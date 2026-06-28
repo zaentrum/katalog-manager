@@ -96,12 +96,32 @@ func envInt(def int, keys ...string) int {
 	return n
 }
 
+// normalizeDSN makes a Spring/JDBC-style datasource URL pgx-friendly: it strips
+// a leading `jdbc:` (so `jdbc:postgresql://h/db` → `postgresql://h/db`) and, when
+// no sslmode is given, defaults to `disable` (the in-cluster demo Postgres is
+// plaintext; a TLS deployment specifies sslmode explicitly).
+func normalizeDSN(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "jdbc:")
+	if s == "" {
+		return s
+	}
+	if (strings.HasPrefix(s, "postgres://") || strings.HasPrefix(s, "postgresql://")) && !strings.Contains(s, "sslmode=") {
+		sep := "?"
+		if strings.Contains(s, "?") {
+			sep = "&"
+		}
+		s += sep + "sslmode=disable"
+	}
+	return s
+}
+
 // Load reads configuration from the process environment.
 func Load() Config {
 	packages := envDefault("/var/lib/katalog/packages", "PACKAGES_ROOT")
 	c := Config{
 		Port:             envDefault("8080", "SERVER_PORT"),
-		DatabaseURL:      env("SPRING_DATASOURCE_URL", "DATABASE_URL"),
+		DatabaseURL:      normalizeDSN(env("SPRING_DATASOURCE_URL", "DATABASE_URL")),
 		DatabaseUser:     env("SPRING_DATASOURCE_USERNAME", "DATABASE_USER"),
 		DatabasePassword: env("SPRING_DATASOURCE_PASSWORD", "DATABASE_PASSWORD"),
 
