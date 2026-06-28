@@ -1,0 +1,5 @@
+/katalog-manager
+/server
+*.test
+/dist/
+.env
