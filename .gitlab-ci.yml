@@ -1,0 +1,51 @@
+# Stube standard CI for katalog-manager (Go + GraphQL catalog-management API).
+# Disabled by default — set CI_ENABLED=true as a CI/CD variable to activate.
+# Builds the image to registry.nalet.cloud/stube/katalog-manager; the demo's
+# kustomize overlay (infrastructure/zaentrum-demo) deploys it.
+workflow:
+  rules:
+    - if: $CI_ENABLED == "true"
+      when: always
+    - when: never
+
+stages:
+  - test
+  - containerize
+
+variables:
+  IMAGE_NAME: $CI_REGISTRY_IMAGE
+
+test:
+  stage: test
+  image: registry.nalet.cloud/infrastructure/library/golang:1.24-alpine
+  variables:
+    GOTOOLCHAIN: local
+  script:
+    - apk add --no-cache git
+    - go vet ./...
+    - go build ./...
+    - go test ./...
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+
+containerize:
+  stage: containerize
+  image:
+    name: registry.nalet.cloud/infrastructure/library/kaniko-project/executor:debug
+    entrypoint: [""]
+  needs: ["test"]
+  script:
+    - mkdir -p "$DOCKER_CONFIG"
+    - REGISTRY_AUTH="$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')"
+    - |
+      cat > "$DOCKER_CONFIG/config.json" <<EOF
+      {"auths":{"$CI_REGISTRY":{"auth":"$REGISTRY_AUTH"}}}
+      EOF
+    - /kaniko/executor
+      --context $CI_PROJECT_DIR
+      --dockerfile $CI_PROJECT_DIR/Dockerfile
+      --destination "$IMAGE_NAME:$CI_COMMIT_SHORT_SHA"
+      --destination "$IMAGE_NAME:latest"
+      --push-retry=5
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"'

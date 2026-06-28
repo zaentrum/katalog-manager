@@ -1,0 +1,388 @@
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+scalar Time
+
+# ---------------------------------------------------------------------------
+# Core read graph (replaces the OData KatalogService projections). The
+# discriminated single-table model is one Item type; movies/series/episodes/
+# albums are filtered queries (faithful to the katalogservice_* views).
+# ---------------------------------------------------------------------------
+
+type Item {
+  id: ID!
+  type: String!
+  title: String!
+  sortTitle: String
+  year: Int
+  description: String
+  rating: Float
+  durationMs: Float
+  parentId: ID
+  seasonNumber: Int
+  episodeNumber: Int
+  tagline: String
+  createdAt: Time
+  modifiedAt: Time
+
+  # computed (katalogservice_* view formulas)
+  posterUrl: String
+  backdropUrl: String
+  runtimeMin: Float
+  yearText: String
+  isPackaged: Boolean!
+  hasIntro: Boolean!
+  hasCredits: Boolean!
+  hasRecap: Boolean!
+
+  # relations / facets
+  parent: Item
+  children: [Item!]!
+  externalIds: [ItemExternalId!]!
+  artwork: [ItemArtwork!]!
+  assets: [PlaybackAsset!]!
+  subtitles: [SubtitleAsset!]!
+  segments: [MediaSegment!]!
+  chapters: [ItemChapter!]!
+  trailerLinks: [ItemTrailerLink!]!
+  diagnostics: ItemDiagnostics
+  processingSteps: [ItemProcessingStep!]!
+  overallStatus: ItemOverallStatus
+  genres: [Genre!]!
+  people: [ItemPerson!]!
+  tags: [String!]!
+}
+
+type PlaybackAsset {
+  id: ID!
+  itemId: ID!
+  path: String!
+  codec: String
+  resolution: String
+  bitrateKbps: Int
+  sizeBytes: Float
+  hash: String
+  isPrimary: Boolean
+  kind: String
+  audioCodec: String
+  audioLanguage: String
+  audioChannels: Int
+  audioBitrateKbps: Int
+  audioTrackCount: Int
+  subtitleTrackCount: Int
+  durationMs: Float
+  sizeMB: Float
+}
+
+type SubtitleAsset {
+  id: ID!
+  itemId: ID!
+  path: String!
+  format: String
+  lang: String
+  label: String
+  isDefault: Boolean
+}
+
+type MediaSegment {
+  id: ID!
+  itemId: ID!
+  kind: String!
+  startMs: Float!
+  endMs: Float!
+  source: String!
+  confidence: Float
+  label: String
+}
+
+type ItemChapter {
+  id: ID!
+  itemId: ID!
+  startMs: Float!
+  endMs: Float!
+  title: String
+  ordinal: Int
+}
+
+type ItemProcessingStep {
+  id: ID!
+  itemId: ID!
+  step: String!
+  status: String!
+  startedAt: Time
+  finishedAt: Time
+  attempts: Int
+  error: String
+  details: String
+  statusCriticality: Int
+}
+
+type ItemOverallStatus {
+  itemId: ID!
+  overallStatus: String
+  doneCount: Int
+  pendingCount: Int
+  failedCount: Int
+  inProgressCount: Int
+  notApplicableCount: Int
+  totalSteps: Int
+  lastStepFinishedAt: Time
+}
+
+type Genre {
+  id: ID!
+  name: String!
+}
+
+type Person {
+  id: ID!
+  name: String!
+}
+
+type ItemPerson {
+  id: ID!
+  role: String!
+  person: Person!
+}
+
+type ItemArtwork {
+  id: ID!
+  itemId: ID!
+  kind: String!
+  url: String!
+}
+
+type ItemExternalId {
+  id: ID!
+  itemId: ID!
+  source: String!
+  externalId: String!
+}
+
+type ItemTrailerLink {
+  id: ID!
+  itemId: ID!
+  source: String!
+  site: String
+  externalId: String
+  url: String!
+  title: String
+  durationSec: Int
+  publishedAt: Time
+  downloadedAt: Time
+  localPath: String
+}
+
+type ItemDiagnostics {
+  id: ID!
+  itemId: ID!
+  generatedAt: Time
+  sourcePath: String
+  sourceSize: Float
+  sourceMtime: Time
+  ffprobeData: String
+  folderListing: String
+  notes: String
+}
+
+type ScanJob {
+  id: ID!
+  source: String!
+  status: String!
+  startedAt: Time
+  finishedAt: Time
+  errorMessage: String
+  filesSeen: Int
+  itemsInserted: Int
+  itemsUpdated: Int
+}
+
+type DownloadJob {
+  id: ID!
+  adapter: String!
+  clientJobId: String!
+  title: String
+  wantedItemId: String
+  state: String!
+  progressPct: Float
+  downloadedBytes: Float
+  sizeBytes: Float
+  speedBps: Float
+  etaSec: Int
+  files: String
+  errorMessage: String
+  startedAt: Time
+  completedAt: Time
+  lastEventAt: Time
+  stateCriticality: Int
+}
+
+type Setting {
+  id: ID!
+  key: String!
+  valueText: String!
+  valueType: String!
+  description: String
+}
+
+type EnrichmentStatusCode {
+  code: String!
+  name: String
+}
+
+# ---------------------------------------------------------------------------
+# Action result types
+# ---------------------------------------------------------------------------
+
+type SearchItem {
+  id: ID!
+  type: String!
+  title: String!
+  year: Int
+  rating: Float
+  score: Float
+}
+
+type SearchResult {
+  items: [SearchItem!]!
+  total: Int!
+  limit: Int!
+  offset: Int!
+}
+
+type EnrichStatus {
+  tmdbEnabled: Boolean!
+}
+
+type EnrichResult {
+  itemId: ID!
+  status: String!
+  message: String
+}
+
+type EnrichPendingResult {
+  queued: Int!
+  type: String
+}
+
+type BackfillResult {
+  artworkData: Int!
+  artwork: Int!
+}
+
+type RetryResult {
+  reset: Int!
+  type: String
+}
+
+type PackageResult {
+  status: String
+  alreadyActive: Boolean
+  message: String
+  episodesEnqueued: Int
+  episodesTotal: Int
+}
+
+type ValidateFinding {
+  code: String!
+  message: String!
+}
+
+type ValidateResult {
+  code: String!
+  message: String!
+  sourcePath: String
+  packagePath: String
+  findings: [ValidateFinding!]!
+}
+
+type FetchTrailersResult {
+  itemId: ID!
+  title: String
+  enqueued: Int!
+  packageId: String
+  jobIds: [String!]!
+  message: String
+}
+
+type DownloadCommandResult {
+  ok: Boolean!
+  adapter: String
+  clientJobId: String
+  message: String
+}
+
+# ---------------------------------------------------------------------------
+# Queries
+# ---------------------------------------------------------------------------
+
+type Query {
+  item(id: ID!): Item
+  items(type: String, genre: String, year: Int, search: String, limit: Int, offset: Int): [Item!]!
+  movies(genre: String, year: Int, search: String, limit: Int, offset: Int): [Item!]!
+  series(genre: String, year: Int, search: String, limit: Int, offset: Int): [Item!]!
+  episodes(seriesId: ID, seasonId: ID, limit: Int, offset: Int): [Item!]!
+  albums(limit: Int, offset: Int): [Item!]!
+
+  searchItems(q: String, type: String, genre: String, year: Int, limit: Int, offset: Int): SearchResult!
+
+  scanJob(id: ID!): ScanJob
+  scanJobs(limit: Int): [ScanJob!]!
+
+  downloadJobs(limit: Int): [DownloadJob!]!
+  downloadClients: String!
+
+  settings: [Setting!]!
+  genres: [Genre!]!
+  people: [Person!]!
+  enrichStatus: EnrichStatus!
+  enrichmentStatusCodes: [EnrichmentStatusCode!]!
+}
+
+# ---------------------------------------------------------------------------
+# Mutations
+# ---------------------------------------------------------------------------
+
+input ItemInput {
+  type: String
+  title: String
+  sortTitle: String
+  year: Int
+  description: String
+  rating: Float
+  durationMs: Float
+  parentId: ID
+  seasonNumber: Int
+  episodeNumber: Int
+  tagline: String
+}
+
+type Mutation {
+  # operator actions
+  triggerScan(source: String): ScanJob!
+  enrichOne(id: ID!): EnrichResult!
+  enrichPending(limit: Int, type: String): EnrichPendingResult!
+  backfillEpisodeBackdrops: BackfillResult!
+  retryNotFound(type: String): RetryResult!
+  packageItem(id: ID!): PackageResult!
+  validateItem(id: ID!): ValidateResult!
+  fetchTrailers(id: ID!): FetchTrailersResult!
+
+  # downloads (CQRS command side)
+  addDownload(adapter: String!, source: String!, title: String, wantedItemId: String): DownloadCommandResult!
+  cancelDownload(adapter: String!, clientJobId: String!): DownloadCommandResult!
+
+  # item + facet CRUD (operator edits)
+  createItem(input: ItemInput!): Item!
+  updateItem(id: ID!, input: ItemInput!): Item!
+  deleteItem(id: ID!): Boolean!
+  setItemGenres(id: ID!, genres: [String!]!): Item!
+  setItemTags(id: ID!, tags: [String!]!): Item!
+
+  # settings (key read-only after create)
+  createSetting(key: String!, valueText: String!, valueType: String, description: String): Setting!
+  updateSetting(id: ID!, valueText: String, valueType: String, description: String): Setting!
+  deleteSetting(id: ID!): Boolean!
+}
