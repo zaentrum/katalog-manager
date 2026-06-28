@@ -3,3 +3,6 @@
 *.test
 /dist/
 .env
+
+# internal design analysis (competitor/infra refs) — not for the public repo
+SPEC/
