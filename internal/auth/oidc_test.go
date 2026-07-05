@@ -18,7 +18,7 @@ func TestNewJWTVerifier_UnreachableIssuerIsNonFatal(t *testing.T) {
 
 	// 127.0.0.1:1 refuses instantly, so the bounded synchronous attempt fails
 	// fast without waiting out the 5s timeout.
-	v, err := NewJWTVerifier(ctx, "http://127.0.0.1:1/realms/stube", "chino", false, false)
+	v, err := NewJWTVerifier(ctx, "http://127.0.0.1:1/realms/zaentrum", "chino", false, false)
 	if err != nil {
 		t.Fatalf("unreachable issuer must be non-fatal, got error: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestNewJWTVerifier_DisabledAuthorizesAll(t *testing.T) {
 		disabled bool
 	}{
 		{"blank issuer", "", false},
-		{"auth disabled", "http://issuer.example/realms/stube", true},
+		{"auth disabled", "http://issuer.example/realms/zaentrum", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v, err := NewJWTVerifier(context.Background(), tc.issuer, "chino", false, tc.disabled)
