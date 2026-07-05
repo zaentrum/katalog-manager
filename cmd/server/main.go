@@ -39,9 +39,14 @@ func main() {
 
 func run() error {
 	cfg := config.Load()
-	ctx := context.Background()
 
-	st, err := store.New(ctx, cfg.DatabaseURL, cfg.DatabaseUser, cfg.DatabasePassword)
+	// Server-lifetime context. Cancelled on shutdown so background workers —
+	// including the OIDC discovery retry goroutine — stop with the server
+	// instead of lingering until process exit.
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+
+	st, err := store.New(bgCtx, cfg.DatabaseURL, cfg.DatabaseUser, cfg.DatabasePassword)
 	if err != nil {
 		return err
 	}
@@ -54,7 +59,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	jwtVerifier, err := auth.NewJWTVerifier(ctx, cfg.OIDCIssuer, cfg.Audience, cfg.AudienceRequired, cfg.AuthDisabled)
+	jwtVerifier, err := auth.NewJWTVerifier(bgCtx, cfg.OIDCIssuer, cfg.Audience, cfg.AudienceRequired, cfg.AuthDisabled)
 	if err != nil {
 		return err
 	}
@@ -68,10 +73,7 @@ func run() error {
 	actions := itemactions.New(st, cfg, steps)
 	trailers := odownloader.New(st, cfg, steps)
 
-	// Background workers (lifetime = server). Cancelled on shutdown.
-	bgCtx, bgCancel := context.WithCancel(context.Background())
-	defer bgCancel()
-
+	// Background workers (lifetime = server) share bgCtx, cancelled on shutdown.
 	if cfg.DownloadEventsEnabled {
 		consumer := downloads.NewConsumer(st, cfg)
 		go func() {
