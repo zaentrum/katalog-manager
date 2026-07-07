@@ -50,6 +50,36 @@ func New(st storePool, cfg config.Config, steps *processing.Steps, ch *chaptersd
 	}
 }
 
+// Poll cadence for the background enrichment drain. Each tick sweeps up to
+// pollBatch pending items synchronously (no overlap); the client backs off on
+// TMDB rate limits, so the sweep self-paces under a shared/bundled token.
+const (
+	pollInterval = 60 * time.Second
+	pollBatch    = 50
+)
+
+// RunPoller drains the pending tmdb queue in the background for the lifetime of
+// ctx — the auto-enrichment worker (mirrors the trailers/download pollers).
+// Without it nothing advances items whose tmdb step is pending, so enrichment
+// stalls (the June regression: 74k pending, 0 processed). No-op when TMDB is
+// disabled. Runs one batch immediately, then one per tick.
+func (s *Service) RunPoller(ctx context.Context) {
+	if !s.cfg.TMDBEnabled() {
+		return
+	}
+	log.Printf("tmdb: enrichment poller started (interval=%s batch=%d)", pollInterval, pollBatch)
+	t := time.NewTicker(pollInterval)
+	defer t.Stop()
+	for {
+		s.sweepPending(pollBatch, "") // synchronous: one batch per tick, no overlap
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
 // storePool is the subset of *store.Store the service needs. The concrete
 // *store.Store satisfies it; declaring it locally keeps the dependency narrow.
 type storePool interface {
