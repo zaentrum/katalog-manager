@@ -422,29 +422,64 @@ func (c *client) fetchImage(ctx context.Context, absoluteURL string) ([]byte, bo
 }
 
 // getJSON performs an authorized GET; returns the body only on HTTP 200.
+// getJSON does an authenticated GET, retrying on TMDB rate-limit (429) with the
+// server's Retry-After (capped) then exponential backoff. GET is idempotent so
+// retry is safe. Returns (body, true) only on 200. A shared/bundled token hits
+// the rate limit sooner, so this pacing keeps the sweep from failing under load.
 func (c *client) getJSON(ctx context.Context, rawURL string) ([]byte, bool) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return nil, false
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	const maxAttempts = 4
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			cancel()
+			return nil, false
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		resp, err := c.http.Do(req)
+		if err != nil {
+			cancel()
+			return nil, false
+		}
+		if resp.StatusCode == http.StatusOK {
+			b, rerr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			cancel()
+			if rerr != nil {
+				return nil, false
+			}
+			return b, true
+		}
+		rateLimited := resp.StatusCode == http.StatusTooManyRequests
+		wait := parseRetryAfter(resp.Header.Get("Retry-After"))
 		io.Copy(io.Discard, resp.Body)
-		return nil, false
+		resp.Body.Close()
+		cancel()
+		if !rateLimited || attempt == maxAttempts-1 {
+			return nil, false
+		}
+		if wait <= 0 {
+			wait = time.Duration(1<<attempt) * time.Second // 1s, 2s, 4s
+		}
+		if wait > 10*time.Second {
+			wait = 10 * time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-time.After(wait):
+		}
 	}
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, false
+	return nil, false
+}
+
+// parseRetryAfter reads a delta-seconds Retry-After header; 0 if absent/invalid.
+func parseRetryAfter(h string) time.Duration {
+	if secs, err := strconv.Atoi(strings.TrimSpace(h)); err == nil && secs >= 0 {
+		return time.Duration(secs) * time.Second
 	}
-	return b, true
+	return 0
 }
 
 func deref(p *string) string {

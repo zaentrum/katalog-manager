@@ -135,7 +135,7 @@ func Load() Config {
 		NFSRoot:      envDefault("/var/lib/katalog/media", "SCANNER_NFS_ROOT", "NFS_ROOT"),
 		PackagesRoot: packages,
 
-		TMDBAPIKey:   env("TMDB_API_KEY"),
+		TMDBAPIKey:   envDefault(DefaultTMDBToken, "TMDB_API_KEY"),
 		TMDBLanguage: envDefault("en-US", "TMDB_LANGUAGE"),
 
 		ChaptersDBEnabled: envBool(false, "CHAPTERSDB_ENABLED"),
@@ -157,7 +157,15 @@ func Load() Config {
 	return c
 }
 
-// TMDBEnabled reports whether TMDB enrichment is configured.
+// DefaultTMDBToken is the bundled default TMDB v4 read-access token, injected at
+// build time via -ldflags "-X .../config.DefaultTMDBToken=<token>". It is EMPTY in
+// source (no secret committed to a public repo) so enrichment works out of the box
+// only when the image is built with a token baked in. An operator's TMDB_API_KEY
+// env always overrides it (their own token → higher, unshared rate limits).
+var DefaultTMDBToken = ""
+
+// TMDBEnabled reports whether TMDB enrichment is configured (a bundled default or
+// an operator override).
 func (c Config) TMDBEnabled() bool { return c.TMDBAPIKey != "" }
 
 // DownloadGatewayEnabled reports whether the command side is configured.

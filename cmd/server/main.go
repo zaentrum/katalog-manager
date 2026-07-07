@@ -85,6 +85,9 @@ func run() error {
 	if cfg.ODownloaderEnabled() {
 		go trailers.RunPoller(bgCtx)
 	}
+	if cfg.TMDBEnabled() {
+		go enricher.RunPoller(bgCtx)
+	}
 
 	// GraphQL.
 	resolver := graph.NewResolver(st, cfg, graph.Services{
