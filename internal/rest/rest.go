@@ -35,8 +35,9 @@ func (h *Handlers) Register(r chi.Router) {
 	r.Get("/api/subtitles/items/{itemId}", h.listSubtitles)
 	r.Get("/api/subtitles/{subId}", h.getSubtitle)
 
-	// Analyzer worker protocol
-	r.Post("/api/analyze/claim", h.claim)
+	// Analyzer worker protocol. The batch POST /api/analyze/claim poll endpoint
+	// was removed: the pipeline is now Kafka-triggered (pure event-driven), so
+	// workers consume item events and fetch detail via GET /api/analyze/items/{id}.
 	r.Get("/api/analyze/items/{id}", h.getAnalyzeItem)
 	r.Get("/api/analyze/items/{id}/steps", h.getSteps)
 	r.Post("/api/analyze/items/{id}/steps/skip", h.skipSteps)
