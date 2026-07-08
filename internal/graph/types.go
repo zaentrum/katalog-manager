@@ -3,6 +3,7 @@ package graph
 import (
 	graphql "github.com/graph-gophers/graphql-go"
 	"github.com/zaentrum/katalog-manager/internal/model"
+	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
 func i32fromI64(v *int64) *int32 {
@@ -186,6 +187,22 @@ func (r *scanJobResolver) ErrorMessage() *string    { return r.m.ErrorMessage }
 func (r *scanJobResolver) FilesSeen() *int32         { return r.m.FilesSeen }
 func (r *scanJobResolver) ItemsInserted() *int32     { return r.m.ItemsInserted }
 func (r *scanJobResolver) ItemsUpdated() *int32      { return r.m.ItemsUpdated }
+
+// ---- ActivityEvent ----
+
+type activityEventResolver struct{ m *store.ActivityRow }
+
+func (r *activityEventResolver) ID() graphql.ID          { return gid(r.m.ID) }
+func (r *activityEventResolver) ItemID() graphql.ID      { return gid(r.m.ItemID) }
+func (r *activityEventResolver) ItemTitle() string       { return r.m.ItemTitle }
+func (r *activityEventResolver) ItemType() string        { return r.m.ItemType }
+func (r *activityEventResolver) Step() string            { return r.m.Step }
+func (r *activityEventResolver) Status() string          { return r.m.Status }
+func (r *activityEventResolver) Attempts() *int32        { return r.m.Attempts }
+func (r *activityEventResolver) Error() *string          { return r.m.Error }
+func (r *activityEventResolver) StartedAt() *graphql.Time  { return gtime(r.m.StartedAt) }
+func (r *activityEventResolver) FinishedAt() *graphql.Time { return gtime(r.m.FinishedAt) }
+func (r *activityEventResolver) UpdatedAt() *graphql.Time  { return gtime(r.m.UpdatedAt) }
 
 // ---- DownloadJob ----
 
