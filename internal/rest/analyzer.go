@@ -3,6 +3,7 @@ package rest
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -557,7 +558,10 @@ func (h *Handlers) putStep(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "upsert affected 0 rows")
+		// Surface the real cause (and log it): a masked "0 rows" string once hid a
+		// pgx type-deduction failure that stalled the whole analyzer pipeline.
+		log.Printf("putStep: upsert item=%s step=%s status=%s failed: %v", id, step, status, err)
+		writeError(w, http.StatusInternalServerError, "step upsert failed: "+err.Error())
 		return
 	}
 

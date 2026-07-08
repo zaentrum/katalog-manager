@@ -71,11 +71,17 @@ func (s *Steps) Upsert(ctx context.Context, itemID, step, status string, errMsg,
 		em = &t
 	}
 	const tbl = "com_nalet_katalog_itemprocessingsteps"
+	// $3 (status) is cast to text at every use. Under pgx's extended protocol
+	// Postgres deduces one type for a parameter at parse time; using bare $3 both
+	// as the varchar `status` value AND inside `= 'in_progress'` / `IN (...)`
+	// comparisons yields "inconsistent types deduced for parameter $3" (42P08).
+	// psql never hit this (simple protocol inlines the literal). The explicit
+	// ::text casts pin $3 to a single type. See analyzer step-upsert regression.
 	tag, err := s.pool.Exec(ctx, `INSERT INTO `+tbl+`
 		(id, createdat, modifiedat, item_id, step, status, startedat, finishedat, attempts, error, details)
-		VALUES (gen_random_uuid()::varchar, now(), now(), $1, $2, $3,
-			CASE WHEN $3 = 'in_progress' THEN now() ELSE NULL END,
-			CASE WHEN $3 IN ('done','failed','skipped') THEN now() ELSE NULL END,
+		VALUES (gen_random_uuid()::varchar, now(), now(), $1, $2, $3::text,
+			CASE WHEN $3::text = 'in_progress' THEN now() ELSE NULL END,
+			CASE WHEN $3::text IN ('done','failed','skipped') THEN now() ELSE NULL END,
 			1, $4, $5)
 		ON CONFLICT (item_id, step) DO UPDATE SET
 			modifiedat = now(),
