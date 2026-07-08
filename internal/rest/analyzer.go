@@ -16,15 +16,9 @@ import (
 // Java controller). Ordered list (membership only matters for ANY()/reset).
 var analyzerSteps = []string{"chapter", "chromaprint", "blackframe", "silence", "subtitle", "tidb"}
 
-// allowedPasses mirrors AnalyzerController.ALLOWED_PASSES.
-var allowedPasses = map[string]bool{
-	"per_file": true, "tidb_first": true, "transcoder": true, "packager": true,
-}
-
-// claimItem is one row of the claim response. The JSON is hand-marshalled to
-// reproduce the Java LinkedHashMap field order and the conditional presence of
-// seriesTitle (present — possibly null — only for the packager pass, omitted
-// otherwise, mirroring row.containsKey("series_title")).
+// claimItem is one per-item analyzer detail row (returned by getAnalyzeItem).
+// The JSON is hand-marshalled to reproduce the Java LinkedHashMap field order
+// and the conditional presence of seriesTitle.
 type claimItem struct {
 	ID            string
 	Type          string
@@ -77,227 +71,30 @@ func (c claimItem) MarshalJSON() ([]byte, error) {
 	return b, nil
 }
 
-// claim ports AnalyzerController#claim: atomic per-pass dequeue with FOR UPDATE
-// SKIP LOCKED, returning {pass, claimed, items[]}. Non-per_file passes flip
-// their owning step to in_progress at claim time.
-func (h *Handlers) claim(w http.ResponseWriter, r *http.Request) {
-	ctx := reqCtx(r)
-	pass := r.URL.Query().Get("pass")
-	if pass == "" {
-		pass = "per_file"
-	}
-	if !allowedPasses[pass] {
-		writeError(w, http.StatusBadRequest,
-			"unknown pass '"+pass+"'; allowed: [per_file, tidb_first, transcoder, packager]")
-		return
-	}
-	limit := 4
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			limit = n
-		}
-	}
-	safeLimit := limit
-	if safeLimit < 1 {
-		safeLimit = 1
-	}
-	if safeLimit > 32 {
-		safeLimit = 32
-	}
-
-	pool := h.d.Store.Pool()
-	var rows pgx.Rows
-	var err error
-	packager := pass == "packager"
-
-	switch pass {
-	case "tidb_first":
-		rows, err = pool.Query(ctx, `
-			WITH next_items AS (
-			  SELECT i.id
-			  FROM com_nalet_katalog_items i
-			  WHERE i.type IN ('movie','episode')
-			    AND EXISTS (SELECT 1 FROM com_nalet_katalog_itemexternalids x
-			                WHERE x.source='tmdb'
-			                  AND ((i.type='movie'   AND x.item_id = i.id)
-			                    OR (i.type='episode' AND x.item_id = i.parent_id)))
-			    AND EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps s
-			                WHERE s.item_id = i.id AND s.step='tidb' AND s.status='pending')
-			    AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps s
-			                    WHERE s.item_id = i.id AND s.status = 'in_progress')
-			  ORDER BY i.createdat DESC NULLS LAST
-			  FOR UPDATE SKIP LOCKED
-			  LIMIT $1
-			)
-			SELECT i.id, i.type, i.title, i.year, i.durationms, NULL::text AS path,
-			       i.seasonnumber, i.episodenumber,
-			       parent_ext.externalid AS series_tmdb_id,
-			       self_ext.externalid   AS movie_tmdb_id
-			FROM next_items n
-			JOIN com_nalet_katalog_items i ON i.id = n.id
-			LEFT JOIN com_nalet_katalog_itemexternalids parent_ext
-			       ON parent_ext.item_id = i.parent_id AND parent_ext.source = 'tmdb'
-			LEFT JOIN com_nalet_katalog_itemexternalids self_ext
-			       ON self_ext.item_id = i.id AND self_ext.source = 'tmdb'`, safeLimit)
-	case "transcoder":
-		rows, err = pool.Query(ctx, `
-			WITH next_items AS (
-			  SELECT i.id
-			  FROM com_nalet_katalog_items i
-			  WHERE i.type IN ('movie','episode')
-			    AND EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets p
-			                WHERE p.item_id = i.id AND p.isprimary = true)
-			    AND EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps s
-			                WHERE s.item_id = i.id AND s.step='transcode' AND s.status='pending')
-			    AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps s
-			                    WHERE s.item_id = i.id AND s.status = 'in_progress')
-			  ORDER BY i.createdat DESC NULLS LAST
-			  FOR UPDATE SKIP LOCKED
-			  LIMIT $1
-			)
-			SELECT i.id, i.type, i.title, i.year, i.durationms, p.path,
-			       i.seasonnumber, i.episodenumber,
-			       parent_ext.externalid AS series_tmdb_id,
-			       self_ext.externalid   AS movie_tmdb_id
-			FROM next_items n
-			JOIN com_nalet_katalog_items i ON i.id = n.id
-			JOIN com_nalet_katalog_playbackassets p ON p.item_id = i.id AND p.isprimary = true
-			LEFT JOIN com_nalet_katalog_itemexternalids parent_ext
-			       ON parent_ext.item_id = i.parent_id AND parent_ext.source = 'tmdb'
-			LEFT JOIN com_nalet_katalog_itemexternalids self_ext
-			       ON self_ext.item_id = i.id AND self_ext.source = 'tmdb'`, safeLimit)
-	case "packager":
-		rows, err = pool.Query(ctx, `
-			WITH next_items AS (
-			  SELECT i.id
-			  FROM com_nalet_katalog_items i
-			  WHERE i.type IN ('movie','episode')
-			    AND EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets p
-			                WHERE p.item_id = i.id AND p.isprimary = true)
-			    AND EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps s
-			                WHERE s.item_id = i.id AND s.step='package' AND s.status='pending')
-			    AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps s
-			                    WHERE s.item_id = i.id AND s.status = 'in_progress')
-			    AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps s
-			                    WHERE s.item_id = i.id AND s.step='transcode' AND s.status='pending')
-			  ORDER BY i.createdat DESC NULLS LAST
-			  FOR UPDATE SKIP LOCKED
-			  LIMIT $1
-			)
-			SELECT i.id, i.type, i.title, i.year, i.durationms, p.path,
-			       i.seasonnumber, i.episodenumber,
-			       parent_item.title     AS series_title,
-			       parent_ext.externalid AS series_tmdb_id,
-			       self_ext.externalid   AS movie_tmdb_id
-			FROM next_items n
-			JOIN com_nalet_katalog_items i ON i.id = n.id
-			JOIN com_nalet_katalog_playbackassets p ON p.item_id = i.id AND p.isprimary = true
-			LEFT JOIN com_nalet_katalog_items parent_item
-			       ON parent_item.id = i.parent_id
-			LEFT JOIN com_nalet_katalog_itemexternalids parent_ext
-			       ON parent_ext.item_id = i.parent_id AND parent_ext.source = 'tmdb'
-			LEFT JOIN com_nalet_katalog_itemexternalids self_ext
-			       ON self_ext.item_id = i.id AND self_ext.source = 'tmdb'`, safeLimit)
-	default: // per_file
-		rows, err = pool.Query(ctx, `
-			WITH next_items AS (
-			  SELECT i.id
-			  FROM com_nalet_katalog_items i
-			  WHERE i.type IN ('movie','episode')
-			    AND EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets p
-			                WHERE p.item_id = i.id AND p.isprimary = true)
-			    AND EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps s
-			                WHERE s.item_id = i.id AND s.status = 'pending' AND s.step = ANY($1))
-			    AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps s
-			                    WHERE s.item_id = i.id AND s.status = 'in_progress')
-			  ORDER BY i.createdat DESC NULLS LAST
-			  FOR UPDATE SKIP LOCKED
-			  LIMIT $2
-			)
-			SELECT i.id, i.type, i.title, i.year, i.durationms, p.path,
-			       i.seasonnumber, i.episodenumber,
-			       parent_ext.externalid AS series_tmdb_id,
-			       self_ext.externalid   AS movie_tmdb_id
-			FROM next_items n
-			JOIN com_nalet_katalog_items i ON i.id = n.id
-			JOIN com_nalet_katalog_playbackassets p ON p.item_id = i.id AND p.isprimary = true
-			LEFT JOIN com_nalet_katalog_itemexternalids parent_ext
-			       ON parent_ext.item_id = i.parent_id AND parent_ext.source = 'tmdb'
-			LEFT JOIN com_nalet_katalog_itemexternalids self_ext
-			       ON self_ext.item_id = i.id AND self_ext.source = 'tmdb'`, analyzerSteps, safeLimit)
-	}
-	if err != nil {
-		http.Error(w, "claim query failed", http.StatusInternalServerError)
-		return
-	}
-
-	items := make([]claimItem, 0)
-	func() {
-		defer rows.Close()
-		for rows.Next() {
-			it := claimItem{includeSeries: packager}
-			var scanErr error
-			if packager {
-				scanErr = rows.Scan(&it.ID, &it.Type, &it.Title, &it.Year, &it.DurationMs, &it.Path,
-					&it.SeasonNumber, &it.EpisodeNumber, &it.SeriesTitle, &it.SeriesTmdbID, &it.MovieTmdbID)
-			} else {
-				scanErr = rows.Scan(&it.ID, &it.Type, &it.Title, &it.Year, &it.DurationMs, &it.Path,
-					&it.SeasonNumber, &it.EpisodeNumber, &it.SeriesTmdbID, &it.MovieTmdbID)
-			}
-			if scanErr != nil {
-				err = scanErr
-				return
-			}
-			items = append(items, it)
-		}
-		err = rows.Err()
-	}()
-	if err != nil {
-		http.Error(w, "claim scan failed", http.StatusInternalServerError)
-		return
-	}
-
-	// Claim-time step flip for the non-per_file passes (per_file relies on the
-	// worker flipping its first detector step itself).
-	var flipStep string
-	switch pass {
-	case "tidb_first":
-		flipStep = "tidb"
-	case "transcoder":
-		flipStep = "transcode"
-	case "packager":
-		flipStep = "package"
-	}
-	if flipStep != "" {
-		for i := range items {
-			_ = h.d.Steps.Upsert(ctx, items[i].ID, flipStep, processing.StatusInProgress, nil, nil)
-		}
-	}
-
-	writeJSON(w, http.StatusOK, claimResponse{Pass: pass, Claimed: len(items), Items: items})
-}
-
-type claimResponse struct {
-	Pass    string      `json:"pass"`
-	Claimed int         `json:"claimed"`
-	Items   []claimItem `json:"items"`
-}
-
-// getAnalyzeItem ports AnalyzerController#getItem: single-item lookup joined to
-// its primary playback path. 404 when there is no primary asset.
+// getAnalyzeItem is the single-item detail lookup the event-driven workers use.
+// Since the pipeline is now Kafka-triggered (no batch claim), a worker consumes
+// an item event and fetches the FULL per-item detail by id here: primary path,
+// season/episode coords, parent series title, and the TMDB ids the tidb pass and
+// output naming need. Returns the same rich shape the old batch claim returned
+// (claimItem with seriesTitle), so workers get everything in one call. 404 when
+// there is no primary asset.
 func (h *Handlers) getAnalyzeItem(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	var (
-		typ, title string
-		year       *int32
-		durationMs *int64
-		path       *string
-	)
+	it := claimItem{includeSeries: true}
 	err := h.d.Store.Pool().QueryRow(reqCtx(r), `
-		SELECT i.id, i.type, i.title, i.year, i.durationms, p.path
+		SELECT i.id, i.type, i.title, i.year, i.durationms, p.path,
+		       i.seasonnumber, i.episodenumber,
+		       parent_item.title     AS series_title,
+		       parent_ext.externalid AS series_tmdb_id,
+		       self_ext.externalid   AS movie_tmdb_id
 		FROM com_nalet_katalog_items i
 		JOIN com_nalet_katalog_playbackassets p ON p.item_id = i.id AND p.isprimary = true
-		WHERE i.id = $1 LIMIT 1`, id).Scan(&id, &typ, &title, &year, &durationMs, &path)
+		LEFT JOIN com_nalet_katalog_items parent_item ON parent_item.id = i.parent_id
+		LEFT JOIN com_nalet_katalog_itemexternalids parent_ext ON parent_ext.item_id = i.parent_id AND parent_ext.source = 'tmdb'
+		LEFT JOIN com_nalet_katalog_itemexternalids self_ext ON self_ext.item_id = i.id AND self_ext.source = 'tmdb'
+		WHERE i.id = $1 LIMIT 1`, id).Scan(
+		&it.ID, &it.Type, &it.Title, &it.Year, &it.DurationMs, &it.Path,
+		&it.SeasonNumber, &it.EpisodeNumber, &it.SeriesTitle, &it.SeriesTmdbID, &it.MovieTmdbID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
@@ -306,11 +103,11 @@ func (h *Handlers) getAnalyzeItem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "item lookup failed", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, analyzeItemView{
-		ID: id, Type: typ, Title: title, Year: year, DurationMs: durationMs, Path: path,
-	})
+	writeJSON(w, http.StatusOK, it)
 }
 
+// analyzeItemView is the lightweight sibling-episode shape returned by
+// getSiblings (id/type/title/year/duration/path only — no TMDB/series joins).
 type analyzeItemView struct {
 	ID         string  `json:"id"`
 	Type       string  `json:"type"`

@@ -48,6 +48,13 @@ type Config struct {
 	KafkaGroupID          string // KAFKA_GROUP_ID / DOWNLOAD_GATEWAY_KAFKA_GROUP_ID
 	KafkaCertDir          string // dir holding user.crt/user.key/ca.crt (default /etc/kafka-cert)
 
+	// catalog pipeline events (Kafka producer + the discovered->enrich consumer).
+	// This is the event-driven trigger spine: scan emits stube.catalog.item.discovered,
+	// the enricher consumes it (replacing the old 60s poll ticker) and emits
+	// stube.catalog.item.enriched, which the analyzer consumes, and so on down the
+	// chain. Defaults ON whenever KAFKA_BROKERS is set (env override to force off).
+	CatalogEventsEnabled bool // CATALOG_EVENTS_ENABLED (default = KAFKA_BROKERS != "")
+
 	// oDownloader
 	ODownloaderURL      string // ODOWNLOADER_URL / ODOWNLOADER_API_URL
 	ODownloaderToken    string // ODOWNLOADER_TOKEN / ODOWNLOADER_API_TOKEN (blank -> disabled)
@@ -147,6 +154,7 @@ func Load() Config {
 		KafkaBrokers:          env("KAFKA_BROKERS"),
 		KafkaGroupID:          envDefault("stube-katalog-manager", "KAFKA_GROUP_ID", "DOWNLOAD_GATEWAY_KAFKA_GROUP_ID"),
 		KafkaCertDir:          envDefault("/etc/kafka-cert", "KAFKA_CERT_DIR"),
+		CatalogEventsEnabled:  envBool(env("KAFKA_BROKERS") != "", "CATALOG_EVENTS_ENABLED"),
 
 		ODownloaderURL:     env("ODOWNLOADER_URL", "ODOWNLOADER_API_URL"),
 		ODownloaderToken:   env("ODOWNLOADER_TOKEN", "ODOWNLOADER_API_TOKEN"),

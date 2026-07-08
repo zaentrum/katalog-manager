@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
@@ -32,11 +33,13 @@ type Scanner struct {
 	st    *store.Store
 	cfg   config.Config
 	steps *processing.Steps
+	prod  *events.Producer // nil-safe: emits stube.catalog.item.discovered on new items
 }
 
 // New constructs a Scanner. Matches graph.ScanRunner structurally via Trigger.
-func New(st *store.Store, cfg config.Config, steps *processing.Steps) *Scanner {
-	return &Scanner{st: st, cfg: cfg, steps: steps}
+// prod may be nil (events disabled) — the producer is nil-safe.
+func New(st *store.Store, cfg config.Config, steps *processing.Steps, prod *events.Producer) *Scanner {
+	return &Scanner{st: st, cfg: cfg, steps: steps, prod: prod}
 }
 
 // Trigger validates the source, inserts a 'running' scan job, launches the walk
@@ -199,6 +202,15 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 		// done the moment the scanner records the file). Best-effort: a step
 		// failure must not abort ingestion.
 		_ = s.steps.Upsert(ctx, itemID, "scan", processing.StatusDone, nil, nil)
+
+		// Event-driven trigger: a brand-new item enters the pipeline. Emit
+		// discovered -> the enricher consumes it (replaces the old poll ticker).
+		// Only on INSERT — a re-scan of an existing file must not re-fire.
+		ev := events.NewItemEvent(itemID)
+		ev.Type = typ
+		ev.Step = "tmdb"
+		ev.Source = "scan"
+		s.prod.EmitItem(ctx, events.TopicDiscovered, ev)
 	} else {
 		// Existing item: bump modifiedat ONLY (never clobber TMDB-owned fields),
 		// and refresh the asset's size + primary flag.

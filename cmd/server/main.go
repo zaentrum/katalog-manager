@@ -21,6 +21,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/chaptersdb"
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/downloads"
+	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/graph"
 	"github.com/zaentrum/katalog-manager/internal/itemactions"
 	"github.com/zaentrum/katalog-manager/internal/odownloader"
@@ -65,10 +66,24 @@ func run() error {
 	}
 	authMW := auth.NewMiddleware(jwtVerifier, streamVerifier)
 
+	// Catalog pipeline event producer (nil-safe no-op when no brokers). The
+	// scanner emits discovered through it; the enricher emits enriched.
+	var eventProducer *events.Producer
+	if cfg.CatalogEventsEnabled {
+		brokers := events.SplitBrokers(cfg.KafkaBrokers)
+		tlsCfg, err := events.MaybeTLS(cfg.KafkaCertDir)
+		if err != nil {
+			log.Printf("catalog events: certs present but unreadable (%v); producing over PLAINTEXT", err)
+			tlsCfg = nil
+		}
+		eventProducer = events.NewProducer(brokers, tlsCfg)
+		defer eventProducer.Close()
+	}
+
 	// Integration services. Each no-ops cleanly when its feature is unconfigured.
 	chapters := chaptersdb.New(cfg)
 	enricher := tmdb.New(st, cfg, steps, chapters)
-	scan := scanner.New(st, cfg, steps)
+	scan := scanner.New(st, cfg, steps, eventProducer)
 	gateway := downloads.NewGateway(cfg)
 	actions := itemactions.New(st, cfg, steps)
 	trailers := odownloader.New(st, cfg, steps)
@@ -85,8 +100,29 @@ func run() error {
 	if cfg.ODownloaderEnabled() {
 		go trailers.RunPoller(bgCtx)
 	}
-	if cfg.TMDBEnabled() {
-		go enricher.RunPoller(bgCtx)
+	// Event-driven enrichment: consume stube.catalog.item.discovered, enrich the
+	// item synchronously, then emit stube.catalog.item.enriched to trigger analyze.
+	// This replaces the old 60s enrichment poll ticker (pure-Kafka triggers).
+	if cfg.CatalogEventsEnabled && cfg.TMDBEnabled() {
+		go events.Consume(bgCtx, events.SplitBrokers(cfg.KafkaBrokers), cfg.KafkaCertDir,
+			"katalog-enricher", []string{events.TopicDiscovered},
+			func(ctx context.Context, _ string, ev events.ItemEvent) error {
+				status, _, err := enricher.EnrichOne(ctx, ev.ItemID)
+				if err != nil {
+					return err
+				}
+				// done|not_found both mean "enrichment finished, proceed to analyze".
+				// failed|skipped do not advance the pipeline.
+				switch status {
+				case "done", "not_found":
+					out := events.NewItemEvent(ev.ItemID)
+					out.Type = ev.Type
+					out.Step = "analyze"
+					out.Status = status
+					eventProducer.EmitItem(ctx, events.TopicEnriched, out)
+				}
+				return nil
+			})
 	}
 
 	// GraphQL.
