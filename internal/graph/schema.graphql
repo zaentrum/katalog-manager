@@ -363,6 +363,9 @@ type Mutation {
   # operator actions
   triggerScan(source: String): ScanJob!
   enrichOne(id: ID!): EnrichResult!
+  # Manual match for items the automatic search can't resolve: re-search with a
+  # corrected title and/or pin an exact TMDB id.
+  identify(id: ID!, title: String, tmdbId: Int): EnrichResult!
   enrichPending(limit: Int, type: String): EnrichPendingResult!
   backfillEpisodeBackdrops: BackfillResult!
   retryNotFound(type: String): RetryResult!

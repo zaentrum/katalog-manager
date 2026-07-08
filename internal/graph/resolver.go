@@ -31,6 +31,7 @@ type ScanRunner interface {
 }
 type Enricher interface {
 	EnrichOne(ctx context.Context, id string) (status string, message string, err error)
+	IdentifyOne(ctx context.Context, id, title string, tmdbID *int64) (status string, message string, err error)
 	EnrichPending(ctx context.Context, limit int32, typ string) (queued int32, err error)
 	BackfillEpisodeBackdrops(ctx context.Context) (artworkData, artwork int32, err error)
 	RetryNotFound(ctx context.Context, typ string) (reset int32, err error)
@@ -324,6 +325,32 @@ func (r *Resolver) EnrichOne(ctx context.Context, args struct{ ID graphql.ID }) 
 		return nil, errNotConfigured
 	}
 	status, msg, err := r.svc.Enricher.EnrichOne(ctx, string(args.ID))
+	if err != nil {
+		return nil, err
+	}
+	res := EnrichResult{ItemID: string(args.ID), Status: status}
+	if msg != "" {
+		res.Message = &msg
+	}
+	return &enrichResultResolver{m: res}, nil
+}
+
+// Identify re-matches an item from an operator-chosen title and/or TMDB id
+// (for cases the automatic search can't resolve, e.g. a filename-derived title).
+func (r *Resolver) Identify(ctx context.Context, args struct {
+	ID     graphql.ID
+	Title  *string
+	TmdbID *int32
+}) (*enrichResultResolver, error) {
+	if r.svc.Enricher == nil {
+		return nil, errNotConfigured
+	}
+	var tmdbID *int64
+	if args.TmdbID != nil {
+		v := int64(*args.TmdbID)
+		tmdbID = &v
+	}
+	status, msg, err := r.svc.Enricher.IdentifyOne(ctx, string(args.ID), strDeref(args.Title), tmdbID)
 	if err != nil {
 		return nil, err
 	}

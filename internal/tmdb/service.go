@@ -102,6 +102,28 @@ func (s *Service) EnrichOne(ctx context.Context, id string) (string, string, err
 	return status, msg, nil
 }
 
+// IdentifyOne re-enriches an item from an operator-supplied match: a corrected
+// title to re-search and/or a specific TMDB id to pin. A pinned id wins (skips
+// the search); otherwise the existing tmdb link is dropped so the (override)
+// title re-resolves from scratch. On success it overwrites the metadata +
+// artwork (applyMovie/applyTv set the title from TMDB, so the name is corrected too).
+func (s *Service) IdentifyOne(ctx context.Context, id, titleOverride string, tmdbID *int64) (string, string, error) {
+	typ, title, year, ok := s.loadItem(ctx, id)
+	if !ok {
+		return statusFailed, "item not found", nil
+	}
+	if strings.TrimSpace(titleOverride) != "" {
+		title = titleOverride
+	}
+	if tmdbID != nil {
+		s.upsertExternalID(ctx, id, "tmdb", strconv.FormatInt(*tmdbID, 10))
+	} else {
+		s.clearExternalID(ctx, id, "tmdb")
+	}
+	status, msg := s.enrichRow(ctx, id, typ, title, year)
+	return status, msg, nil
+}
+
 // EnrichPending queues up to limit items whose tmdb step is pending or absent
 // (ORDER BY createdat ASC) and runs the sweep asynchronously. It returns the
 // clamped queue size immediately (matching the CAP controller's 202 {queued}).
@@ -516,6 +538,12 @@ func (s *Service) existingTmdbID(ctx context.Context, itemID string) (int64, boo
 		return 0, false
 	}
 	return id, true
+}
+
+// clearExternalID drops an item's external-id link so enrichment re-resolves it
+// from scratch (used by Identify to discard a stale/wrong match before re-search).
+func (s *Service) clearExternalID(ctx context.Context, itemID, source string) {
+	s.pool.Exec(ctx, `DELETE FROM com_nalet_katalog_itemexternalids WHERE item_id = $1 AND source = $2`, itemID, source)
 }
 
 func (s *Service) upsertExternalID(ctx context.Context, itemID, source, externalID string) {
