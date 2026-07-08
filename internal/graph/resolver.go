@@ -228,6 +228,18 @@ func (r *Resolver) ScanJobs(ctx context.Context, args struct{ Limit *int32 }) ([
 	return out, nil
 }
 
+func (r *Resolver) Activity(ctx context.Context, args struct{ Limit *int32 }) ([]*activityEventResolver, error) {
+	rows, err := r.store.ActivityFeed(ctx, deref32(args.Limit))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*activityEventResolver, 0, len(rows))
+	for _, x := range rows {
+		out = append(out, &activityEventResolver{m: x})
+	}
+	return out, nil
+}
+
 func (r *Resolver) DownloadJobs(ctx context.Context, args struct{ Limit *int32 }) ([]*downloadJobResolver, error) {
 	js, err := r.store.ListDownloadJobs(ctx, deref32(args.Limit))
 	if err != nil {

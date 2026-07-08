@@ -199,6 +199,20 @@ type ScanJob {
   itemsUpdated: Int
 }
 
+type ActivityEvent {
+  id: ID!
+  itemId: ID!
+  itemTitle: String!
+  itemType: String!
+  step: String!
+  status: String!
+  attempts: Int
+  error: String
+  startedAt: Time
+  finishedAt: Time
+  updatedAt: Time
+}
+
 type DownloadJob {
   id: ID!
   adapter: String!
@@ -330,6 +344,10 @@ type Query {
 
   scanJob(id: ID!): ScanJob
   scanJobs(limit: Int): [ScanJob!]!
+
+  # Pipeline activity feed: processing-step transitions across all items,
+  # newest first (drives the Activity monitor, technical + friendly views).
+  activity(limit: Int): [ActivityEvent!]!
 
   downloadJobs(limit: Int): [DownloadJob!]!
   downloadClients: String!
