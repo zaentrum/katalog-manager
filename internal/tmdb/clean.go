@@ -37,9 +37,11 @@ var tokenPatterns = func() []*regexp.Regexp {
 }()
 
 var (
-	bracketRE   = regexp.MustCompile(`[\[\](){}]`)
-	trailingRE  = regexp.MustCompile(`[-_.]+\s*$`)
-	whitespceRE = regexp.MustCompile(`\s+`)
+	bracketRE    = regexp.MustCompile(`[\[\](){}]`)
+	trailingRE   = regexp.MustCompile(`[-_.]+\s*$`)
+	whitespceRE  = regexp.MustCompile(`\s+`)
+	resolutionRE = regexp.MustCompile(`(?i)\b\d{2,4}x\d{2,4}\b`) // e.g. 320x180, 1920x1080
+	camelRE      = regexp.MustCompile(`([\p{Ll}\d])(\p{Lu})`)    // Big|Buck|Bunny boundaries
 )
 
 // cleanTitle strips Sonarr/Radarr-style release-group / quality / codec tokens
@@ -51,11 +53,20 @@ func cleanTitle(raw string) string {
 	for _, re := range tokenPatterns {
 		s = re.ReplaceAllString(s, " ")
 	}
+	s = resolutionRE.ReplaceAllString(s, " ")
 	s = bracketRE.ReplaceAllString(s, " ")
 	s = trailingRE.ReplaceAllString(s, " ")
 	s = strings.TrimSpace(whitespceRE.ReplaceAllString(s, " "))
 	if s == "" {
 		return raw
+	}
+	// A smushed filename with no spaces (e.g. "BigBuckBunny") won't match TMDB —
+	// split camelCase into words ("Big Buck Bunny"). Only when there's no space,
+	// so real multi-word titles ("Tears of Steel") are left untouched.
+	if !strings.Contains(s, " ") {
+		if split := camelRE.ReplaceAllString(s, "$1 $2"); split != s {
+			s = split
+		}
 	}
 	return s
 }
