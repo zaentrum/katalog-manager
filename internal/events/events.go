@@ -100,9 +100,22 @@ func NewProducer(brokers []string, tlsCfg *tls.Config) *Producer {
 	return &Producer{w: w}
 }
 
-// Emit publishes payload to topic keyed by key (the item_id). Best-effort: a
-// produce error is logged, never propagated — the DB step row is still the
-// source of truth and a stuck item is recoverable by re-emitting.
+// emitAttempts / emitBackoff bound the produce-retry loop. The bundled demo
+// broker is ephemeral (emptyDir) and topics auto-create, so the FIRST produce
+// after a broker restart (or a cold topic) returns UNKNOWN_TOPIC_OR_PARTITION
+// while the broker creates the topic — a transient that clears within a second
+// or two. Without a retry that first event is silently lost (a stuck item);
+// retrying makes the pipeline self-heal across a broker restart / topic
+// auto-create race. Total worst-case wait ~5.5s (0.3+0.6+..+1.8).
+const (
+	emitAttempts = 6
+	emitBackoff  = 300 * time.Millisecond
+)
+
+// Emit publishes payload to topic keyed by key (the item_id), retrying transient
+// produce errors (topic auto-create window, leader election) with a bounded
+// backoff. A final failure is logged, never propagated — the DB step row is
+// still the source of truth and a stuck item stays recoverable by re-emitting.
 func (p *Producer) Emit(ctx context.Context, topic, key string, payload any) {
 	if p == nil || p.w == nil {
 		return
@@ -112,11 +125,21 @@ func (p *Producer) Emit(ctx context.Context, topic, key string, payload any) {
 		log.Printf("catalog events: marshal %s failed: %v", topic, err)
 		return
 	}
-	if err := p.w.WriteMessages(ctx, kafka.Message{Topic: topic, Key: []byte(key), Value: b}); err != nil {
-		log.Printf("catalog events: emit to %s (key=%s) failed: %v", topic, key, err)
-		return
+	msg := kafka.Message{Topic: topic, Key: []byte(key), Value: b}
+	var lastErr error
+	for attempt := 1; attempt <= emitAttempts; attempt++ {
+		if lastErr = p.w.WriteMessages(ctx, msg); lastErr == nil {
+			log.Printf("catalog events: emitted %s key=%s", topic, key)
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		// AllowAutoTopicCreation means the failed write also triggers the
+		// broker to create the topic; the next attempt lands once it exists.
+		time.Sleep(time.Duration(attempt) * emitBackoff)
 	}
-	log.Printf("catalog events: emitted %s key=%s", topic, key)
+	log.Printf("catalog events: emit to %s (key=%s) FAILED after %d attempts: %v", topic, key, emitAttempts, lastErr)
 }
 
 // EmitItem is the common case: an ItemEvent to a stage topic.
