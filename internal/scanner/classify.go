@@ -34,14 +34,61 @@ var (
 // classify reproduces NfsScanner.classify(rel, isVideo, isAudio).
 // rel is the path relative to the scan root, using '/' separators.
 func classify(rel string, isVideo, isAudio bool) string {
-	lower := strings.ToLower(rel)
 	if isAudio {
 		return "track"
 	}
-	if strings.Contains(lower, "/series/") || strings.Contains(lower, "/tv/") || episodePattern.MatchString(rel) {
+	if hasSeriesFolder(rel) || episodePattern.MatchString(rel) {
 		return "episode"
 	}
 	return "movie"
+}
+
+// seriesFolderNames are the path segments that mark a TV library subtree. A file
+// anywhere under one of these is treated as episodic (the segment after it is the
+// show name — see seriesTitleFor). Matching whole segments (not a substring) so a
+// top-level "series/…" is caught, not only a nested "/series/…".
+var seriesFolderNames = map[string]bool{"series": true, "tv": true, "shows": true, "tvshows": true}
+
+func hasSeriesFolder(rel string) bool {
+	for _, seg := range strings.Split(strings.ToLower(rel), "/") {
+		if seriesFolderNames[seg] {
+			return true
+		}
+	}
+	return false
+}
+
+// seriesTitleFor derives the show name for an episode file. It prefers the folder
+// immediately under a series/tv/shows parent (the conventional
+// "series/<Show>/<file>" layout); failing that it strips the SxxEyy token and
+// everything after it from the filename. The result is normalised like a title so
+// it matches the series parent's TMDB search.
+func seriesTitleFor(rel, filename string) string {
+	parts := strings.Split(rel, "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if seriesFolderNames[strings.ToLower(parts[i])] {
+			if t := showTitle(parts[i+1]); t != "" {
+				return t
+			}
+		}
+	}
+	base := stripExt(filename)
+	if loc := episodePattern.FindStringIndex(base); loc != nil {
+		base = base[:loc[0]]
+	}
+	return showTitle(base)
+}
+
+// showTitle normalises a raw folder/filename fragment into a clean show title:
+// separators to spaces, a (year) or trailing bare year stripped, then cleanTitle.
+func showTitle(raw string) string {
+	name := cleanupPattern.ReplaceAllString(raw, " ")
+	if parenYearPattern.MatchString(name) {
+		name = parenYearPattern.ReplaceAllString(name, "")
+	} else {
+		name = trailingBareYear.ReplaceAllString(name, "$1")
+	}
+	return cleanTitle(collapseWS(name))
 }
 
 // extractTitle reproduces NfsScanner.extractTitle(filename, type).

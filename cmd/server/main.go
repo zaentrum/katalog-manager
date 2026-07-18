@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/graph-gophers/graphql-go/relay"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/chaptersdb"
@@ -112,14 +113,18 @@ func run() error {
 					return err
 				}
 				// done|not_found both mean "enrichment finished, proceed to analyze".
-				// failed|skipped do not advance the pipeline.
+				// failed|skipped do not advance the pipeline. A series parent is
+				// metadata-only (no primary playback asset) — it enriches but must
+				// NOT enter analyze/transcode/package, so gate on a playable file.
 				switch status {
 				case "done", "not_found":
-					out := events.NewItemEvent(ev.ItemID)
-					out.Type = ev.Type
-					out.Step = "analyze"
-					out.Status = status
-					eventProducer.EmitItem(ctx, events.TopicEnriched, out)
+					if hasPrimaryAsset(ctx, st, ev.ItemID) {
+						out := events.NewItemEvent(ev.ItemID)
+						out.Type = ev.Type
+						out.Step = "analyze"
+						out.Status = status
+						eventProducer.EmitItem(ctx, events.TopicEnriched, out)
+					}
 				}
 				return nil
 			})
@@ -185,6 +190,32 @@ func run() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// hasPrimaryAsset reports whether an item has a primary playback asset (a
+// playable file). Series parents are metadata-only and have none, so this gates
+// them out of the analyze/transcode/package pipeline.
+//
+// Error handling is deliberately fail-OPEN: only a clean ErrNoRows (the genuine
+// metadata-only series-parent case) blocks advancement. Any OTHER DB fault
+// (pool exhaustion, deadline, reset) must NOT silently strand a playable item —
+// enrichment is one-shot per discovered event (no retry/poll), so a movie that
+// missed its analyze emission would never become playable. A spurious analyze on
+// a series parent is far cheaper, so on an unexpected error we log and advance.
+func hasPrimaryAsset(ctx context.Context, st *store.Store, itemID string) bool {
+	var one int
+	err := st.Pool().QueryRow(ctx,
+		`SELECT 1 FROM com_nalet_katalog_playbackassets WHERE item_id = $1 AND isprimary = true LIMIT 1`,
+		itemID).Scan(&one)
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, pgx.ErrNoRows):
+		return false
+	default:
+		log.Printf("catalog: hasPrimaryAsset(%s) errored (%v); advancing to analyze (fail-open)", itemID, err)
+		return true
+	}
 }
 
 func writeText(w http.ResponseWriter, s string) {

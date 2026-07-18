@@ -256,9 +256,54 @@ func (s *Service) enrichRow(ctx context.Context, id, typ, title string, year *in
 		return s.enrichMovie(ctx, id, title, year)
 	case "series":
 		return s.enrichSeries(ctx, id, title, year)
+	case "episode":
+		return s.enrichEpisode(ctx, id)
 	default:
 		return statusSkipped, "type '" + typ + "' not implemented yet"
 	}
+}
+
+// enrichEpisode enriches a single episode from its series parent's TMDB match.
+// This is the discovered-event path; the parent's enrichSeries also sweeps its
+// children via enrichEpisodesOf, and the two converge idempotently (applyEpisode
+// is a keyed upsert). When the parent is not yet matched — or the episode is an
+// orphan with no parent/coords — it returns not_found (mapped to a 'skipped'
+// step) so the pipeline still ADVANCES to analyze; the parent's later match
+// backfills the metadata. Returns done once the episode metadata is applied.
+func (s *Service) enrichEpisode(ctx context.Context, id string) (string, string) {
+	// Validate the episode's linkage before marking in_progress, so an orphan
+	// (no parent / coords) goes straight to not_found without a spurious
+	// in_progress churn on every redelivery.
+	var parentID *string
+	var season, episode *int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT parent_id, seasonnumber, episodenumber FROM com_nalet_katalog_items WHERE id = $1`, id).
+		Scan(&parentID, &season, &episode); err != nil {
+		s.markStatus(ctx, id, "not_found", nil)
+		return statusNotFound, "episode row not found"
+	}
+	if parentID == nil || season == nil || episode == nil {
+		s.markStatus(ctx, id, "not_found", nil)
+		return statusNotFound, "episode has no series parent"
+	}
+
+	s.markStatus(ctx, id, "in_progress", nil)
+
+	tmdbTvID, ok := s.existingTmdbID(ctx, *parentID)
+	if !ok {
+		// Parent series not matched yet; its enrichEpisodesOf will fill this
+		// episode once it resolves. Advance the pipeline in the meantime.
+		s.markStatus(ctx, id, "not_found", nil)
+		return statusNotFound, "series parent not yet matched"
+	}
+
+	epd, ok := s.tmdb.getTvEpisode(ctx, tmdbTvID, *season, *episode)
+	if !ok || strings.TrimSpace(epd.Name) == "" {
+		s.markStatus(ctx, id, "not_found", nil)
+		return statusNotFound, ""
+	}
+	s.applyEpisode(ctx, id, epd) // metadata + still artwork + marks the tmdb step done
+	return statusDone, ""
 }
 
 func (s *Service) enrichMovie(ctx context.Context, id, title string, year *int) (string, string) {
