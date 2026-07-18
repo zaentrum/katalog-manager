@@ -164,8 +164,16 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 	title := extractTitle(name, typ)
 	year := extractYear(name)
 	var seasonNumber, episodeNumber *int32
+	var parentID *string
+	var newSeriesID string // set when this file created a series parent (emit one discovered)
 	if typ == "episode" {
 		seasonNumber, episodeNumber = episodeCoords(name)
+		if sid, created := s.resolveSeriesParent(ctx, pool, rel, name); sid != "" {
+			parentID = &sid
+			if created {
+				newSeriesID = sid
+			}
+		}
 	}
 
 	size := fileSize(d)
@@ -182,10 +190,10 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 		// New item: INSERT items + primary asset + seed the 'scan' step.
 		if err := pool.QueryRow(ctx,
 			`INSERT INTO com_nalet_katalog_items
-			   (id, type, title, sorttitle, year, seasonnumber, episodenumber, createdat, modifiedat)
-			 VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, $5, $6, now(), now())
+			   (id, type, title, sorttitle, year, parent_id, seasonnumber, episodenumber, createdat, modifiedat)
+			 VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, $5, $6, $7, now(), now())
 			 RETURNING id`,
-			typ, title, strings.ToLower(title), year, seasonNumber, episodeNumber).Scan(&itemID); err != nil {
+			typ, title, strings.ToLower(title), year, parentID, seasonNumber, episodeNumber).Scan(&itemID); err != nil {
 			return
 		}
 		res.itemsInserted++
@@ -211,6 +219,17 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 		ev.Step = "tmdb"
 		ev.Source = "scan"
 		s.prod.EmitItem(ctx, events.TopicDiscovered, ev)
+
+		// A brand-new series parent (created by this episode) also enters the
+		// pipeline: its discovered event drives enrichSeries (TMDB TV match +
+		// child-episode backfill). Emitted once, only when newly created.
+		if newSeriesID != "" {
+			sev := events.NewItemEvent(newSeriesID)
+			sev.Type = "series"
+			sev.Step = "tmdb"
+			sev.Source = "scan"
+			s.prod.EmitItem(ctx, events.TopicDiscovered, sev)
+		}
 	} else {
 		// Existing item: bump modifiedat ONLY (never clobber TMDB-owned fields),
 		// and refresh the asset's size + primary flag.
@@ -231,6 +250,51 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 	if isVideo {
 		s.scanSidecars(ctx, pool, path, itemID)
 	}
+}
+
+// resolveSeriesParent finds (or creates) the series parent item for an episode
+// file, returning its id and whether it was newly created (so the caller emits a
+// single discovered event for a new series). Match is on the normalised show
+// title (sorttitle). The series row is metadata-only — it has NO playback asset,
+// so it never enters analyze/transcode/package (gated in the enrich consumer);
+// TMDB fills its title/year/artwork via enrichSeries. Best-effort: any DB error
+// yields ("", false) and the episode is ingested without a parent.
+//
+// NOTE (find-or-create is safe within a single scan only): filepath.WalkDir
+// invokes its callback sequentially, so per show the first episode creates the
+// parent and the rest find it — no race. TWO overlapping scans could each
+// SELECT-miss and INSERT, duplicating the series. Hardening follow-up: a partial
+// unique index on (sorttitle) WHERE type='series' + ON CONFLICT upsert, or
+// serialize Trigger against an existing 'running' scanjob.
+func (s *Scanner) resolveSeriesParent(ctx context.Context, pool *pgxpool.Pool, rel, filename string) (string, bool) {
+	title := seriesTitleFor(rel, filename)
+	if strings.TrimSpace(title) == "" {
+		return "", false
+	}
+	sort := strings.ToLower(title)
+
+	var id string
+	err := pool.QueryRow(ctx,
+		`SELECT id FROM com_nalet_katalog_items WHERE type = 'series' AND sorttitle = $1 LIMIT 1`,
+		sort).Scan(&id)
+	if err == nil {
+		return id, false
+	}
+	if err != pgx.ErrNoRows {
+		return "", false
+	}
+
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO com_nalet_katalog_items (id, type, title, sorttitle, createdat, modifiedat)
+		 VALUES (gen_random_uuid()::varchar, 'series', $1, $2, now(), now())
+		 RETURNING id`,
+		title, sort).Scan(&id); err != nil {
+		return "", false
+	}
+	// The series parent is "scanned" the moment its first episode is seen — record
+	// the step so it surfaces in the activity monitor alongside its episodes.
+	_ = s.steps.Upsert(ctx, id, "scan", processing.StatusDone, nil, nil)
+	return id, true
 }
 
 // scanSidecars finds subtitle files in the video's directory sharing the video
