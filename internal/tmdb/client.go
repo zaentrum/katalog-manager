@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // TMDB bases. API uses the v4 bearer token; images come off the CDN.
@@ -90,67 +91,207 @@ type tmdbVideo struct {
 }
 
 // --- search ---
+//
+// Ranking, not "first hit". TMDB search is ordered by popularity, so blindly
+// taking results[0] mis-identifies an obscure title that shares a name with a
+// famous film ("Spring" -> Spring Breakers, "Hero" -> a popular Hero). Instead we
+// fetch the candidate list query-only (no year filter — that filter can drop the
+// real match entirely) and pick the best with pickBest: a candidate must have a
+// TITLE relation (exact normalised match, or a substring either way), and the
+// release year — when known — disambiguates among those. A pure year coincidence
+// with no title relation never matches, so we degrade to not-found rather than
+// attach a wrong-but-popular film.
 
-// searchMovie returns the first hit's TMDB id, with a year-less retry when a
-// year-filtered query returns nothing (mirrors TmdbClient.searchMovie).
+type searchCandidate struct {
+	ID    int64
+	Title string
+	Year  int // 0 when unknown
+}
+
 func (c *client) searchMovie(ctx context.Context, title string, year *int) (int64, bool) {
 	if !c.enabled() || strings.TrimSpace(title) == "" {
 		return 0, false
 	}
-	id, ok := c.searchMovieOnce(ctx, title, year)
-	if ok || year == nil {
-		return id, ok
-	}
-	return c.searchMovieOnce(ctx, title, nil)
-}
-
-func (c *client) searchMovieOnce(ctx context.Context, title string, year *int) (int64, bool) {
-	u := apiBase + "/search/movie?language=" + url.QueryEscape(c.language) +
+	base := apiBase + "/search/movie?language=" + url.QueryEscape(c.language) +
 		"&query=" + url.QueryEscape(title)
+	cands := c.searchCandidates(ctx, base, true)
 	if year != nil {
-		u += "&year=" + strconv.Itoa(*year)
+		// Also pull the year-filtered page: a correct-year match that is
+		// unpopular (page 2+ of the unfiltered list, never seen) still surfaces
+		// here. We rank the merged set ourselves, so the filter is a candidate
+		// SOURCE — never the decider — which avoids the old "filter drops the
+		// real match -> blind popularity" failure.
+		cands = mergeCandidates(cands, c.searchCandidates(ctx, base+"&year="+strconv.Itoa(*year), true))
 	}
-	return c.firstSearchID(ctx, u)
+	return pickBest(cands, title, year)
 }
 
 func (c *client) searchTv(ctx context.Context, title string, year *int) (int64, bool) {
 	if !c.enabled() || strings.TrimSpace(title) == "" {
 		return 0, false
 	}
-	id, ok := c.searchTvOnce(ctx, title, year)
-	if ok || year == nil {
-		return id, ok
-	}
-	return c.searchTvOnce(ctx, title, nil)
-}
-
-func (c *client) searchTvOnce(ctx context.Context, title string, year *int) (int64, bool) {
-	u := apiBase + "/search/tv?language=" + url.QueryEscape(c.language) +
+	base := apiBase + "/search/tv?language=" + url.QueryEscape(c.language) +
 		"&query=" + url.QueryEscape(title)
+	cands := c.searchCandidates(ctx, base, false)
 	if year != nil {
-		u += "&first_air_date_year=" + strconv.Itoa(*year)
+		cands = mergeCandidates(cands, c.searchCandidates(ctx, base+"&first_air_date_year="+strconv.Itoa(*year), false))
 	}
-	return c.firstSearchID(ctx, u)
+	return pickBest(cands, title, year)
 }
 
-func (c *client) firstSearchID(ctx context.Context, u string) (int64, bool) {
+// mergeCandidates appends b's candidates that a doesn't already contain (by id),
+// preserving a's (popularity) order first. Used to combine the plain-query and
+// year-filtered result pages.
+func mergeCandidates(a, b []searchCandidate) []searchCandidate {
+	if len(b) == 0 {
+		return a
+	}
+	seen := make(map[int64]bool, len(a))
+	for _, c := range a {
+		seen[c.ID] = true
+	}
+	for _, c := range b {
+		if !seen[c.ID] {
+			seen[c.ID] = true
+			a = append(a, c)
+		}
+	}
+	return a
+}
+
+// searchCandidates fetches a TMDB search page and extracts id/title/year in the
+// server's (popularity) order. movie selects the title/release_date fields; TV
+// uses name/first_air_date.
+func (c *client) searchCandidates(ctx context.Context, u string, movie bool) []searchCandidate {
 	body, ok := c.getJSON(ctx, u)
 	if !ok {
-		return 0, false
+		return nil
 	}
 	var resp struct {
 		Results []struct {
-			ID int64 `json:"id"`
+			ID           int64  `json:"id"`
+			Title        string `json:"title"`
+			Name         string `json:"name"`
+			ReleaseDate  string `json:"release_date"`
+			FirstAirDate string `json:"first_air_date"`
 		} `json:"results"`
 	}
-	if err := json.Unmarshal(body, &resp); err != nil || len(resp.Results) == 0 {
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil
+	}
+	out := make([]searchCandidate, 0, len(resp.Results))
+	for _, r := range resp.Results {
+		if r.ID <= 0 {
+			continue
+		}
+		title, date := r.Title, r.ReleaseDate
+		if !movie {
+			title, date = r.Name, r.FirstAirDate
+		}
+		out = append(out, searchCandidate{ID: r.ID, Title: title, Year: yearOf(date)})
+	}
+	return out
+}
+
+// pickBest scores candidates and returns the highest — requiring a title
+// relation so a popularity-driven wrong match can't win.
+//
+// A candidate qualifies only via:
+//   - EXACT normalised title (score 1000) — a strong signal, accepted on its own; or
+//   - SUBSTRING either way (score 300) but ONLY when the shorter side is ≥4 chars
+//     AND the year corroborates within ±1. A bare substring (short token like
+//     "up"/"her", or a loose match with no/mismatched year) is NOT enough — it
+//     would let a popular namesake win, the exact bug this guards against.
+//
+// Year proximity then adds (exact 500 / ±1 300 / ±2 150), with the original
+// popularity order as a sub-tiebreak. No qualifier ⇒ not-found (a wrong match is
+// worse than none; unmatched items stay playable and can be pinned via identify).
+func pickBest(cands []searchCandidate, wantTitle string, wantYear *int) (int64, bool) {
+	nw := normTitle(wantTitle)
+	if nw == "" || len(cands) == 0 {
 		return 0, false
 	}
-	id := resp.Results[0].ID
-	if id > 0 {
-		return id, true
+	var bestID int64
+	bestScore := -1.0
+	for i, c := range cands {
+		nt := normTitle(c.Title)
+		if nt == "" {
+			continue
+		}
+		yearDiff := -1 // -1 => year unknown on one side
+		if wantYear != nil && c.Year != 0 {
+			yearDiff = absInt(c.Year - *wantYear)
+		}
+		title := 0
+		switch {
+		case nt == nw:
+			title = 1000
+		case minLen(nt, nw) >= 4 && (strings.Contains(nt, nw) || strings.Contains(nw, nt)) &&
+			yearDiff >= 0 && yearDiff <= 1:
+			title = 300
+		default:
+			continue // no accepted title relation — never match on popularity alone
+		}
+		year := 0
+		switch yearDiff {
+		case 0:
+			year = 500
+		case 1:
+			year = 300
+		case 2:
+			year = 150
+		}
+		// Popularity sub-tiebreak: earlier results rank higher, but only enough to
+		// break exact score ties (never to override a better title/year match).
+		score := float64(title+year) + float64(len(cands)-i)*0.001
+		if score > bestScore {
+			bestScore, bestID = score, c.ID
+		}
+	}
+	if bestID > 0 {
+		return bestID, true
 	}
 	return 0, false
+}
+
+func minLen(a, b string) int {
+	if len(a) < len(b) {
+		return len(a)
+	}
+	return len(b)
+}
+
+// normTitle lowercases and keeps only letters/digits (Unicode-aware, so non-Latin
+// titles survive), dropping punctuation and spaces — "Caminandes: Llama Drama" and
+// "Caminandes Llama Drama" compare equal, and a Japanese/Cyrillic title still
+// normalises to itself rather than to an empty string.
+func normTitle(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// yearOf parses the leading YYYY of a TMDB date ("2019-04-04" -> 2019); 0 if absent.
+func yearOf(date string) int {
+	if len(date) < 4 {
+		return 0
+	}
+	y, err := strconv.Atoi(date[:4])
+	if err != nil {
+		return 0
+	}
+	return y
+}
+
+func absInt(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 // --- detail fetches ---
