@@ -380,6 +380,29 @@ func (c *client) getTv(ctx context.Context, id int64) (*tmdbTv, bool) {
 	}, true
 }
 
+// getTvExternalIDs returns a series' imdb + TheTVDB ids (the latter keys fanart.tv
+// TV artwork). Empty strings when absent/unavailable.
+func (c *client) getTvExternalIDs(ctx context.Context, tvID int64) (imdbID, tvdbID string) {
+	if !c.enabled() {
+		return "", ""
+	}
+	body, ok := c.getJSON(ctx, apiBase+"/tv/"+strconv.FormatInt(tvID, 10)+"/external_ids?language="+url.QueryEscape(c.language))
+	if !ok {
+		return "", ""
+	}
+	var n struct {
+		ImdbID *string `json:"imdb_id"`
+		TvdbID *int64  `json:"tvdb_id"`
+	}
+	if err := json.Unmarshal(body, &n); err != nil {
+		return "", ""
+	}
+	if n.TvdbID != nil && *n.TvdbID > 0 {
+		tvdbID = strconv.FormatInt(*n.TvdbID, 10)
+	}
+	return deref(n.ImdbID), tvdbID
+}
+
 func (c *client) getTvEpisode(ctx context.Context, tvID int64, season, episode int) (*tmdbEpisode, bool) {
 	if !c.enabled() {
 		return nil, false

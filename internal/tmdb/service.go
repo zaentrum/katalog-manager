@@ -31,22 +31,24 @@ const (
 
 // Service is the TMDB enrichment service.
 type Service struct {
-	pool  *pgxpool.Pool
-	cfg   config.Config
-	steps *processing.Steps
-	ch    *chaptersdb.Client
-	tmdb  *client
+	pool   *pgxpool.Pool
+	cfg    config.Config
+	steps  *processing.Steps
+	ch     *chaptersdb.Client
+	tmdb   *client
+	fanart *fanartClient // artwork-only fallback for poster/backdrop TMDB is missing
 }
 
 // New builds the enrichment Service. The TMDB client is disabled when
 // cfg.TMDBAPIKey is blank (every call no-ops; EnrichOne reports 'skipped').
 func New(st storePool, cfg config.Config, steps *processing.Steps, ch *chaptersdb.Client) *Service {
 	return &Service{
-		pool:  st.Pool(),
-		cfg:   cfg,
-		steps: steps,
-		ch:    ch,
-		tmdb:  newClient(cfg.TMDBAPIKey, cfg.TMDBLanguage),
+		pool:   st.Pool(),
+		cfg:    cfg,
+		steps:  steps,
+		ch:     ch,
+		tmdb:   newClient(cfg.TMDBAPIKey, cfg.TMDBLanguage),
+		fanart: newFanartClient(cfg.FanartAPIKey, cfg.FanartClientKey),
 	}
 }
 
@@ -340,10 +342,22 @@ func (s *Service) enrichMovie(ctx context.Context, id, title string, year *int) 
 	}
 	s.applyChaptersDb(ctx, id, m.Title, year, dur)
 
-	if posterURL := s.tmdb.imageURL(m.PosterPath, "w780"); posterURL != "" {
+	posterURL := s.tmdb.imageURL(m.PosterPath, "w780")
+	backdropURL := s.tmdb.imageURL(m.BackdropPath, "w1280")
+	// fanart.tv fallback: fill only the kind(s) TMDB left blank (keyed by TMDB id).
+	if s.fanart.enabled() && (posterURL == "" || backdropURL == "") {
+		fp, fb := s.fanart.movieArtwork(ctx, strconv.FormatInt(tmdbID, 10))
+		if posterURL == "" {
+			posterURL = fp
+		}
+		if backdropURL == "" {
+			backdropURL = fb
+		}
+	}
+	if posterURL != "" {
 		s.persistArtwork(ctx, id, "poster", posterURL)
 	}
-	if backdropURL := s.tmdb.imageURL(m.BackdropPath, "w1280"); backdropURL != "" {
+	if backdropURL != "" {
 		s.persistArtwork(ctx, id, "backdrop", backdropURL)
 	}
 
@@ -378,10 +392,24 @@ func (s *Service) enrichSeries(ctx context.Context, id, title string, year *int)
 	}
 	s.applyTrailerLinks(ctx, id, s.tmdb.getTvVideos(ctx, tmdbID))
 
-	if posterURL := s.tmdb.imageURL(t.PosterPath, "w780"); posterURL != "" {
+	posterURL := s.tmdb.imageURL(t.PosterPath, "w780")
+	backdropURL := s.tmdb.imageURL(t.BackdropPath, "w1280")
+	// fanart.tv fallback: keyed by TheTVDB id (resolved via TMDB external_ids).
+	if s.fanart.enabled() && (posterURL == "" || backdropURL == "") {
+		if _, tvdbID := s.tmdb.getTvExternalIDs(ctx, tmdbID); tvdbID != "" {
+			fp, fb := s.fanart.tvArtwork(ctx, tvdbID)
+			if posterURL == "" {
+				posterURL = fp
+			}
+			if backdropURL == "" {
+				backdropURL = fb
+			}
+		}
+	}
+	if posterURL != "" {
 		s.persistArtwork(ctx, id, "poster", posterURL)
 	}
-	if backdropURL := s.tmdb.imageURL(t.BackdropPath, "w1280"); backdropURL != "" {
+	if backdropURL != "" {
 		s.persistArtwork(ctx, id, "backdrop", backdropURL)
 	}
 
