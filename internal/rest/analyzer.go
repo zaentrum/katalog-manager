@@ -32,6 +32,10 @@ type claimItem struct {
 	includeSeries bool
 	SeriesTmdbID  *string
 	MovieTmdbID   *string
+	// Whether the item has its OWN artwork of each kind (ignoring the series
+	// fallback), so the analyzer only extracts a keyframe for genuine gaps.
+	HasOwnPoster   bool
+	HasOwnBackdrop bool
 }
 
 // MarshalJSON preserves key order and the conditional seriesTitle key.
@@ -66,7 +70,9 @@ func (c claimItem) MarshalJSON() ([]byte, error) {
 		_ = w("seriesTitle", c.SeriesTitle, true)
 	}
 	_ = w("seriesTmdbId", c.SeriesTmdbID, true)
-	_ = w("movieTmdbId", c.MovieTmdbID, false)
+	_ = w("movieTmdbId", c.MovieTmdbID, true)
+	_ = w("hasOwnPoster", c.HasOwnPoster, true)
+	_ = w("hasOwnBackdrop", c.HasOwnBackdrop, false)
 	b = append(b, '}')
 	return b, nil
 }
@@ -86,7 +92,9 @@ func (h *Handlers) getAnalyzeItem(w http.ResponseWriter, r *http.Request) {
 		       i.seasonnumber, i.episodenumber,
 		       parent_item.title     AS series_title,
 		       parent_ext.externalid AS series_tmdb_id,
-		       self_ext.externalid   AS movie_tmdb_id
+		       self_ext.externalid   AS movie_tmdb_id,
+		       EXISTS(SELECT 1 FROM com_nalet_katalog_itemartworkdata a WHERE a.item_id = i.id AND a.kind = 'poster')   AS has_own_poster,
+		       EXISTS(SELECT 1 FROM com_nalet_katalog_itemartworkdata a WHERE a.item_id = i.id AND a.kind = 'backdrop') AS has_own_backdrop
 		FROM com_nalet_katalog_items i
 		JOIN com_nalet_katalog_playbackassets p ON p.item_id = i.id AND p.isprimary = true
 		LEFT JOIN com_nalet_katalog_items parent_item ON parent_item.id = i.parent_id
@@ -94,7 +102,8 @@ func (h *Handlers) getAnalyzeItem(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN com_nalet_katalog_itemexternalids self_ext ON self_ext.item_id = i.id AND self_ext.source = 'tmdb'
 		WHERE i.id = $1 LIMIT 1`, id).Scan(
 		&it.ID, &it.Type, &it.Title, &it.Year, &it.DurationMs, &it.Path,
-		&it.SeasonNumber, &it.EpisodeNumber, &it.SeriesTitle, &it.SeriesTmdbID, &it.MovieTmdbID)
+		&it.SeasonNumber, &it.EpisodeNumber, &it.SeriesTitle, &it.SeriesTmdbID, &it.MovieTmdbID,
+		&it.HasOwnPoster, &it.HasOwnBackdrop)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
