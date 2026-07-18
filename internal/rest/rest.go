@@ -31,6 +31,7 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 func (h *Handlers) Register(r chi.Router) {
 	// Binary / byte-range
 	r.Get("/api/artwork/{itemId}/{kind}", h.getArtwork)
+	r.Put("/api/artwork/{itemId}/{kind}", h.putArtwork) // analyzer-extracted keyframe upload
 	r.Get("/api/play/{itemId}", h.getPlay)
 	r.Get("/api/subtitles/items/{itemId}", h.listSubtitles)
 	r.Get("/api/subtitles/{subId}", h.getSubtitle)
