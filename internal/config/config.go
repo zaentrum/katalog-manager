@@ -35,6 +35,10 @@ type Config struct {
 	TMDBAPIKey   string // TMDB_API_KEY (blank -> enrichment disabled)
 	TMDBLanguage string // TMDB_LANGUAGE (default en-US)
 
+	// fanart.tv artwork fallback (fills poster/backdrop TMDB is missing). Blank -> off.
+	FanartAPIKey    string // FANART_API_KEY (project key)
+	FanartClientKey string // FANART_CLIENT_KEY (optional personal key, fresher images)
+
 	// chaptersdb
 	ChaptersDBEnabled bool   // CHAPTERSDB_ENABLED (default false)
 	ChaptersDBBaseURL string // CHAPTERSDB_BASE_URL (default https://chaptersdb.com)
@@ -56,11 +60,11 @@ type Config struct {
 	CatalogEventsEnabled bool // CATALOG_EVENTS_ENABLED (default = KAFKA_BROKERS != "")
 
 	// oDownloader
-	ODownloaderURL      string // ODOWNLOADER_URL / ODOWNLOADER_API_URL
-	ODownloaderToken    string // ODOWNLOADER_TOKEN / ODOWNLOADER_API_TOKEN (blank -> disabled)
-	ODownloaderPollSec  int    // poll interval seconds (default 15)
-	ODownloaderInbox    string // inbox dir (default <PackagesRoot>/_inbox)
-	ODownloaderTimeout  int    // per-job timeout minutes (default 60)
+	ODownloaderURL     string // ODOWNLOADER_URL / ODOWNLOADER_API_URL
+	ODownloaderToken   string // ODOWNLOADER_TOKEN / ODOWNLOADER_API_TOKEN (blank -> disabled)
+	ODownloaderPollSec int    // poll interval seconds (default 15)
+	ODownloaderInbox   string // inbox dir (default <PackagesRoot>/_inbox)
+	ODownloaderTimeout int    // per-job timeout minutes (default 60)
 }
 
 func env(keys ...string) string {
@@ -145,6 +149,9 @@ func Load() Config {
 		TMDBAPIKey:   envDefault(DefaultTMDBToken, "TMDB_API_KEY"),
 		TMDBLanguage: envDefault("en-US", "TMDB_LANGUAGE"),
 
+		FanartAPIKey:    envDefault(DefaultFanartKey, "FANART_API_KEY"),
+		FanartClientKey: envDefault("", "FANART_CLIENT_KEY"),
+
 		ChaptersDBEnabled: envBool(false, "CHAPTERSDB_ENABLED"),
 		ChaptersDBBaseURL: envDefault("https://chaptersdb.com", "CHAPTERSDB_BASE_URL"),
 
@@ -171,6 +178,13 @@ func Load() Config {
 // only when the image is built with a token baked in. An operator's TMDB_API_KEY
 // env always overrides it (their own token → higher, unshared rate limits).
 var DefaultTMDBToken = ""
+
+// DefaultFanartKey is the bundled fanart.tv PROJECT api key, injected at build
+// time via -ldflags "-X .../config.DefaultFanartKey=<key>" (empty in source — no
+// secret committed). fanart.tv's model is a per-project shared key, so baking one
+// in ships the artwork fallback out of the box; an operator's FANART_API_KEY env
+// overrides it, and FANART_CLIENT_KEY adds their personal (fresher-images) key.
+var DefaultFanartKey = ""
 
 // TMDBEnabled reports whether TMDB enrichment is configured (a bundled default or
 // an operator override).
