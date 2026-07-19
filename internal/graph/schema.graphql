@@ -24,6 +24,9 @@ type Item {
   seasonNumber: Int
   episodeNumber: Int
   tagline: String
+  # true after a manual metadata edit: the enricher then leaves title / year /
+  # description / tagline untouched (unlock to let enrichment refresh them).
+  metadataLocked: Boolean!
   createdAt: Time
   modifiedAt: Time
 
@@ -375,6 +378,8 @@ input ItemInput {
   seasonNumber: Int
   episodeNumber: Int
   tagline: String
+  # set true on a manual edit (protects it from enrichment); false to unlock.
+  metadataLocked: Boolean
 }
 
 type Mutation {

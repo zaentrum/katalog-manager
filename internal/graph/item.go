@@ -96,6 +96,9 @@ func (r *itemResolver) HasCredits(ctx context.Context) (bool, error) {
 func (r *itemResolver) HasRecap(ctx context.Context) (bool, error) {
 	return r.s.ItemHasSegment(ctx, r.m.ID, "recap")
 }
+func (r *itemResolver) MetadataLocked(ctx context.Context) (bool, error) {
+	return r.s.ItemMetadataLocked(ctx, r.m.ID)
+}
 
 // ---- relations ----
 

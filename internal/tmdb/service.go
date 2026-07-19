@@ -587,7 +587,7 @@ func (s *Service) applyOMDb(ctx context.Context, itemID string, res *omdbResult,
 		rating = COALESCE(rating, $4),
 		year = COALESCE(year, $5),
 		modifiedat = now()
-		WHERE id = $6`,
+		WHERE id = $6 AND NOT metadatalocked`,
 		title, sort, desc, rating, year, itemID)
 	s.upsertGenres(ctx, itemID, res.Genres)
 }
@@ -618,7 +618,7 @@ func (s *Service) applyMovie(ctx context.Context, itemID string, m *tmdbMovie) {
 		year = COALESCE($6, year),
 		tagline = $7,
 		modifiedat = now()
-		WHERE id = $8`,
+		WHERE id = $8 AND NOT metadatalocked`,
 		title, sort, nullStr(m.Overview), rating, dur, year, nullStr(m.Tagline), itemID)
 
 	s.upsertGenres(ctx, itemID, m.Genres)
@@ -653,7 +653,7 @@ func (s *Service) applyTv(ctx context.Context, itemID string, t *tmdbTv) {
 		year = COALESCE($6, year),
 		tagline = $7,
 		modifiedat = now()
-		WHERE id = $8`,
+		WHERE id = $8 AND NOT metadatalocked`,
 		title, sort, nullStr(t.Overview), rating, dur, year, nullStr(t.Tagline), itemID)
 
 	s.upsertGenres(ctx, itemID, t.Genres)
@@ -684,7 +684,7 @@ func (s *Service) applyEpisode(ctx context.Context, itemID string, ep *tmdbEpiso
 		durationms = COALESCE($5, durationms),
 		year = COALESCE($6, year),
 		modifiedat = now()
-		WHERE id = $7`,
+		WHERE id = $7 AND NOT metadatalocked`,
 		title, sort, nullStr(ep.Overview), rating, dur, year, itemID)
 
 	// Episode-side completion goes through the shared audit path.
