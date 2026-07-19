@@ -20,6 +20,7 @@ type Services struct {
 	Enricher  Enricher
 	Packager  Packager
 	Validator Validator
+	Remover   Remover
 	Trailers  TrailerFetcher
 	DLGateway DownloadGateway
 }
@@ -39,6 +40,21 @@ type Enricher interface {
 type Packager interface {
 	PackageItem(ctx context.Context, id string) (PackageResult, error)
 }
+// Remover deletes an item (a series cascades to episodes) and optionally its
+// files on disk. Implemented by itemactions.
+type Remover interface {
+	RemoveItem(ctx context.Context, id string, deleteFiles, deletePackages bool) (RemoveResult, error)
+}
+
+// RemoveResult reports what a RemoveItem call actually did.
+type RemoveResult struct {
+	Deleted         bool
+	ItemsRemoved    int32
+	FilesRemoved    int32
+	PackagesRemoved int32
+	Errors          []string
+}
+
 type Validator interface {
 	ValidateItem(ctx context.Context, id string) (ValidateResult, error)
 }
@@ -538,8 +554,23 @@ func (r *Resolver) UpdateItem(ctx context.Context, args struct {
 	return newItemResolver(it, r.store), nil
 }
 
-func (r *Resolver) DeleteItem(ctx context.Context, args struct{ ID graphql.ID }) (bool, error) {
-	return r.store.DeleteItem(ctx, string(args.ID))
+func (r *Resolver) DeleteItem(ctx context.Context, args struct {
+	ID             graphql.ID
+	DeleteFiles    *bool
+	DeletePackages *bool
+}) (*deleteItemResultResolver, error) {
+	if r.svc.Remover == nil {
+		return nil, errNotConfigured
+	}
+	deleteFiles := args.DeleteFiles != nil && *args.DeleteFiles
+	// Packaged artifacts are regenerable dead weight once the item is gone —
+	// remove them unless explicitly kept.
+	deletePackages := args.DeletePackages == nil || *args.DeletePackages
+	res, err := r.svc.Remover.RemoveItem(ctx, string(args.ID), deleteFiles, deletePackages)
+	if err != nil {
+		return nil, err
+	}
+	return &deleteItemResultResolver{m: res}, nil
 }
 
 func (r *Resolver) SetItemGenres(ctx context.Context, args struct {

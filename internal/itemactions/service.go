@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/graph"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store"
@@ -37,14 +38,15 @@ var ErrNotPackageable = errors.New("not packageable")
 // Service implements graph.Packager (PackageItem) and graph.Validator
 // (ValidateItem).
 type Service struct {
-	st    *store.Store
-	cfg   config.Config
-	steps *processing.Steps
+	st     *store.Store
+	cfg    config.Config
+	steps  *processing.Steps
+	events *events.Producer // nil-safe: removed-event emit no-ops without a bus
 }
 
 // New constructs the item-actions service.
-func New(st *store.Store, cfg config.Config, steps *processing.Steps) *Service {
-	return &Service{st: st, cfg: cfg, steps: steps}
+func New(st *store.Store, cfg config.Config, steps *processing.Steps, ev *events.Producer) *Service {
+	return &Service{st: st, cfg: cfg, steps: steps, events: ev}
 }
 
 func ptrStr(s string) *string { return &s }

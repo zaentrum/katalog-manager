@@ -92,6 +92,33 @@ var itemChildTables = []string{
 }
 
 // DeleteItem removes an item and all its composition rows in one transaction.
+// DeleteItems removes the given items and all their facet rows in ONE
+// transaction (used by the remover: episodes + their series together). Returns
+// the number of items rows actually deleted.
+func (s *Store) DeleteItems(ctx context.Context, ids []string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	for _, t := range itemChildTables {
+		if _, err := tx.Exec(ctx, `DELETE FROM `+t+` WHERE item_id = ANY($1)`, ids); err != nil {
+			return 0, err
+		}
+	}
+	ct, err := tx.Exec(ctx, `DELETE FROM com_nalet_katalog_items WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return ct.RowsAffected(), nil
+}
+
 func (s *Store) DeleteItem(ctx context.Context, id string) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
