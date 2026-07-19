@@ -92,11 +92,39 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 	}
 	var pkgRoots []string
 	if deletePackages {
-		for _, iid := range ids {
-			root := packageRoot(s.cfg.PackagesRoot, types[iid], iid)
-			if underRoot(s.cfg.PackagesRoot, root) {
+		seen := map[string]bool{}
+		add := func(root string) {
+			if root != "" && underRoot(s.cfg.PackagesRoot, root) && !seen[root] {
+				seen[root] = true
 				pkgRoots = append(pkgRoots, root)
 			}
+		}
+		// The packaged asset's manifest path is AUTHORITATIVE for where the
+		// package lives — an item whose type changed after packaging (e.g. a
+		// movie reclassified to episode) keeps its package under the OLD
+		// category, which a type-derived path would miss.
+		rows, err := s.st.Pool().Query(ctx, `
+			SELECT path FROM com_nalet_katalog_playbackassets
+			WHERE item_id = ANY($1) AND kind = 'packaged' AND path IS NOT NULL`, ids)
+		if err != nil {
+			return res, err
+		}
+		for rows.Next() {
+			var p string
+			if err := rows.Scan(&p); err != nil {
+				rows.Close()
+				return res, err
+			}
+			add(filepath.Dir(p)) // …/<itemID>/manifest.json -> the package root
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return res, err
+		}
+		// Type-derived fallback covers partially-packaged leftovers with no
+		// packaged row yet.
+		for _, iid := range ids {
+			add(packageRoot(s.cfg.PackagesRoot, types[iid], iid))
 		}
 	}
 
