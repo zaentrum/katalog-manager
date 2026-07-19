@@ -30,6 +30,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/rest"
 	"github.com/zaentrum/katalog-manager/internal/scanner"
 	"github.com/zaentrum/katalog-manager/internal/store"
+	"github.com/zaentrum/katalog-manager/internal/stream"
 	"github.com/zaentrum/katalog-manager/internal/tmdb"
 )
 
@@ -168,6 +169,24 @@ func run() error {
 		writeText(w, "{\"status\":\"UP\"}")
 	})
 
+	// Live catalog stream: a per-pod Kafka tail (latest offset) fans thin
+	// catalog.updated notifications out to the console over SSE, so it refreshes
+	// the moment the pipeline moves instead of polling. No brokers => inert.
+	broker := stream.NewBroker()
+	if cfg.CatalogEventsEnabled {
+		host, _ := os.Hostname()
+		if host == "" {
+			host = "unknown"
+		}
+		go events.ConsumeLatest(bgCtx, events.SplitBrokers(cfg.KafkaBrokers), cfg.KafkaCertDir,
+			"katalog-stream-"+host,
+			[]string{events.TopicDiscovered, events.TopicEnriched, events.TopicAnalyzed, events.TopicTranscoded},
+			func(_ context.Context, topic string, ev events.ItemEvent) error {
+				broker.Publish(stream.Note{ItemID: ev.ItemID, ItemType: ev.Type, Phase: stream.PhaseOf(topic)})
+				return nil
+			})
+	}
+
 	// Authenticated surface.
 	r.Group(func(pr chi.Router) {
 		pr.Use(authMW.Handler)
@@ -178,6 +197,7 @@ func run() error {
 		// the demo's path-routing (the portal's katalog console posts there).
 		pr.Handle("/api/manage/query", gqlHandler)
 		pr.Handle("/api/manage/graphql", gqlHandler)
+		pr.Get("/api/manage/stream", broker.Handler)
 		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: steps}).Register(pr)
 	})
 
