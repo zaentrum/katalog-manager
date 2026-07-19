@@ -42,6 +42,8 @@ func main() {
 
 func run() error {
 	cfg := config.Load()
+	// Tenant topic prefix — must be set before any Kafka producer/consumer starts.
+	events.Configure(cfg.KafkaTopicPrefix)
 
 	// Server-lifetime context. Cancelled on shutdown so background workers —
 	// including the OIDC discovery retry goroutine — stop with the server

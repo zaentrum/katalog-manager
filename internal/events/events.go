@@ -38,8 +38,11 @@ import (
 )
 
 // Catalog pipeline topics (naming mirrors the existing stube.download.client.*
-// convention: stube.<domain>.<entity>.<event>).
-const (
+// convention: <prefix><domain>.<entity>.<event>). The prefix is CONFIGURABLE
+// (KAFKA_TOPIC_PREFIX, default "stube.") so multiple platform instances — e.g.
+// beta and prod — can share one Kafka cluster without topic collisions. Call
+// Configure once at boot, before any producer/consumer starts.
+var (
 	TopicDiscovered = "stube.catalog.item.discovered"
 	TopicEnriched   = "stube.catalog.item.enriched"
 	TopicAnalyzed   = "stube.catalog.item.analyzed"
@@ -53,6 +56,25 @@ const (
 	// live-refresh surfaces drop the item without a reload.
 	TopicRemoved = "stube.catalog.item.removed"
 )
+
+// Configure derives the topic names from a tenant prefix. Blank falls back to
+// "stube."; a missing trailing dot is added. Not goroutine-safe by design —
+// boot-time only.
+func Configure(prefix string) {
+	p := strings.TrimSpace(prefix)
+	if p == "" {
+		p = "stube."
+	}
+	if !strings.HasSuffix(p, ".") {
+		p += "."
+	}
+	TopicDiscovered = p + "catalog.item.discovered"
+	TopicEnriched = p + "catalog.item.enriched"
+	TopicAnalyzed = p + "catalog.item.analyzed"
+	TopicTranscoded = p + "catalog.item.transcoded"
+	TopicPackaged = p + "catalog.item.packaged"
+	TopicRemoved = p + "catalog.item.removed"
+}
 
 // ItemEvent is the minimal envelope carried on the catalog topics: identity +
 // the step this event unblocks + provenance. Consumers that need the media path
