@@ -161,9 +161,22 @@ func (p *Producer) Close() {
 type Handler func(ctx context.Context, topic string, ev ItemEvent) error
 
 // Consume runs a consumer-group reader over topics until ctx is cancelled,
-// invoking h per message. TLS is optional (see package doc). Defensive: no
-// brokers / unreadable certs => logged no-op return (service stays healthy).
+// invoking h per message. It starts at the EARLIEST offset (a fresh group works
+// through history — right for pipeline stages, which must not miss items). TLS
+// is optional (see package doc). Defensive: no brokers / unreadable certs =>
+// logged no-op return (service stays healthy).
 func Consume(ctx context.Context, brokers []string, certDir, groupID string, topics []string, h Handler) {
+	consume(ctx, brokers, certDir, groupID, topics, h, kafka.FirstOffset)
+}
+
+// ConsumeLatest is Consume starting at the LATEST offset: a fresh group sees
+// only NEW events. Right for live-tail fan-outs (the SSE catalog stream), where
+// replaying history would blast stale notifications at every boot.
+func ConsumeLatest(ctx context.Context, brokers []string, certDir, groupID string, topics []string, h Handler) {
+	consume(ctx, brokers, certDir, groupID, topics, h, kafka.LastOffset)
+}
+
+func consume(ctx context.Context, brokers []string, certDir, groupID string, topics []string, h Handler, startOffset int64) {
 	if len(brokers) == 0 {
 		log.Printf("catalog events consumer(%s): no Kafka brokers; not starting (service stays healthy)", groupID)
 		return
@@ -185,7 +198,7 @@ func Consume(ctx context.Context, brokers []string, certDir, groupID string, top
 		GroupID:     groupID,
 		GroupTopics: topics,
 		Dialer:      dialer,
-		StartOffset: kafka.FirstOffset,
+		StartOffset: startOffset,
 	})
 	defer reader.Close()
 	log.Printf("catalog events consumer(%s) active (%s) topics=%s", groupID, scheme, strings.Join(topics, ","))
