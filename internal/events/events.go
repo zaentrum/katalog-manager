@@ -49,6 +49,9 @@ const (
 	// packager itself stays Kafka-producer-free. Nothing downstream consumes it
 	// as a trigger; it exists for live-refresh fan-outs ("became watchable").
 	TopicPackaged = "stube.catalog.item.packaged"
+	// TopicRemoved announces a catalog deletion (fan-out only, like packaged):
+	// live-refresh surfaces drop the item without a reload.
+	TopicRemoved = "stube.catalog.item.removed"
 )
 
 // ItemEvent is the minimal envelope carried on the catalog topics: identity +

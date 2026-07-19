@@ -98,7 +98,7 @@ func run() error {
 	enricher := tmdb.New(st, cfg, steps, chapters, settingLookup)
 	scan := scanner.New(st, cfg, steps, eventProducer)
 	gateway := downloads.NewGateway(cfg)
-	actions := itemactions.New(st, cfg, steps)
+	actions := itemactions.New(st, cfg, steps, eventProducer)
 	trailers := odownloader.New(st, cfg, steps)
 
 	// Background workers (lifetime = server) share bgCtx, cancelled on shutdown.
@@ -148,6 +148,7 @@ func run() error {
 		Enricher:  enricher,
 		Packager:  actions,
 		Validator: actions,
+		Remover:   actions,
 		Trailers:  trailers,
 		DLGateway: gateway,
 	})
@@ -180,7 +181,7 @@ func run() error {
 		}
 		go events.ConsumeLatest(bgCtx, events.SplitBrokers(cfg.KafkaBrokers), cfg.KafkaCertDir,
 			"katalog-stream-"+host,
-			[]string{events.TopicDiscovered, events.TopicEnriched, events.TopicAnalyzed, events.TopicTranscoded, events.TopicPackaged},
+			[]string{events.TopicDiscovered, events.TopicEnriched, events.TopicAnalyzed, events.TopicTranscoded, events.TopicPackaged, events.TopicRemoved},
 			func(_ context.Context, topic string, ev events.ItemEvent) error {
 				broker.Publish(stream.Note{ItemID: ev.ItemID, ItemType: ev.Type, Phase: stream.PhaseOf(topic)})
 				return nil

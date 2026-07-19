@@ -92,6 +92,19 @@ type PackageResult struct {
 	EpisodesTotal    *int32
 }
 
+type deleteItemResultResolver struct{ m RemoveResult }
+
+func (r *deleteItemResultResolver) Deleted() bool          { return r.m.Deleted }
+func (r *deleteItemResultResolver) ItemsRemoved() int32    { return r.m.ItemsRemoved }
+func (r *deleteItemResultResolver) FilesRemoved() int32    { return r.m.FilesRemoved }
+func (r *deleteItemResultResolver) PackagesRemoved() int32 { return r.m.PackagesRemoved }
+func (r *deleteItemResultResolver) Errors() []string {
+	if r.m.Errors == nil {
+		return []string{}
+	}
+	return r.m.Errors
+}
+
 type packageResultResolver struct{ m PackageResult }
 
 func (r *packageResultResolver) Status() *string         { return r.m.Status }

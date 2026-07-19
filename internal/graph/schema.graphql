@@ -294,6 +294,14 @@ type RetryResult {
   type: String
 }
 
+type DeleteItemResult {
+  deleted: Boolean!
+  itemsRemoved: Int!
+  filesRemoved: Int!
+  packagesRemoved: Int!
+  errors: [String!]!
+}
+
 type PackageResult {
   status: String
   alreadyActive: Boolean
@@ -403,7 +411,11 @@ type Mutation {
   # item + facet CRUD (operator edits)
   createItem(input: ItemInput!): Item!
   updateItem(id: ID!, input: ItemInput!): Item!
-  deleteItem(id: ID!): Boolean!
+  # Remove an item from the catalog (a series cascades to its episodes). File
+  # cleanup is explicit: deleteFiles removes the SOURCE MEDIA from disk
+  # (irreversible; left in place, a rescan re-imports the item);
+  # deletePackages removes the packaged HLS artifacts (regenerable).
+  deleteItem(id: ID!, deleteFiles: Boolean, deletePackages: Boolean): DeleteItemResult!
   setItemGenres(id: ID!, genres: [String!]!): Item!
   setItemTags(id: ID!, tags: [String!]!): Item!
 
