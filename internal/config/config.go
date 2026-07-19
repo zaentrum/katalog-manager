@@ -39,6 +39,11 @@ type Config struct {
 	FanartAPIKey    string // FANART_API_KEY (project key)
 	FanartClientKey string // FANART_CLIENT_KEY (optional personal key, fresher images)
 
+	// OMDb (omdbapi.com) metadata fallback: fills description/rating/poster TMDB
+	// lacks, and can match items TMDB misses entirely (by title+year). Blank -> off.
+	// Overridable at runtime via the `omdb.api_key` setting.
+	OMDBAPIKey string // OMDB_API_KEY
+
 	// chaptersdb
 	ChaptersDBEnabled bool   // CHAPTERSDB_ENABLED (default false)
 	ChaptersDBBaseURL string // CHAPTERSDB_BASE_URL (default https://chaptersdb.com)
@@ -151,6 +156,7 @@ func Load() Config {
 
 		FanartAPIKey:    envDefault(DefaultFanartKey, "FANART_API_KEY"),
 		FanartClientKey: envDefault("", "FANART_CLIENT_KEY"),
+		OMDBAPIKey:      envDefault(DefaultOMDBKey, "OMDB_API_KEY"),
 
 		ChaptersDBEnabled: envBool(false, "CHAPTERSDB_ENABLED"),
 		ChaptersDBBaseURL: envDefault("https://chaptersdb.com", "CHAPTERSDB_BASE_URL"),
@@ -185,6 +191,12 @@ var DefaultTMDBToken = ""
 // in ships the artwork fallback out of the box; an operator's FANART_API_KEY env
 // overrides it, and FANART_CLIENT_KEY adds their personal (fresher-images) key.
 var DefaultFanartKey = ""
+
+// DefaultOMDBKey is the bundled OMDb (omdbapi.com) api key, injected at build time
+// via -ldflags "-X .../config.DefaultOMDBKey=<key>" (empty in source — no secret
+// committed; OMDb's free tier is per-user + 1,000 req/day, so it is NOT bundled by
+// default). An operator's OMDB_API_KEY env or the `omdb.api_key` setting overrides.
+var DefaultOMDBKey = ""
 
 // TMDBEnabled reports whether TMDB enrichment is configured (a bundled default or
 // an operator override).

@@ -18,25 +18,29 @@ const (
 	imageBase = "https://image.tmdb.org/t/p"
 )
 
-// client is the minimal TMDB v3 HTTP client (ported from TmdbClient.java).
-// A blank apiKey disables the client: every call returns a zero result so the
-// caller can treat enrichment as a no-op.
+// client is the minimal TMDB v3 HTTP client (ported from TmdbClient.java). The
+// api key is resolved per call via `key` (a settings-backed resolver → the
+// `tmdb.api_key` setting overrides the env/build default) so an operator can
+// change it at runtime without a restart. A blank key disables the client: every
+// call returns a zero result so the caller can treat enrichment as a no-op.
 type client struct {
-	apiKey   string
+	key      func() string
 	language string
 	http     *http.Client
 }
 
-func newClient(apiKey, language string) *client {
+func newClient(key func() string, language string) *client {
 	return &client{
-		apiKey:   apiKey,
+		key:      key,
 		language: language,
 		// connect timeout 10s folds into the per-call request timeout.
 		http: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
-func (c *client) enabled() bool { return strings.TrimSpace(c.apiKey) != "" }
+func (c *client) apiKey() string { return strings.TrimSpace(c.key()) }
+
+func (c *client) enabled() bool { return c.apiKey() != "" }
 
 // --- detail structs (only the parsed fields) ---
 
@@ -600,7 +604,7 @@ func (c *client) getJSON(ctx context.Context, rawURL string) ([]byte, bool) {
 			return nil, false
 		}
 		req.Header.Set("Accept", "application/json")
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		req.Header.Set("Authorization", "Bearer "+c.apiKey())
 		resp, err := c.http.Do(req)
 		if err != nil {
 			cancel()

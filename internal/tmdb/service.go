@@ -29,26 +29,60 @@ const (
 	statusSkipped  = "skipped"
 )
 
+// SettingLookup resolves a runtime setting value by key (the katalog settings
+// table). ok=false when the setting is absent. Passing nil disables the DB
+// override so only env/build defaults apply.
+type SettingLookup func(ctx context.Context, key string) (value string, ok bool)
+
 // Service is the TMDB enrichment service.
 type Service struct {
 	pool   *pgxpool.Pool
 	cfg    config.Config
 	steps  *processing.Steps
 	ch     *chaptersdb.Client
+	lookup SettingLookup
 	tmdb   *client
 	fanart *fanartClient // artwork-only fallback for poster/backdrop TMDB is missing
+	omdb   *omdbClient   // metadata fallback (description/rating/poster + title-match)
 }
 
-// New builds the enrichment Service. The TMDB client is disabled when
-// cfg.TMDBAPIKey is blank (every call no-ops; EnrichOne reports 'skipped').
-func New(st storePool, cfg config.Config, steps *processing.Steps, ch *chaptersdb.Client) *Service {
-	return &Service{
+// New builds the enrichment Service. API keys are resolved per call via the
+// settings table (lookup) → env/build defaults, so the TMDB / OMDb / fanart keys
+// can be edited at runtime without a restart. A blank effective TMDB key disables
+// the client (every call no-ops; EnrichOne reports 'skipped').
+func New(st storePool, cfg config.Config, steps *processing.Steps, ch *chaptersdb.Client, lookup SettingLookup) *Service {
+	s := &Service{
 		pool:   st.Pool(),
 		cfg:    cfg,
 		steps:  steps,
 		ch:     ch,
-		tmdb:   newClient(cfg.TMDBAPIKey, cfg.TMDBLanguage),
-		fanart: newFanartClient(cfg.FanartAPIKey, cfg.FanartClientKey),
+		lookup: lookup,
+	}
+	s.tmdb = newClient(s.keyFor("tmdb.api_key", cfg.TMDBAPIKey), cfg.TMDBLanguage)
+	s.fanart = newFanartClient(
+		s.keyFor("fanart.api_key", cfg.FanartAPIKey),
+		s.keyFor("fanart.client_key", cfg.FanartClientKey),
+	)
+	s.omdb = newOMDbClient(s.keyFor("omdb.api_key", cfg.OMDBAPIKey))
+	return s
+}
+
+// keyFor returns a resolver for an API key: the DB setting (when present and
+// non-blank) overrides the config/env fallback. Resolved on each call so a
+// settings edit takes effect on the next enrichment.
+func (s *Service) keyFor(settingKey, fallback string) func() string {
+	fallback = strings.TrimSpace(fallback)
+	return func() string {
+		if s.lookup != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if v, ok := s.lookup(ctx, settingKey); ok {
+				if v = strings.TrimSpace(v); v != "" {
+					return v
+				}
+			}
+		}
+		return fallback
 	}
 }
 
@@ -317,6 +351,10 @@ func (s *Service) enrichMovie(ctx context.Context, id, title string, year *int) 
 		tmdbID, ok = s.tmdb.searchMovie(ctx, searchTitle, year)
 	}
 	if !ok {
+		// TMDB missed the item entirely — try OMDb by title+year before giving up.
+		if st, msg := s.omdbFallbackMatch(ctx, id, searchTitle, year, "movie"); st != "" {
+			return st, msg
+		}
 		s.markStatus(ctx, id, "not_found", nil)
 		return statusNotFound, ""
 	}
@@ -361,6 +399,9 @@ func (s *Service) enrichMovie(ctx context.Context, id, title string, year *int) 
 		s.persistArtwork(ctx, id, "backdrop", backdropURL)
 	}
 
+	// OMDb fills description/rating/poster TMDB left blank (keyed by imdb id).
+	s.omdbGapFill(ctx, id, m.ImdbID, m.Overview != "", m.VoteAverage > 0, posterURL != "")
+
 	s.markStatus(ctx, id, "done", nil)
 	return statusDone, ""
 }
@@ -374,6 +415,11 @@ func (s *Service) enrichSeries(ctx context.Context, id, title string, year *int)
 		tmdbID, ok = s.tmdb.searchTv(ctx, searchTitle, year)
 	}
 	if !ok {
+		// TMDB missed the series entirely — try OMDb by title+year (episodes stay
+		// filename-based, as OMDb-only matches carry no TMDB id to enumerate them).
+		if st, msg := s.omdbFallbackMatch(ctx, id, searchTitle, year, "series"); st != "" {
+			return st, msg
+		}
 		s.markStatus(ctx, id, "not_found", nil)
 		return statusNotFound, ""
 	}
@@ -394,16 +440,22 @@ func (s *Service) enrichSeries(ctx context.Context, id, title string, year *int)
 
 	posterURL := s.tmdb.imageURL(t.PosterPath, "w780")
 	backdropURL := s.tmdb.imageURL(t.BackdropPath, "w1280")
-	// fanart.tv fallback: keyed by TheTVDB id (resolved via TMDB external_ids).
-	if s.fanart.enabled() && (posterURL == "" || backdropURL == "") {
-		if _, tvdbID := s.tmdb.getTvExternalIDs(ctx, tmdbID); tvdbID != "" {
-			fp, fb := s.fanart.tvArtwork(ctx, tvdbID)
-			if posterURL == "" {
-				posterURL = fp
-			}
-			if backdropURL == "" {
-				backdropURL = fb
-			}
+	// External IDs (imdb for OMDb, tvdb for fanart) — fetched once, only when a
+	// fallback actually needs them.
+	var imdbID, tvdbID string
+	needFanart := s.fanart.enabled() && (posterURL == "" || backdropURL == "")
+	needOMDb := s.omdb.enabled() && (t.Overview == "" || t.VoteAverage <= 0 || posterURL == "")
+	if needFanart || needOMDb {
+		imdbID, tvdbID = s.tmdb.getTvExternalIDs(ctx, tmdbID)
+	}
+	// fanart.tv fallback: keyed by TheTVDB id.
+	if needFanart && tvdbID != "" {
+		fp, fb := s.fanart.tvArtwork(ctx, tvdbID)
+		if posterURL == "" {
+			posterURL = fp
+		}
+		if backdropURL == "" {
+			backdropURL = fb
 		}
 	}
 	if posterURL != "" {
@@ -412,6 +464,9 @@ func (s *Service) enrichSeries(ctx context.Context, id, title string, year *int)
 	if backdropURL != "" {
 		s.persistArtwork(ctx, id, "backdrop", backdropURL)
 	}
+
+	// OMDb fills description/rating/poster TMDB left blank (keyed by imdb id).
+	s.omdbGapFill(ctx, id, imdbID, t.Overview != "", t.VoteAverage > 0, posterURL != "")
 
 	s.enrichEpisodesOf(ctx, id, tmdbID)
 
@@ -454,6 +509,88 @@ func (s *Service) enrichEpisodesOf(ctx context.Context, seriesID string, tmdbTvI
 }
 
 // ===================== field appliers =====================
+
+// omdbFallbackMatch identifies an item TMDB missed entirely, via OMDb by
+// title+year. On a hit it writes the OMDb metadata + imdb external id + poster and
+// marks the item done. Returns ("", "") when OMDb is disabled or finds nothing, so
+// the caller falls through to not_found.
+func (s *Service) omdbFallbackMatch(ctx context.Context, id, title string, year *int, kind string) (status, message string) {
+	if !s.omdb.enabled() {
+		return "", ""
+	}
+	res, ok := s.omdb.byTitle(ctx, title, year, kind)
+	if !ok || res == nil {
+		return "", ""
+	}
+	s.applyOMDb(ctx, id, res, false)
+	if res.ImdbID != "" {
+		s.upsertExternalID(ctx, id, "imdb", res.ImdbID)
+	}
+	if res.Poster != "" {
+		s.persistArtwork(ctx, id, "poster", res.Poster)
+	}
+	s.markStatus(ctx, id, "done", nil)
+	return statusDone, "matched via OMDb"
+}
+
+// omdbGapFill fills description/rating/poster that TMDB left blank, keyed by the
+// IMDb id TMDB already resolved. No-op when OMDb is disabled, no imdb id is known,
+// or every field is already present.
+func (s *Service) omdbGapFill(ctx context.Context, id, imdbID string, haveDesc, haveRating, havePoster bool) {
+	if !s.omdb.enabled() || (haveDesc && haveRating && havePoster) {
+		return
+	}
+	if strings.TrimSpace(imdbID) == "" {
+		return
+	}
+	res, ok := s.omdb.byIMDb(ctx, imdbID)
+	if !ok || res == nil {
+		return
+	}
+	s.applyOMDb(ctx, id, res, true)
+	if !havePoster && res.Poster != "" {
+		s.persistArtwork(ctx, id, "poster", res.Poster)
+	}
+}
+
+// applyOMDb writes OMDb metadata into the item. It never clobbers an existing
+// description/rating/year (fill-only via COALESCE + a blank-guard). With
+// fillOnly=false (OMDb is the sole source — TMDB missed) it also sets the
+// canonical title; with fillOnly=true (gap-fill after a TMDB match) the title is
+// left untouched.
+func (s *Service) applyOMDb(ctx context.Context, itemID string, res *omdbResult, fillOnly bool) {
+	var desc *string
+	if res.Plot != "" {
+		p := res.Plot
+		desc = &p
+	}
+	var rating *float64
+	if res.Rating > 0 {
+		r := res.Rating
+		rating = &r
+	}
+	var year *int
+	if res.Year > 0 {
+		y := res.Year
+		year = &y
+	}
+	var title, sort *string
+	if !fillOnly && strings.TrimSpace(res.Title) != "" {
+		t := res.Title
+		l := strings.ToLower(t)
+		title, sort = &t, &l
+	}
+	s.pool.Exec(ctx, `UPDATE com_nalet_katalog_items SET
+		title = COALESCE($1, title),
+		sorttitle = COALESCE($2, sorttitle),
+		description = CASE WHEN description IS NULL OR description = '' THEN COALESCE($3, description) ELSE description END,
+		rating = COALESCE(rating, $4),
+		year = COALESCE(year, $5),
+		modifiedat = now()
+		WHERE id = $6`,
+		title, sort, desc, rating, year, itemID)
+	s.upsertGenres(ctx, itemID, res.Genres)
+}
 
 func (s *Service) applyMovie(ctx context.Context, itemID string, m *tmdbMovie) {
 	year := parseYear(m.ReleaseDate)
