@@ -6,15 +6,17 @@ package rest
 import (
 	"github.com/go-chi/chi/v5"
 	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
 // Deps are the dependencies the REST handlers need.
 type Deps struct {
-	Store *store.Store
-	Cfg   config.Config
-	Steps *processing.Steps
+	Store  *store.Store
+	Cfg    config.Config
+	Steps  *processing.Steps
+	Events *events.Producer // nil-safe: packaged-event emit no-ops without a bus
 }
 
 // Handlers groups the REST handlers.
