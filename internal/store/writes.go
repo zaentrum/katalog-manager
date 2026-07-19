@@ -11,17 +11,18 @@ import (
 // ItemWrite carries item fields for create/update. Nil = unset (left unchanged
 // on update; defaulted on create).
 type ItemWrite struct {
-	Type          *string
-	Title         *string
-	SortTitle     *string
-	Year          *int32
-	Description   *string
-	Rating        *float64
-	DurationMs    *int64
-	ParentID      *string
-	SeasonNumber  *int32
-	EpisodeNumber *int32
-	Tagline       *string
+	Type           *string
+	Title          *string
+	SortTitle      *string
+	Year           *int32
+	Description    *string
+	Rating         *float64
+	DurationMs     *int64
+	ParentID       *string
+	SeasonNumber   *int32
+	EpisodeNumber  *int32
+	Tagline        *string
+	MetadataLocked *bool // true = manual edit; the enricher leaves metadata alone
 }
 
 // CreateItem inserts a new item. type and title are required.
@@ -58,10 +59,11 @@ func (s *Store) UpdateItem(ctx context.Context, id string, w ItemWrite) (*model.
 		seasonnumber  = COALESCE($10, seasonnumber),
 		episodenumber = COALESCE($11, episodenumber),
 		tagline       = COALESCE($12, tagline),
+		metadatalocked = COALESCE($13, metadatalocked),
 		modifiedat    = now()
 		WHERE id = $1 RETURNING `+itemBaseCols,
 		id, w.Type, w.Title, w.SortTitle, w.Year, w.Description, w.Rating, w.DurationMs,
-		w.ParentID, w.SeasonNumber, w.EpisodeNumber, w.Tagline), &i)
+		w.ParentID, w.SeasonNumber, w.EpisodeNumber, w.Tagline, w.MetadataLocked), &i)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}

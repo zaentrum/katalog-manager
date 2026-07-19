@@ -68,6 +68,18 @@ func (s *Store) ItemHasSegment(ctx context.Context, id, kind string) (bool, erro
 	return ok, err
 }
 
+// ItemMetadataLocked reports whether the item's metadata was manually edited
+// (the enricher then leaves it alone). Fail-open to false so item queries keep
+// working against a database that predates the metadatalocked column.
+func (s *Store) ItemMetadataLocked(ctx context.Context, id string) (bool, error) {
+	var locked bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT metadatalocked FROM com_nalet_katalog_items WHERE id = $1`, id).Scan(&locked); err != nil {
+		return false, nil
+	}
+	return locked, nil
+}
+
 func (s *Store) AssetsByItem(ctx context.Context, id string) ([]*model.PlaybackAsset, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id, item_id, path, codec, resolution, bitratekbps, sizebytes,
 		hash, isprimary, kind, audiocodec, audiolanguage, audiochannels, audiobitratekbps,

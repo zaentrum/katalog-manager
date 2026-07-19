@@ -496,17 +496,18 @@ func (r *Resolver) CancelDownload(ctx context.Context, args struct {
 }
 
 type itemInput struct {
-	Type          *string
-	Title         *string
-	SortTitle     *string
-	Year          *int32
-	Description   *string
-	Rating        *float64
-	DurationMs    *float64
-	ParentID      *graphql.ID
-	SeasonNumber  *int32
-	EpisodeNumber *int32
-	Tagline       *string
+	Type           *string
+	Title          *string
+	SortTitle      *string
+	Year           *int32
+	Description    *string
+	Rating         *float64
+	DurationMs     *float64
+	ParentID       *graphql.ID
+	SeasonNumber   *int32
+	EpisodeNumber  *int32
+	Tagline        *string
+	MetadataLocked *bool
 }
 
 func (in itemInput) toWrite() store.ItemWrite {
@@ -514,7 +515,7 @@ func (in itemInput) toWrite() store.ItemWrite {
 		Type: in.Type, Title: in.Title, SortTitle: in.SortTitle, Year: in.Year,
 		Description: in.Description, Rating: in.Rating, DurationMs: f2i64(in.DurationMs),
 		ParentID: idStr(in.ParentID), SeasonNumber: in.SeasonNumber, EpisodeNumber: in.EpisodeNumber,
-		Tagline: in.Tagline,
+		Tagline: in.Tagline, MetadataLocked: in.MetadataLocked,
 	}
 }
 
