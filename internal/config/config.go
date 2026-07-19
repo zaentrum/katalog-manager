@@ -54,6 +54,7 @@ type Config struct {
 	// download events (Kafka read side)
 	DownloadEventsEnabled bool   // DOWNLOAD_GATEWAY_EVENTS_ENABLED (default false)
 	KafkaBrokers          string // KAFKA_BROKERS
+	KafkaTopicPrefix      string // KAFKA_TOPIC_PREFIX (default "stube." — per-tenant on a shared cluster)
 	KafkaGroupID          string // KAFKA_GROUP_ID / DOWNLOAD_GATEWAY_KAFKA_GROUP_ID
 	KafkaCertDir          string // dir holding user.crt/user.key/ca.crt (default /etc/kafka-cert)
 
@@ -165,6 +166,7 @@ func Load() Config {
 
 		DownloadEventsEnabled: envBool(false, "DOWNLOAD_GATEWAY_EVENTS_ENABLED"),
 		KafkaBrokers:          env("KAFKA_BROKERS"),
+		KafkaTopicPrefix:      envDefault("stube.", "KAFKA_TOPIC_PREFIX"),
 		KafkaGroupID:          envDefault("stube-katalog-manager", "KAFKA_GROUP_ID", "DOWNLOAD_GATEWAY_KAFKA_GROUP_ID"),
 		KafkaCertDir:          envDefault("/etc/kafka-cert", "KAFKA_CERT_DIR"),
 		CatalogEventsEnabled:  envBool(env("KAFKA_BROKERS") != "", "CATALOG_EVENTS_ENABLED"),
