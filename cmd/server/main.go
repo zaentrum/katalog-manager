@@ -180,7 +180,7 @@ func run() error {
 		}
 		go events.ConsumeLatest(bgCtx, events.SplitBrokers(cfg.KafkaBrokers), cfg.KafkaCertDir,
 			"katalog-stream-"+host,
-			[]string{events.TopicDiscovered, events.TopicEnriched, events.TopicAnalyzed, events.TopicTranscoded},
+			[]string{events.TopicDiscovered, events.TopicEnriched, events.TopicAnalyzed, events.TopicTranscoded, events.TopicPackaged},
 			func(_ context.Context, topic string, ev events.ItemEvent) error {
 				broker.Publish(stream.Note{ItemID: ev.ItemID, ItemType: ev.Type, Phase: stream.PhaseOf(topic)})
 				return nil
@@ -198,7 +198,7 @@ func run() error {
 		pr.Handle("/api/manage/query", gqlHandler)
 		pr.Handle("/api/manage/graphql", gqlHandler)
 		pr.Get("/api/manage/stream", broker.Handler)
-		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: steps}).Register(pr)
+		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: steps, Events: eventProducer}).Register(pr)
 	})
 
 	srv := &http.Server{

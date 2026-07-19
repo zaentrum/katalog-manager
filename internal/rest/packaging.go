@@ -10,6 +10,8 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/zaentrum/katalog-manager/internal/events"
 )
 
 // packagingComplete ports ItemActionsController#ingestPackagingManifest: the
@@ -187,6 +189,21 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		subsWritten++
+	}
+
+	// The pipeline's end: the packaged (playable) asset is now in the catalog —
+	// announce it so live-refresh surfaces update at the exact became-watchable
+	// moment. Emitted only on a real packaged write (nil-safe without a bus).
+	if packagedWritten {
+		var typ *string
+		_ = pool.QueryRow(ctx, `SELECT type FROM com_nalet_katalog_items WHERE id = $1`, itemID).Scan(&typ)
+		ev := events.NewItemEvent(itemID)
+		if typ != nil {
+			ev.Type = *typ
+		}
+		ev.Status = "done"
+		ev.Source = "katalog-manager"
+		h.d.Events.EmitItem(ctx, events.TopicPackaged, ev)
 	}
 
 	sourceEnriched := srcCodec != nil || srcResolution != nil || srcBitrateKbps != nil

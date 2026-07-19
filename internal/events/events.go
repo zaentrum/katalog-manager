@@ -44,6 +44,11 @@ const (
 	TopicEnriched   = "stube.catalog.item.enriched"
 	TopicAnalyzed   = "stube.catalog.item.analyzed"
 	TopicTranscoded = "stube.catalog.item.transcoded"
+	// TopicPackaged marks the pipeline's END: the packaged (playable) asset is
+	// recorded in the catalog. Emitted by the packaging-complete REST sink — the
+	// packager itself stays Kafka-producer-free. Nothing downstream consumes it
+	// as a trigger; it exists for live-refresh fan-outs ("became watchable").
+	TopicPackaged = "stube.catalog.item.packaged"
 )
 
 // ItemEvent is the minimal envelope carried on the catalog topics: identity +
