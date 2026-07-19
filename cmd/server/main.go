@@ -83,7 +83,18 @@ func run() error {
 
 	// Integration services. Each no-ops cleanly when its feature is unconfigured.
 	chapters := chaptersdb.New(cfg)
-	enricher := tmdb.New(st, cfg, steps, chapters)
+	// Resolve enrichment API keys from the settings table at runtime (the
+	// `tmdb.api_key` / `omdb.api_key` / `fanart.api_key` / `fanart.client_key`
+	// settings override the env/build defaults, so the settings editor can change
+	// them without a restart).
+	settingLookup := func(ctx context.Context, key string) (string, bool) {
+		row, err := st.GetSettingByKey(ctx, key)
+		if err != nil || row == nil {
+			return "", false
+		}
+		return row.ValueText, true
+	}
+	enricher := tmdb.New(st, cfg, steps, chapters, settingLookup)
 	scan := scanner.New(st, cfg, steps, eventProducer)
 	gateway := downloads.NewGateway(cfg)
 	actions := itemactions.New(st, cfg, steps)

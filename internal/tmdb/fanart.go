@@ -20,21 +20,24 @@ import (
 
 const fanartBase = "https://webservice.fanart.tv/v3"
 
+// Keys are resolved per call via settings-backed resolvers (the `fanart.api_key`
+// / `fanart.client_key` settings override the env/build defaults) so they can be
+// changed at runtime without a restart.
 type fanartClient struct {
-	apiKey    string
-	clientKey string
+	apiKey    func() string
+	clientKey func() string
 	http      *http.Client
 }
 
-func newFanartClient(apiKey, clientKey string) *fanartClient {
+func newFanartClient(apiKey, clientKey func() string) *fanartClient {
 	return &fanartClient{
-		apiKey:    strings.TrimSpace(apiKey),
-		clientKey: strings.TrimSpace(clientKey),
+		apiKey:    apiKey,
+		clientKey: clientKey,
 		http:      &http.Client{Timeout: 20 * time.Second},
 	}
 }
 
-func (f *fanartClient) enabled() bool { return f.apiKey != "" }
+func (f *fanartClient) enabled() bool { return strings.TrimSpace(f.apiKey()) != "" }
 
 // fanartImage is one artwork entry. `likes` is a string in the fanart.tv JSON.
 type fanartImage struct {
@@ -103,9 +106,9 @@ func (f *fanartClient) get(ctx context.Context, path string, out any) bool {
 	if !f.enabled() {
 		return false
 	}
-	u := fanartBase + path + "?api_key=" + url.QueryEscape(f.apiKey)
-	if f.clientKey != "" {
-		u += "&client_key=" + url.QueryEscape(f.clientKey)
+	u := fanartBase + path + "?api_key=" + url.QueryEscape(strings.TrimSpace(f.apiKey()))
+	if ck := strings.TrimSpace(f.clientKey()); ck != "" {
+		u += "&client_key=" + url.QueryEscape(ck)
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
