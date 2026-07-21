@@ -18,3 +18,29 @@ func TestDerivedID(t *testing.T) {
 		}
 	}
 }
+
+// TestDownloadTopicsFor locks the per-tenant prefix derivation: blank/"stube."
+// keeps prod byte-identical; a tenant prefix (zaentrum-beta.) shifts all four.
+func TestDownloadTopicsFor(t *testing.T) {
+	prodDefault := []string{
+		"stube.download.client.started",
+		"stube.download.client.progress",
+		"stube.download.client.completed",
+		"stube.download.client.failed",
+	}
+	for _, prefix := range []string{"", "stube."} {
+		got := downloadTopicsFor(prefix)
+		for i, w := range prodDefault {
+			if got[i] != w {
+				t.Errorf("downloadTopicsFor(%q)[%d] = %s, want %s", prefix, i, got[i], w)
+			}
+		}
+	}
+	got := downloadTopicsFor("zaentrum-beta.")
+	if got[2] != "zaentrum-beta.download.client.completed" {
+		t.Errorf("tenant prefix: got %s", got[2])
+	}
+	if len(got) != 4 {
+		t.Fatalf("want 4 topics, got %d", len(got))
+	}
+}

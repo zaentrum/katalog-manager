@@ -20,15 +20,30 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
-// The four explicit topics the read-side consumer subscribes to. The Java
-// listener uses topicPattern "stube\\.download\\.client\\..*"; kafka-go has no
-// regex topic support, so we subscribe to the four concrete topic names that
-// the gateway emits (events.go). The event kind is the last dot-segment.
-var downloadTopics = []string{
-	"stube.download.client.started",
-	"stube.download.client.progress",
-	"stube.download.client.completed",
-	"stube.download.client.failed",
+// downloadTopicsFor returns the four topics the read-side consumer subscribes
+// to, under the per-tenant prefix (KAFKA_TOPIC_PREFIX, default "stube." — so
+// prod is unchanged; a shared-cluster tenant like zaentrum-beta uses its own
+// "zaentrum-beta." prefix). The gateway emits the matching names (events.go);
+// the event kind is the last dot-segment.
+//
+// The Java listener used topicPattern "…download\\.client\\..*"; kafka-go has
+// no regex topic support, so we enumerate the four concrete names.
+func downloadPrefix(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return "stube."
+	}
+	return prefix
+}
+
+func downloadTopicsFor(prefix string) []string {
+	prefix = downloadPrefix(prefix)
+	return []string{
+		prefix + "download.client.started",
+		prefix + "download.client.progress",
+		prefix + "download.client.completed",
+		prefix + "download.client.failed",
+	}
 }
 
 // Consumer is the read side of the download CQRS split: it consumes the
@@ -79,17 +94,18 @@ func (c *Consumer) Run(ctx context.Context) error {
 		TLS:       tlsCfg,
 	}
 
+	topics := downloadTopicsFor(c.cfg.KafkaTopicPrefix)
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:     brokers,
 		GroupID:     c.cfg.KafkaGroupID,
-		GroupTopics: downloadTopics,
+		GroupTopics: topics,
 		Dialer:      dialer,
 		StartOffset: kafka.FirstOffset, // auto.offset.reset=earliest
 	})
 	defer reader.Close()
 
-	log.Printf("download-event consumer active (brokers=%s, group=%s) projecting stube.download.client.* -> downloadjobs",
-		c.cfg.KafkaBrokers, c.cfg.KafkaGroupID)
+	log.Printf("download-event consumer active (brokers=%s, group=%s) projecting %sdownload.client.* -> downloadjobs",
+		c.cfg.KafkaBrokers, c.cfg.KafkaGroupID, downloadPrefix(c.cfg.KafkaTopicPrefix))
 
 	for {
 		msg, err := reader.ReadMessage(ctx)
