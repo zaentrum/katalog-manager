@@ -79,13 +79,19 @@ func (s *Store) IngestExternalFile(ctx context.Context, w ItemWrite, absPath str
 	} else {
 		sort = *w.Title
 	}
+	// metadatalocked is NOT NULL — default a nil pointer to false (unlocked: let
+	// the enricher fill artwork/metadata from TMDB).
+	locked := false
+	if w.MetadataLocked != nil {
+		locked = *w.MetadataLocked
+	}
 	err = s.pool.QueryRow(ctx, `INSERT INTO com_nalet_katalog_items
 		(id, createdat, modifiedat, type, title, sorttitle, year, description, rating, durationms,
 		 parent_id, seasonnumber, episodenumber, tagline, metadatalocked)
 		VALUES (gen_random_uuid()::varchar, now(), now(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id`,
 		*w.Type, *w.Title, sort, w.Year, w.Description, w.Rating, w.DurationMs,
-		w.ParentID, w.SeasonNumber, w.EpisodeNumber, w.Tagline, w.MetadataLocked).Scan(&itemID)
+		w.ParentID, w.SeasonNumber, w.EpisodeNumber, w.Tagline, locked).Scan(&itemID)
 	if err != nil {
 		return "", false, err
 	}
