@@ -57,4 +57,9 @@ func (h *Handlers) Register(r chi.Router) {
 
 	// Packager machine sink
 	r.Post("/api/items/{id}/packaging-complete", h.packagingComplete)
+
+	// External-file ingest: register a staged file (item + primary asset) and
+	// emit discovered so it flows the pipeline. Neutral machine contract used by
+	// importers/addons; the scanner's create path exposed as an API.
+	r.Post("/api/ingest", h.ingest)
 }
