@@ -44,6 +44,60 @@ func (s *Store) CreateItem(ctx context.Context, w ItemWrite) (*model.Item, error
 	return &i, nil
 }
 
+// IngestExternalFile registers a file that appeared in the library at absPath
+// as a new item with a primary playback asset — the same shape the scanner
+// creates (com_nalet_katalog_items + a primary playbackasset), so the file
+// flows the normal enrich→analyze→transcode→package pipeline. Idempotent on the
+// asset path: if the path already maps to an item, that item id is returned and
+// created=false (a re-ingest is a no-op). The caller seeds the scan step +
+// emits discovered exactly as the scanner does on a fresh insert.
+//
+// Neutral: this is "register an external file into the catalog", identical to
+// what the scanner does for the media root — it knows nothing of where the file
+// came from.
+func (s *Store) IngestExternalFile(ctx context.Context, w ItemWrite, absPath string, sizeBytes int64) (itemID string, created bool, err error) {
+	if w.Type == nil || *w.Type == "" || w.Title == nil || *w.Title == "" {
+		return "", false, errors.New("type and title are required")
+	}
+	if absPath == "" {
+		return "", false, errors.New("path is required")
+	}
+	// Already ingested at this path? Return the existing item (idempotent).
+	var existing *string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT item_id FROM com_nalet_katalog_playbackassets WHERE path = $1 LIMIT 1`, absPath).
+		Scan(&existing); err != nil && err != pgx.ErrNoRows {
+		return "", false, err
+	}
+	if existing != nil {
+		return *existing, false, nil
+	}
+
+	sort := ""
+	if w.SortTitle != nil {
+		sort = *w.SortTitle
+	} else {
+		sort = *w.Title
+	}
+	err = s.pool.QueryRow(ctx, `INSERT INTO com_nalet_katalog_items
+		(id, createdat, modifiedat, type, title, sorttitle, year, description, rating, durationms,
+		 parent_id, seasonnumber, episodenumber, tagline, metadatalocked)
+		VALUES (gen_random_uuid()::varchar, now(), now(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		RETURNING id`,
+		*w.Type, *w.Title, sort, w.Year, w.Description, w.Rating, w.DurationMs,
+		w.ParentID, w.SeasonNumber, w.EpisodeNumber, w.Tagline, w.MetadataLocked).Scan(&itemID)
+	if err != nil {
+		return "", false, err
+	}
+	if _, err = s.pool.Exec(ctx,
+		`INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, sizebytes, isprimary)
+		 VALUES (gen_random_uuid()::varchar, $1, $2, $3, true)`,
+		itemID, absPath, sizeBytes); err != nil {
+		return "", false, err
+	}
+	return itemID, true, nil
+}
+
 // UpdateItem updates the provided (non-nil) fields and bumps modifiedat.
 func (s *Store) UpdateItem(ctx context.Context, id string, w ItemWrite) (*model.Item, error) {
 	var i model.Item
