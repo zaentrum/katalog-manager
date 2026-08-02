@@ -14,16 +14,29 @@ import (
 // external importer) as a catalog item. NEUTRAL: it is the scanner's create path
 // exposed as a machine contract — it knows nothing of how the file got there.
 type ingestRequest struct {
-	Path        string   `json:"path"`  // absolute source path (must exist under a known root)
-	Type        string   `json:"type"`  // movie|episode|track
-	Title       string   `json:"title"` // required
-	Year        *int32   `json:"year,omitempty"`
-	Description  *string  `json:"description,omitempty"`
-	SortTitle   *string  `json:"sortTitle,omitempty"`
-	SizeBytes   int64    `json:"sizeBytes,omitempty"`
+	Path        string  `json:"path"`  // absolute source path (must exist under a known root)
+	Type        string  `json:"type"`  // movie|episode|track
+	Title       string  `json:"title"` // required
+	Year        *int32  `json:"year,omitempty"`
+	Description *string `json:"description,omitempty"`
+	SortTitle   *string `json:"sortTitle,omitempty"`
+	SizeBytes   int64   `json:"sizeBytes,omitempty"`
 	// MetadataLocked pins the provided metadata against the enricher (default
 	// false: let the pipeline enrich/fill artwork from TMDB).
 	MetadataLocked *bool `json:"metadataLocked,omitempty"`
+
+	// Episode coordinates. store.ItemWrite has always accepted these and
+	// IngestExternalFile has always bound them — only this DTO dropped them, so
+	// every externally-ingested episode arrived with a NULL parent.
+	//
+	// The consequence is not cosmetic: enrichEpisode returns "episode has no
+	// series parent" -> not_found -> skipped, and the worker advances on
+	// done|not_found alike, so the item becomes a PLAYABLE, metadata-less
+	// orphan named after the show, with no error anywhere. Production holds 64
+	// such rows, all with a primary asset.
+	ParentID      *string `json:"parentId,omitempty"`
+	SeasonNumber  *int32  `json:"seasonNumber,omitempty"`
+	EpisodeNumber *int32  `json:"episodeNumber,omitempty"`
 }
 
 // ingest handles POST /api/ingest: create item + primary asset at the path, seed
@@ -43,6 +56,18 @@ func (h *Handlers) ingest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "path, type and title are required")
 		return
 	}
+	// An episode without coordinates cannot be linked to its series, and the
+	// pipeline will happily publish it anyway as an orphan. Reject it at the
+	// boundary: a 400 here is the only thing that turns a silent, permanent
+	// data defect into a visible failure the caller can fix.
+	if req.Type == "episode" && (req.ParentID == nil || *req.ParentID == "" ||
+		req.SeasonNumber == nil || req.EpisodeNumber == nil) {
+		writeError(w, http.StatusBadRequest,
+			"an episode requires parentId, seasonNumber and episodeNumber; "+
+				"without them it would be ingested as an unlinked orphan")
+		return
+	}
+
 	// Guard: the path must live under the media OR packages root — an ingest must
 	// never point the catalog at an arbitrary host path.
 	if !underRoot(h.d.Cfg.NFSRoot, req.Path) && !underRoot(h.d.Cfg.PackagesRoot, req.Path) {
@@ -53,6 +78,7 @@ func (h *Handlers) ingest(w http.ResponseWriter, r *http.Request) {
 	iw := store.ItemWrite{
 		Type: &req.Type, Title: &req.Title, SortTitle: req.SortTitle,
 		Year: req.Year, Description: req.Description, MetadataLocked: req.MetadataLocked,
+		ParentID: req.ParentID, SeasonNumber: req.SeasonNumber, EpisodeNumber: req.EpisodeNumber,
 	}
 	itemID, created, err := h.d.Store.IngestExternalFile(r.Context(), iw, req.Path, req.SizeBytes)
 	if err != nil {
