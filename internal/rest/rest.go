@@ -33,6 +33,15 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 func (h *Handlers) Register(r chi.Router) {
 	// Binary / byte-range
 	r.Get("/api/artwork/{itemId}/{kind}", h.getArtwork)
+	// Also serve artwork READS under /api/manage — the same reason GraphQL is
+	// mounted twice in cmd/server/main.go. Only /api/manage is published by a
+	// Route, so the bare /api/artwork path is unreachable from a browser and
+	// every image in the catalog console 404'd, in every environment.
+	//
+	// The PUT is deliberately NOT mirrored: it is the analyzer uploading an
+	// extracted keyframe from inside the cluster, and it has no reason to be
+	// reachable from outside.
+	r.Get("/api/manage/artwork/{itemId}/{kind}", h.getArtwork)
 	r.Put("/api/artwork/{itemId}/{kind}", h.putArtwork) // analyzer-extracted keyframe upload
 	r.Get("/api/play/{itemId}", h.getPlay)
 	r.Get("/api/subtitles/items/{itemId}", h.listSubtitles)

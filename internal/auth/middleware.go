@@ -43,8 +43,12 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		// Stream token: only on /api/artwork/**, as an alternative to JWT.
-		if strings.HasPrefix(path, "/api/artwork/") && m.stream.Configured() {
+		// Stream token: only on artwork reads, as an alternative to JWT —
+		// an <img> tag cannot send an Authorization header. Both mount points
+		// count: /api/artwork is the in-cluster one, /api/manage/artwork is
+		// the one published by a Route and therefore the one browsers use.
+		if (strings.HasPrefix(path, "/api/artwork/") ||
+			strings.HasPrefix(path, "/api/manage/artwork/")) && m.stream.Configured() {
 			if tok := r.URL.Query().Get("stream"); tok != "" {
 				if sub, ok := m.stream.Verify(tok); ok {
 					ctx := WithPrincipal(r.Context(), &Principal{Subject: sub, Stream: true})

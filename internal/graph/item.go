@@ -59,12 +59,12 @@ func (r *itemResolver) ModifiedAt() *graphql.Time { return gtime(r.m.ModifiedAt)
 // ---- computed (view formulas) ----
 
 func (r *itemResolver) PosterURL() *string {
-	s := "/katalog-api/api/artwork/" + r.m.ID + "/poster"
+	s := "/api/manage/artwork/" + r.m.ID + "/poster"
 	return &s
 }
 
 func (r *itemResolver) BackdropURL() *string {
-	s := "/katalog-api/api/artwork/" + r.m.ID + "/backdrop"
+	s := "/api/manage/artwork/" + r.m.ID + "/backdrop"
 	return &s
 }
 
