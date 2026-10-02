@@ -12,7 +12,8 @@ The surface is split deliberately:
 - **GraphQL** (`/query`) — the operator/UI read graph and mutations: catalog
   reads (`items`, `movies`, `series`, `episodes`, `albums`, `item` with nested
   facets + computed fields), `searchItems`, `scanJobs`, `downloadJobs`,
-  `settings`, and the operator actions (`triggerScan`, `enrichOne`/`enrichPending`,
+  `settings`, `deletedItems` (the deletion log, read-only), and the operator
+  actions (`triggerScan`, `enrichOne`/`enrichPending`,
   `packageItem`, `validateItem`, `fetchTrailers`, `addDownload`/`cancelDownload`,
   item + settings CRUD). Schema-first via
   [graph-gophers/graphql-go](https://github.com/graph-gophers/graphql-go) — the

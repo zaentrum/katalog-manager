@@ -80,6 +80,51 @@ func TestDeletionLogDefaultIsUTC(t *testing.T) {
 	}
 }
 
+// The log reads newest first; since is inclusive and means an instant, in
+// whatever zone it is given; limit caps the rows.
+func TestListDeletedItems(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_deleteditems (id, type, title, deletedat, deletedby, reason) VALUES
+		('a', 'movie', 'Oldest', '2026-09-30 22:30:00', 'subject-1', NULL),
+		('b', 'episode', 'Middle', '2026-10-01 08:00:00', 'katalog-manager/scanner', NULL),
+		('c', 'series', 'Newest', '2026-10-02 12:00:00', 'subject-2', 'a duplicate')`)
+
+	ids := func(since *time.Time, limit int32) string {
+		t.Helper()
+		ds, err := st.ListDeletedItems(ctx, since, limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, d := range ds {
+			out = append(out, d.ID)
+		}
+		return strings.Join(out, ",")
+	}
+	if got := ids(nil, 0); got != "c,b,a" {
+		t.Errorf("all, newest first: %s", got)
+	}
+	// 10:00 at UTC+2 is 08:00 UTC: b's own instant, so b is included.
+	since := time.Date(2026, 10, 1, 10, 0, 0, 0, time.FixedZone("UTC+2", 2*3600))
+	if got := ids(&since, 0); got != "c,b" {
+		t.Errorf("since %s: %s, want c,b", since.Format(time.RFC3339), got)
+	}
+	if got := ids(nil, 1); got != "c" {
+		t.Errorf("limit 1: %s, want c", got)
+	}
+
+	ds, err := st.ListDeletedItems(ctx, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := ds[0]
+	if c.Type != "series" || c.Title != "Newest" || c.DeletedBy != "subject-2" || c.Reason == nil ||
+		*c.Reason != "a duplicate" || !c.DeletedAt.Equal(time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)) {
+		t.Errorf("row = %+v", *c)
+	}
+}
+
 // columns lists the deletion log's columns as "name type NULL|NOT NULL".
 func columns(t *testing.T, st *store.Store) string {
 	t.Helper()

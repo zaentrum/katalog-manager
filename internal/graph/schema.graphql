@@ -249,6 +249,20 @@ type EnrichmentStatusCode {
   name: String
 }
 
+# An item the catalog deleted, from the deletion log: one entry per id, its
+# latest deletion. If the catalog holds an item with this id again, it was
+# re-created after the deletion, and the item that exists wins.
+type DeletedItem {
+  id: ID!
+  type: String!
+  # the title it had when it was deleted
+  title: String!
+  deletedAt: Time!
+  # the principal's subject, or the service that deleted (katalog-manager/scanner)
+  deletedBy: String!
+  reason: String
+}
+
 # ---------------------------------------------------------------------------
 # Action result types
 # ---------------------------------------------------------------------------
@@ -368,6 +382,10 @@ type Query {
   people: [Person!]!
   enrichStatus: EnrichStatus!
   enrichmentStatusCodes: [EnrichmentStatusCode!]!
+
+  # The deletion log, newest first: items deleted at or after since (all when
+  # omitted), at most limit (default 100, max 500). Read-only.
+  deletedItems(since: Time, limit: Int): [DeletedItem!]!
 }
 
 # ---------------------------------------------------------------------------

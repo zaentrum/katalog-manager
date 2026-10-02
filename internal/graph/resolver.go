@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"errors"
+	"time"
 
 	graphql "github.com/graph-gophers/graphql-go"
 	"github.com/zaentrum/katalog-manager/internal/config"
@@ -325,6 +326,25 @@ func (r *Resolver) EnrichmentStatusCodes(ctx context.Context) ([]*enrichmentStat
 	out := make([]*enrichmentStatusCodeResolver, 0, len(cs))
 	for _, c := range cs {
 		out = append(out, &enrichmentStatusCodeResolver{m: c})
+	}
+	return out, nil
+}
+
+func (r *Resolver) DeletedItems(ctx context.Context, args struct {
+	Since *graphql.Time
+	Limit *int32
+}) ([]*deletedItemResolver, error) {
+	var since *time.Time
+	if args.Since != nil {
+		since = &args.Since.Time
+	}
+	ds, err := r.store.ListDeletedItems(ctx, since, deref32(args.Limit))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*deletedItemResolver, 0, len(ds))
+	for _, d := range ds {
+		out = append(out, &deletedItemResolver{m: d})
 	}
 	return out, nil
 }

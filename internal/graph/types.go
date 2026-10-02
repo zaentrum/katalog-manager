@@ -240,6 +240,17 @@ func (r *settingResolver) ValueText() string    { return r.m.ValueText }
 func (r *settingResolver) ValueType() string    { return r.m.ValueType }
 func (r *settingResolver) Description() *string { return r.m.Description }
 
+// ---- DeletedItem ----
+
+type deletedItemResolver struct{ m *model.DeletedItem }
+
+func (r *deletedItemResolver) ID() graphql.ID          { return gid(r.m.ID) }
+func (r *deletedItemResolver) Type() string            { return r.m.Type }
+func (r *deletedItemResolver) Title() string           { return r.m.Title }
+func (r *deletedItemResolver) DeletedAt() graphql.Time { return graphql.Time{Time: r.m.DeletedAt} }
+func (r *deletedItemResolver) DeletedBy() string       { return r.m.DeletedBy }
+func (r *deletedItemResolver) Reason() *string         { return r.m.Reason }
+
 // ---- EnrichmentStatusCode ----
 
 type enrichmentStatusCodeResolver struct{ m *model.EnrichmentStatusCode }
