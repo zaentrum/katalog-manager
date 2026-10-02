@@ -173,9 +173,10 @@ const deleteAndRecordItems = `
 // DeleteItems removes the given items and all their facet rows in ONE
 // transaction (the remover takes a series and its episodes together), and in
 // that same transaction records every item it removes in the deletion log,
-// attributed to d. If the log cannot be written, nothing is deleted. Returns
-// the number of items removed; an id that does not exist is skipped and leaves
-// no row.
+// attributed to d. A person the items credited whom no other title credits
+// goes with them, recorded in the log too (DeleteUncreditedPeople). If the log
+// cannot be written, nothing is deleted. Returns the number of items removed;
+// an id that does not exist is skipped and leaves no row.
 func (s *Store) DeleteItems(ctx context.Context, ids []string, d Deletion) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
@@ -189,6 +190,11 @@ func (s *Store) DeleteItems(ctx context.Context, ids []string, d Deletion) (int6
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
+	credited, err := personIDs(ctx, tx, `SELECT DISTINCT person_id FROM com_nalet_katalog_itempeople
+		WHERE item_id = ANY($1)`, ids)
+	if err != nil {
+		return 0, err
+	}
 	for _, t := range itemChildTables {
 		if _, err := tx.Exec(ctx, `DELETE FROM `+t+` WHERE item_id = ANY($1)`, ids); err != nil {
 			return 0, err
@@ -198,10 +204,32 @@ func (s *Store) DeleteItems(ctx context.Context, ids []string, d Deletion) (int6
 	if err != nil {
 		return 0, fmt.Errorf("delete items and record them in the deletion log: %w", err)
 	}
+	if _, err := DeleteUncreditedPeople(ctx, tx, credited, Deletion{By: by,
+		Reason: "no title credits them any more: the title that did was deleted"}); err != nil {
+		return 0, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
 	return ct.RowsAffected(), nil
+}
+
+// personIDs runs a query that selects person ids.
+func personIDs(ctx context.Context, tx pgx.Tx, sql string, args ...any) ([]string, error) {
+	rows, err := tx.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // DeleteItem removes one item and its facet rows, and records it in the

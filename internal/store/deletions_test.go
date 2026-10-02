@@ -155,3 +155,120 @@ func columns(t *testing.T, st *store.Store, table string) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+// people adds people and their credits: each entry is a person id, a name and
+// the items crediting them (as actors).
+func people(t *testing.T, st *store.Store, entries ...[]string) {
+	t.Helper()
+	for _, e := range entries {
+		storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ($1, $2)`, e[0], e[1])
+		for _, item := range e[2:] {
+			storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itempeople (id, item_id, person_id, role)
+				VALUES (gen_random_uuid()::varchar, $1, $2, 'actor')`, item, e[0])
+		}
+	}
+}
+
+// Deleting a title deletes the people no title credits any more, with their
+// images, in the same transaction, each recorded in the log as a person; a
+// person another title credits stays, and so does one the title never credited.
+func TestDeleteItemsDeletesThePeopleNoTitleCreditsAnyMore(t *testing.T) {
+	st := storetest.Open(t)
+	storetest.AddItem(t, st, movieA, "movie", "Movie A", "")
+	storetest.AddItem(t, st, movieB, "movie", "Movie B", "")
+	people(t, st, []string{"only-a", "Only A", movieA}, []string{"a-and-b", "A And B", movieA, movieB},
+		[]string{"nobody", "Credited By Nobody"})
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itempeople (id, item_id, person_id, role)
+		VALUES ('director-too', $1, 'only-a', 'director')`, movieA)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_personartwork (id, person_id, contenttype, bytes, sha256, isprimary)
+		VALUES ('portrait', 'only-a', 'image/jpeg', '\xffd8', repeat('a', 64), true)`)
+
+	if n, err := st.DeleteItems(context.Background(), []string{movieA}, store.Deletion{By: "subject-1", Reason: "a duplicate"}); err != nil || n != 1 {
+		t.Fatalf("DeleteItems: n=%d err=%v", n, err)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_people WHERE id = 'only-a'`); n != 0 {
+		t.Fatal("a person no title credits any more is still in the catalog")
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_personartwork WHERE person_id = 'only-a'`); n != 0 {
+		t.Error("the deleted person's images stayed")
+	}
+	d, ok := storetest.Deleted(t, st, "only-a")
+	if !ok || d.Type != "person" || d.Title != "Only A" || d.DeletedBy != "subject-1" || d.Reason == nil ||
+		!strings.Contains(*d.Reason, "no title credits them") {
+		t.Fatalf("the person's log row: %+v (ok %v)", d, ok)
+	}
+	if item, _ := storetest.Deleted(t, st, movieA); !item.DeletedAt.Equal(d.DeletedAt) || item.Type != "movie" {
+		t.Errorf("the title %+v and its person %+v: one delete, one moment", item, d)
+	}
+	for _, id := range []string{"a-and-b", "nobody"} {
+		if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_people WHERE id = $1`, id); n != 1 {
+			t.Errorf("%s was deleted", id)
+		}
+		if _, ok := storetest.Deleted(t, st, id); ok {
+			t.Errorf("%s is in the deletion log", id)
+		}
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_deleteditems`); n != 2 {
+		t.Errorf("the log holds %d rows, want the title and its one person", n)
+	}
+}
+
+// A person who cannot be recorded is not deleted, and neither is the title
+// whose deletion left them uncredited.
+func TestDeletingAPersonThatCannotBeRecordedDoesNotHappen(t *testing.T) {
+	st := storetest.Open(t)
+	storetest.AddItem(t, st, movieA, "movie", "Movie A", "")
+	people(t, st, []string{"only-a", "Only A", movieA})
+	storetest.Exec(t, st, `ALTER TABLE com_nalet_katalog_deleteditems ADD CONSTRAINT refuse_people CHECK (type <> 'person')`)
+
+	if _, err := st.DeleteItem(context.Background(), movieA, store.Deletion{By: "subject-1"}); err == nil {
+		t.Fatal("the delete went through without the person's row in the log")
+	}
+	if storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE id = $1`, movieA) != 1 ||
+		storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_people WHERE id = 'only-a'`) != 1 ||
+		storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itempeople WHERE person_id = 'only-a'`) != 1 {
+		t.Fatal("part of a delete that failed stayed done")
+	}
+}
+
+// A person re-created with an id the log holds is a person like any other
+// (the one that exists wins), and deleting them again replaces their row.
+func TestAPersonRecreatedWithTheSameIDCanBeDeletedAgain(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	storetest.AddItem(t, st, movieA, "movie", "Movie A", "")
+	storetest.AddItem(t, st, movieB, "movie", "Movie B", "")
+	people(t, st, []string{"ada", "Ada First", movieA})
+	if _, err := st.DeleteItem(ctx, movieA, store.Deletion{By: "subject-1"}); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := storetest.Deleted(t, st, "ada")
+
+	people(t, st, []string{"ada", "Ada Second", movieB}) // e.g. restored from her record
+	if _, ok := storetest.Deleted(t, st, "ada"); !ok {
+		t.Fatal("re-creating a person must not touch the log")
+	}
+	tx, err := st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if n, err := store.DeleteUncreditedPeople(ctx, tx, []string{"ada", "ada"}, store.Deletion{By: "katalog-manager/tmdb"}); err != nil || n != 0 {
+		t.Fatalf("a person a title credits: deleted %d, %v", n, err)
+	}
+	storetest.Exec(t, st, `DELETE FROM com_nalet_katalog_itempeople WHERE person_id = 'ada'`) // outside tx: committed
+	if n, err := store.DeleteUncreditedPeople(ctx, tx, []string{"ada"}, store.Deletion{By: "katalog-manager/tmdb", Reason: "again"}); err != nil || n != 1 {
+		t.Fatalf("deleting her again: %d, %v", n, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := storetest.Deleted(t, st, "ada")
+	if second.Title != "Ada Second" || second.DeletedBy != "katalog-manager/tmdb" || second.Reason == nil ||
+		*second.Reason != "again" || second.DeletedAt.Before(first.DeletedAt) {
+		t.Fatalf("the row must describe the latest deletion: %+v", second)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_deleteditems WHERE id = 'ada'`); n != 1 {
+		t.Fatalf("%d rows for one id", n)
+	}
+}

@@ -284,13 +284,15 @@ type EnrichmentStatusCode {
   name: String
 }
 
-# An item the catalog deleted, from the deletion log: one entry per id, its
-# latest deletion. If the catalog holds an item with this id again, it was
-# re-created after the deletion, and the item that exists wins.
+# An item the catalog deleted, or a person (type "person") it deleted because
+# no title credits them any more, from the deletion log: one entry per id, its
+# latest deletion. If the catalog holds an item or person with this id again,
+# it was re-created after the deletion, and the one that exists wins.
 type DeletedItem {
   id: ID!
+  # the item's type (movie, series, episode, ...), or person
   type: String!
-  # the title it had when it was deleted
+  # the title it had when it was deleted; a person's name
   title: String!
   deletedAt: Time!
   # the principal's subject, or the service that deleted (katalog-manager/scanner)

@@ -3,9 +3,13 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/zaentrum/katalog-manager/db/migrations"
 	"github.com/zaentrum/katalog-manager/internal/model"
@@ -15,6 +19,8 @@ import (
 // records each item it removes in the deletion log
 // (com_nalet_katalog_deleteditems) inside its own transaction: an item never
 // leaves the catalog without a row there, and a delete that fails leaves none.
+// The same goes for a person, whom the catalog deletes once no title credits
+// them any more (type person).
 type Deletion struct {
 	// By is the authenticated principal's subject, or the service that deletes,
 	// e.g. "katalog-manager/scanner". Required.
@@ -44,6 +50,87 @@ func clip(s string, n int) string {
 		return s
 	}
 	return string([]rune(s)[:n])
+}
+
+// The people a delete of credits leaves credited by no title: deleted with
+// their images, and recorded in the deletion log as type person under their
+// name, in the statement that deletes them. A person deleted before (and
+// re-created since) has their row replaced by this, their latest, deletion.
+const uncreditedPeople = `
+	gone AS (
+		DELETE FROM com_nalet_katalog_people p
+		WHERE p.id = ANY($1::text[])
+		  AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itempeople ip WHERE ip.person_id = p.id)
+		RETURNING p.id, p.name
+	),
+	logged AS (
+		INSERT INTO com_nalet_katalog_deleteditems (id, type, title, deletedat, deletedby, reason)
+		SELECT id, 'person', left(COALESCE(name, ''), 255), now() AT TIME ZONE 'utc', $2, $3
+		FROM gone
+		ON CONFLICT (id) DO UPDATE SET
+			type = EXCLUDED.type, title = EXCLUDED.title, deletedat = EXCLUDED.deletedat,
+			deletedby = EXCLUDED.deletedby, reason = EXCLUDED.reason
+		RETURNING id
+	)`
+
+const (
+	deleteUncreditedPeople          = `WITH` + uncreditedPeople + ` SELECT count(*)::int FROM logged`
+	deleteUncreditedPeopleAndImages = `WITH` + uncreditedPeople + `,
+	images AS (
+		DELETE FROM com_nalet_katalog_personartwork a USING gone WHERE a.person_id = gone.id
+	)
+	SELECT count(*)::int FROM logged`
+)
+
+// DeleteUncreditedPeople deletes, in tx, each of the given people whom no
+// title credits any more, with their images, and records each in the deletion
+// log (type person) in the same transaction, attributed to d: a person never
+// leaves the catalog without a row there, and if the log cannot be written,
+// nothing is deleted. A person a title still credits stays. It returns how many
+// it deleted.
+//
+// The people are locked first. A transaction that gives one of them a credit
+// meanwhile either commits before, and they stay, or finds them gone after.
+func DeleteUncreditedPeople(ctx context.Context, tx pgx.Tx, ids []string, d Deletion) (int, error) {
+	ids = uniqueSorted(ids)
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	by, reason, err := d.values()
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM com_nalet_katalog_people WHERE id = ANY($1::text[])
+		ORDER BY id FOR UPDATE`, ids); err != nil {
+		return 0, err
+	}
+	var withImages bool // a catalog older than 030 keeps no person images
+	if err := tx.QueryRow(ctx, `SELECT to_regclass('com_nalet_katalog_personartwork') IS NOT NULL`).
+		Scan(&withImages); err != nil {
+		return 0, err
+	}
+	sql := deleteUncreditedPeople
+	if withImages {
+		sql = deleteUncreditedPeopleAndImages
+	}
+	var n int
+	if err := tx.QueryRow(ctx, sql, ids, by, reason).Scan(&n); err != nil {
+		return 0, fmt.Errorf("delete the people no title credits and record them in the deletion log: %w", err)
+	}
+	return n, nil
+}
+
+func uniqueSorted(ids []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range ids {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ListDeletedItems reads the deletion log, newest first: the items deleted at

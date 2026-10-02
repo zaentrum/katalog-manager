@@ -319,11 +319,13 @@ type DownloadJob struct {
 }
 
 // DeletedItem mirrors db/migrations/029_deleted_items.sql: an item the catalog
-// deleted, as of its latest deletion. If an item with the same ID exists again,
-// it was re-created after this deletion, and the item that exists wins.
+// deleted, or a person (Type "person") it deleted because no title credits them
+// any more, as of its latest deletion. If an item or person with the same ID
+// exists again, it was re-created after this deletion, and the one that exists
+// wins.
 type DeletedItem struct {
 	ID        string
-	Type      string
+	Type      string    // the item's type, or "person"
 	Title     string    // the title it had when it was deleted
 	DeletedAt time.Time // UTC
 	DeletedBy string    // a principal's subject, or the service that deleted
