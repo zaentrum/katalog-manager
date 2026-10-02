@@ -8,11 +8,13 @@
 --
 -- deletedItems is katalog-manager's deletion log (db/migrations/029), so that a
 -- verification can tell a record the catalog deleted (an orphan: sweep it) from
--- one it lost (restore it): [{"id","deletedAt","deletedBy"}], ordered by id,
--- deletedAt in UTC, one entry per id (its latest deletion). An id that is in
--- both items and deletedItems was re-created after it was deleted: present wins.
--- On a catalog without the log (older than 029) it is null, not [], because
--- nothing there can be called deleted.
+-- one it lost (restore it): [{"id","type","deletedAt","deletedBy"}], ordered by
+-- id, deletedAt in UTC, one entry per id (its latest deletion). type is the
+-- item's type (movie, series, episode, ...), or person for a person the catalog
+-- deleted because no title credits them any more. An id that is in both items
+-- (or people) and deletedItems was re-created after it was deleted: present
+-- wins. On a catalog without the log (older than 029) it is null, not [],
+-- because nothing there can be called deleted.
 --
 -- people is every person the catalog holds (db/migrations/030), ordered by id:
 --   [{"id", "name", "sortName", "alsoKnownAs": [], "birthDate", "deathDate",
@@ -66,11 +68,13 @@ select json_build_object(
     'deletedItems', case when to_regclass('com_nalet_katalog_deleteditems') is null then null else (
       select coalesce(json_agg(json_build_object(
                'id', d.id,
+               'type', d.type,
                'deletedAt', to_char(d.deletedat, 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
                'deletedBy', d.deletedby) order by d.id), '[]')
       from xmltable('//row'
              passing table_to_xml(to_regclass('com_nalet_katalog_deleteditems'), false, false, '')
-             columns id text path 'id', deletedat timestamp path 'deletedat', deletedby text path 'deletedby') d
+             columns id text path 'id', type text path 'type', deletedat timestamp path 'deletedat',
+                     deletedby text path 'deletedby') d
     ) end,
     -- The query is planned even where it does not run, so it may not name what
     -- a catalog older than 030 lacks: a person is read through to_jsonb of their

@@ -235,6 +235,38 @@ func TestExportOnACatalogOlderThanThePeopleMigration(t *testing.T) {
 	}
 }
 
+// deletedItems says what each deleted id was: the item's type, or person for
+// someone the catalog deleted because no title credits them any more. The
+// fields it had stay, in their order.
+func TestExportDeletedItemsSayWhatTheyWere(t *testing.T) {
+	st := storetest.OpenInTimeZone(t, "Pacific/Kiritimati")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_deleteditems (id, type, title, deletedat, deletedby, reason) VALUES
+		('a2a2a2a2-0000-4000-8000-000000000001', 'movie', 'A Film', '2026-10-01 08:00:00', 'subject-1', 'a duplicate'),
+		('a1a1a1a1-0000-4000-8000-000000000002', 'person', 'Selena Gomez', '2026-10-02 21:15:30.5', 'katalog-manager/tmdb',
+		 'no title credits them any more: TMDB''s credits of "Spring" no longer list them')`)
+	raw := section(t, runExport(t, st), "deletedItems")
+	want := `[{"id":"a1a1a1a1-0000-4000-8000-000000000002","type":"person","deletedAt":"2026-10-02T21:15:30Z",` +
+		`"deletedBy":"katalog-manager/tmdb"},` +
+		`{"id":"a2a2a2a2-0000-4000-8000-000000000001","type":"movie","deletedAt":"2026-10-01T08:00:00Z","deletedBy":"subject-1"}]`
+	var got, expected any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	_ = json.Unmarshal([]byte(want), &expected)
+	if !reflect.DeepEqual(got, expected) {
+		t.Errorf("deletedItems:\n %s\nwant\n %s", raw, want)
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if k := keys(t, e); !reflect.DeepEqual(k, []string{"id", "type", "deletedAt", "deletedBy"}) {
+			t.Errorf("a deletedItems entry's keys: %v", k)
+		}
+	}
+}
+
 // psql prints the document and nothing else: the file's QUIET header keeps the
 // tags of its SET statements out. Needs psql on PATH.
 func TestExportThroughPsqlPrintsOnlyTheDocument(t *testing.T) {
