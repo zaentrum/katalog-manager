@@ -41,9 +41,12 @@ schema in the order of their numbers, and each is idempotent:
 
 - `028_go_rewrite.sql` fills two gaps (the `trailerjobs` table and a
   `downloadjobs (adapter, clientjobid)` unique index).
-- `029_deleted_items.sql` adds the deletion log, `com_nalet_katalog_deleteditems`.
-  The service creates it at startup when it is missing; where its role may not
-  create tables, apply the file by hand.
+- `029_deleted_items.sql` adds the deletion log, `com_nalet_katalog_deleteditems`:
+  every item the catalog deletes, and every person it deletes because no title
+  credits them any more (type `person`). A title's credits follow TMDB: read
+  from TMDB, they replace the title's credits, and a person left uncredited
+  goes. The service creates the log at startup when it is missing; where its
+  role may not create tables, apply the file by hand.
 - `030_people.sql` gives a person their TMDB id and details (dates, places,
   biography per language, also-known-as names, locks and field origins), adds
   their images (`com_nalet_katalog_personartwork`) and the cursors of TMDB's
