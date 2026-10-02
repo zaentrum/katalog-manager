@@ -13,7 +13,7 @@ func TestUnderRoot(t *testing.T) {
 	}{
 		{"/var/lib/katalog/media", "/var/lib/katalog/media/Movie (2020).mp4", true},
 		{"/var/lib/katalog/media", "/var/lib/katalog/media/series/Show/ep.mp4", true},
-		{"/var/lib/katalog/media", "/var/lib/katalog/media", false},        // the root itself is never removable
+		{"/var/lib/katalog/media", "/var/lib/katalog/media", false},           // the root itself is never removable
 		{"/var/lib/katalog/media", "/var/lib/katalog/mediaX/file.mp4", false}, // sibling prefix trick
 		{"/var/lib/katalog/media", "/etc/passwd", false},
 		{"/var/lib/katalog/media", "/var/lib/katalog/media/../secrets", false}, // traversal

@@ -18,24 +18,24 @@ func i32fromI64(v *int64) *int32 {
 
 type playbackAssetResolver struct{ m *model.PlaybackAsset }
 
-func (r *playbackAssetResolver) ID() graphql.ID            { return gid(r.m.ID) }
-func (r *playbackAssetResolver) ItemID() graphql.ID        { return gid(r.m.ItemID) }
-func (r *playbackAssetResolver) Path() string              { return r.m.Path }
-func (r *playbackAssetResolver) Codec() *string            { return r.m.Codec }
-func (r *playbackAssetResolver) Resolution() *string       { return r.m.Resolution }
-func (r *playbackAssetResolver) BitrateKbps() *int32       { return r.m.BitrateKbps }
-func (r *playbackAssetResolver) SizeBytes() *float64       { return i64ptrToFloat(r.m.SizeBytes) }
-func (r *playbackAssetResolver) Hash() *string             { return r.m.Hash }
-func (r *playbackAssetResolver) IsPrimary() *bool          { return r.m.IsPrimary }
-func (r *playbackAssetResolver) Kind() *string             { return r.m.Kind }
-func (r *playbackAssetResolver) AudioCodec() *string       { return r.m.AudioCodec }
-func (r *playbackAssetResolver) AudioLanguage() *string    { return r.m.AudioLanguage }
-func (r *playbackAssetResolver) AudioChannels() *int32     { return r.m.AudioChannels }
-func (r *playbackAssetResolver) AudioBitrateKbps() *int32  { return r.m.AudioBitrateKbps }
-func (r *playbackAssetResolver) AudioTrackCount() *int32   { return r.m.AudioTrackCount }
+func (r *playbackAssetResolver) ID() graphql.ID             { return gid(r.m.ID) }
+func (r *playbackAssetResolver) ItemID() graphql.ID         { return gid(r.m.ItemID) }
+func (r *playbackAssetResolver) Path() string               { return r.m.Path }
+func (r *playbackAssetResolver) Codec() *string             { return r.m.Codec }
+func (r *playbackAssetResolver) Resolution() *string        { return r.m.Resolution }
+func (r *playbackAssetResolver) BitrateKbps() *int32        { return r.m.BitrateKbps }
+func (r *playbackAssetResolver) SizeBytes() *float64        { return i64ptrToFloat(r.m.SizeBytes) }
+func (r *playbackAssetResolver) Hash() *string              { return r.m.Hash }
+func (r *playbackAssetResolver) IsPrimary() *bool           { return r.m.IsPrimary }
+func (r *playbackAssetResolver) Kind() *string              { return r.m.Kind }
+func (r *playbackAssetResolver) AudioCodec() *string        { return r.m.AudioCodec }
+func (r *playbackAssetResolver) AudioLanguage() *string     { return r.m.AudioLanguage }
+func (r *playbackAssetResolver) AudioChannels() *int32      { return r.m.AudioChannels }
+func (r *playbackAssetResolver) AudioBitrateKbps() *int32   { return r.m.AudioBitrateKbps }
+func (r *playbackAssetResolver) AudioTrackCount() *int32    { return r.m.AudioTrackCount }
 func (r *playbackAssetResolver) SubtitleTrackCount() *int32 { return r.m.SubtitleTrackCount }
-func (r *playbackAssetResolver) DurationMs() *float64      { return i64ptrToFloat(r.m.DurationMs) }
-func (r *playbackAssetResolver) SizeMB() *float64          { return i64ptrToFloat(r.m.SizeMB) }
+func (r *playbackAssetResolver) DurationMs() *float64       { return i64ptrToFloat(r.m.DurationMs) }
+func (r *playbackAssetResolver) SizeMB() *float64           { return i64ptrToFloat(r.m.SizeMB) }
 
 // ---- SubtitleAsset ----
 
@@ -53,14 +53,14 @@ func (r *subtitleAssetResolver) IsDefault() *bool   { return r.m.IsDefault }
 
 type mediaSegmentResolver struct{ m *model.MediaSegment }
 
-func (r *mediaSegmentResolver) ID() graphql.ID     { return gid(r.m.ID) }
-func (r *mediaSegmentResolver) ItemID() graphql.ID { return gid(r.m.ItemID) }
-func (r *mediaSegmentResolver) Kind() string       { return r.m.Kind }
-func (r *mediaSegmentResolver) StartMs() float64   { return i64ToFloat(r.m.StartMs) }
-func (r *mediaSegmentResolver) EndMs() float64     { return i64ToFloat(r.m.EndMs) }
-func (r *mediaSegmentResolver) Source() string     { return r.m.Source }
+func (r *mediaSegmentResolver) ID() graphql.ID       { return gid(r.m.ID) }
+func (r *mediaSegmentResolver) ItemID() graphql.ID   { return gid(r.m.ItemID) }
+func (r *mediaSegmentResolver) Kind() string         { return r.m.Kind }
+func (r *mediaSegmentResolver) StartMs() float64     { return i64ToFloat(r.m.StartMs) }
+func (r *mediaSegmentResolver) EndMs() float64       { return i64ToFloat(r.m.EndMs) }
+func (r *mediaSegmentResolver) Source() string       { return r.m.Source }
 func (r *mediaSegmentResolver) Confidence() *float64 { return r.m.Confidence }
-func (r *mediaSegmentResolver) Label() *string     { return r.m.Label }
+func (r *mediaSegmentResolver) Label() *string       { return r.m.Label }
 
 // ---- ItemChapter ----
 
@@ -92,15 +92,19 @@ func (r *processingStepResolver) StatusCriticality() *int32 { return r.m.StatusC
 
 type overallStatusResolver struct{ m *model.ItemOverallStatus }
 
-func (r *overallStatusResolver) ItemID() graphql.ID             { return gid(r.m.ItemID) }
-func (r *overallStatusResolver) OverallStatus() *string         { return r.m.OverallStatus }
-func (r *overallStatusResolver) DoneCount() *int32              { return i32fromI64(r.m.DoneCount) }
-func (r *overallStatusResolver) PendingCount() *int32           { return i32fromI64(r.m.PendingCount) }
-func (r *overallStatusResolver) FailedCount() *int32            { return i32fromI64(r.m.FailedCount) }
-func (r *overallStatusResolver) InProgressCount() *int32        { return i32fromI64(r.m.InProgressCount) }
-func (r *overallStatusResolver) NotApplicableCount() *int32     { return i32fromI64(r.m.NotApplicableCount) }
-func (r *overallStatusResolver) TotalSteps() *int32             { return i32fromI64(r.m.TotalSteps) }
-func (r *overallStatusResolver) LastStepFinishedAt() *graphql.Time { return gtime(r.m.LastStepFinishedAt) }
+func (r *overallStatusResolver) ItemID() graphql.ID      { return gid(r.m.ItemID) }
+func (r *overallStatusResolver) OverallStatus() *string  { return r.m.OverallStatus }
+func (r *overallStatusResolver) DoneCount() *int32       { return i32fromI64(r.m.DoneCount) }
+func (r *overallStatusResolver) PendingCount() *int32    { return i32fromI64(r.m.PendingCount) }
+func (r *overallStatusResolver) FailedCount() *int32     { return i32fromI64(r.m.FailedCount) }
+func (r *overallStatusResolver) InProgressCount() *int32 { return i32fromI64(r.m.InProgressCount) }
+func (r *overallStatusResolver) NotApplicableCount() *int32 {
+	return i32fromI64(r.m.NotApplicableCount)
+}
+func (r *overallStatusResolver) TotalSteps() *int32 { return i32fromI64(r.m.TotalSteps) }
+func (r *overallStatusResolver) LastStepFinishedAt() *graphql.Time {
+	return gtime(r.m.LastStepFinishedAt)
+}
 
 // ---- Genre / Person / ItemPerson ----
 
@@ -148,42 +152,42 @@ func (r *externalIDResolver) ExternalID() string { return r.m.ExternalID }
 
 type trailerLinkResolver struct{ m *model.ItemTrailerLink }
 
-func (r *trailerLinkResolver) ID() graphql.ID            { return gid(r.m.ID) }
-func (r *trailerLinkResolver) ItemID() graphql.ID        { return gid(r.m.ItemID) }
-func (r *trailerLinkResolver) Source() string            { return r.m.Source }
-func (r *trailerLinkResolver) Site() *string             { return r.m.Site }
-func (r *trailerLinkResolver) ExternalID() *string       { return r.m.ExternalID }
-func (r *trailerLinkResolver) URL() string               { return r.m.URL }
-func (r *trailerLinkResolver) Title() *string            { return r.m.Title }
-func (r *trailerLinkResolver) DurationSec() *int32       { return r.m.DurationSec }
+func (r *trailerLinkResolver) ID() graphql.ID              { return gid(r.m.ID) }
+func (r *trailerLinkResolver) ItemID() graphql.ID          { return gid(r.m.ItemID) }
+func (r *trailerLinkResolver) Source() string              { return r.m.Source }
+func (r *trailerLinkResolver) Site() *string               { return r.m.Site }
+func (r *trailerLinkResolver) ExternalID() *string         { return r.m.ExternalID }
+func (r *trailerLinkResolver) URL() string                 { return r.m.URL }
+func (r *trailerLinkResolver) Title() *string              { return r.m.Title }
+func (r *trailerLinkResolver) DurationSec() *int32         { return r.m.DurationSec }
 func (r *trailerLinkResolver) PublishedAt() *graphql.Time  { return gtime(r.m.PublishedAt) }
 func (r *trailerLinkResolver) DownloadedAt() *graphql.Time { return gtime(r.m.DownloadedAt) }
-func (r *trailerLinkResolver) LocalPath() *string        { return r.m.LocalPath }
+func (r *trailerLinkResolver) LocalPath() *string          { return r.m.LocalPath }
 
 // ---- ItemDiagnostics ----
 
 type diagnosticsResolver struct{ m *model.ItemDiagnostics }
 
-func (r *diagnosticsResolver) ID() graphql.ID            { return gid(r.m.ID) }
-func (r *diagnosticsResolver) ItemID() graphql.ID        { return gid(r.m.ItemID) }
+func (r *diagnosticsResolver) ID() graphql.ID             { return gid(r.m.ID) }
+func (r *diagnosticsResolver) ItemID() graphql.ID         { return gid(r.m.ItemID) }
 func (r *diagnosticsResolver) GeneratedAt() *graphql.Time { return gtime(r.m.GeneratedAt) }
-func (r *diagnosticsResolver) SourcePath() *string       { return r.m.SourcePath }
-func (r *diagnosticsResolver) SourceSize() *float64      { return i64ptrToFloat(r.m.SourceSize) }
+func (r *diagnosticsResolver) SourcePath() *string        { return r.m.SourcePath }
+func (r *diagnosticsResolver) SourceSize() *float64       { return i64ptrToFloat(r.m.SourceSize) }
 func (r *diagnosticsResolver) SourceMtime() *graphql.Time { return gtime(r.m.SourceMtime) }
-func (r *diagnosticsResolver) FfprobeData() *string      { return r.m.FfprobeData }
-func (r *diagnosticsResolver) FolderListing() *string    { return r.m.FolderListing }
-func (r *diagnosticsResolver) Notes() *string            { return r.m.Notes }
+func (r *diagnosticsResolver) FfprobeData() *string       { return r.m.FfprobeData }
+func (r *diagnosticsResolver) FolderListing() *string     { return r.m.FolderListing }
+func (r *diagnosticsResolver) Notes() *string             { return r.m.Notes }
 
 // ---- ScanJob ----
 
 type scanJobResolver struct{ m *model.ScanJob }
 
-func (r *scanJobResolver) ID() graphql.ID           { return gid(r.m.ID) }
-func (r *scanJobResolver) Source() string           { return r.m.Source }
-func (r *scanJobResolver) Status() string           { return r.m.Status }
+func (r *scanJobResolver) ID() graphql.ID            { return gid(r.m.ID) }
+func (r *scanJobResolver) Source() string            { return r.m.Source }
+func (r *scanJobResolver) Status() string            { return r.m.Status }
 func (r *scanJobResolver) StartedAt() *graphql.Time  { return gtime(r.m.StartedAt) }
 func (r *scanJobResolver) FinishedAt() *graphql.Time { return gtime(r.m.FinishedAt) }
-func (r *scanJobResolver) ErrorMessage() *string    { return r.m.ErrorMessage }
+func (r *scanJobResolver) ErrorMessage() *string     { return r.m.ErrorMessage }
 func (r *scanJobResolver) FilesSeen() *int32         { return r.m.FilesSeen }
 func (r *scanJobResolver) ItemsInserted() *int32     { return r.m.ItemsInserted }
 func (r *scanJobResolver) ItemsUpdated() *int32      { return r.m.ItemsUpdated }
@@ -192,14 +196,14 @@ func (r *scanJobResolver) ItemsUpdated() *int32      { return r.m.ItemsUpdated }
 
 type activityEventResolver struct{ m *store.ActivityRow }
 
-func (r *activityEventResolver) ID() graphql.ID          { return gid(r.m.ID) }
-func (r *activityEventResolver) ItemID() graphql.ID      { return gid(r.m.ItemID) }
-func (r *activityEventResolver) ItemTitle() string       { return r.m.ItemTitle }
-func (r *activityEventResolver) ItemType() string        { return r.m.ItemType }
-func (r *activityEventResolver) Step() string            { return r.m.Step }
-func (r *activityEventResolver) Status() string          { return r.m.Status }
-func (r *activityEventResolver) Attempts() *int32        { return r.m.Attempts }
-func (r *activityEventResolver) Error() *string          { return r.m.Error }
+func (r *activityEventResolver) ID() graphql.ID            { return gid(r.m.ID) }
+func (r *activityEventResolver) ItemID() graphql.ID        { return gid(r.m.ItemID) }
+func (r *activityEventResolver) ItemTitle() string         { return r.m.ItemTitle }
+func (r *activityEventResolver) ItemType() string          { return r.m.ItemType }
+func (r *activityEventResolver) Step() string              { return r.m.Step }
+func (r *activityEventResolver) Status() string            { return r.m.Status }
+func (r *activityEventResolver) Attempts() *int32          { return r.m.Attempts }
+func (r *activityEventResolver) Error() *string            { return r.m.Error }
 func (r *activityEventResolver) StartedAt() *graphql.Time  { return gtime(r.m.StartedAt) }
 func (r *activityEventResolver) FinishedAt() *graphql.Time { return gtime(r.m.FinishedAt) }
 func (r *activityEventResolver) UpdatedAt() *graphql.Time  { return gtime(r.m.UpdatedAt) }
@@ -208,32 +212,32 @@ func (r *activityEventResolver) UpdatedAt() *graphql.Time  { return gtime(r.m.Up
 
 type downloadJobResolver struct{ m *model.DownloadJob }
 
-func (r *downloadJobResolver) ID() graphql.ID            { return gid(r.m.ID) }
-func (r *downloadJobResolver) Adapter() string           { return r.m.Adapter }
-func (r *downloadJobResolver) ClientJobID() string       { return r.m.ClientJobID }
-func (r *downloadJobResolver) Title() *string            { return r.m.Title }
-func (r *downloadJobResolver) WantedItemID() *string     { return r.m.WantedItemID }
-func (r *downloadJobResolver) State() string             { return r.m.State }
-func (r *downloadJobResolver) ProgressPct() *float64     { return r.m.ProgressPct }
-func (r *downloadJobResolver) DownloadedBytes() *float64 { return i64ptrToFloat(r.m.DownloadedBytes) }
-func (r *downloadJobResolver) SizeBytes() *float64       { return i64ptrToFloat(r.m.SizeBytes) }
-func (r *downloadJobResolver) SpeedBps() *float64        { return i64ptrToFloat(r.m.SpeedBps) }
-func (r *downloadJobResolver) EtaSec() *int32            { return r.m.EtaSec }
-func (r *downloadJobResolver) Files() *string            { return r.m.Files }
-func (r *downloadJobResolver) ErrorMessage() *string     { return r.m.ErrorMessage }
+func (r *downloadJobResolver) ID() graphql.ID             { return gid(r.m.ID) }
+func (r *downloadJobResolver) Adapter() string            { return r.m.Adapter }
+func (r *downloadJobResolver) ClientJobID() string        { return r.m.ClientJobID }
+func (r *downloadJobResolver) Title() *string             { return r.m.Title }
+func (r *downloadJobResolver) WantedItemID() *string      { return r.m.WantedItemID }
+func (r *downloadJobResolver) State() string              { return r.m.State }
+func (r *downloadJobResolver) ProgressPct() *float64      { return r.m.ProgressPct }
+func (r *downloadJobResolver) DownloadedBytes() *float64  { return i64ptrToFloat(r.m.DownloadedBytes) }
+func (r *downloadJobResolver) SizeBytes() *float64        { return i64ptrToFloat(r.m.SizeBytes) }
+func (r *downloadJobResolver) SpeedBps() *float64         { return i64ptrToFloat(r.m.SpeedBps) }
+func (r *downloadJobResolver) EtaSec() *int32             { return r.m.EtaSec }
+func (r *downloadJobResolver) Files() *string             { return r.m.Files }
+func (r *downloadJobResolver) ErrorMessage() *string      { return r.m.ErrorMessage }
 func (r *downloadJobResolver) StartedAt() *graphql.Time   { return gtime(r.m.StartedAt) }
 func (r *downloadJobResolver) CompletedAt() *graphql.Time { return gtime(r.m.CompletedAt) }
 func (r *downloadJobResolver) LastEventAt() *graphql.Time { return gtime(r.m.LastEventAt) }
-func (r *downloadJobResolver) StateCriticality() *int32  { return r.m.StateCriticality }
+func (r *downloadJobResolver) StateCriticality() *int32   { return r.m.StateCriticality }
 
 // ---- Setting ----
 
 type settingResolver struct{ m *model.Setting }
 
-func (r *settingResolver) ID() graphql.ID    { return gid(r.m.ID) }
-func (r *settingResolver) Key() string       { return r.m.Key }
-func (r *settingResolver) ValueText() string { return r.m.ValueText }
-func (r *settingResolver) ValueType() string { return r.m.ValueType }
+func (r *settingResolver) ID() graphql.ID       { return gid(r.m.ID) }
+func (r *settingResolver) Key() string          { return r.m.Key }
+func (r *settingResolver) ValueText() string    { return r.m.ValueText }
+func (r *settingResolver) ValueType() string    { return r.m.ValueType }
 func (r *settingResolver) Description() *string { return r.m.Description }
 
 // ---- EnrichmentStatusCode ----

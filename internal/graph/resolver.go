@@ -40,6 +40,7 @@ type Enricher interface {
 type Packager interface {
 	PackageItem(ctx context.Context, id string) (PackageResult, error)
 }
+
 // Remover deletes an item (a series cascades to episodes) and optionally its
 // files on disk. Implemented by itemactions.
 type Remover interface {

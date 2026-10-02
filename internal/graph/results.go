@@ -19,9 +19,9 @@ type searchItemResolver struct{ m SearchItem }
 func (r *searchItemResolver) ID() graphql.ID   { return gid(r.m.ID) }
 func (r *searchItemResolver) Type() string     { return r.m.Type }
 func (r *searchItemResolver) Title() string    { return r.m.Title }
-func (r *searchItemResolver) Year() *int32      { return r.m.Year }
-func (r *searchItemResolver) Rating() *float64  { return r.m.Rating }
-func (r *searchItemResolver) Score() *float64   { return r.m.Score }
+func (r *searchItemResolver) Year() *int32     { return r.m.Year }
+func (r *searchItemResolver) Rating() *float64 { return r.m.Rating }
+func (r *searchItemResolver) Score() *float64  { return r.m.Score }
 
 type SearchResult struct {
 	Items  []SearchItem
@@ -57,7 +57,7 @@ type enrichResultResolver struct{ m EnrichResult }
 
 func (r *enrichResultResolver) ItemID() graphql.ID { return gid(r.m.ItemID) }
 func (r *enrichResultResolver) Status() string     { return r.m.Status }
-func (r *enrichResultResolver) Message() *string    { return r.m.Message }
+func (r *enrichResultResolver) Message() *string   { return r.m.Message }
 
 type EnrichPendingResult struct {
 	Queued int32
@@ -67,7 +67,7 @@ type EnrichPendingResult struct {
 type enrichPendingResultResolver struct{ m EnrichPendingResult }
 
 func (r *enrichPendingResultResolver) Queued() int32 { return r.m.Queued }
-func (r *enrichPendingResultResolver) Type() *string  { return r.m.Type }
+func (r *enrichPendingResultResolver) Type() *string { return r.m.Type }
 
 type backfillResultResolver struct{ artworkData, artwork int32 }
 
@@ -81,7 +81,7 @@ type RetryResult struct {
 
 type retryResultResolver struct{ m RetryResult }
 
-func (r *retryResultResolver) Reset() int32 { return r.m.Reset }
+func (r *retryResultResolver) Reset() int32  { return r.m.Reset }
 func (r *retryResultResolver) Type() *string { return r.m.Type }
 
 type PackageResult struct {
@@ -107,9 +107,9 @@ func (r *deleteItemResultResolver) Errors() []string {
 
 type packageResultResolver struct{ m PackageResult }
 
-func (r *packageResultResolver) Status() *string         { return r.m.Status }
-func (r *packageResultResolver) AlreadyActive() *bool    { return r.m.AlreadyActive }
-func (r *packageResultResolver) Message() *string        { return r.m.Message }
+func (r *packageResultResolver) Status() *string          { return r.m.Status }
+func (r *packageResultResolver) AlreadyActive() *bool     { return r.m.AlreadyActive }
+func (r *packageResultResolver) Message() *string         { return r.m.Message }
 func (r *packageResultResolver) EpisodesEnqueued() *int32 { return r.m.EpisodesEnqueued }
 func (r *packageResultResolver) EpisodesTotal() *int32    { return r.m.EpisodesTotal }
 

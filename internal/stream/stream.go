@@ -29,7 +29,7 @@ const (
 
 // Note is the thin notification sent to browsers.
 type Note struct {
-	Type     string `json:"type"`               // always "catalog.updated"
+	Type     string `json:"type"` // always "catalog.updated"
 	ItemID   string `json:"itemId,omitempty"`
 	ItemType string `json:"itemType,omitempty"` // movie|series|episode
 	Phase    string `json:"phase,omitempty"`    // discovered|enriched|analyzed|transcoded

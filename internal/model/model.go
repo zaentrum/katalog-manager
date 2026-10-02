@@ -262,24 +262,24 @@ type Setting struct {
 }
 
 type DownloadJob struct {
-	ID              string
-	CreatedAt       *time.Time
-	ModifiedAt      *time.Time
-	Adapter         string
-	ClientJobID     string
-	Title           *string
-	WantedItemID    *string
-	State           string
-	ProgressPct     *float64
-	DownloadedBytes *int64
-	SizeBytes       *int64
-	SpeedBps        *int64
-	EtaSec          *int32
-	Files           *string
-	ErrorMessage    *string
-	StartedAt       *time.Time
-	CompletedAt     *time.Time
-	LastEventAt     *time.Time
+	ID               string
+	CreatedAt        *time.Time
+	ModifiedAt       *time.Time
+	Adapter          string
+	ClientJobID      string
+	Title            *string
+	WantedItemID     *string
+	State            string
+	ProgressPct      *float64
+	DownloadedBytes  *int64
+	SizeBytes        *int64
+	SpeedBps         *int64
+	EtaSec           *int32
+	Files            *string
+	ErrorMessage     *string
+	StartedAt        *time.Time
+	CompletedAt      *time.Time
+	LastEventAt      *time.Time
 	StateCriticality *int32 // view-computed
 }
 

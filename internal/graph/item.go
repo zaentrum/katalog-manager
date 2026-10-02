@@ -46,7 +46,7 @@ func (r *itemResolver) Type() string              { return r.m.Type }
 func (r *itemResolver) Title() string             { return r.m.Title }
 func (r *itemResolver) SortTitle() *string        { return r.m.SortTitle }
 func (r *itemResolver) Year() *int32              { return r.m.Year }
-func (r *itemResolver) Description() *string       { return r.m.Description }
+func (r *itemResolver) Description() *string      { return r.m.Description }
 func (r *itemResolver) Rating() *float64          { return r.m.Rating }
 func (r *itemResolver) DurationMs() *float64      { return i64ptrToFloat(r.m.DurationMs) }
 func (r *itemResolver) ParentID() *graphql.ID     { return gidptr(r.m.ParentID) }
