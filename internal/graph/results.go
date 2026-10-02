@@ -69,6 +69,25 @@ type enrichPendingResultResolver struct{ m EnrichPendingResult }
 func (r *enrichPendingResultResolver) Queued() int32 { return r.m.Queued }
 func (r *enrichPendingResultResolver) Type() *string { return r.m.Type }
 
+type peopleRefreshResultResolver struct{ m PeopleRefreshResult }
+
+func (r *peopleRefreshResultResolver) TitlesRead() int32          { return r.m.TitlesRead }
+func (r *peopleRefreshResultResolver) TitlesFailed() int32        { return r.m.TitlesFailed }
+func (r *peopleRefreshResultResolver) PeopleMatched() int32       { return r.m.PeopleMatched }
+func (r *peopleRefreshResultResolver) PeopleCreated() int32       { return r.m.PeopleCreated }
+func (r *peopleRefreshResultResolver) CreditsRelinked() int32     { return r.m.CreditsRelinked }
+func (r *peopleRefreshResultResolver) PeopleFetched() int32       { return r.m.PeopleFetched }
+func (r *peopleRefreshResultResolver) PeopleLocked() int32        { return r.m.PeopleLocked }
+func (r *peopleRefreshResultResolver) PeopleNotFound() int32      { return r.m.PeopleNotFound }
+func (r *peopleRefreshResultResolver) PeopleFailed() int32        { return r.m.PeopleFailed }
+func (r *peopleRefreshResultResolver) PeopleWithoutTmdbID() int32 { return r.m.PeopleWithoutTmdbID }
+func (r *peopleRefreshResultResolver) StartedAt() graphql.Time {
+	return graphql.Time{Time: r.m.StartedAt}
+}
+func (r *peopleRefreshResultResolver) FinishedAt() graphql.Time {
+	return graphql.Time{Time: r.m.FinishedAt}
+}
+
 type backfillResultResolver struct{ artworkData, artwork int32 }
 
 func (r *backfillResultResolver) ArtworkData() int32 { return r.artworkData }

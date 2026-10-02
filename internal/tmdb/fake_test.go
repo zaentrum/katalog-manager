@@ -32,6 +32,7 @@ type fakeTMDB struct {
 	images   map[string][]byte             // GET /t/p/{size}{path}, by path
 	changes  map[string]map[string][]int64 // kind → day (YYYY-MM-DD) → ids changed that day
 	fail     map[string]int                // path → status to answer instead
+	held     map[string]chan struct{}      // path → answered once the channel closes
 	pageSize int                           // change-list results per page (TMDB: 100)
 	maxPage  int                           // the highest page TMDB serves (0: any)
 	requests []string                      // path?query of every request, in order
@@ -60,6 +61,7 @@ func newFakeTMDB(t testing.TB) *fakeTMDB {
 		images:   map[string][]byte{},
 		changes:  map[string]map[string][]int64{},
 		fail:     map[string]int{},
+		held:     map[string]chan struct{}{},
 		pageSize: 100,
 	}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
@@ -153,6 +155,18 @@ func (f *fakeTMDB) failing(path string, status int) {
 	f.fail[path] = status
 }
 
+// hold keeps requests to path waiting; arrived receives once one is waiting,
+// and release lets them all through.
+func (f *fakeTMDB) hold(path string) (arrived <-chan struct{}, release func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	gate, here := make(chan struct{}), make(chan struct{}, 1)
+	f.held[path] = gate
+	f.held[path+"#arrived"] = here
+	var once sync.Once
+	return here, func() { once.Do(func() { close(gate) }) }
+}
+
 // calls are the requests whose path starts with prefix.
 func (f *fakeTMDB) calls(prefix string) []string {
 	f.mu.Lock()
@@ -173,6 +187,16 @@ func (f *fakeTMDB) forget() {
 }
 
 func (f *fakeTMDB) serve(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	gate, here := f.held[r.URL.Path], f.held[r.URL.Path+"#arrived"]
+	f.mu.Unlock()
+	if gate != nil {
+		select {
+		case here <- struct{}{}:
+		default:
+		}
+		<-gate
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, r.URL.Path+"?"+r.URL.RawQuery)

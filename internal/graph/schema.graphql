@@ -338,6 +338,31 @@ type BackfillResult {
   artwork: Int!
 }
 
+# What a refreshPeople run did.
+type PeopleRefreshResult {
+  # titles whose TMDB credits were read again, and those that could not be
+  titlesRead: Int!
+  titlesFailed: Int!
+  # people without a TMDB id who got theirs from a credit
+  peopleMatched: Int!
+  # credited people the catalog did not hold yet
+  peopleCreated: Int!
+  # credits once matched to a namesake by name, now on the person credited
+  creditsRelinked: Int!
+  # people whose details and profile were read and stored
+  peopleFetched: Int!
+  # people left alone because their record is locked
+  peopleLocked: Int!
+  # TMDB ids TMDB does not know (any more)
+  peopleNotFound: Int!
+  # people whose details could not be read; a later run tries again
+  peopleFailed: Int!
+  # people who still have no TMDB id: no credit TMDB lists names them
+  peopleWithoutTmdbId: Int!
+  startedAt: Time!
+  finishedAt: Time!
+}
+
 type RetryResult {
   reset: Int!
   type: String
@@ -452,6 +477,14 @@ type Mutation {
   # corrected title and/or pin an exact TMDB id.
   identify(id: ID!, title: String, tmdbId: Int): EnrichResult!
   enrichPending(limit: Int, type: String): EnrichPendingResult!
+  # Backfill people from TMDB: read the TMDB credits of titles again, so the
+  # people they credit get their TMDB ids (a person known only by name is
+  # matched by it once), then read those people's details and profiles. all:
+  # every title and every person with a TMDB id; otherwise only the titles
+  # crediting someone without one, and the people never read. Locks are
+  # honoured. The run finishes even when the caller stops waiting (its counts
+  # are logged); one runs at a time.
+  refreshPeople(all: Boolean): PeopleRefreshResult!
   backfillEpisodeBackdrops: BackfillResult!
   retryNotFound(type: String): RetryResult!
   packageItem(id: ID!): PackageResult!

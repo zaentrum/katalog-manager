@@ -163,6 +163,7 @@ func run() error {
 	resolver := graph.NewResolver(st, cfg, graph.Services{
 		Scanner:   scan,
 		Enricher:  enricher,
+		People:    enricher,
 		Packager:  actions,
 		Validator: actions,
 		Remover:   actions,

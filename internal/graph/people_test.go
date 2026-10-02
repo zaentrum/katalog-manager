@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/store"
@@ -63,5 +64,46 @@ func TestPersonQueriesWithoutThePeopleMigration(t *testing.T) {
 		`"tmdbPersonId":null,"imdbId":null,"knownForDepartment":null,"metadataLocked":false,"lockedFields":[],`+
 		`"fieldOrigins":[],"tmdbFetchedAt":null,"tmdbChangedAt":null,"modifiedAt":null}]}`; got != want {
 		t.Errorf("people:\n got  %s\n want %s", got, want)
+	}
+}
+
+// fakePeople records the call the refreshPeople mutation makes.
+type fakePeople struct{ all *bool }
+
+func (f *fakePeople) RefreshPeople(_ context.Context, all bool) (PeopleRefreshResult, error) {
+	f.all = &all
+	return PeopleRefreshResult{TitlesRead: 3, TitlesFailed: 1, PeopleMatched: 70, PeopleCreated: 2, CreditsRelinked: 1,
+		PeopleFetched: 71, PeopleLocked: 1, PeopleNotFound: 1, PeopleFailed: 0, PeopleWithoutTmdbID: 3,
+		StartedAt: time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC), FinishedAt: time.Date(2026, 10, 2, 8, 0, 9, 0, time.UTC)}, nil
+}
+
+// refreshPeople runs the backfill (all defaults to false) and reports its counts.
+func TestRefreshPeopleMutation(t *testing.T) {
+	for _, tc := range []struct {
+		args string
+		all  bool
+	}{{"(all: true)", true}, {"", false}} {
+		fp := &fakePeople{}
+		schema := MustSchema(NewResolver(nil, config.Config{}, Services{People: fp}))
+		resp := schema.Exec(context.Background(), `mutation { refreshPeople`+tc.args+` { titlesRead titlesFailed
+			peopleMatched peopleCreated creditsRelinked peopleFetched peopleLocked peopleNotFound peopleFailed
+			peopleWithoutTmdbId startedAt finishedAt } }`, "", nil)
+		if len(resp.Errors) > 0 {
+			t.Fatal(resp.Errors)
+		}
+		if fp.all == nil || *fp.all != tc.all {
+			t.Errorf("refreshPeople%s called the refresher with all=%v", tc.args, fp.all)
+		}
+		want := `{"refreshPeople":{"titlesRead":3,"titlesFailed":1,"peopleMatched":70,"peopleCreated":2,"creditsRelinked":1,` +
+			`"peopleFetched":71,"peopleLocked":1,"peopleNotFound":1,"peopleFailed":0,"peopleWithoutTmdbId":3,` +
+			`"startedAt":"2026-10-02T08:00:00Z","finishedAt":"2026-10-02T08:00:09Z"}}`
+		if got := string(resp.Data); got != want {
+			t.Errorf("got  %s\nwant %s", got, want)
+		}
+	}
+	resp := MustSchema(NewResolver(nil, config.Config{}, Services{})).Exec(context.Background(),
+		`mutation { refreshPeople(all: true) { titlesRead } }`, "", nil)
+	if len(resp.Errors) == 0 {
+		t.Error("refreshPeople without a refresher answered")
 	}
 }

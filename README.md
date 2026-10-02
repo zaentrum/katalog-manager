@@ -14,7 +14,7 @@ The surface is split deliberately:
   facets + computed fields), `searchItems`, `scanJobs`, `downloadJobs`,
   `settings`, `deletedItems` (the deletion log, read-only), `people` and
   `person` (a person's TMDB details, locks and field origins), and the operator
-  actions (`triggerScan`, `enrichOne`/`enrichPending`,
+  actions (`triggerScan`, `enrichOne`/`enrichPending`, `refreshPeople`,
   `packageItem`, `validateItem`, `fetchTrailers`, `addDownload`/`cancelDownload`,
   item + settings CRUD). Schema-first via
   [graph-gophers/graphql-go](https://github.com/graph-gophers/graphql-go) — the

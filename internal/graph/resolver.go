@@ -19,11 +19,33 @@ var errNotConfigured = errors.New("feature not configured")
 type Services struct {
 	Scanner   ScanRunner
 	Enricher  Enricher
+	People    PeopleRefresher
 	Packager  Packager
 	Validator Validator
 	Remover   Remover
 	Trailers  TrailerFetcher
 	DLGateway DownloadGateway
+}
+
+// PeopleRefresher backfills people from TMDB (implemented by tmdb).
+type PeopleRefresher interface {
+	RefreshPeople(ctx context.Context, all bool) (PeopleRefreshResult, error)
+}
+
+// PeopleRefreshResult reports what a RefreshPeople run did.
+type PeopleRefreshResult struct {
+	TitlesRead          int32 // titles whose TMDB credits were read
+	TitlesFailed        int32 // titles whose credits could not be read
+	PeopleMatched       int32 // people without a TMDB id who got theirs from a credit
+	PeopleCreated       int32 // credited people the catalog did not hold yet
+	CreditsRelinked     int32 // credits matched to a namesake, now on the person credited
+	PeopleFetched       int32 // people whose details and profile were read and stored
+	PeopleLocked        int32 // people left alone: their record is locked
+	PeopleNotFound      int32 // TMDB ids TMDB does not know (any more)
+	PeopleFailed        int32 // people whose details could not be read
+	PeopleWithoutTmdbID int32 // people who still have no TMDB id
+	StartedAt           time.Time
+	FinishedAt          time.Time
 }
 
 // Narrow interfaces the graph layer depends on (implemented by integration
@@ -436,6 +458,18 @@ func (r *Resolver) EnrichPending(ctx context.Context, args struct {
 		res.Type = &typ
 	}
 	return &enrichPendingResultResolver{m: res}, nil
+}
+
+// RefreshPeople is the operator's backfill of people from TMDB.
+func (r *Resolver) RefreshPeople(ctx context.Context, args struct{ All *bool }) (*peopleRefreshResultResolver, error) {
+	if r.svc.People == nil {
+		return nil, errNotConfigured
+	}
+	res, err := r.svc.People.RefreshPeople(ctx, derefBool(args.All))
+	if err != nil {
+		return nil, err
+	}
+	return &peopleRefreshResultResolver{m: res}, nil
 }
 
 func (r *Resolver) BackfillEpisodeBackdrops(ctx context.Context) (*backfillResultResolver, error) {

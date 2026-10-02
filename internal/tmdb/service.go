@@ -50,6 +50,7 @@ type Service struct {
 	// remembers once it is (a migration is not undone under a running service).
 	peopleCheck func(context.Context) (bool, error)
 	peopleOK    atomic.Bool
+	refreshing  atomic.Bool // a RefreshPeople run is under way
 }
 
 // New builds the enrichment Service. API keys are resolved per call via the
