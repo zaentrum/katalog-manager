@@ -1,8 +1,59 @@
 package tmdb
 
-import "testing"
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 func yr(y int) *int { return &y }
+
+// get retries a 429 and says which answer it got: the body of a 200, TMDB not
+// knowing what was asked for (404), or a failure, which may pass.
+func TestGetRetriesRateLimitsAndTellsNotFoundFromFailure(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer token" {
+			http.Error(w, "no bearer", http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/3/limited":
+			if calls.Add(1) < 3 {
+				http.Error(w, "slow down", http.StatusTooManyRequests)
+				return
+			}
+			w.Write([]byte(`{"ok":true}`))
+		case "/3/missing":
+			http.Error(w, `{"status_code":34}`, http.StatusNotFound)
+		default:
+			http.Error(w, "broken", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+	c := newClient(func() string { return "token" }, "en-US")
+	c.apiBase, c.retryUnit = srv.URL+"/3", time.Millisecond
+	ctx := context.Background()
+
+	if b, err := c.get(ctx, c.apiBase+"/limited"); err != nil || string(b) != `{"ok":true}` || calls.Load() != 3 {
+		t.Errorf("rate limited twice: body %q, err %v after %d calls; want the body after 3", b, err, calls.Load())
+	}
+	if _, err := c.get(ctx, c.apiBase+"/missing"); !isNotFound(err) {
+		t.Errorf("404: err %v, want not found", err)
+	}
+	if _, err := c.get(ctx, c.apiBase+"/broken"); err == nil || isNotFound(err) {
+		t.Errorf("500: err %v, want a failure that is not 'not found'", err)
+	}
+	if _, ok := c.getJSON(ctx, c.apiBase+"/broken"); ok {
+		t.Error("getJSON reported a 500 as ok")
+	}
+	if got := c.imageURL("/p.jpg", "h632"); got != defaultImageBase+"/h632/p.jpg" {
+		t.Errorf("imageURL = %s", got)
+	}
+}
 
 // TestPickBest covers the year-aware ranking that replaced "take results[0]":
 // title relation is required, and the year disambiguates among title matches —

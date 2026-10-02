@@ -3,6 +3,7 @@ package tmdb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,8 +15,8 @@ import (
 
 // TMDB bases. API uses the v4 bearer token; images come off the CDN.
 const (
-	apiBase   = "https://api.themoviedb.org/3"
-	imageBase = "https://image.tmdb.org/t/p"
+	defaultAPIBase   = "https://api.themoviedb.org/3"
+	defaultImageBase = "https://image.tmdb.org/t/p"
 )
 
 // client is the minimal TMDB v3 HTTP client (ported from TmdbClient.java). The
@@ -27,6 +28,10 @@ type client struct {
 	key      func() string
 	language string
 	http     *http.Client
+	// apiBase and imageBase are TMDB's API and image hosts; a test points
+	// them at a fake.
+	apiBase, imageBase string
+	retryUnit          time.Duration // 0: one second
 }
 
 func newClient(key func() string, language string) *client {
@@ -34,8 +39,22 @@ func newClient(key func() string, language string) *client {
 		key:      key,
 		language: language,
 		// connect timeout 10s folds into the per-call request timeout.
-		http: &http.Client{Timeout: 30 * time.Second},
+		http:      &http.Client{Timeout: 30 * time.Second},
+		apiBase:   defaultAPIBase,
+		imageBase: defaultImageBase,
 	}
+}
+
+// statusError is an answer other than 200 OK.
+type statusError struct{ code int }
+
+func (e *statusError) Error() string { return "tmdb: HTTP " + strconv.Itoa(e.code) }
+
+// isNotFound reports whether err is TMDB saying it does not know what was asked
+// for: a definite answer, unlike a failure, which may pass.
+func isNotFound(err error) bool {
+	var se *statusError
+	return errors.As(err, &se) && se.code == http.StatusNotFound
 }
 
 func (c *client) apiKey() string { return strings.TrimSpace(c.key()) }
@@ -116,7 +135,7 @@ func (c *client) searchMovie(ctx context.Context, title string, year *int) (int6
 	if !c.enabled() || strings.TrimSpace(title) == "" {
 		return 0, false
 	}
-	base := apiBase + "/search/movie?language=" + url.QueryEscape(c.language) +
+	base := c.apiBase + "/search/movie?language=" + url.QueryEscape(c.language) +
 		"&query=" + url.QueryEscape(title)
 	cands := c.searchCandidates(ctx, base, true)
 	if year != nil {
@@ -134,7 +153,7 @@ func (c *client) searchTv(ctx context.Context, title string, year *int) (int64, 
 	if !c.enabled() || strings.TrimSpace(title) == "" {
 		return 0, false
 	}
-	base := apiBase + "/search/tv?language=" + url.QueryEscape(c.language) +
+	base := c.apiBase + "/search/tv?language=" + url.QueryEscape(c.language) +
 		"&query=" + url.QueryEscape(title)
 	cands := c.searchCandidates(ctx, base, false)
 	if year != nil {
@@ -304,7 +323,7 @@ func (c *client) getMovie(ctx context.Context, id int64) (*tmdbMovie, bool) {
 	if !c.enabled() {
 		return nil, false
 	}
-	body, ok := c.getJSON(ctx, apiBase+"/movie/"+strconv.FormatInt(id, 10)+"?language="+url.QueryEscape(c.language))
+	body, ok := c.getJSON(ctx, c.apiBase+"/movie/"+strconv.FormatInt(id, 10)+"?language="+url.QueryEscape(c.language))
 	if !ok {
 		return nil, false
 	}
@@ -345,7 +364,7 @@ func (c *client) getTv(ctx context.Context, id int64) (*tmdbTv, bool) {
 	if !c.enabled() {
 		return nil, false
 	}
-	body, ok := c.getJSON(ctx, apiBase+"/tv/"+strconv.FormatInt(id, 10)+"?language="+url.QueryEscape(c.language))
+	body, ok := c.getJSON(ctx, c.apiBase+"/tv/"+strconv.FormatInt(id, 10)+"?language="+url.QueryEscape(c.language))
 	if !ok {
 		return nil, false
 	}
@@ -390,7 +409,7 @@ func (c *client) getTvExternalIDs(ctx context.Context, tvID int64) (imdbID, tvdb
 	if !c.enabled() {
 		return "", ""
 	}
-	body, ok := c.getJSON(ctx, apiBase+"/tv/"+strconv.FormatInt(tvID, 10)+"/external_ids?language="+url.QueryEscape(c.language))
+	body, ok := c.getJSON(ctx, c.apiBase+"/tv/"+strconv.FormatInt(tvID, 10)+"/external_ids?language="+url.QueryEscape(c.language))
 	if !ok {
 		return "", ""
 	}
@@ -411,7 +430,7 @@ func (c *client) getTvEpisode(ctx context.Context, tvID int64, season, episode i
 	if !c.enabled() {
 		return nil, false
 	}
-	u := apiBase + "/tv/" + strconv.FormatInt(tvID, 10) +
+	u := c.apiBase + "/tv/" + strconv.FormatInt(tvID, 10) +
 		"/season/" + strconv.Itoa(season) + "/episode/" + strconv.Itoa(episode) +
 		"?language=" + url.QueryEscape(c.language)
 	body, ok := c.getJSON(ctx, u)
@@ -447,14 +466,14 @@ func (c *client) getCredits(ctx context.Context, id int64) (*tmdbCredits, bool) 
 	if !c.enabled() {
 		return nil, false
 	}
-	return c.credits(ctx, apiBase+"/movie/"+strconv.FormatInt(id, 10)+"/credits?language="+url.QueryEscape(c.language))
+	return c.credits(ctx, c.apiBase+"/movie/"+strconv.FormatInt(id, 10)+"/credits?language="+url.QueryEscape(c.language))
 }
 
 func (c *client) getTvCredits(ctx context.Context, id int64) (*tmdbCredits, bool) {
 	if !c.enabled() {
 		return nil, false
 	}
-	return c.credits(ctx, apiBase+"/tv/"+strconv.FormatInt(id, 10)+"/credits?language="+url.QueryEscape(c.language))
+	return c.credits(ctx, c.apiBase+"/tv/"+strconv.FormatInt(id, 10)+"/credits?language="+url.QueryEscape(c.language))
 }
 
 func (c *client) credits(ctx context.Context, u string) (*tmdbCredits, bool) {
@@ -503,7 +522,7 @@ func (c *client) getVideos(ctx context.Context, pathSuffix string) []tmdbVideo {
 	if !c.enabled() {
 		return nil
 	}
-	body, ok := c.getJSON(ctx, apiBase+pathSuffix+"?language="+url.QueryEscape(c.language))
+	body, ok := c.getJSON(ctx, c.apiBase+pathSuffix+"?language="+url.QueryEscape(c.language))
 	if !ok {
 		return nil
 	}
@@ -559,65 +578,74 @@ func (c *client) imageURL(path, size string) string {
 	if strings.TrimSpace(sz) == "" {
 		sz = "original"
 	}
-	return imageBase + "/" + sz + path
+	return c.imageBase + "/" + sz + path
 }
 
 // fetchImage downloads raw image bytes; only HTTP 200 yields bytes.
 func (c *client) fetchImage(ctx context.Context, absoluteURL string) ([]byte, bool) {
+	b, err := c.download(ctx, absoluteURL)
+	return b, err == nil
+}
+
+// download fetches raw bytes from the image CDN: the body of a 200, or a
+// *statusError for any other answer.
+func (c *client) download(ctx context.Context, absoluteURL string) ([]byte, error) {
 	if strings.TrimSpace(absoluteURL) == "" {
-		return nil, false
+		return nil, errors.New("tmdb: no image url")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, absoluteURL, nil)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, resp.Body)
-		return nil, false
+		return nil, &statusError{code: resp.StatusCode}
 	}
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, false
-	}
-	return b, true
+	return io.ReadAll(resp.Body)
 }
 
 // getJSON performs an authorized GET; returns the body only on HTTP 200.
-// getJSON does an authenticated GET, retrying on TMDB rate-limit (429) with the
-// server's Retry-After (capped) then exponential backoff. GET is idempotent so
-// retry is safe. Returns (body, true) only on 200. A shared/bundled token hits
-// the rate limit sooner, so this pacing keeps the sweep from failing under load.
 func (c *client) getJSON(ctx context.Context, rawURL string) ([]byte, bool) {
+	b, err := c.get(ctx, rawURL)
+	return b, err == nil
+}
+
+// get does an authenticated GET, retrying on TMDB rate-limit (429) with the
+// server's Retry-After (capped) then exponential backoff. GET is idempotent so
+// retry is safe. Returns the body of a 200, a *statusError for any other final
+// answer, or the transport's error. A shared/bundled token hits the rate limit
+// sooner, so this pacing keeps the sweep from failing under load.
+func (c *client) get(ctx context.Context, rawURL string) ([]byte, error) {
 	const maxAttempts = 4
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			cancel()
-			return nil, false
+			return nil, err
 		}
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("Authorization", "Bearer "+c.apiKey())
 		resp, err := c.http.Do(req)
 		if err != nil {
 			cancel()
-			return nil, false
+			return nil, err
 		}
 		if resp.StatusCode == http.StatusOK {
 			b, rerr := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			cancel()
 			if rerr != nil {
-				return nil, false
+				return nil, rerr
 			}
-			return b, true
+			return b, nil
 		}
 		rateLimited := resp.StatusCode == http.StatusTooManyRequests
 		wait := parseRetryAfter(resp.Header.Get("Retry-After"))
@@ -625,21 +653,30 @@ func (c *client) getJSON(ctx context.Context, rawURL string) ([]byte, bool) {
 		resp.Body.Close()
 		cancel()
 		if !rateLimited || attempt == maxAttempts-1 {
-			return nil, false
+			return nil, &statusError{code: resp.StatusCode}
 		}
 		if wait <= 0 {
-			wait = time.Duration(1<<attempt) * time.Second // 1s, 2s, 4s
+			wait = time.Duration(1<<attempt) * c.backoffUnit() // 1s, 2s, 4s
 		}
 		if wait > 10*time.Second {
 			wait = 10 * time.Second
 		}
 		select {
 		case <-ctx.Done():
-			return nil, false
+			return nil, ctx.Err()
 		case <-time.After(wait):
 		}
 	}
-	return nil, false
+	return nil, errors.New("tmdb: no attempt left")
+}
+
+// backoffUnit is the first wait after a 429 without Retry-After; a test
+// shortens it.
+func (c *client) backoffUnit() time.Duration {
+	if c.retryUnit > 0 {
+		return c.retryUnit
+	}
+	return time.Second
 }
 
 // parseRetryAfter reads a delta-seconds Retry-After header; 0 if absent/invalid.
