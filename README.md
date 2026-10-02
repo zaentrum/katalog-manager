@@ -33,9 +33,14 @@ The surface is split deliberately:
 
 The service reuses the existing `katalog` Postgres database **unchanged** — the
 lowercase `com_nalet_katalog_*` tables and the computed `katalogservice_*` views.
-No destructive migration. `db/migrations/028_go_rewrite.sql` only fills two gaps
-(the `trailerjobs` table and a `downloadjobs (adapter, clientjobid)` unique index)
-and is idempotent.
+No destructive migration. The files in `db/migrations/` apply on top of the base
+schema in the order of their numbers, and each is idempotent:
+
+- `028_go_rewrite.sql` fills two gaps (the `trailerjobs` table and a
+  `downloadjobs (adapter, clientjobid)` unique index).
+- `029_deleted_items.sql` adds the deletion log, `com_nalet_katalog_deleteditems`.
+  The service creates it at startup when it is missing; where its role may not
+  create tables, apply the file by hand.
 
 ## Configuration
 
@@ -52,6 +57,14 @@ Env vars mirror the previous service so existing manifests keep working — see
 go build ./...
 go test ./...                 # includes the GraphQL schema-binding test
 go run ./cmd/server           # needs a reachable Postgres + the env above
+```
+
+Tests that touch the database need a PostgreSQL and are skipped without one.
+Point them at a database where they may create and drop schemas; each test works
+in a schema of its own and drops it afterwards:
+
+```bash
+KATALOG_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable' go test ./...
 ```
 
 GraphQL endpoint: `POST /query`. Health: `/healthz`,

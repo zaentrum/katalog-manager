@@ -57,6 +57,14 @@ func run() error {
 	}
 	defer st.Close()
 
+	// The deletion log (migration 029). Item deletes record themselves there in
+	// their own transaction and fail without it, so a missing table must be loud;
+	// reads keep working, so it does not stop the service. Where this role may
+	// not create tables, apply db/migrations/029_deleted_items.sql by hand.
+	if err := st.EnsureDeletionLog(bgCtx); err != nil {
+		log.Printf("catalog: the deletion log (db/migrations/029_deleted_items.sql) is missing and could not be created: %v; item deletes fail until it exists", err)
+	}
+
 	steps := processing.New(st.Pool())
 
 	// Auth: bearer JWT (issuer-only MVP) + stream-token (artwork only).
