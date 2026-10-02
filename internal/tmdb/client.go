@@ -516,6 +516,89 @@ func (c *client) credits(ctx context.Context, u string) (*tmdbCredits, bool) {
 	return cr, true
 }
 
+// --- people ---
+
+// tmdbPerson is what the catalog keeps of TMDB's details of a person.
+type tmdbPerson struct {
+	ID                 int64
+	Name               string
+	AlsoKnownAs        []string
+	Biography          string // in the language asked for; "" when TMDB has none in it
+	Birthday           string // YYYY-MM-DD, "" when unknown
+	Deathday           string
+	PlaceOfBirth       string
+	KnownForDepartment string
+	ImdbID             string
+	ProfilePath        string // the file path of the primary profile image
+}
+
+// getPerson reads GET /person/{id} in a language; with extras it appends the
+// person's external ids and images. TMDB not knowing the id is a *statusError
+// 404 (isNotFound).
+func (c *client) getPerson(ctx context.Context, id int64, language string, extras bool) (*tmdbPerson, error) {
+	if !c.enabled() {
+		return nil, errors.New("tmdb: no API key")
+	}
+	u := c.apiBase + "/person/" + strconv.FormatInt(id, 10) + "?language=" + url.QueryEscape(language)
+	if extras {
+		u += "&append_to_response=external_ids,images"
+	}
+	body, err := c.get(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	var n struct {
+		ID                 int64    `json:"id"`
+		Name               *string  `json:"name"`
+		AlsoKnownAs        []string `json:"also_known_as"`
+		Biography          *string  `json:"biography"`
+		Birthday           *string  `json:"birthday"`
+		Deathday           *string  `json:"deathday"`
+		PlaceOfBirth       *string  `json:"place_of_birth"`
+		KnownForDepartment *string  `json:"known_for_department"`
+		ImdbID             *string  `json:"imdb_id"`
+		ProfilePath        *string  `json:"profile_path"`
+		ExternalIDs        struct {
+			ImdbID *string `json:"imdb_id"`
+		} `json:"external_ids"`
+		Images struct {
+			Profiles []struct {
+				FilePath string `json:"file_path"`
+			} `json:"profiles"`
+		} `json:"images"`
+	}
+	if err := json.Unmarshal(body, &n); err != nil {
+		return nil, errors.New("tmdb: person " + strconv.FormatInt(id, 10) + ": " + err.Error())
+	}
+	p := &tmdbPerson{
+		ID:                 n.ID,
+		Name:               deref(n.Name),
+		AlsoKnownAs:        n.AlsoKnownAs,
+		Biography:          deref(n.Biography),
+		Birthday:           deref(n.Birthday),
+		Deathday:           deref(n.Deathday),
+		PlaceOfBirth:       deref(n.PlaceOfBirth),
+		KnownForDepartment: deref(n.KnownForDepartment),
+		ImdbID:             deref(n.ImdbID),
+		ProfilePath:        deref(n.ProfilePath),
+	}
+	if p.ImdbID == "" {
+		p.ImdbID = deref(n.ExternalIDs.ImdbID)
+	}
+	if p.ProfilePath == "" && len(n.Images.Profiles) > 0 {
+		p.ProfilePath = n.Images.Profiles[0].FilePath
+	}
+	return p, nil
+}
+
+// lang is the language the catalog reads TMDB in (TMDB_LANGUAGE).
+func (c *client) lang() string {
+	if l := strings.TrimSpace(c.language); l != "" {
+		return l
+	}
+	return "en-US"
+}
+
 // --- videos / trailers ---
 
 func (c *client) getMovieVideos(ctx context.Context, id int64) []tmdbVideo {
