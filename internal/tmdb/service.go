@@ -447,7 +447,7 @@ func (s *Service) enrichSeries(ctx context.Context, id, title string, year *int)
 	}
 	s.applyTv(ctx, id, t)
 
-	if c, ok := s.tmdb.getTvCredits(ctx, tmdbID); ok {
+	if c, ok := s.tmdb.getTvAggregateCredits(ctx, tmdbID); ok {
 		s.applyCredits(ctx, id, c)
 	}
 	s.applyTrailerLinks(ctx, id, s.tmdb.getTvVideos(ctx, tmdbID))

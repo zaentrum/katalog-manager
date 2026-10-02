@@ -29,6 +29,7 @@ type fakeTMDB struct {
 	movies   map[int64]map[string]any            // GET /movie/{id}
 	tvs      map[int64]map[string]any            // GET /tv/{id}
 	credits  map[string][]map[string]any         // "movie/10" or "tv/20": cast entries; a "job" makes crew
+	every    map[string][]aggPerson              // "tv/20": a series' credits over every season (aggregate_credits)
 	people   map[int64]*fakePerson               // GET /person/{id}
 	images   map[string][]byte                   // GET /t/p/{size}{path}, by path
 	changes  map[string]map[string][]int64       // kind → day (YYYY-MM-DD) → ids changed that day
@@ -59,6 +60,7 @@ func newFakeTMDB(t testing.TB) *fakeTMDB {
 		movies:   map[int64]map[string]any{},
 		tvs:      map[int64]map[string]any{},
 		credits:  map[string][]map[string]any{},
+		every:    map[string][]aggPerson{},
 		people:   map[int64]*fakePerson{},
 		images:   map[string][]byte{},
 		changes:  map[string]map[string][]int64{},
@@ -122,6 +124,24 @@ func (f *fakeTMDB) cast(title string, entries ...[]string) {
 		out = append(out, m)
 	}
 	f.credits[title] = out
+}
+
+// aggPerson is someone in a series' credits over every season: the episodes
+// they are in, in all, and their billing order; a job makes them crew.
+type aggPerson struct {
+	id       int64
+	name     string
+	episodes int
+	order    int
+	job      string
+}
+
+// aggregate sets a series' credits over every season ("tv/20"). Without it, a
+// series' aggregate credits are its plain credits (cast), one episode each.
+func (f *fakeTMDB) aggregate(title string, people ...aggPerson) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.every[title] = people
 }
 
 func (f *fakeTMDB) person(id int64, p *fakePerson) {
@@ -270,6 +290,27 @@ func (f *fakeTMDB) serve(w http.ResponseWriter, r *http.Request) {
 				crew = append(crew, e)
 			} else {
 				cast = append(cast, e)
+			}
+		}
+		answer(map[string]any{"id": id, "cast": cast, "crew": crew})
+	case len(seg) == 3 && seg[2] == "aggregate_credits" && (f.every[seg[0]+"/"+seg[1]] != nil || f.credits[seg[0]+"/"+seg[1]] != nil):
+		every := f.every[seg[0]+"/"+seg[1]]
+		if every == nil {
+			for i, e := range f.credits[seg[0]+"/"+seg[1]] {
+				job, _ := e["job"].(string)
+				every = append(every, aggPerson{e["id"].(int64), e["name"].(string), 1, i, job})
+			}
+		}
+		cast, crew := []any{}, []any{}
+		for _, p := range every {
+			if p.job == "" {
+				cast = append(cast, map[string]any{"id": p.id, "name": p.name, "order": p.order,
+					"total_episode_count": p.episodes, "known_for_department": "Acting",
+					"roles": []any{map[string]any{"character": "Someone", "episode_count": p.episodes}}})
+			} else {
+				crew = append(crew, map[string]any{"id": p.id, "name": p.name, "department": "Directing",
+					"total_episode_count": p.episodes,
+					"jobs":                []any{map[string]any{"job": p.job, "episode_count": p.episodes}}})
 			}
 		}
 		answer(map[string]any{"id": id, "cast": cast, "crew": crew})

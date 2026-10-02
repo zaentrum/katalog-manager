@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -101,7 +102,7 @@ type tmdbEpisode struct {
 }
 
 type tmdbCredits struct {
-	Cast []tmdbCredit // first 12 cast
+	Cast []tmdbCredit // a film's first billed, a series' most episodes (movieCastCap, seriesCreditCap)
 	Crew []tmdbCredit // directors only
 }
 
@@ -467,7 +468,19 @@ func (c *client) getTvEpisode(ctx context.Context, tvID int64, season, episode i
 }
 
 // --- credits ---
+//
+// A title's credits replace what the catalog credits it with, so each read
+// must be the title's whole list as the catalog keeps it, never a part of it.
 
+// The most people a title is credited with per role. A film's cast is its
+// first billed; a series gathers its regulars over all its seasons, so it keeps
+// more, ranked by the episodes each is in.
+const (
+	movieCastCap    = 12
+	seriesCreditCap = 20
+)
+
+// getCredits reads a film's credits: its first billed cast and its directors.
 func (c *client) getCredits(ctx context.Context, id int64) (*tmdbCredits, bool) {
 	if !c.enabled() {
 		return nil, false
@@ -475,13 +488,76 @@ func (c *client) getCredits(ctx context.Context, id int64) (*tmdbCredits, bool) 
 	return c.credits(ctx, c.apiBase+"/movie/"+strconv.FormatInt(id, 10)+"/credits?language="+url.QueryEscape(c.language))
 }
 
-func (c *client) getTvCredits(ctx context.Context, id int64) (*tmdbCredits, bool) {
+// getTvAggregateCredits reads a series' credits over every season
+// (aggregate_credits): its cast, most episodes first, and the people who
+// directed its episodes, most directed first, seriesCreditCap of each. A tie
+// goes to TMDB's billing order, then the lower TMDB id. TMDB's plain credits
+// of a series are its latest season's only; replacing a series' credits with
+// them would drop everyone of the seasons before.
+func (c *client) getTvAggregateCredits(ctx context.Context, id int64) (*tmdbCredits, bool) {
 	if !c.enabled() {
 		return nil, false
 	}
-	return c.credits(ctx, c.apiBase+"/tv/"+strconv.FormatInt(id, 10)+"/credits?language="+url.QueryEscape(c.language))
+	body, ok := c.getJSON(ctx, c.apiBase+"/tv/"+strconv.FormatInt(id, 10)+"/aggregate_credits?language="+url.QueryEscape(c.language))
+	if !ok {
+		return nil, false
+	}
+	var n struct {
+		Cast []struct {
+			ID       int64  `json:"id"`
+			Name     string `json:"name"`
+			Episodes int    `json:"total_episode_count"`
+			Order    int    `json:"order"`
+		} `json:"cast"`
+		Crew []struct {
+			ID   int64  `json:"id"`
+			Name string `json:"name"`
+			Jobs []struct {
+				Job      string `json:"job"`
+				Episodes int    `json:"episode_count"`
+			} `json:"jobs"`
+		} `json:"crew"`
+	}
+	if err := json.Unmarshal(body, &n); err != nil {
+		return nil, false
+	}
+	type ranked struct {
+		credit          tmdbCredit
+		episodes, order int
+	}
+	var cast, directors []ranked
+	for _, p := range n.Cast {
+		cast = append(cast, ranked{tmdbCredit{ID: p.ID, Name: p.Name}, p.Episodes, p.Order})
+	}
+	for _, p := range n.Crew {
+		for _, j := range p.Jobs {
+			if strings.EqualFold(j.Job, "Director") {
+				directors = append(directors, ranked{tmdbCredit{ID: p.ID, Name: p.Name}, j.Episodes, 0})
+				break
+			}
+		}
+	}
+	top := func(rs []ranked) []tmdbCredit {
+		sort.SliceStable(rs, func(i, j int) bool {
+			switch {
+			case rs[i].episodes != rs[j].episodes:
+				return rs[i].episodes > rs[j].episodes
+			case rs[i].order != rs[j].order:
+				return rs[i].order < rs[j].order
+			}
+			return rs[i].credit.ID < rs[j].credit.ID
+		})
+		var out []tmdbCredit
+		for i := 0; i < len(rs) && i < seriesCreditCap; i++ {
+			out = append(out, rs[i].credit)
+		}
+		return out
+	}
+	return &tmdbCredits{Cast: top(cast), Crew: top(directors)}, true
 }
 
+// credits reads a film's credits: the first movieCastCap of its cast, in
+// TMDB's billing order, and every director.
 func (c *client) credits(ctx context.Context, u string) (*tmdbCredits, bool) {
 	body, ok := c.getJSON(ctx, u)
 	if !ok {
@@ -503,7 +579,7 @@ func (c *client) credits(ctx context.Context, u string) (*tmdbCredits, bool) {
 	}
 	cr := &tmdbCredits{}
 	for i, p := range n.Cast {
-		if i >= 12 {
+		if i >= movieCastCap {
 			break
 		}
 		cr.Cast = append(cr.Cast, tmdbCredit{ID: p.ID, Name: p.Name})
