@@ -15,6 +15,7 @@
 -- nothing there can be called deleted.
 -- Every timestamp below is formatted in the session's zone: pin it, so the
 -- export says the same thing whatever the server's default zone is.
+\set QUIET on
 set time zone 'UTC';
 select json_build_object(
     'exportedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
