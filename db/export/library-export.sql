@@ -13,10 +13,28 @@
 -- both items and deletedItems was re-created after it was deleted: present wins.
 -- On a catalog without the log (older than 029) it is null, not [], because
 -- nothing there can be called deleted.
+--
+-- people is every person the catalog holds (db/migrations/030), ordered by id:
+--   [{"id", "name", "sortName", "alsoKnownAs": [], "birthDate", "deathDate",
+--     "birthPlace", "biography": {<language>: text},
+--     "externalIds": {"tmdbPerson", "imdb"}, "knownForDepartment",
+--     "metadataLocked", "lockedFields": [], "fieldOrigins": {<field>: origin},
+--     "tmdbFetchedAt", "tmdbChangedAt", "modifiedAt",
+--     "artwork": [{"kind": "profile", "contentType", "base64", "sha256",
+--                  "width", "height", "isPrimary", "sourcePath", "fetchedAt"}]}]
+-- Timestamps are UTC (YYYY-MM-DDTHH:MM:SSZ), dates YYYY-MM-DD, sha256 is
+-- "sha256:<hex>" as the library record writes it, base64 has no line breaks,
+-- the primary image comes first. lockedFields and fieldOrigins name fields as
+-- person.json does (images is the artwork); sourcePath is TMDB's file path. On
+-- a catalog without 030 a person is an id and a name, and the rest of each
+-- entry is empty: null, [] or {}.
 -- Every timestamp below is formatted in the session's zone: pin it, so the
--- export says the same thing whatever the server's default zone is.
+-- export says the same thing whatever the server's default zone is. Image
+-- bytes read through table_to_xml come in the session's xmlbinary: pin that
+-- too.
 \set QUIET on
 set time zone 'UTC';
+set xmlbinary to base64;
 select json_build_object(
     'exportedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
     'items', coalesce((select json_agg(x order by x->>'id') from (
@@ -53,5 +71,53 @@ select json_build_object(
       from xmltable('//row'
              passing table_to_xml(to_regclass('com_nalet_katalog_deleteditems'), false, false, '')
              columns id text path 'id', deletedat timestamp path 'deletedat', deletedby text path 'deletedby') d
-    ) end
+    ) end,
+    -- A person is read through to_jsonb of their row, which carries the columns
+    -- the table has when the query runs, so naming one that a catalog older than
+    -- 030 lacks gives null instead of failing the export. Their images are read
+    -- through table_to_xml, like the log: that table may not exist at all.
+    'people', (
+      with art as (
+        select a.person_id, json_agg(json_build_object(
+                 'kind', a.kind,
+                 'contentType', a.contenttype,
+                 'base64', translate(a.b64, E'\r\n', ''),
+                 'sha256', 'sha256:' || a.sha256,
+                 'width', a.width,
+                 'height', a.height,
+                 'isPrimary', coalesce(a.isprimary, false),
+                 'sourcePath', a.sourcepath,
+                 'fetchedAt', to_char(a.fetchedat at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
+               order by a.isprimary desc nulls last, a.fetchedat desc nulls last, a.id) as list
+        from xmltable('//row'
+               passing table_to_xml(to_regclass('com_nalet_katalog_personartwork'), false, false, '')
+               columns id text path 'id', person_id text path 'person_id', kind text path 'kind',
+                       contenttype text path 'contenttype', b64 text path 'bytes', sha256 text path 'sha256',
+                       width integer path 'width', height integer path 'height',
+                       isprimary boolean path 'isprimary', sourcepath text path 'sourcepath',
+                       fetchedat timestamptz path 'fetchedat') a
+        where a.b64 is not null
+        group by a.person_id
+      )
+      select coalesce(json_agg(json_build_object(
+          'id', p.r->>'id',
+          'name', p.r->>'name',
+          'sortName', p.r->>'sortname',
+          'alsoKnownAs', case when jsonb_typeof(p.r->'alsoknownas') = 'array' then p.r->'alsoknownas' else '[]' end,
+          'birthDate', to_char((p.r->>'birthdate')::date, 'YYYY-MM-DD'),
+          'deathDate', to_char((p.r->>'deathdate')::date, 'YYYY-MM-DD'),
+          'birthPlace', p.r->>'birthplace',
+          'biography', case when jsonb_typeof(p.r->'biography') = 'object' then p.r->'biography' else '{}' end,
+          'externalIds', json_build_object('tmdbPerson', p.r->>'tmdbpersonid', 'imdb', p.r->>'imdbid'),
+          'knownForDepartment', p.r->>'knownfordepartment',
+          'metadataLocked', coalesce((p.r->>'metadatalocked')::boolean, false),
+          'lockedFields', case when jsonb_typeof(p.r->'lockedfields') = 'array' then p.r->'lockedfields' else '[]' end,
+          'fieldOrigins', case when jsonb_typeof(p.r->'fieldorigins') = 'object' then p.r->'fieldorigins' else '{}' end,
+          'tmdbFetchedAt', to_char((p.r->>'tmdbfetchedat')::timestamptz at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+          'tmdbChangedAt', to_char((p.r->>'tmdbchangedat')::date, 'YYYY-MM-DD'),
+          'modifiedAt', to_char((p.r->>'modifiedat')::timestamptz at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+          'artwork', coalesce((select art.list from art where art.person_id = p.r->>'id'), '[]')
+        ) order by p.r->>'id'), '[]')
+      from (select to_jsonb(x) as r from com_nalet_katalog_people x) p
+    )
   );

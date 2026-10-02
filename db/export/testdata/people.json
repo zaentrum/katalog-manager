@@ -1,0 +1,106 @@
+[
+  {
+    "id": "0c0c0c0c-0000-4000-8000-000000000003",
+    "name": "Name Only",
+    "sortName": null,
+    "alsoKnownAs": [],
+    "birthDate": null,
+    "deathDate": null,
+    "birthPlace": null,
+    "biography": {},
+    "externalIds": {
+      "tmdbPerson": null,
+      "imdb": null
+    },
+    "knownForDepartment": null,
+    "metadataLocked": false,
+    "lockedFields": [],
+    "fieldOrigins": {},
+    "tmdbFetchedAt": null,
+    "tmdbChangedAt": null,
+    "modifiedAt": null,
+    "artwork": []
+  },
+  {
+    "id": "a1a1a1a1-0000-4000-8000-000000000001",
+    "name": "Ada Example",
+    "sortName": "Example, Ada",
+    "alsoKnownAs": [
+      "A. Example",
+      "Ада Пример"
+    ],
+    "birthDate": "1815-12-10",
+    "deathDate": "1852-11-27",
+    "birthPlace": "London, England",
+    "biography": {
+      "de": "Deutsch.",
+      "en": "English.\nA second paragraph."
+    },
+    "externalIds": {
+      "tmdbPerson": "101",
+      "imdb": "nm0000001"
+    },
+    "knownForDepartment": "Writing",
+    "metadataLocked": false,
+    "lockedFields": [
+      "biography"
+    ],
+    "fieldOrigins": {
+      "name": "tmdb",
+      "images": "tmdb",
+      "biography": "manual",
+      "externalIds": "tmdb"
+    },
+    "tmdbFetchedAt": "2026-10-01T06:00:00Z",
+    "tmdbChangedAt": "2026-09-30",
+    "modifiedAt": "2026-10-01T06:00:01Z",
+    "artwork": [
+      {
+        "kind": "profile",
+        "contentType": "image/jpeg",
+        "base64": "AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dzj6vH4/wYNFBsiKTA3PkVMU1phaG92fYSLkpmgp661vMPK0djf5u30+wIJEBceJSwzOkFIT1ZdZGtyeYCHjpWco6qxuL/GzdTb4unw9/4FDBMaISgvNj1ES1JZYGdudXyDipGYn6attLvCydDX3uXs8/oBCA8WHSQrMjlAR05VXGNqcXh/ho2Um6KpsLe+xczT2uHo7/b9BAsSGSAnLjU8Q0pRWF9mbXR7gomQl56lrLO6wcjP1t3k6/L5AAcOFRwjKjE4P0ZNVFtiaXB3foWMk5qhqK+2vcTL0tng5+71/AMKERgfJi00O0JJUFdeZWxzeoGIj5adpKuyucDHztXc4+rx+P8GDRQbIikw",
+        "sha256": "sha256:04773f8726c81cafcfa1a09a82664b98b00d2021031a1715bca1154f2dad3472",
+        "width": 421,
+        "height": 632,
+        "isPrimary": true,
+        "sourcePath": "/ada.jpg",
+        "fetchedAt": "2026-10-01T06:00:00Z"
+      },
+      {
+        "kind": "profile",
+        "contentType": "image/png",
+        "base64": "AQ4bKDVCT1xpdoOQnaq3xNHe6/gFEh8sOUZTYG16h5ShrrvI1eLv/AkWIzA9SldkcX6LmKWyv8zZ5vMADRonNEFOW2h1go+cqbbD0N3q9wQ=",
+        "sha256": "sha256:94d23ba3fd03b4e36503edef7305e4de34a91114b3c808126eaa30d09bf1494a",
+        "width": null,
+        "height": null,
+        "isPrimary": false,
+        "sourcePath": null,
+        "fetchedAt": "2026-09-01T00:00:00Z"
+      }
+    ]
+  },
+  {
+    "id": "b2b2b2b2-0000-4000-8000-000000000002",
+    "name": "Ben Example",
+    "sortName": null,
+    "alsoKnownAs": [],
+    "birthDate": null,
+    "deathDate": null,
+    "birthPlace": null,
+    "biography": {},
+    "externalIds": {
+      "tmdbPerson": "102",
+      "imdb": null
+    },
+    "knownForDepartment": null,
+    "metadataLocked": true,
+    "lockedFields": [],
+    "fieldOrigins": {
+      "name": "manual"
+    },
+    "tmdbFetchedAt": null,
+    "tmdbChangedAt": null,
+    "modifiedAt": "2026-09-15T22:00:00Z",
+    "artwork": []
+  }
+]
