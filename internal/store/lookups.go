@@ -24,23 +24,6 @@ func (s *Store) ListGenres(ctx context.Context) ([]*model.Genre, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) ListPeople(ctx context.Context) ([]*model.Person, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, name FROM com_nalet_katalog_people ORDER BY name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*model.Person
-	for rows.Next() {
-		var p model.Person
-		if err := rows.Scan(&p.ID, &p.Name); err != nil {
-			return nil, err
-		}
-		out = append(out, &p)
-	}
-	return out, rows.Err()
-}
-
 func (s *Store) ListEnrichmentStatusCodes(ctx context.Context) ([]*model.EnrichmentStatusCode, error) {
 	rows, err := s.pool.Query(ctx, `SELECT code, name FROM com_nalet_katalog_enrichmentstatuscodes ORDER BY code`)
 	if err != nil {

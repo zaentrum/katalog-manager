@@ -246,25 +246,20 @@ func (s *Store) GenresByItem(ctx context.Context, id string) ([]*model.Genre, er
 
 // PeopleByItem returns the item-person link rows and the parallel person rows.
 func (s *Store) PeopleByItem(ctx context.Context, id string) ([]*model.ItemPerson, []*model.Person, error) {
-	rows, err := s.pool.Query(ctx, `SELECT ip.id, ip.item_id, ip.person_id, ip.role, p.name
-		FROM com_nalet_katalog_itempeople ip JOIN com_nalet_katalog_people p ON p.id = ip.person_id
-		WHERE ip.item_id = $1 ORDER BY ip.role, p.name`, id)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer rows.Close()
 	var links []*model.ItemPerson
 	var people []*model.Person
-	for rows.Next() {
-		var ip model.ItemPerson
-		var name string
-		if err := rows.Scan(&ip.ID, &ip.ItemID, &ip.PersonID, &ip.Role, &name); err != nil {
-			return nil, nil, err
-		}
-		links = append(links, &ip)
-		people = append(people, &model.Person{ID: ip.PersonID, Name: name})
-	}
-	return links, people, rows.Err()
+	var ip *model.ItemPerson
+	err := s.queryPeople(ctx, func(cols string) string {
+		return `SELECT ip.id, ip.item_id, ip.person_id, ip.role, ` + cols + `
+			FROM com_nalet_katalog_itempeople ip JOIN com_nalet_katalog_people p ON p.id = ip.person_id
+			WHERE ip.item_id = $1 ORDER BY ip.role, p.name, p.id`
+	}, func() []any {
+		ip = &model.ItemPerson{}
+		return []any{&ip.ID, &ip.ItemID, &ip.PersonID, &ip.Role}
+	}, func(p *model.Person) {
+		links, people = append(links, ip), append(people, p)
+	}, id)
+	return links, people, err
 }
 
 func (s *Store) TagsByItem(ctx context.Context, id string) ([]string, error) {

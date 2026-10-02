@@ -139,9 +139,44 @@ type Genre {
   name: String!
 }
 
+# Someone a title credits. Everything but id and name is what TMDB says about
+# them (or what someone set by hand); a catalog older than migration 030 has
+# only id and name. Dates are YYYY-MM-DD.
 type Person {
   id: ID!
   name: String!
+  sortName: String
+  alsoKnownAs: [String!]!
+  birthDate: String
+  deathDate: String
+  birthPlace: String
+  # one text per language (its primary subtag, e.g. en), by language
+  biography: [LocalizedText!]!
+  tmdbPersonId: String
+  imdbId: String
+  knownForDepartment: String
+  # true: automation leaves every field alone; lockedFields: these fields
+  metadataLocked: Boolean!
+  lockedFields: [String!]!
+  # where each field that is set came from (tmdb, manual, ...), by field
+  fieldOrigins: [FieldOrigin!]!
+  # when TMDB was last read for the person
+  tmdbFetchedAt: Time
+  # the last day TMDB's change list named them
+  tmdbChangedAt: String
+  createdAt: Time
+  # when their data last changed
+  modifiedAt: Time
+}
+
+type LocalizedText {
+  language: String!
+  text: String!
+}
+
+type FieldOrigin {
+  field: String!
+  origin: String!
 }
 
 type ItemPerson {
@@ -380,6 +415,7 @@ type Query {
   settings: [Setting!]!
   genres: [Genre!]!
   people: [Person!]!
+  person(id: ID!): Person
   enrichStatus: EnrichStatus!
   enrichmentStatusCodes: [EnrichmentStatusCode!]!
 

@@ -207,3 +207,38 @@ func TestPeopleConstraints(t *testing.T) {
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_personartwork (id, person_id, contenttype, bytes, sha256, isprimary)
 		VALUES ('a4', 'p2', 'image/png', '\x04', repeat('d', 64), true)`)
 }
+
+// An item's people come with their details, by role and name; on a catalog
+// without 030 with their names.
+func TestPeopleByItem(t *testing.T) {
+	for _, withPeople := range []bool{true, false} {
+		open := storetest.Open
+		if !withPeople {
+			open = storetest.OpenBase
+		}
+		st := open(t)
+		ctx := context.Background()
+		storetest.AddItem(t, st, movieA, "movie", "A Film", "")
+		storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ('p1', 'Ada Example'), ('p2', 'Ben Example')`)
+		if withPeople {
+			storetest.Exec(t, st, `UPDATE com_nalet_katalog_people SET tmdbpersonid = '101', birthdate = '1815-12-10',
+				biography = '{"en": "English."}' WHERE id = 'p1'`)
+		}
+		storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itempeople (id, item_id, person_id, role) VALUES
+			('l1', $1, 'p2', 'director'), ('l2', $1, 'p1', 'actor')`, movieA)
+
+		links, people, err := st.PeopleByItem(ctx, movieA)
+		if err != nil {
+			t.Fatalf("with 030 %v: %v", withPeople, err)
+		}
+		if len(links) != 2 || len(people) != 2 || links[0].ID != "l2" || links[0].Role != "actor" ||
+			people[0].ID != "p1" || people[0].Name != "Ada Example" || links[1].PersonID != "p2" || people[1].Name != "Ben Example" {
+			t.Fatalf("with 030 %v: links %+v, people %+v", withPeople, links, people)
+		}
+		ada := people[0]
+		if withPeople != (ada.TmdbPersonID != nil && *ada.TmdbPersonID == "101" && ada.BirthDate != nil &&
+			*ada.BirthDate == "1815-12-10" && ada.Biography["en"] == "English.") {
+			t.Errorf("with 030 %v: Ada's details %+v", withPeople, *ada)
+		}
+	}
+}

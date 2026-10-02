@@ -314,6 +314,14 @@ func (r *Resolver) People(ctx context.Context) ([]*personResolver, error) {
 	return out, nil
 }
 
+func (r *Resolver) Person(ctx context.Context, args struct{ ID graphql.ID }) (*personResolver, error) {
+	p, err := r.store.GetPerson(ctx, string(args.ID))
+	if err != nil || p == nil {
+		return nil, err
+	}
+	return &personResolver{m: p}, nil
+}
+
 func (r *Resolver) EnrichStatus(ctx context.Context) *enrichStatusResolver {
 	return &enrichStatusResolver{tmdbEnabled: r.cfg.TMDBEnabled()}
 }

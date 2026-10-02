@@ -148,9 +148,44 @@ type Genre struct {
 	Name string
 }
 
+// Person is someone a title credits. Everything but ID and Name comes with
+// db/migrations/030_people.sql; on a catalog without it the rest is empty.
+// LockedFields and FieldOrigins name fields as the library record's
+// person.json does (name, sortName, alsoKnownAs, birthDate, deathDate,
+// birthPlace, biography, externalIds, images, knownForDepartment).
 type Person struct {
-	ID   string
-	Name string
+	ID                 string
+	Name               string
+	SortName           *string
+	AlsoKnownAs        []string
+	BirthDate          *string // YYYY-MM-DD
+	DeathDate          *string // YYYY-MM-DD
+	BirthPlace         *string
+	Biography          map[string]string // language (primary subtag) → text
+	TmdbPersonID       *string
+	ImdbID             *string
+	KnownForDepartment *string
+	MetadataLocked     bool              // every field is left alone by automation
+	LockedFields       []string          // these fields are
+	FieldOrigins       map[string]string // field → tmdb | manual | …
+	TmdbFetchedAt      *time.Time        // TMDB last read for the person
+	TmdbChangedAt      *string           // YYYY-MM-DD: the last day TMDB's change list named them
+	CreatedAt          *time.Time
+	ModifiedAt         *time.Time // their data last changed
+}
+
+// ReferenceSync is one TMDB change list's cursor (db/migrations/030): the day
+// its next run reads from, and what its last run did.
+type ReferenceSync struct {
+	Kind             string // person | movie | tv
+	Cursor           string // YYYY-MM-DD
+	LastRunAt        *time.Time
+	LastRunChanges   *int32 // ids the change list named
+	LastRunMatched   *int32 // of them, held by the catalog
+	LastRunRefreshed *int32
+	LastRunSkipped   *int32 // locked, or TMDB no longer knows them
+	LastRunFailed    *int32
+	LastRunError     *string
 }
 
 type ItemGenre struct {

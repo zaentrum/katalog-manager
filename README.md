@@ -12,7 +12,8 @@ The surface is split deliberately:
 - **GraphQL** (`/query`) — the operator/UI read graph and mutations: catalog
   reads (`items`, `movies`, `series`, `episodes`, `albums`, `item` with nested
   facets + computed fields), `searchItems`, `scanJobs`, `downloadJobs`,
-  `settings`, `deletedItems` (the deletion log, read-only), and the operator
+  `settings`, `deletedItems` (the deletion log, read-only), `people` and
+  `person` (a person's TMDB details, locks and field origins), and the operator
   actions (`triggerScan`, `enrichOne`/`enrichPending`,
   `packageItem`, `validateItem`, `fetchTrailers`, `addDownload`/`cancelDownload`,
   item + settings CRUD). Schema-first via

@@ -1,6 +1,8 @@
 package graph
 
 import (
+	"sort"
+
 	graphql "github.com/graph-gophers/graphql-go"
 	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/store"
@@ -115,8 +117,66 @@ func (r *genreResolver) Name() string   { return r.m.Name }
 
 type personResolver struct{ m *model.Person }
 
-func (r *personResolver) ID() graphql.ID { return gid(r.m.ID) }
-func (r *personResolver) Name() string   { return r.m.Name }
+func (r *personResolver) ID() graphql.ID              { return gid(r.m.ID) }
+func (r *personResolver) Name() string                { return r.m.Name }
+func (r *personResolver) SortName() *string           { return r.m.SortName }
+func (r *personResolver) AlsoKnownAs() []string       { return nonNil(r.m.AlsoKnownAs) }
+func (r *personResolver) BirthDate() *string          { return r.m.BirthDate }
+func (r *personResolver) DeathDate() *string          { return r.m.DeathDate }
+func (r *personResolver) BirthPlace() *string         { return r.m.BirthPlace }
+func (r *personResolver) TmdbPersonID() *string       { return r.m.TmdbPersonID }
+func (r *personResolver) ImdbID() *string             { return r.m.ImdbID }
+func (r *personResolver) KnownForDepartment() *string { return r.m.KnownForDepartment }
+func (r *personResolver) MetadataLocked() bool        { return r.m.MetadataLocked }
+func (r *personResolver) LockedFields() []string      { return nonNil(r.m.LockedFields) }
+func (r *personResolver) TmdbFetchedAt() *graphql.Time {
+	return gtime(r.m.TmdbFetchedAt)
+}
+func (r *personResolver) TmdbChangedAt() *string    { return r.m.TmdbChangedAt }
+func (r *personResolver) CreatedAt() *graphql.Time  { return gtime(r.m.CreatedAt) }
+func (r *personResolver) ModifiedAt() *graphql.Time { return gtime(r.m.ModifiedAt) }
+
+func (r *personResolver) Biography() []*localizedTextResolver {
+	out := []*localizedTextResolver{}
+	for _, lang := range sortedKeys(r.m.Biography) {
+		out = append(out, &localizedTextResolver{language: lang, text: r.m.Biography[lang]})
+	}
+	return out
+}
+
+func (r *personResolver) FieldOrigins() []*fieldOriginResolver {
+	out := []*fieldOriginResolver{}
+	for _, f := range sortedKeys(r.m.FieldOrigins) {
+		out = append(out, &fieldOriginResolver{field: f, origin: r.m.FieldOrigins[f]})
+	}
+	return out
+}
+
+type localizedTextResolver struct{ language, text string }
+
+func (r *localizedTextResolver) Language() string { return r.language }
+func (r *localizedTextResolver) Text() string     { return r.text }
+
+type fieldOriginResolver struct{ field, origin string }
+
+func (r *fieldOriginResolver) Field() string  { return r.field }
+func (r *fieldOriginResolver) Origin() string { return r.origin }
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 type itemPersonResolver struct {
 	m      *model.ItemPerson
