@@ -30,7 +30,9 @@ const (
 	// maxChangePages is the last page TMDB serves of a list.
 	maxChangePages = 500
 	// changeSyncLock is the advisory lock that lets one instance run at a time.
-	changeSyncLock = int64(0x6b6d2d746d6462) // "km-tmdb"
+	// Its second key is the catalog's schema: catalogs in other schemas of the
+	// same database, such as tests, do not wait for each other.
+	changeSyncLock = int32(0x6b6d746d) // "kmtm"
 )
 
 // errSyncBusy says another instance of the service is running the change lists.
@@ -90,7 +92,8 @@ func (s *Service) SyncChanges(ctx context.Context, now time.Time) ([]syncRun, er
 		return nil, err
 	}
 	var mine bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, changeSyncLock).Scan(&mine); err != nil || !mine {
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1, hashtext(current_schema()))`, changeSyncLock).
+		Scan(&mine); err != nil || !mine {
 		conn.Release()
 		if err == nil {
 			err = errSyncBusy
@@ -98,7 +101,8 @@ func (s *Service) SyncChanges(ctx context.Context, now time.Time) ([]syncRun, er
 		return nil, err
 	}
 	defer func() {
-		if _, err := conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, changeSyncLock); err != nil {
+		if _, err := conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1, hashtext(current_schema()))`,
+			changeSyncLock); err != nil {
 			conn.Conn().Close(context.Background()) // never hand back a session that may still hold the lock
 		}
 		conn.Release()

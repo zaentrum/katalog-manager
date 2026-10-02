@@ -335,6 +335,29 @@ func TestSyncChangesSplitsAWindowTooBigToPage(t *testing.T) {
 	}
 }
 
+// The lock is per catalog: a catalog in another schema of the same database
+// runs its lists while one runs.
+func TestSyncChangesOfTwoCatalogsDoNotWaitForEachOther(t *testing.T) {
+	busy, free := newFakeTMDB(t), newFakeTMDB(t)
+	first := newTestService(t, storetest.Open(t), busy, "en-US")
+	second := newTestService(t, storetest.Open(t), free, "en-US")
+	arrived, release := busy.hold("/3/person/changes")
+	defer release()
+	done := make(chan error, 1)
+	go func() {
+		_, err := first.SyncChanges(context.Background(), syncNow)
+		done <- err
+	}()
+	<-arrived
+	if _, err := second.SyncChanges(context.Background(), syncNow); err != nil {
+		t.Errorf("another catalog's lists while the first runs: %v", err)
+	}
+	release()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 // One instance runs the lists at a time; the lists need TMDB and migration 030.
 func TestSyncChangesRunsOnceAtATime(t *testing.T) {
 	st := storetest.Open(t)
