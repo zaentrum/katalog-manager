@@ -50,6 +50,9 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	if err := st.EnsurePeople(ctx); err != nil {
 		t.Fatalf("apply the people migration: %v", err)
 	}
+	if err := st.EnsureItemLockedFields(ctx); err != nil {
+		t.Fatalf("apply the item locked fields migration: %v", err)
+	}
 	return st
 }
 

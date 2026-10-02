@@ -13,6 +13,21 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/model"
 )
 
+// EnsureItemLockedFields applies db/migrations/031_item_locked_fields.sql when
+// the items table has no lockedfields column. Without it only metadatalocked
+// keeps a title's credits from following TMDB. The check comes first for the
+// reason EnsurePeople gives.
+func (s *Store) EnsureItemLockedFields(ctx context.Context) error {
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_attribute
+		WHERE attrelid = to_regclass('com_nalet_katalog_items') AND attname = 'lockedfields' AND NOT attisdropped)`).
+		Scan(&exists); err != nil || exists {
+		return err
+	}
+	_, err := s.pool.Exec(ctx, migrations.ItemLockedFields)
+	return err
+}
+
 // personCols is a person as migration 030 keeps them; personBaseCols as a
 // catalog without it does. Both read com_nalet_katalog_people as p.
 const (

@@ -4,7 +4,8 @@
 //
 // Not every deployment runs this directory, so the service embeds the
 // migrations it cannot work without and applies each one at startup when its
-// objects are missing (see store.EnsureDeletionLog and store.EnsurePeople).
+// objects are missing (see store.EnsureDeletionLog, store.EnsurePeople and
+// store.EnsureItemLockedFields).
 package migrations
 
 import _ "embed"
@@ -20,3 +21,9 @@ var DeletedItems string
 //
 //go:embed 030_people.sql
 var People string
+
+// ItemLockedFields is 031_item_locked_fields.sql: the fields of a title, such
+// as its credits, that automation leaves alone.
+//
+//go:embed 031_item_locked_fields.sql
+var ItemLockedFields string

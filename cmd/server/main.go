@@ -71,6 +71,12 @@ func run() error {
 	if err := st.EnsurePeople(bgCtx); err != nil {
 		log.Printf("catalog: the people migration (db/migrations/030_people.sql) is missing and could not be applied: %v; people keep only their names until it is", err)
 	}
+	// A title's locked fields (migration 031): with "credits" among them, TMDB
+	// neither adds nor drops a credit of the title. Without the column only
+	// metadatalocked keeps credits as they are.
+	if err := st.EnsureItemLockedFields(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/031_item_locked_fields.sql is missing and could not be applied: %v; only metadataLocked keeps a title's credits until it is", err)
+	}
 
 	steps := processing.New(st.Pool())
 

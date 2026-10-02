@@ -242,3 +242,36 @@ func TestPeopleByItem(t *testing.T) {
 		}
 	}
 }
+
+// 031 gives a title its lockedfields: a JSON array, NULL for every title older
+// than it; running it again changes nothing, and the startup check adds it
+// where it is missing.
+func TestItemLockedFieldsMigration(t *testing.T) {
+	st := storetest.OpenBase(t)
+	ctx := context.Background()
+	storetest.AddItem(t, st, movieA, "movie", "Kept Film", "")
+	for run := 1; run <= 2; run++ {
+		if err := st.EnsureItemLockedFields(ctx); err != nil {
+			t.Fatalf("EnsureItemLockedFields, %d. time: %v", run, err)
+		}
+	}
+	for run := 3; run <= 4; run++ {
+		if _, err := st.Pool().Exec(ctx, migrations.ItemLockedFields); err != nil {
+			t.Fatalf("applying 031 for the %d. time: %v", run, err)
+		}
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE id = $1 AND lockedfields IS NULL`, movieA); n != 1 {
+		t.Error("a title older than 031 must come through with no locked fields")
+	}
+	if got := columns(t, st, "com_nalet_katalog_items"); !strings.HasSuffix(got, "metadatalocked boolean NOT NULL\nlockedfields jsonb NULL") {
+		t.Errorf("items after 031:\n%s", got)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM pg_constraint
+		WHERE conrelid = to_regclass('com_nalet_katalog_items') AND contype = 'c'`); n != 1 {
+		t.Errorf("%d checks on items after four runs, want 1", n)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET lockedfields = '["credits"]' WHERE id = $1`, movieA)
+	if _, err := st.Pool().Exec(ctx, `UPDATE com_nalet_katalog_items SET lockedfields = '{"credits": true}' WHERE id = $1`, movieA); err == nil {
+		t.Error("lockedfields took an object")
+	}
+}

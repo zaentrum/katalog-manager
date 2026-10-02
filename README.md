@@ -50,6 +50,9 @@ schema in the order of their numbers, and each is idempotent:
   change lists (`com_nalet_katalog_referencesync`). The service applies it at
   startup when any of it is missing; where its role may not alter the people
   table, apply the file by hand.
+- `031_item_locked_fields.sql` gives a title `lockedfields`: with `credits` (or
+  `people`) among them, TMDB neither adds nor drops a credit of the title, as
+  with `metadatalocked`. Applied at startup like 030.
 
 ## Configuration
 
