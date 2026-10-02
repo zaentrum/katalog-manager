@@ -192,8 +192,9 @@ func TestExportPeople(t *testing.T) {
 	}
 }
 
-// On a catalog without migration 030 the export still runs: a person is an id
-// and a name with every other field empty; without 029 deletedItems is null.
+// On a catalog without migration 030 the export still runs, and people is
+// null, as deletedItems is without 029: such a catalog holds no person
+// records, only the names its credits carry.
 func TestExportOnACatalogOlderThanThePeopleMigration(t *testing.T) {
 	for _, withLog := range []bool{true, false} {
 		st := storetest.OpenBase(t)
@@ -203,22 +204,34 @@ func TestExportOnACatalogOlderThanThePeopleMigration(t *testing.T) {
 			}
 		}
 		storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ('0c0c0c0c-0000-4000-8000-000000000003', 'Name Only')`)
+		storetest.AddItem(t, st, "m1", "movie", "A Film", "")
+		storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itempeople (id, item_id, person_id, role)
+			VALUES ('l1', 'm1', '0c0c0c0c-0000-4000-8000-000000000003', 'actor')`)
 		doc := runExport(t, st)
-		var people []any
-		if err := json.Unmarshal(section(t, doc, "people"), &people); err != nil {
-			t.Fatal(err)
+		if people := string(section(t, doc, "people")); people != "null" {
+			t.Errorf("with the deletion log %v: people %s, want null", withLog, people)
 		}
-		var want []any
-		raw, _ := os.ReadFile("testdata/people.json")
-		if err := json.Unmarshal(raw, &want); err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual(people, want[:1]) { // the person from before 030, as she exports with it
-			t.Errorf("with the deletion log %v: people %v, want %v", withLog, people, want[:1])
+		if got := string(section(t, doc, "items")); !strings.Contains(got, `"personId" : "0c0c0c0c-0000-4000-8000-000000000003", "name" : "Name Only"`) {
+			t.Errorf("with the deletion log %v: the credit is not in the items: %s", withLog, got)
 		}
 		if deleted := string(section(t, doc, "deletedItems")); (deleted == "null") == withLog {
 			t.Errorf("with the deletion log %v: deletedItems %s", withLog, deleted)
 		}
+	}
+
+	// With 030, a person from before it exports with every field empty.
+	st := storetest.Open(t)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ('0c0c0c0c-0000-4000-8000-000000000003', 'Name Only')`)
+	var people, want []any
+	if err := json.Unmarshal(section(t, runExport(t, st), "people"), &people); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile("testdata/people.json")
+	if err := json.Unmarshal(raw, &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(people, want[:1]) {
+		t.Errorf("a person from before 030: %v, want %v", people, want[:1])
 	}
 }
 

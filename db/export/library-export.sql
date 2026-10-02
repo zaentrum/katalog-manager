@@ -25,9 +25,9 @@
 -- Timestamps are UTC (YYYY-MM-DDTHH:MM:SSZ), dates YYYY-MM-DD, sha256 is
 -- "sha256:<hex>" as the library record writes it, base64 has no line breaks,
 -- the primary image comes first. lockedFields and fieldOrigins name fields as
--- person.json does (images is the artwork); sourcePath is TMDB's file path. On
--- a catalog without 030 a person is an id and a name, and the rest of each
--- entry is empty: null, [] or {}.
+-- person.json does (images is the artwork); sourcePath is TMDB's file path.
+-- On a catalog without 030 it is null, not [], like deletedItems without 029:
+-- such a catalog holds no person records, only the names its credits carry.
 -- Every timestamp below is formatted in the session's zone: pin it, so the
 -- export says the same thing whatever the server's default zone is. Image
 -- bytes read through table_to_xml come in the session's xmlbinary: pin that
@@ -72,11 +72,11 @@ select json_build_object(
              passing table_to_xml(to_regclass('com_nalet_katalog_deleteditems'), false, false, '')
              columns id text path 'id', deletedat timestamp path 'deletedat', deletedby text path 'deletedby') d
     ) end,
-    -- A person is read through to_jsonb of their row, which carries the columns
-    -- the table has when the query runs, so naming one that a catalog older than
-    -- 030 lacks gives null instead of failing the export. Their images are read
-    -- through table_to_xml, like the log: that table may not exist at all.
-    'people', (
+    -- The query is planned even where it does not run, so it may not name what
+    -- a catalog older than 030 lacks: a person is read through to_jsonb of their
+    -- row, which carries the columns the table has, and their images through
+    -- table_to_xml, like the log.
+    'people', case when to_regclass('com_nalet_katalog_personartwork') is null then null else (
       with art as (
         select a.person_id, json_agg(json_build_object(
                  'kind', a.kind,
@@ -119,5 +119,5 @@ select json_build_object(
           'artwork', coalesce((select art.list from art where art.person_id = p.r->>'id'), '[]')
         ) order by p.r->>'id'), '[]')
       from (select to_jsonb(x) as r from com_nalet_katalog_people x) p
-    )
+    ) end
   );
