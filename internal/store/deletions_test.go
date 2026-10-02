@@ -33,7 +33,7 @@ func TestDeletionLogMigrationIsIdempotent(t *testing.T) {
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_deleteditems`); n != 1 {
 		t.Fatalf("re-running the migration must keep what the log holds: %d rows, want 1", n)
 	}
-	if got, want := columns(t, st), strings.Join([]string{
+	if got, want := columns(t, st, "com_nalet_katalog_deleteditems"), strings.Join([]string{
 		"id character varying(36) NOT NULL",
 		"type character varying(20) NOT NULL",
 		"title character varying(255) NOT NULL",
@@ -125,14 +125,14 @@ func TestListDeletedItems(t *testing.T) {
 	}
 }
 
-// columns lists the deletion log's columns as "name type NULL|NOT NULL".
-func columns(t *testing.T, st *store.Store) string {
+// columns lists a table's columns as "name type NULL|NOT NULL".
+func columns(t *testing.T, st *store.Store, table string) string {
 	t.Helper()
 	rows, err := st.Pool().Query(context.Background(), `
 		SELECT attname, format_type(atttypid, atttypmod), attnotnull
 		FROM pg_attribute
-		WHERE attrelid = 'com_nalet_katalog_deleteditems'::regclass AND attnum > 0 AND NOT attisdropped
-		ORDER BY attnum`)
+		WHERE attrelid = to_regclass($1) AND attnum > 0 AND NOT attisdropped
+		ORDER BY attnum`, table)
 	if err != nil {
 		t.Fatal(err)
 	}

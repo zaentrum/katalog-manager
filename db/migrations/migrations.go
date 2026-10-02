@@ -4,7 +4,7 @@
 //
 // Not every deployment runs this directory, so the service embeds the
 // migrations it cannot work without and applies each one at startup when its
-// objects are missing (see store.EnsureDeletionLog).
+// objects are missing (see store.EnsureDeletionLog and store.EnsurePeople).
 package migrations
 
 import _ "embed"
@@ -14,3 +14,9 @@ import _ "embed"
 //
 //go:embed 029_deleted_items.sql
 var DeletedItems string
+
+// People is 030_people.sql: a person's TMDB identity and details, their
+// images, and the cursors of TMDB's change lists.
+//
+//go:embed 030_people.sql
+var People string

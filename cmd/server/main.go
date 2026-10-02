@@ -64,6 +64,13 @@ func run() error {
 	if err := st.EnsureDeletionLog(bgCtx); err != nil {
 		log.Printf("catalog: the deletion log (db/migrations/029_deleted_items.sql) is missing and could not be created: %v; item deletes fail until it exists", err)
 	}
+	// People with their TMDB identity and details (migration 030). Without it
+	// the catalog works as before: credits link people by name, and nothing
+	// about a person is fetched or kept. Where this role may not alter the
+	// people table, apply db/migrations/030_people.sql by hand.
+	if err := st.EnsurePeople(bgCtx); err != nil {
+		log.Printf("catalog: the people migration (db/migrations/030_people.sql) is missing and could not be applied: %v; people keep only their names until it is", err)
+	}
 
 	steps := processing.New(st.Pool())
 

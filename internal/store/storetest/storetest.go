@@ -42,6 +42,27 @@ func Open(t testing.TB) *store.Store {
 // keeps the server's default.
 func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	t.Helper()
+	st := open(t, tz)
+	ctx := context.Background()
+	if err := st.EnsureDeletionLog(ctx); err != nil {
+		t.Fatalf("apply the deletion log migration: %v", err)
+	}
+	if err := st.EnsurePeople(ctx); err != nil {
+		t.Fatalf("apply the people migration: %v", err)
+	}
+	return st
+}
+
+// OpenBase is Open without the migrations the service applies at startup: the
+// base tables as a catalog older than them has them, for a test that applies
+// a migration itself or proves something works without it.
+func OpenBase(t testing.TB) *store.Store {
+	t.Helper()
+	return open(t, "")
+}
+
+func open(t testing.TB, tz string) *store.Store {
+	t.Helper()
 	dsn := os.Getenv(EnvURL)
 	if dsn == "" {
 		t.Skipf("set %s to run the tests that need PostgreSQL", EnvURL)
@@ -82,9 +103,6 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 
 	if _, err := st.Pool().Exec(ctx, baseSchema); err != nil {
 		t.Fatalf("create the base tables: %v", err)
-	}
-	if err := st.EnsureDeletionLog(ctx); err != nil {
-		t.Fatalf("apply the deletion log migration: %v", err)
 	}
 	return st
 }

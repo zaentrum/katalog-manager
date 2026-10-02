@@ -42,6 +42,12 @@ schema in the order of their numbers, and each is idempotent:
 - `029_deleted_items.sql` adds the deletion log, `com_nalet_katalog_deleteditems`.
   The service creates it at startup when it is missing; where its role may not
   create tables, apply the file by hand.
+- `030_people.sql` gives a person their TMDB id and details (dates, places,
+  biography per language, also-known-as names, locks and field origins), adds
+  their images (`com_nalet_katalog_personartwork`) and the cursors of TMDB's
+  change lists (`com_nalet_katalog_referencesync`). The service applies it at
+  startup when any of it is missing; where its role may not alter the people
+  table, apply the file by hand.
 
 ## Configuration
 
