@@ -117,10 +117,10 @@ func (s *Service) peopleToRead(ctx context.Context, where string, args ...any) (
 // ===================== a person's details =====================
 
 // A person's fields, named as the library record's person.json names them
-// (plus knownForDepartment). lockedfields and fieldorigins use these names.
+// (plus knownForDepartment). lockedfields and fieldorigins use these names;
+// sortName is one too, but TMDB has none to write.
 const (
 	fieldName               = "name"
-	fieldSortName           = "sortName"
 	fieldAlsoKnownAs        = "alsoKnownAs"
 	fieldBirthDate          = "birthDate"
 	fieldDeathDate          = "deathDate"
