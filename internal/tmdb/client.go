@@ -591,6 +591,36 @@ func (c *client) getPerson(ctx context.Context, id int64, language string, extra
 	return p, nil
 }
 
+// getChanges reads one page of TMDB's change list of kind (person, movie or
+// tv): the ids of what changed from start to end (days, UTC). TMDB serves at
+// most 14 days per call.
+func (c *client) getChanges(ctx context.Context, kind string, start, end time.Time, page int) (ids []int64, totalPages int, err error) {
+	if !c.enabled() {
+		return nil, 0, errors.New("tmdb: no API key")
+	}
+	u := c.apiBase + "/" + kind + "/changes?start_date=" + start.Format(time.DateOnly) +
+		"&end_date=" + end.Format(time.DateOnly) + "&page=" + strconv.Itoa(page)
+	body, err := c.get(ctx, u)
+	if err != nil {
+		return nil, 0, err
+	}
+	var n struct {
+		Results []struct {
+			ID int64 `json:"id"`
+		} `json:"results"`
+		TotalPages int `json:"total_pages"`
+	}
+	if err := json.Unmarshal(body, &n); err != nil {
+		return nil, 0, errors.New("tmdb: " + kind + " changes: " + err.Error())
+	}
+	for _, r := range n.Results {
+		if r.ID > 0 {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids, n.TotalPages, nil
+}
+
 // lang is the language the catalog reads TMDB in (TMDB_LANGUAGE).
 func (c *client) lang() string {
 	if l := strings.TrimSpace(c.language); l != "" {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -34,6 +35,9 @@ type Config struct {
 	// TMDB
 	TMDBAPIKey   string // TMDB_API_KEY (blank -> enrichment disabled)
 	TMDBLanguage string // TMDB_LANGUAGE (default en-US)
+	// How often the people and titles the catalog holds are refreshed from
+	// TMDB's change lists. Idle while there is no TMDB key.
+	TMDBRefreshInterval time.Duration // TMDB_REFRESH_INTERVAL (default 24h; 0 or off disables)
 
 	// fanart.tv artwork fallback (fills poster/backdrop TMDB is missing). Blank -> off.
 	FanartAPIKey    string // FANART_API_KEY (project key)
@@ -113,6 +117,23 @@ func envInt(def int, keys ...string) int {
 	return n
 }
 
+// envDuration reads a Go duration ("24h", "90m"); "0", "off", "false" and
+// "disabled" are zero, and anything it cannot read is def.
+func envDuration(def time.Duration, keys ...string) time.Duration {
+	v := strings.ToLower(env(keys...))
+	switch v {
+	case "":
+		return def
+	case "0", "off", "false", "disabled", "none":
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def
+	}
+	return max(d, 0)
+}
+
 // normalizeDSN makes a Spring/JDBC-style datasource URL pgx-friendly: it strips
 // a leading `jdbc:` (so `jdbc:postgresql://h/db` → `postgresql://h/db`) and, when
 // no sslmode is given, defaults to `disable` (the in-cluster demo Postgres is
@@ -152,8 +173,9 @@ func Load() Config {
 		NFSRoot:      envDefault("/var/lib/katalog/media", "SCANNER_NFS_ROOT", "NFS_ROOT"),
 		PackagesRoot: packages,
 
-		TMDBAPIKey:   envDefault(DefaultTMDBToken, "TMDB_API_KEY"),
-		TMDBLanguage: envDefault("en-US", "TMDB_LANGUAGE"),
+		TMDBAPIKey:          envDefault(DefaultTMDBToken, "TMDB_API_KEY"),
+		TMDBLanguage:        envDefault("en-US", "TMDB_LANGUAGE"),
+		TMDBRefreshInterval: envDuration(24*time.Hour, "TMDB_REFRESH_INTERVAL"),
 
 		FanartAPIKey:    envDefault(DefaultFanartKey, "FANART_API_KEY"),
 		FanartClientKey: envDefault("", "FANART_CLIENT_KEY"),

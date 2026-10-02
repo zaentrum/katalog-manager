@@ -51,6 +51,8 @@ type Service struct {
 	peopleCheck func(context.Context) (bool, error)
 	peopleOK    atomic.Bool
 	refreshing  atomic.Bool // a RefreshPeople run is under way
+
+	maxChangePages int // 0: TMDB's, maxChangePages; a test lowers it
 }
 
 // New builds the enrichment Service. API keys are resolved per call via the

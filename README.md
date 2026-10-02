@@ -59,6 +59,13 @@ Env vars mirror the previous service so existing manifests keep working — see
 `DOWNLOAD_GATEWAY_EVENTS_ENABLED`, `KAFKA_BROKERS`, `ODOWNLOADER_URL/TOKEN`.
 `AUTH_DISABLED=true` turns off auth for local dev.
 
+`TMDB_REFRESH_INTERVAL` (a Go duration, default `24h`; `0` or `off` turns it
+off) is how often the people and titles the catalog holds are refreshed from
+TMDB's change lists: each list (person, movie, tv) is read from its cursor up
+to today and only what the catalog holds is refreshed; the cursor moves on once
+a run went through. It idles while there is no TMDB key, and one instance runs
+it at a time.
+
 ## Develop
 
 ```bash

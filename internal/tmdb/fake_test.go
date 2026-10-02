@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,17 +26,18 @@ type fakeTMDB struct {
 	srv *httptest.Server
 
 	mu       sync.Mutex
-	movies   map[int64]map[string]any      // GET /movie/{id}
-	tvs      map[int64]map[string]any      // GET /tv/{id}
-	credits  map[string][]map[string]any   // "movie/10" or "tv/20": cast entries; a "job" makes crew
-	people   map[int64]*fakePerson         // GET /person/{id}
-	images   map[string][]byte             // GET /t/p/{size}{path}, by path
-	changes  map[string]map[string][]int64 // kind → day (YYYY-MM-DD) → ids changed that day
-	fail     map[string]int                // path → status to answer instead
-	held     map[string]chan struct{}      // path → answered once the channel closes
-	pageSize int                           // change-list results per page (TMDB: 100)
-	maxPage  int                           // the highest page TMDB serves (0: any)
-	requests []string                      // path?query of every request, in order
+	movies   map[int64]map[string]any            // GET /movie/{id}
+	tvs      map[int64]map[string]any            // GET /tv/{id}
+	credits  map[string][]map[string]any         // "movie/10" or "tv/20": cast entries; a "job" makes crew
+	people   map[int64]*fakePerson               // GET /person/{id}
+	images   map[string][]byte                   // GET /t/p/{size}{path}, by path
+	changes  map[string]map[string][]int64       // kind → day (YYYY-MM-DD) → ids changed that day
+	fail     map[string]int                      // path → status to answer instead
+	held     map[string]chan struct{}            // path → answered once the channel closes
+	failIf   func(path string, q url.Values) int // a status to answer a request with instead, or 0
+	pageSize int                                 // change-list results per page (TMDB: 100)
+	maxPage  int                                 // the highest page TMDB serves (0: any)
+	requests []string                            // path?query of every request, in order
 }
 
 // fakePerson is what TMDB knows about a person.
@@ -167,6 +169,23 @@ func (f *fakeTMDB) hold(path string) (arrived <-chan struct{}, release func()) {
 	return here, func() { once.Do(func() { close(gate) }) }
 }
 
+// failWhen makes requests answer what fail returns for them (0: answer).
+func (f *fakeTMDB) failWhen(fail func(path string, q url.Values) int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failIf = fail
+}
+
+// changeReads lists how kind's change list was read: "start..end pN", in order.
+func (f *fakeTMDB) changeReads(kind string) []string {
+	var out []string
+	for _, r := range f.calls("/3/" + kind + "/changes?") {
+		q, _ := url.ParseQuery(r[strings.Index(r, "?")+1:])
+		out = append(out, q.Get("start_date")+".."+q.Get("end_date")+" p"+q.Get("page"))
+	}
+	return out
+}
+
 // calls are the requests whose path starts with prefix.
 func (f *fakeTMDB) calls(prefix string) []string {
 	f.mu.Lock()
@@ -204,6 +223,12 @@ func (f *fakeTMDB) serve(w http.ResponseWriter, r *http.Request) {
 	if status, ok := f.fail[path]; ok {
 		http.Error(w, `{"status_message":"injected"}`, status)
 		return
+	}
+	if f.failIf != nil {
+		if status := f.failIf(path, r.URL.Query()); status != 0 {
+			http.Error(w, `{"status_message":"injected"}`, status)
+			return
+		}
 	}
 	if strings.HasPrefix(path, "/t/p/") {
 		parts := strings.SplitN(strings.TrimPrefix(path, "/t/p/"), "/", 2)

@@ -130,6 +130,10 @@ func run() error {
 	if cfg.ODownloaderEnabled() {
 		go trailers.RunPoller(bgCtx)
 	}
+	// Keep the people and titles the catalog holds fresh from TMDB's change
+	// lists, without crawling TMDB: every TMDB_REFRESH_INTERVAL (default 24h),
+	// idle while there is no TMDB key.
+	go enricher.RunChangeSync(bgCtx, cfg.TMDBRefreshInterval)
 	// Event-driven enrichment: consume stube.catalog.item.discovered, enrich the
 	// item synchronously, then emit stube.catalog.item.enriched to trigger analyze.
 	// This replaces the old 60s enrichment poll ticker (pure-Kafka triggers).
