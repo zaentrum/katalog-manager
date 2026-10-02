@@ -260,13 +260,15 @@ func TestADroppedPersonAnotherTitleCreditsStays(t *testing.T) {
 }
 
 // Without the deletion log nobody can be deleted, so a title's credits that
-// would leave someone uncredited stay as they were; the title is enriched
-// all the same.
+// would leave someone uncredited stay as they were — none dropped, none added,
+// no one made — and the title is enriched all the same.
 func TestCreditsThatCannotBeRecordedStayAsTheyWere(t *testing.T) {
 	st := storetest.Open(t)
 	f := newFakeTMDB(t)
 	s := newTestService(t, st, f, "en-US")
 	twoShorts(t, st, f)
+	f.cast("movie/593048", []string{fmt.Sprint(springDirector), "Andreas Goralczyk", "Director"},
+		[]string{"9000003", "A New Voice"}) // TMDB lists someone new besides
 	before := credits(t, st, spring)
 	storetest.Exec(t, st, `DROP TABLE com_nalet_katalog_deleteditems`)
 
@@ -274,8 +276,11 @@ func TestCreditsThatCannotBeRecordedStayAsTheyWere(t *testing.T) {
 	if got := credits(t, st, spring); got != before {
 		t.Errorf("credits changed although their people could not be recorded:\n %s", got)
 	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itempeople WHERE item_id = $1`, spring); n != 14 {
+		t.Errorf("Spring has %d credit rows, want its 14", n)
+	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_people`); n != 29 {
-		t.Errorf("%d people, want all 29", n)
+		t.Errorf("%d people, want all 29 and no one new", n)
 	}
 	res, err := s.RefreshPeople(context.Background(), false)
 	if err != nil {
