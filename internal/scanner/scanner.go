@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,10 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
+
+// deletedByScanner is how the deletion log names the scanner when it removes an
+// item on its own.
+const deletedByScanner = "katalog-manager/scanner"
 
 // Scanner is the NFS filesystem walker / upserter.
 type Scanner struct {
@@ -442,14 +447,21 @@ func (s *Scanner) attachTrailer(ctx context.Context, pool *pgxpool.Pool, path, a
 		}
 		res.itemsUpdated++
 		// If the trailer previously had its own orphan item with no remaining
-		// assets, delete that orphan.
+		// assets, delete that orphan — through the store, so its facet rows go
+		// with it and the deletion log records it in the same transaction (a
+		// folder the orphan left on storage then reads as deleted, not lost).
 		if *parentItemID != *existingItemID {
 			var remaining int
 			if err := pool.QueryRow(ctx,
 				`SELECT COUNT(*) FROM com_nalet_katalog_playbackassets WHERE item_id = $1`,
 				*existingItemID).Scan(&remaining); err == nil && remaining == 0 {
-				_, _ = pool.Exec(ctx,
-					`DELETE FROM com_nalet_katalog_items WHERE id = $1`, *existingItemID)
+				if _, err := s.st.DeleteItem(ctx, *existingItemID, store.Deletion{
+					By:     deletedByScanner,
+					Reason: "its file is a trailer of item " + *parentItemID,
+				}); err != nil {
+					log.Printf("scanner: item %s has no files left after its trailer moved to item %s, but could not be removed: %v",
+						*existingItemID, *parentItemID, err)
+				}
 			}
 		}
 	}

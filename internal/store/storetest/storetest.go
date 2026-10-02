@@ -15,6 +15,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net/url"
 	"os"
 	"strings"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
@@ -103,6 +105,71 @@ func Count(t testing.TB, st *store.Store, sql string, args ...any) int {
 		t.Fatalf("%s: %v", firstLine(sql), err)
 	}
 	return n
+}
+
+// AddItem inserts an item; parentID may be empty.
+func AddItem(t testing.TB, st *store.Store, id, typ, title, parentID string) {
+	t.Helper()
+	var parent *string
+	if parentID != "" {
+		parent = &parentID
+	}
+	Exec(t, st, `INSERT INTO com_nalet_katalog_items (id, type, title, parent_id, createdat, modifiedat)
+		VALUES ($1, $2, $3, $4, now(), now())`, id, typ, title, parent)
+}
+
+// facets are the tables whose rows hang off an item and go with it, each with
+// a statement that gives an item ($1) one row there.
+var facets = []struct{ table, insert string }{
+	{"com_nalet_katalog_itemgenres", `(id, item_id, genre_id) VALUES (gen_random_uuid()::varchar, $1, 'g')`},
+	{"com_nalet_katalog_itempeople", `(id, item_id, person_id, role) VALUES (gen_random_uuid()::varchar, $1, 'p', 'actor')`},
+	{"com_nalet_katalog_itemtags", `(id, item_id, tag) VALUES (gen_random_uuid()::varchar, $1, 'tag')`},
+	{"com_nalet_katalog_itemexternalids", `(id, item_id, source, externalid) VALUES (gen_random_uuid()::varchar, $1, 'tmdb', '1')`},
+	{"com_nalet_katalog_itemartwork", `(id, item_id, kind, url) VALUES (gen_random_uuid()::varchar, $1, 'poster', 'u')`},
+	{"com_nalet_katalog_itemartworkdata", `(id, item_id, kind, contenttype) VALUES (gen_random_uuid()::varchar, $1, 'poster', 'image/png')`},
+	{"com_nalet_katalog_playbackassets", `(id, item_id, path) VALUES (gen_random_uuid()::varchar, $1::varchar, '/media/' || $1::varchar)`},
+	{"com_nalet_katalog_subtitleassets", `(id, item_id, path) VALUES (gen_random_uuid()::varchar, $1::varchar, '/media/' || $1::varchar || '.srt')`},
+	{"com_nalet_katalog_mediasegments", `(id, item_id, kind, startms, endms, source) VALUES (gen_random_uuid()::varchar, $1, 'intro', 0, 1, 'manual')`},
+	{"com_nalet_katalog_itemchapters", `(id, item_id, startms, endms) VALUES (gen_random_uuid()::varchar, $1, 0, 1)`},
+	{"com_nalet_katalog_itemtrailerlinks", `(id, item_id, source, url) VALUES (gen_random_uuid()::varchar, $1, 'tmdb', 'u')`},
+	{"com_nalet_katalog_itemdiagnostics", `(id, item_id) VALUES (gen_random_uuid()::varchar, $1)`},
+	{"com_nalet_katalog_itemprocessingsteps", `(id, item_id, step) VALUES (gen_random_uuid()::varchar, $1, 'scan')`},
+}
+
+// AddFacets gives an item one row in every table that hangs off it.
+func AddFacets(t testing.TB, st *store.Store, itemID string) {
+	t.Helper()
+	for _, f := range facets {
+		Exec(t, st, `INSERT INTO `+f.table+` `+f.insert, itemID)
+	}
+}
+
+// FacetRows counts the rows that hang off an item, across those tables.
+func FacetRows(t testing.TB, st *store.Store, itemID string) int {
+	t.Helper()
+	n := 0
+	for _, f := range facets {
+		n += Count(t, st, `SELECT count(*) FROM `+f.table+` WHERE item_id = $1`, itemID)
+	}
+	return n
+}
+
+// Facets is how many rows AddFacets gives an item.
+var Facets = len(facets)
+
+// Deleted reads the deletion log's row for id; ok is false when there is none.
+func Deleted(t testing.TB, st *store.Store, id string) (d model.DeletedItem, ok bool) {
+	t.Helper()
+	err := st.Pool().QueryRow(context.Background(), `SELECT id, type, title, deletedat, deletedby, reason
+		FROM com_nalet_katalog_deleteditems WHERE id = $1`, id).
+		Scan(&d.ID, &d.Type, &d.Title, &d.DeletedAt, &d.DeletedBy, &d.Reason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return d, false
+	}
+	if err != nil {
+		t.Fatalf("read the deletion log row of %s: %v", id, err)
+	}
+	return d, true
 }
 
 // withSession adds session settings to dsn. pgx passes parameters it does not

@@ -10,8 +10,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/graph"
+	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
 // RemoveItem implements graph.Remover: delete an item from the catalog (a
@@ -20,9 +22,12 @@ import (
 // Order of operations is deliberate:
 //  1. Collect file paths / package roots BEFORE the rows go (they are the only
 //     record of where the files live).
-//  2. Delete the catalog rows in ONE transaction — the catalog is the source of
-//     truth; from here the item is gone even if a file removal later fails
-//     (failures are reported in Errors for the operator to retry by hand).
+//  2. Delete the catalog rows in ONE transaction, which also records every
+//     item it removes in the deletion log, attributed to the caller — the
+//     catalog is the source of truth; from here the item is gone even if a file
+//     removal later fails (failures are reported in Errors for the operator to
+//     retry by hand), and the log tells a later verification that a folder left
+//     behind belongs to an item the catalog deleted, not one it lost.
 //  3. Remove media files (only with deleteFiles) and packaged dirs (only with
 //     deletePackages), every path validated to live UNDER its configured root —
 //     a corrupted path row must never turn into an rm outside the library.
@@ -128,8 +133,8 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 		}
 	}
 
-	// 2. Catalog rows go first, atomically.
-	n, err := s.st.DeleteItems(ctx, ids)
+	// 2. Catalog rows go first, atomically, and are recorded as they go.
+	n, err := s.st.DeleteItems(ctx, ids, store.Deletion{By: auth.Actor(ctx, "katalog-manager")})
 	if err != nil {
 		return res, err
 	}

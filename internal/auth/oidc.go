@@ -38,6 +38,16 @@ func PrincipalFrom(ctx context.Context) (*Principal, bool) {
 	return p, ok
 }
 
+// Actor names who is acting in ctx, for a record that must say who did
+// something: the authenticated principal's subject ("anonymous" when auth is
+// disabled), or service when the work did not come from a request.
+func Actor(ctx context.Context, service string) string {
+	if p, ok := PrincipalFrom(ctx); ok && p != nil && p.Subject != "" {
+		return p.Subject
+	}
+	return service
+}
+
 // JWTVerifier validates bearer access tokens against an OIDC issuer's JWKS.
 // MVP semantics mirror the CAP service: issuer + signature + expiry only
 // (audience optional). A disabled verifier (no issuer configured, or

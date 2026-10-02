@@ -40,6 +40,21 @@ func TestNewJWTVerifier_UnreachableIssuerIsNonFatal(t *testing.T) {
 	}
 }
 
+// TestActor pins who a record names: the principal's subject when a request
+// carries one, the service otherwise.
+func TestActor(t *testing.T) {
+	ctx := context.Background()
+	if got := Actor(ctx, "katalog-manager"); got != "katalog-manager" {
+		t.Errorf("no principal: %q, want the service", got)
+	}
+	if got := Actor(WithPrincipal(ctx, &Principal{Subject: "subject-1"}), "katalog-manager"); got != "subject-1" {
+		t.Errorf("with a principal: %q, want its subject", got)
+	}
+	if got := Actor(WithPrincipal(ctx, &Principal{}), "katalog-manager"); got != "katalog-manager" {
+		t.Errorf("a principal without a subject: %q, want the service", got)
+	}
+}
+
 // TestNewJWTVerifier_DisabledAuthorizesAll confirms the disabled/blank-issuer
 // path still authorizes every caller as "anonymous".
 func TestNewJWTVerifier_DisabledAuthorizesAll(t *testing.T) {

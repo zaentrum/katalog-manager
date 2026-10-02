@@ -283,6 +283,18 @@ type DownloadJob struct {
 	StateCriticality *int32 // view-computed
 }
 
+// DeletedItem mirrors db/migrations/029_deleted_items.sql: an item the catalog
+// deleted, as of its latest deletion. If an item with the same ID exists again,
+// it was re-created after this deletion, and the item that exists wins.
+type DeletedItem struct {
+	ID        string
+	Type      string
+	Title     string    // the title it had when it was deleted
+	DeletedAt time.Time // UTC
+	DeletedBy string    // a principal's subject, or the service that deleted
+	Reason    *string
+}
+
 // TrailerJob mirrors db/migrations/020_trailerjobs.sql (absent from the live
 // dump; recreated by db/migrations/028).
 type TrailerJob struct {

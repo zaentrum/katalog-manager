@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/zaentrum/katalog-manager/internal/model"
@@ -151,13 +152,37 @@ var itemChildTables = []string{
 	"com_nalet_katalog_itemprocessingsteps",
 }
 
-// DeleteItem removes an item and all its composition rows in one transaction.
+// deleteAndRecordItems removes items and writes one deletion-log row for each
+// item it removed — one statement, so the log holds exactly the rows that went.
+// now() is the transaction's start: everything one delete removes shares one
+// deletedat. An id deleted before (and re-created since) has its row replaced
+// by this, its latest, deletion.
+const deleteAndRecordItems = `
+	WITH gone AS (
+		DELETE FROM com_nalet_katalog_items WHERE id = ANY($1)
+		RETURNING id, type, title
+	)
+	INSERT INTO com_nalet_katalog_deleteditems (id, type, title, deletedat, deletedby, reason)
+	SELECT id, left(COALESCE(type, ''), 20), left(COALESCE(title, ''), 255),
+	       now() AT TIME ZONE 'utc', $2, $3
+	FROM gone
+	ON CONFLICT (id) DO UPDATE SET
+		type = EXCLUDED.type, title = EXCLUDED.title, deletedat = EXCLUDED.deletedat,
+		deletedby = EXCLUDED.deletedby, reason = EXCLUDED.reason`
+
 // DeleteItems removes the given items and all their facet rows in ONE
-// transaction (used by the remover: episodes + their series together). Returns
-// the number of items rows actually deleted.
-func (s *Store) DeleteItems(ctx context.Context, ids []string) (int64, error) {
+// transaction (the remover takes a series and its episodes together), and in
+// that same transaction records every item it removes in the deletion log,
+// attributed to d. If the log cannot be written, nothing is deleted. Returns
+// the number of items removed; an id that does not exist is skipped and leaves
+// no row.
+func (s *Store) DeleteItems(ctx context.Context, ids []string, d Deletion) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
+	}
+	by, reason, err := d.values()
+	if err != nil {
+		return 0, err
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -169,9 +194,9 @@ func (s *Store) DeleteItems(ctx context.Context, ids []string) (int64, error) {
 			return 0, err
 		}
 	}
-	ct, err := tx.Exec(ctx, `DELETE FROM com_nalet_katalog_items WHERE id = ANY($1)`, ids)
+	ct, err := tx.Exec(ctx, deleteAndRecordItems, ids, by, reason)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("delete items and record them in the deletion log: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
@@ -179,25 +204,12 @@ func (s *Store) DeleteItems(ctx context.Context, ids []string) (int64, error) {
 	return ct.RowsAffected(), nil
 }
 
-func (s *Store) DeleteItem(ctx context.Context, id string) (bool, error) {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback(ctx)
-	for _, t := range itemChildTables {
-		if _, err := tx.Exec(ctx, `DELETE FROM `+t+` WHERE item_id = $1`, id); err != nil {
-			return false, err
-		}
-	}
-	ct, err := tx.Exec(ctx, `DELETE FROM com_nalet_katalog_items WHERE id = $1`, id)
-	if err != nil {
-		return false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, err
-	}
-	return ct.RowsAffected() > 0, nil
+// DeleteItem removes one item and its facet rows, and records it in the
+// deletion log, all in one transaction (see DeleteItems). It reports whether
+// the item existed.
+func (s *Store) DeleteItem(ctx context.Context, id string, d Deletion) (bool, error) {
+	n, err := s.DeleteItems(ctx, []string{id}, d)
+	return n > 0, err
 }
 
 // SetItemGenres replaces the item's genres, find-or-creating each by name.
