@@ -101,8 +101,14 @@ type tmdbEpisode struct {
 }
 
 type tmdbCredits struct {
-	Cast []string // first 12 cast names
-	Crew []string // directors only
+	Cast []tmdbCredit // first 12 cast
+	Crew []tmdbCredit // directors only
+}
+
+// tmdbCredit is one credited person: TMDB's id for them, and the name.
+type tmdbCredit struct {
+	ID   int64
+	Name string
 }
 
 type tmdbVideo struct {
@@ -483,9 +489,11 @@ func (c *client) credits(ctx context.Context, u string) (*tmdbCredits, bool) {
 	}
 	var n struct {
 		Cast []struct {
+			ID   int64  `json:"id"`
 			Name string `json:"name"`
 		} `json:"cast"`
 		Crew []struct {
+			ID   int64  `json:"id"`
 			Name string `json:"name"`
 			Job  string `json:"job"`
 		} `json:"crew"`
@@ -498,11 +506,11 @@ func (c *client) credits(ctx context.Context, u string) (*tmdbCredits, bool) {
 		if i >= 12 {
 			break
 		}
-		cr.Cast = append(cr.Cast, p.Name)
+		cr.Cast = append(cr.Cast, tmdbCredit{ID: p.ID, Name: p.Name})
 	}
 	for _, p := range n.Crew {
 		if strings.EqualFold(p.Job, "Director") {
-			cr.Crew = append(cr.Crew, p.Name)
+			cr.Crew = append(cr.Crew, tmdbCredit{ID: p.ID, Name: p.Name})
 		}
 	}
 	return cr, true

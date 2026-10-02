@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -44,6 +45,11 @@ type Service struct {
 	tmdb   *client
 	fanart *fanartClient // artwork-only fallback for poster/backdrop TMDB is missing
 	omdb   *omdbClient   // metadata fallback (description/rating/poster + title-match)
+
+	// peopleCheck reports whether migration 030 is in place; peopleOK
+	// remembers once it is (a migration is not undone under a running service).
+	peopleCheck func(context.Context) (bool, error)
+	peopleOK    atomic.Bool
 }
 
 // New builds the enrichment Service. API keys are resolved per call via the
@@ -57,6 +63,11 @@ func New(st storePool, cfg config.Config, steps *processing.Steps, ch *chaptersd
 		steps:  steps,
 		ch:     ch,
 		lookup: lookup,
+	}
+	if pc, ok := st.(interface {
+		PeopleReady(context.Context) (bool, error)
+	}); ok {
+		s.peopleCheck = pc.PeopleReady
 	}
 	s.tmdb = newClient(s.keyFor("tmdb.api_key", cfg.TMDBAPIKey), cfg.TMDBLanguage)
 	s.fanart = newFanartClient(
@@ -701,15 +712,6 @@ func (s *Service) applyEpisode(ctx context.Context, itemID string, ep *tmdbEpiso
 	}
 }
 
-func (s *Service) applyCredits(ctx context.Context, itemID string, c *tmdbCredits) {
-	for _, director := range c.Crew {
-		s.upsertPerson(ctx, itemID, director, "director")
-	}
-	for _, actor := range c.Cast {
-		s.upsertPerson(ctx, itemID, actor, "actor")
-	}
-}
-
 // ===================== relation upserts =====================
 
 func (s *Service) existingTmdbID(ctx context.Context, itemID string) (int64, bool) {
@@ -787,38 +789,6 @@ func (s *Service) upsertGenres(ctx context.Context, itemID string, genres []stri
 				`INSERT INTO com_nalet_katalog_itemgenres (id, item_id, genre_id) VALUES (gen_random_uuid()::varchar, $1, $2)`,
 				itemID, genreID)
 		}
-	}
-}
-
-func (s *Service) upsertPerson(ctx context.Context, itemID, name, role string) {
-	if strings.TrimSpace(name) == "" {
-		return
-	}
-	var personID string
-	err := s.pool.QueryRow(ctx,
-		`SELECT id FROM com_nalet_katalog_people WHERE name = $1`, name).Scan(&personID)
-	if err == pgx.ErrNoRows {
-		personID = ""
-	} else if err != nil {
-		return
-	}
-	if personID == "" {
-		if err := s.pool.QueryRow(ctx,
-			`INSERT INTO com_nalet_katalog_people (id, name) VALUES (gen_random_uuid()::varchar, $1) RETURNING id`,
-			name).Scan(&personID); err != nil {
-			return
-		}
-	}
-	var linked int
-	if err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM com_nalet_katalog_itempeople WHERE item_id = $1 AND person_id = $2 AND role = $3`,
-		itemID, personID, role).Scan(&linked); err != nil {
-		return
-	}
-	if linked == 0 {
-		s.pool.Exec(ctx,
-			`INSERT INTO com_nalet_katalog_itempeople (id, item_id, person_id, role) VALUES (gen_random_uuid()::varchar, $1, $2, $3)`,
-			itemID, personID, role)
 	}
 }
 
