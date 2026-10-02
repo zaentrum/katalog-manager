@@ -54,6 +54,10 @@ func runExport(t *testing.T, st *store.Store) []byte {
 		conn.Conn().Close(ctx)
 		conn.Release()
 	}()
+	// A server may encode binary in XML as hex: the export must not depend on it.
+	if _, err := conn.Exec(ctx, `SET xmlbinary TO hex`); err != nil {
+		t.Fatal(err)
+	}
 	results, err := conn.Conn().PgConn().Exec(ctx, strings.Join(sql, "\n")).ReadAll()
 	if err != nil {
 		t.Fatalf("the export failed: %v", err)
