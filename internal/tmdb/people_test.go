@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
@@ -130,7 +132,6 @@ func TestCreditsFindTheirPeopleByTMDBID(t *testing.T) {
 // Enrichments that meet the same new person at once make one person.
 func TestFindOrCreatePersonOnceUnderConcurrency(t *testing.T) {
 	st := storetest.Open(t)
-	s := newTestService(t, st, newFakeTMDB(t), "en-US")
 	for round := 0; round < 5; round++ {
 		var wg sync.WaitGroup
 		ids := make([]string, 8)
@@ -139,7 +140,10 @@ func TestFindOrCreatePersonOnceUnderConcurrency(t *testing.T) {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				ids[i], _, errs[i] = s.findOrCreatePerson(context.Background(), int64(700+round), "Same Person")
+				errs[i] = pgx.BeginFunc(context.Background(), st.Pool(), func(tx pgx.Tx) (err error) {
+					ids[i], _, err = findOrCreatePerson(context.Background(), tx, int64(700+round), "Same Person")
+					return err
+				})
 			}(i)
 		}
 		wg.Wait()

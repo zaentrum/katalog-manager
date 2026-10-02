@@ -19,10 +19,11 @@ func counts(r graph.PeopleRefreshResult) graph.PeopleRefreshResult {
 }
 
 // The demo's catalog knows its people by name only: the backfill reads each
-// title's credits again to give them their TMDB ids, then their details. What
-// it cannot do (a title whose credits fail, a person TMDB does not know, a
-// locked record, a name no credit lists) it reports, and a second run without
-// all picks up only what is left.
+// title's credits again to give them their TMDB ids, then their details; a
+// credit TMDB no longer lists goes, and so does its person when no title
+// credits them any more. What it cannot do (a title whose credits fail, a
+// person TMDB does not know, a locked record) it reports, and a second run
+// without all picks up only what is left.
 func TestRefreshPeopleBackfillsPeopleKnownByName(t *testing.T) {
 	st := storetest.Open(t)
 	f := newFakeTMDB(t)
@@ -52,23 +53,28 @@ func TestRefreshPeopleBackfillsPeopleKnownByName(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, want := counts(res), (graph.PeopleRefreshResult{TitlesRead: 3, TitlesFailed: 1, PeopleMatched: 4,
-		PeopleCreated: 1, PeopleFetched: 3, PeopleLocked: 1, PeopleNotFound: 1, PeopleWithoutTmdbID: 2}); got != want {
+		PeopleCreated: 1, CreditsAdded: 1, CreditsDropped: 1, PeopleDeleted: 1, PeopleFetched: 3, PeopleLocked: 1,
+		PeopleNotFound: 1, PeopleWithoutTmdbID: 1}); got != want {
 		t.Errorf("first run:\n got  %+v\n want %+v", got, want)
 	}
 	if res.StartedAt.IsZero() || res.FinishedAt.Before(res.StartedAt) {
 		t.Errorf("run from %s to %s", res.StartedAt, res.FinishedAt)
 	}
-	for id, want := range map[string]string{"ada": "101", "ben": "102", "cy": "103", "dot": "104", "old": "-", "fay": "-"} {
+	for id, want := range map[string]string{"ada": "101", "ben": "102", "cy": "103", "dot": "104", "fay": "-"} {
 		if got := tmdbIDOf(t, st, id); got != want {
 			t.Errorf("%s has TMDB id %s, want %s", id, got, want)
 		}
+	}
+	if d, ok := storetest.Deleted(t, st, "old"); !ok || d.Type != "person" || d.Title != "Old Credit" ||
+		d.DeletedBy != "katalog-manager/tmdb" || d.Reason == nil || !strings.Contains(*d.Reason, `"Second Film"`) {
+		t.Errorf("the person TMDB no longer credits and no title credits: log row %+v (%v)", d, ok)
 	}
 	samePerson(t, st, "ada", `{"name": "Ada Example", "sortName": null, "aka": null, "birth": null, "death": null,
 		"place": null, "bio": {"en": "About Ada Example."}, "tmdb": "101", "imdb": null, "dept": null, "locked": false,
 		"lockedFields": null, "origins": {"name": "tmdb", "biography": "tmdb", "externalIds": "tmdb"},
 		"changed": null, "fetched": true}`)
-	if got, want := credits(t, st, film2), "actor Cy Example (103), actor New Person (105), actor Old Credit (-)"; got != want {
-		t.Errorf("second film: %s, want %s (a credit TMDB no longer lists stays)", got, want)
+	if got, want := credits(t, st, film2), "actor Cy Example (103), actor New Person (105)"; got != want {
+		t.Errorf("second film: %s, want %s (exactly TMDB's)", got, want)
 	}
 
 	// Again, without all: only what is left.
@@ -77,8 +83,8 @@ func TestRefreshPeopleBackfillsPeopleKnownByName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := counts(res), (graph.PeopleRefreshResult{TitlesRead: 1, TitlesFailed: 1, PeopleLocked: 1,
-		PeopleNotFound: 1, PeopleWithoutTmdbID: 2}); got != want {
+	if got, want := counts(res), (graph.PeopleRefreshResult{TitlesFailed: 1, PeopleLocked: 1,
+		PeopleNotFound: 1, PeopleWithoutTmdbID: 1}); got != want {
 		t.Errorf("second run:\n got  %+v\n want %+v", got, want)
 	}
 	if got := f.calls("/3/person/101"); len(got) != 0 {
@@ -94,7 +100,7 @@ func TestRefreshPeopleBackfillsPeopleKnownByName(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, want := counts(res), (graph.PeopleRefreshResult{TitlesRead: 4, PeopleMatched: 1, PeopleFetched: 4,
-		PeopleLocked: 1, PeopleNotFound: 1, PeopleWithoutTmdbID: 1}); got != want {
+		PeopleLocked: 1, PeopleNotFound: 1}); got != want {
 		t.Errorf("run with all:\n got  %+v\n want %+v", got, want)
 	}
 }

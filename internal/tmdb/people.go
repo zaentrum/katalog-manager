@@ -46,10 +46,11 @@ func (s *Service) peopleReady(ctx context.Context) bool {
 	return true
 }
 
-// applyCredits stores a title's credits: each credited person is found by
-// their TMDB id and linked to the item in their role, and a person the catalog
-// has not read from TMDB yet gets their details and profile. A person whose
-// details cannot be had is logged and left for later: it never fails the title.
+// applyCredits makes a title's credits TMDB's (replaceCredits), and a credited
+// person the catalog has not read from TMDB yet gets their details and profile.
+// A person whose details cannot be had is logged and left for later: it never
+// fails the title, and neither do credits that cannot be stored (they stay as
+// they were).
 func (s *Service) applyCredits(ctx context.Context, itemID string, c *tmdbCredits) {
 	if !s.peopleReady(ctx) {
 		for _, d := range c.Crew {
@@ -60,8 +61,16 @@ func (s *Service) applyCredits(ctx context.Context, itemID string, c *tmdbCredit
 		}
 		return
 	}
-	links := s.linkCredits(ctx, itemID, c)
-	s.fetchUnreadPeople(ctx, links.people)
+	ch, err := s.replaceCredits(ctx, itemID, c)
+	if err != nil {
+		log.Printf("tmdb: credits of item %s: %v; left as they were", itemID, err)
+		return
+	}
+	if ch.added+ch.dropped+ch.relinked+ch.deleted > 0 {
+		log.Printf("tmdb: credits of item %s follow TMDB: %d added, %d dropped, %d moved off a namesake; "+
+			"%d people no title credits any more deleted", itemID, ch.added, ch.dropped, ch.relinked, ch.deleted)
+	}
+	s.fetchUnreadPeople(ctx, ch.people)
 }
 
 // fetchUnreadPeople reads TMDB's details of each of the given people that the
@@ -534,160 +543,8 @@ func jsonStringMap(raw []byte) map[string]string {
 	return out
 }
 
-// creditLinks says what storing one title's credits did.
-type creditLinks struct {
-	matched  int      // people without a TMDB id that a credit gave theirs
-	created  int      // credited people the catalog did not hold yet
-	relinked int      // links to a namesake, replaced by a link to the credited person
-	people   []string // the credited people, by catalog id, each once
-	failed   int      // credits that could not be stored
-}
-
-// linkCredits finds or creates every credited person by their TMDB id and links
-// them to the item. A link the item has to someone else of a credited name, in
-// the same role, is a credit that was once matched by name alone, to a
-// namesake: it goes, the link to the credited person stays. Links to names the
-// credits do not carry are left alone.
-func (s *Service) linkCredits(ctx context.Context, itemID string, c *tmdbCredits) creditLinks {
-	var out creditLinks
-	type credited struct{ names, ids []string }
-	byRole := map[string]*credited{}
-	seen := map[string]bool{}
-	add := func(role string, cr tmdbCredit) {
-		name := clip(oneLine(cr.Name), 255)
-		if name == "" {
-			return
-		}
-		personID, how, err := s.findOrCreatePerson(ctx, cr.ID, name)
-		if err != nil {
-			log.Printf("tmdb: credit %q (TMDB person %d) of item %s: %v", name, cr.ID, itemID, err)
-			out.failed++
-			return
-		}
-		switch how {
-		case personMatched:
-			out.matched++
-		case personCreated:
-			out.created++
-		}
-		if err := s.linkPerson(ctx, itemID, personID, role); err != nil {
-			log.Printf("tmdb: link %s as %s of item %s: %v", personID, role, itemID, err)
-			out.failed++
-			return
-		}
-		r := byRole[role]
-		if r == nil {
-			r = &credited{}
-			byRole[role] = r
-		}
-		r.names, r.ids = append(r.names, name), append(r.ids, personID)
-		if !seen[personID] {
-			seen[personID] = true
-			out.people = append(out.people, personID)
-		}
-	}
-	for _, d := range c.Crew {
-		add(roleDirector, d)
-	}
-	for _, a := range c.Cast {
-		add(roleActor, a)
-	}
-	for role, r := range byRole {
-		tag, err := s.pool.Exec(ctx, `DELETE FROM com_nalet_katalog_itempeople ip
-			USING com_nalet_katalog_people p
-			WHERE ip.item_id = $1 AND ip.role = $2 AND p.id = ip.person_id
-			  AND p.name = ANY($3::text[]) AND NOT (ip.person_id = ANY($4::text[]))`,
-			itemID, role, r.names, r.ids)
-		if err != nil {
-			log.Printf("tmdb: replace links to namesakes of item %s: %v", itemID, err)
-			continue
-		}
-		out.relinked += int(tag.RowsAffected())
-	}
-	return out
-}
-
-// How findOrCreatePerson came by a person.
-type personFind int
-
-const (
-	personFound   personFind = iota // by TMDB id, or by name for a credit without one
-	personMatched                   // a person without a TMDB id, by name: they carry it now
-	personCreated                   // new
-)
-
-// findOrCreatePerson returns the person a credit names: the one with its TMDB
-// id; failing that the first person of that name who has no TMDB id yet (the
-// people saved before TMDB ids were kept), who gets the id; failing that a new
-// person. A person who has a TMDB id is never taken for another TMDB id, so two
-// people of one name stay two. Two enrichments that meet the same new person at
-// once end up with the same row: the TMDB id is unique.
-func (s *Service) findOrCreatePerson(ctx context.Context, tmdbID int64, name string) (string, personFind, error) {
-	if tmdbID <= 0 {
-		return s.personByName(ctx, name)
-	}
-	key := strconv.FormatInt(tmdbID, 10)
-	for attempt := 0; attempt < 3; attempt++ {
-		var id string
-		err := s.pool.QueryRow(ctx,
-			`SELECT id FROM com_nalet_katalog_people WHERE tmdbpersonid = $1`, key).Scan(&id)
-		if err == nil {
-			return id, personFound, nil
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return "", 0, err
-		}
-		err = s.pool.QueryRow(ctx, `UPDATE com_nalet_katalog_people SET
-				tmdbpersonid = $1,
-				fieldorigins = COALESCE(fieldorigins, '{}'::jsonb) || '{"externalIds": "tmdb"}'::jsonb,
-				modifiedat = now()
-			WHERE id = (SELECT id FROM com_nalet_katalog_people
-			            WHERE name = $2 AND tmdbpersonid IS NULL ORDER BY id LIMIT 1)
-			  AND tmdbpersonid IS NULL
-			RETURNING id`, key, name).Scan(&id)
-		if err == nil {
-			return id, personMatched, nil
-		}
-		if isUniqueViolation(err) {
-			continue // the id was given to someone meanwhile: find them
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return "", 0, err
-		}
-		err = s.pool.QueryRow(ctx, `INSERT INTO com_nalet_katalog_people
-				(id, name, tmdbpersonid, fieldorigins, createdat, modifiedat)
-			VALUES (gen_random_uuid()::varchar, $2, $1, '{"name": "tmdb", "externalIds": "tmdb"}', now(), now())
-			ON CONFLICT (tmdbpersonid) WHERE tmdbpersonid IS NOT NULL DO NOTHING
-			RETURNING id`, key, name).Scan(&id)
-		if err == nil {
-			return id, personCreated, nil
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return "", 0, err
-		}
-		// created meanwhile by another enrichment: find them on the next pass
-	}
-	return "", 0, fmt.Errorf("TMDB person %s was created and taken concurrently; giving up", key)
-}
-
-// personByName is how a credit without a TMDB id finds its person: by name,
-// preferring someone without a TMDB id, as before ids were kept.
-func (s *Service) personByName(ctx context.Context, name string) (string, personFind, error) {
-	var id string
-	err := s.pool.QueryRow(ctx, `SELECT id FROM com_nalet_katalog_people WHERE name = $1
-		ORDER BY tmdbpersonid IS NULL DESC, id LIMIT 1`, name).Scan(&id)
-	if err == nil {
-		return id, personFound, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return "", 0, err
-	}
-	err = s.pool.QueryRow(ctx, `INSERT INTO com_nalet_katalog_people (id, name, fieldorigins, createdat, modifiedat)
-		VALUES (gen_random_uuid()::varchar, $1, '{"name": "tmdb"}', now(), now()) RETURNING id`, name).Scan(&id)
-	return id, personCreated, err
-}
-
-// linkPerson links a person to an item in a role, once.
+// linkPerson links a person to an item in a role, once (credits as they were
+// stored before migration 030).
 func (s *Service) linkPerson(ctx context.Context, itemID, personID, role string) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO com_nalet_katalog_itempeople (id, item_id, person_id, role)
 		SELECT gen_random_uuid()::varchar, $1::text, $2::text, $3::text

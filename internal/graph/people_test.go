@@ -72,7 +72,8 @@ type fakePeople struct{ all *bool }
 
 func (f *fakePeople) RefreshPeople(_ context.Context, all bool) (PeopleRefreshResult, error) {
 	f.all = &all
-	return PeopleRefreshResult{TitlesRead: 3, TitlesFailed: 1, PeopleMatched: 70, PeopleCreated: 2, CreditsRelinked: 1,
+	return PeopleRefreshResult{TitlesRead: 3, TitlesFailed: 1, TitlesLocked: 1, PeopleMatched: 70, PeopleCreated: 2,
+		CreditsAdded: 4, CreditsDropped: 26, CreditsRelinked: 1, PeopleDeleted: 25,
 		PeopleFetched: 71, PeopleLocked: 1, PeopleNotFound: 1, PeopleFailed: 0, PeopleWithoutTmdbID: 3,
 		StartedAt: time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC), FinishedAt: time.Date(2026, 10, 2, 8, 0, 9, 0, time.UTC)}, nil
 }
@@ -86,15 +87,16 @@ func TestRefreshPeopleMutation(t *testing.T) {
 		fp := &fakePeople{}
 		schema := MustSchema(NewResolver(nil, config.Config{}, Services{People: fp}))
 		resp := schema.Exec(context.Background(), `mutation { refreshPeople`+tc.args+` { titlesRead titlesFailed
-			peopleMatched peopleCreated creditsRelinked peopleFetched peopleLocked peopleNotFound peopleFailed
-			peopleWithoutTmdbId startedAt finishedAt } }`, "", nil)
+			titlesLocked peopleMatched peopleCreated creditsAdded creditsDropped creditsRelinked peopleDeleted
+			peopleFetched peopleLocked peopleNotFound peopleFailed peopleWithoutTmdbId startedAt finishedAt } }`, "", nil)
 		if len(resp.Errors) > 0 {
 			t.Fatal(resp.Errors)
 		}
 		if fp.all == nil || *fp.all != tc.all {
 			t.Errorf("refreshPeople%s called the refresher with all=%v", tc.args, fp.all)
 		}
-		want := `{"refreshPeople":{"titlesRead":3,"titlesFailed":1,"peopleMatched":70,"peopleCreated":2,"creditsRelinked":1,` +
+		want := `{"refreshPeople":{"titlesRead":3,"titlesFailed":1,"titlesLocked":1,"peopleMatched":70,"peopleCreated":2,` +
+			`"creditsAdded":4,"creditsDropped":26,"creditsRelinked":1,"peopleDeleted":25,` +
 			`"peopleFetched":71,"peopleLocked":1,"peopleNotFound":1,"peopleFailed":0,"peopleWithoutTmdbId":3,` +
 			`"startedAt":"2026-10-02T08:00:00Z","finishedAt":"2026-10-02T08:00:09Z"}}`
 		if got := string(resp.Data); got != want {

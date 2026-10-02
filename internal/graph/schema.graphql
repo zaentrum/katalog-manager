@@ -361,15 +361,22 @@ type BackfillResult {
 
 # What a refreshPeople run did.
 type PeopleRefreshResult {
-  # titles whose TMDB credits were read again, and those that could not be
+  # titles whose TMDB credits were read again, those whose credits could not
+  # be read or stored, and those that keep their credits (locked)
   titlesRead: Int!
   titlesFailed: Int!
+  titlesLocked: Int!
   # people without a TMDB id who got theirs from a credit
   peopleMatched: Int!
   # credited people the catalog did not hold yet
   peopleCreated: Int!
+  # credits titles gained from TMDB, and credits TMDB no longer lists, gone
+  creditsAdded: Int!
+  creditsDropped: Int!
   # credits once matched to a namesake by name, now on the person credited
   creditsRelinked: Int!
+  # people no title credits any more: deleted, and in the deletion log
+  peopleDeleted: Int!
   # people whose details and profile were read and stored
   peopleFetched: Int!
   # people left alone because their record is locked
@@ -502,13 +509,15 @@ type Mutation {
   # corrected title and/or pin an exact TMDB id.
   identify(id: ID!, title: String, tmdbId: Int): EnrichResult!
   enrichPending(limit: Int, type: String): EnrichPendingResult!
-  # Backfill people from TMDB: read the TMDB credits of titles again, so the
-  # people they credit get their TMDB ids (a person known only by name is
-  # matched by it once), then read those people's details and profiles. all:
-  # every title and every person with a TMDB id; otherwise only the titles
-  # crediting someone without one, and the people never read. Locks are
-  # honoured. The run finishes even when the caller stops waiting (its counts
-  # are logged); one runs at a time.
+  # Backfill people from TMDB: read the TMDB credits of titles again, so each
+  # title credits exactly whom TMDB lists (a person known only by name is
+  # matched by it once; a credit TMDB no longer lists goes, and a person no
+  # title credits any more is deleted, in the deletion log), then read the
+  # people's details and profiles. all: every title and every person with a
+  # TMDB id; otherwise only the titles crediting someone without one, and the
+  # people never read. Locks are honoured: a locked title keeps its credits.
+  # The run finishes even when the caller stops waiting (its counts are
+  # logged); one runs at a time.
   refreshPeople(all: Boolean): PeopleRefreshResult!
   backfillEpisodeBackdrops: BackfillResult!
   retryNotFound(type: String): RetryResult!

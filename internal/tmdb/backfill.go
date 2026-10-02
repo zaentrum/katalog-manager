@@ -12,10 +12,11 @@ import (
 )
 
 // RefreshPeople is the operator's backfill of people (graph.PeopleRefresher).
-// It reads the TMDB credits of titles again, which gives the people they
-// credit their TMDB ids (a person known only by name is matched by it once,
-// and a credit once matched to a namesake moves to the person credited), and
-// then reads people's details and profiles, honouring their locks.
+// It reads the TMDB credits of titles again, which replace the titles' credits
+// (replaceCredits): the people they credit get their TMDB ids (a person known
+// only by name is matched by it once), a credit TMDB no longer lists goes, and
+// a person no title credits any more is deleted and logged. Then it reads
+// people's details and profiles, honouring their locks.
 //
 // With all it reads every movie and series that has a TMDB id and every
 // person who has one; without, only the titles crediting someone who has no
@@ -54,11 +55,22 @@ func (s *Service) RefreshPeople(ctx context.Context, all bool) (graph.PeopleRefr
 			log.Printf("tmdb: people refresh: the credits of %s %s (TMDB %d) could not be read", t.typ, t.id, t.tmdbID)
 			continue
 		}
+		ch, err := s.replaceCredits(ctx, t.id, c)
+		if err != nil {
+			res.TitlesFailed++
+			log.Printf("tmdb: people refresh: the credits of %s %s (TMDB %d) could not be stored: %v", t.typ, t.id, t.tmdbID, err)
+			continue
+		}
 		res.TitlesRead++
-		l := s.linkCredits(ctx, t.id, c)
-		res.PeopleMatched += int32(l.matched)
-		res.PeopleCreated += int32(l.created)
-		res.CreditsRelinked += int32(l.relinked)
+		if ch.locked {
+			res.TitlesLocked++
+		}
+		res.PeopleMatched += int32(ch.matched)
+		res.PeopleCreated += int32(ch.created)
+		res.CreditsAdded += int32(ch.added)
+		res.CreditsDropped += int32(ch.dropped)
+		res.CreditsRelinked += int32(ch.relinked)
+		res.PeopleDeleted += int32(ch.deleted)
 	}
 
 	where := `tmdbfetchedat IS NULL`
@@ -89,10 +101,12 @@ func (s *Service) RefreshPeople(ctx context.Context, all bool) (graph.PeopleRefr
 		return res, err
 	}
 	res.FinishedAt = time.Now().UTC()
-	log.Printf("tmdb: people refresh all=%v: titles read=%d failed=%d; people matched=%d created=%d relinked=%d "+
-		"fetched=%d locked=%d notFound=%d failed=%d withoutTmdbId=%d (%s)", all,
-		res.TitlesRead, res.TitlesFailed, res.PeopleMatched, res.PeopleCreated, res.CreditsRelinked,
-		res.PeopleFetched, res.PeopleLocked, res.PeopleNotFound, res.PeopleFailed, res.PeopleWithoutTmdbID,
+	log.Printf("tmdb: people refresh all=%v: titles read=%d failed=%d locked=%d; credits added=%d dropped=%d "+
+		"relinked=%d; people matched=%d created=%d deleted=%d fetched=%d locked=%d notFound=%d failed=%d "+
+		"withoutTmdbId=%d (%s)", all,
+		res.TitlesRead, res.TitlesFailed, res.TitlesLocked, res.CreditsAdded, res.CreditsDropped, res.CreditsRelinked,
+		res.PeopleMatched, res.PeopleCreated, res.PeopleDeleted, res.PeopleFetched, res.PeopleLocked,
+		res.PeopleNotFound, res.PeopleFailed, res.PeopleWithoutTmdbID,
 		res.FinishedAt.Sub(res.StartedAt).Round(time.Millisecond))
 	return res, nil
 }

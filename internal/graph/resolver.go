@@ -35,10 +35,14 @@ type PeopleRefresher interface {
 // PeopleRefreshResult reports what a RefreshPeople run did.
 type PeopleRefreshResult struct {
 	TitlesRead          int32 // titles whose TMDB credits were read
-	TitlesFailed        int32 // titles whose credits could not be read
+	TitlesFailed        int32 // titles whose credits could not be read or stored
+	TitlesLocked        int32 // titles that keep their credits (locked): left as they are
 	PeopleMatched       int32 // people without a TMDB id who got theirs from a credit
 	PeopleCreated       int32 // credited people the catalog did not hold yet
+	CreditsAdded        int32 // credits titles gained from TMDB
+	CreditsDropped      int32 // credits TMDB no longer lists, gone
 	CreditsRelinked     int32 // credits matched to a namesake, now on the person credited
+	PeopleDeleted       int32 // people no title credits any more: deleted, in the deletion log
 	PeopleFetched       int32 // people whose details and profile were read and stored
 	PeopleLocked        int32 // people left alone: their record is locked
 	PeopleNotFound      int32 // TMDB ids TMDB does not know (any more)

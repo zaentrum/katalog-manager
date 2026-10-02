@@ -73,9 +73,13 @@ type peopleRefreshResultResolver struct{ m PeopleRefreshResult }
 
 func (r *peopleRefreshResultResolver) TitlesRead() int32          { return r.m.TitlesRead }
 func (r *peopleRefreshResultResolver) TitlesFailed() int32        { return r.m.TitlesFailed }
+func (r *peopleRefreshResultResolver) TitlesLocked() int32        { return r.m.TitlesLocked }
 func (r *peopleRefreshResultResolver) PeopleMatched() int32       { return r.m.PeopleMatched }
 func (r *peopleRefreshResultResolver) PeopleCreated() int32       { return r.m.PeopleCreated }
+func (r *peopleRefreshResultResolver) CreditsAdded() int32        { return r.m.CreditsAdded }
+func (r *peopleRefreshResultResolver) CreditsDropped() int32      { return r.m.CreditsDropped }
 func (r *peopleRefreshResultResolver) CreditsRelinked() int32     { return r.m.CreditsRelinked }
+func (r *peopleRefreshResultResolver) PeopleDeleted() int32       { return r.m.PeopleDeleted }
 func (r *peopleRefreshResultResolver) PeopleFetched() int32       { return r.m.PeopleFetched }
 func (r *peopleRefreshResultResolver) PeopleLocked() int32        { return r.m.PeopleLocked }
 func (r *peopleRefreshResultResolver) PeopleNotFound() int32      { return r.m.PeopleNotFound }
