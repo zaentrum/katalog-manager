@@ -379,6 +379,18 @@ func (r *Resolver) DeletedItems(ctx context.Context, args struct {
 	return out, nil
 }
 
+func (r *Resolver) ReferenceSync(ctx context.Context) ([]*referenceSyncResolver, error) {
+	rs, err := r.store.ListReferenceSync(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*referenceSyncResolver, 0, len(rs))
+	for _, x := range rs {
+		out = append(out, &referenceSyncResolver{m: x})
+	}
+	return out, nil
+}
+
 // ===================== Mutations =====================
 
 func (r *Resolver) TriggerScan(ctx context.Context, args struct{ Source *string }) (*scanJobResolver, error) {

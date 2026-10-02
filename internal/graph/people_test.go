@@ -107,3 +107,26 @@ func TestRefreshPeopleMutation(t *testing.T) {
 		t.Error("refreshPeople without a refresher answered")
 	}
 }
+
+// referenceSync reads each change list's cursor and last run, by kind; a
+// catalog without migration 030 has none.
+func TestReferenceSyncQuery(t *testing.T) {
+	st := storetest.OpenInTimeZone(t, "Pacific/Kiritimati")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_referencesync (kind, cursor, lastrunat, lastrunchanges,
+		lastrunmatched, lastrunrefreshed, lastrunskipped, lastrunfailed, lastrunerror) VALUES
+		('tv', '2026-10-02', '2026-10-02 03:00:00+00', 120, 2, 2, 0, 0, NULL),
+		('person', '2026-09-28', '2026-10-02 03:00:01+00', 5400, 3, 1, 1, 1, '1 of 3 refreshes failed')`)
+	got := query(t, st, `{ referenceSync { kind cursor lastRunAt lastRunChanges lastRunMatched lastRunRefreshed
+		lastRunSkipped lastRunFailed lastRunError } }`)
+	want := `{"referenceSync":[` +
+		`{"kind":"person","cursor":"2026-09-28","lastRunAt":"2026-10-02T03:00:01Z","lastRunChanges":5400,"lastRunMatched":3,` +
+		`"lastRunRefreshed":1,"lastRunSkipped":1,"lastRunFailed":1,"lastRunError":"1 of 3 refreshes failed"},` +
+		`{"kind":"tv","cursor":"2026-10-02","lastRunAt":"2026-10-02T03:00:00Z","lastRunChanges":120,"lastRunMatched":2,` +
+		`"lastRunRefreshed":2,"lastRunSkipped":0,"lastRunFailed":0,"lastRunError":null}]}`
+	if got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+	if got := query(t, storetest.OpenBase(t), `{ referenceSync { kind } }`); got != `{"referenceSync":[]}` {
+		t.Errorf("without 030: %s", got)
+	}
+}

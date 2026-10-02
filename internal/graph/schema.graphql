@@ -298,6 +298,25 @@ type DeletedItem {
   reason: String
 }
 
+# One of TMDB's change lists (person, movie, tv), as the daily refresh keeps
+# it: the day its next run reads from, and what its last run did. The counts
+# are of that run: ids the list named, those the catalog holds, and of them
+# the ones refreshed, skipped (a locked record, an id TMDB no longer knows)
+# and failed. lastRunError says why the cursor did not move, or what else is
+# worth knowing.
+type ReferenceSync {
+  kind: String!
+  # YYYY-MM-DD
+  cursor: String!
+  lastRunAt: Time
+  lastRunChanges: Int
+  lastRunMatched: Int
+  lastRunRefreshed: Int
+  lastRunSkipped: Int
+  lastRunFailed: Int
+  lastRunError: String
+}
+
 # ---------------------------------------------------------------------------
 # Action result types
 # ---------------------------------------------------------------------------
@@ -447,6 +466,10 @@ type Query {
   # The deletion log, newest first: items deleted at or after since (all when
   # omitted), at most limit (default 100, max 500). Read-only.
   deletedItems(since: Time, limit: Int): [DeletedItem!]!
+
+  # The daily refresh from TMDB's change lists, one entry per list that has
+  # run, by kind. Read-only.
+  referenceSync: [ReferenceSync!]!
 }
 
 # ---------------------------------------------------------------------------

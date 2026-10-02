@@ -311,6 +311,20 @@ func (r *deletedItemResolver) DeletedAt() graphql.Time { return graphql.Time{Tim
 func (r *deletedItemResolver) DeletedBy() string       { return r.m.DeletedBy }
 func (r *deletedItemResolver) Reason() *string         { return r.m.Reason }
 
+// ---- ReferenceSync ----
+
+type referenceSyncResolver struct{ m *model.ReferenceSync }
+
+func (r *referenceSyncResolver) Kind() string             { return r.m.Kind }
+func (r *referenceSyncResolver) Cursor() string           { return r.m.Cursor }
+func (r *referenceSyncResolver) LastRunAt() *graphql.Time { return gtime(r.m.LastRunAt) }
+func (r *referenceSyncResolver) LastRunChanges() *int32   { return r.m.LastRunChanges }
+func (r *referenceSyncResolver) LastRunMatched() *int32   { return r.m.LastRunMatched }
+func (r *referenceSyncResolver) LastRunRefreshed() *int32 { return r.m.LastRunRefreshed }
+func (r *referenceSyncResolver) LastRunSkipped() *int32   { return r.m.LastRunSkipped }
+func (r *referenceSyncResolver) LastRunFailed() *int32    { return r.m.LastRunFailed }
+func (r *referenceSyncResolver) LastRunError() *string    { return r.m.LastRunError }
+
 // ---- EnrichmentStatusCode ----
 
 type enrichmentStatusCodeResolver struct{ m *model.EnrichmentStatusCode }
