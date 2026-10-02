@@ -31,7 +31,8 @@ func TestRemoveItemRecordsTheSeriesAndItsEpisodes(t *testing.T) {
 	svc := New(st, config.Config{}, processing.New(st.Pool()), nil)
 
 	ctx := auth.WithPrincipal(context.Background(), &auth.Principal{Subject: operator})
-	res, err := svc.RemoveItem(ctx, series, false, false)
+	const reason = "the season was ingested twice"
+	res, err := svc.RemoveItem(ctx, series, false, false, reason)
 	if err != nil || !res.Deleted || res.ItemsRemoved != 3 {
 		t.Fatalf("RemoveItem: %+v, %v; want the series and its 2 episodes removed", res, err)
 	}
@@ -47,6 +48,9 @@ func TestRemoveItemRecordsTheSeriesAndItsEpisodes(t *testing.T) {
 		if got := d.Type + " " + d.Title; got != want || d.DeletedBy != operator {
 			t.Errorf("%s logged as %q by %q, want %q by %q", id, got, d.DeletedBy, want, operator)
 		}
+		if d.Reason == nil || *d.Reason != reason {
+			t.Errorf("%s logged with reason %v, want %q", id, d.Reason, reason)
+		}
 		if !d.DeletedAt.Equal(s.DeletedAt) {
 			t.Errorf("%s deleted at %s, the series at %s: one removal, one transaction", id, d.DeletedAt, s.DeletedAt)
 		}
@@ -59,11 +63,12 @@ func TestRemoveItemRecordsTheSeriesAndItsEpisodes(t *testing.T) {
 	}
 
 	// Without a request behind it, the removal is the service's own.
-	if _, err := svc.RemoveItem(context.Background(), unrelated, false, false); err != nil {
+	if _, err := svc.RemoveItem(context.Background(), unrelated, false, false, ""); err != nil {
 		t.Fatal(err)
 	}
-	if d, _ := storetest.Deleted(t, st, unrelated); d.DeletedBy != "katalog-manager" {
-		t.Errorf("a removal without a principal is attributed to %q, want katalog-manager", d.DeletedBy)
+	if d, _ := storetest.Deleted(t, st, unrelated); d.DeletedBy != "katalog-manager" || d.Reason != nil {
+		t.Errorf("a removal without a principal or reason is logged by %q with reason %v, want katalog-manager and none",
+			d.DeletedBy, d.Reason)
 	}
 }
 
@@ -71,7 +76,7 @@ func TestRemoveItemOfAnUnknownItemRecordsNothing(t *testing.T) {
 	st := storetest.Open(t)
 	svc := New(st, config.Config{}, processing.New(st.Pool()), nil)
 
-	_, err := svc.RemoveItem(context.Background(), series, false, false)
+	_, err := svc.RemoveItem(context.Background(), series, false, false, "gone")
 	if !errors.Is(err, ErrUnknownItem) {
 		t.Fatalf("RemoveItem of an unknown id: %v, want ErrUnknownItem", err)
 	}

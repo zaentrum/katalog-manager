@@ -42,9 +42,10 @@ type Packager interface {
 }
 
 // Remover deletes an item (a series cascades to episodes) and optionally its
-// files on disk. Implemented by itemactions.
+// files on disk, recording every item it removes in the deletion log with the
+// caller and the reason (which may be empty). Implemented by itemactions.
 type Remover interface {
-	RemoveItem(ctx context.Context, id string, deleteFiles, deletePackages bool) (RemoveResult, error)
+	RemoveItem(ctx context.Context, id string, deleteFiles, deletePackages bool, reason string) (RemoveResult, error)
 }
 
 // RemoveResult reports what a RemoveItem call actually did.
@@ -559,6 +560,7 @@ func (r *Resolver) DeleteItem(ctx context.Context, args struct {
 	ID             graphql.ID
 	DeleteFiles    *bool
 	DeletePackages *bool
+	Reason         *string
 }) (*deleteItemResultResolver, error) {
 	if r.svc.Remover == nil {
 		return nil, errNotConfigured
@@ -567,7 +569,7 @@ func (r *Resolver) DeleteItem(ctx context.Context, args struct {
 	// Packaged artifacts are regenerable dead weight once the item is gone —
 	// remove them unless explicitly kept.
 	deletePackages := args.DeletePackages == nil || *args.DeletePackages
-	res, err := r.svc.Remover.RemoveItem(ctx, string(args.ID), deleteFiles, deletePackages)
+	res, err := r.svc.Remover.RemoveItem(ctx, string(args.ID), deleteFiles, deletePackages, strDeref(args.Reason))
 	if err != nil {
 		return nil, err
 	}

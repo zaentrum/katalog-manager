@@ -414,8 +414,10 @@ type Mutation {
   # Remove an item from the catalog (a series cascades to its episodes). File
   # cleanup is explicit: deleteFiles removes the SOURCE MEDIA from disk
   # (irreversible; left in place, a rescan re-imports the item);
-  # deletePackages removes the packaged HLS artifacts (regenerable).
-  deleteItem(id: ID!, deleteFiles: Boolean, deletePackages: Boolean): DeleteItemResult!
+  # deletePackages removes the packaged HLS artifacts (regenerable). Every item
+  # removed is recorded in the deletion log with the caller and the optional
+  # reason.
+  deleteItem(id: ID!, deleteFiles: Boolean, deletePackages: Boolean, reason: String): DeleteItemResult!
   setItemGenres(id: ID!, genres: [String!]!): Item!
   setItemTags(id: ID!, tags: [String!]!): Item!
 

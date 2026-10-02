@@ -18,6 +18,7 @@ import (
 
 // RemoveItem implements graph.Remover: delete an item from the catalog (a
 // series cascades to its episodes) and optionally clean its files off disk.
+// reason, which may be empty, is kept in the deletion log.
 //
 // Order of operations is deliberate:
 //  1. Collect file paths / package roots BEFORE the rows go (they are the only
@@ -32,7 +33,7 @@ import (
 //     deletePackages), every path validated to live UNDER its configured root —
 //     a corrupted path row must never turn into an rm outside the library.
 //  4. Emit stube.catalog.item.removed so live-refresh surfaces drop the item.
-func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, deletePackages bool) (graph.RemoveResult, error) {
+func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, deletePackages bool, reason string) (graph.RemoveResult, error) {
 	var res graph.RemoveResult
 
 	var typ, title string
@@ -134,7 +135,7 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 	}
 
 	// 2. Catalog rows go first, atomically, and are recorded as they go.
-	n, err := s.st.DeleteItems(ctx, ids, store.Deletion{By: auth.Actor(ctx, "katalog-manager")})
+	n, err := s.st.DeleteItems(ctx, ids, store.Deletion{By: auth.Actor(ctx, "katalog-manager"), Reason: reason})
 	if err != nil {
 		return res, err
 	}
