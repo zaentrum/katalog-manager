@@ -117,7 +117,8 @@ func TestSeriesCreditsKeepTheMostEpisodes(t *testing.T) {
 		}
 		people = append(people, aggPerson{int64(1000 + i), fmt.Sprintf("Actor %02d", i), episodes, 30 - i, ""})
 	}
-	people = append(people, aggPerson{1100, "Tied On Billing", 101 - 12, 30 - 12, ""}) // ties number 12 on order too
+	// Ties number 12 on order too, and is listed after them with a lower id.
+	people = append(people, aggPerson{1000, "Tied On Billing", 101 - 12, 30 - 12, ""})
 	for i := 1; i <= 22; i++ {
 		people = append(people, aggPerson{int64(2000 + i), fmt.Sprintf("Director %02d", i), 50 - i, 0, "Director"})
 	}
@@ -144,7 +145,7 @@ func TestSeriesCreditsKeepTheMostEpisodes(t *testing.T) {
 	// Billing order breaks the tie of 12 and 13 (13 is billed first: order 17
 	// against 18), and the lower id the tie of 12 and "Tied On Billing".
 	wantCast := "Actor 01, Actor 02, Actor 03, Actor 04, Actor 05, Actor 06, Actor 07, Actor 08, Actor 09, Actor 10, " +
-		"Actor 11, Actor 13, Actor 12, Tied On Billing, Actor 14, Actor 15, Actor 16, Actor 17, Actor 18, Actor 19"
+		"Actor 11, Actor 13, Tied On Billing, Actor 12, Actor 14, Actor 15, Actor 16, Actor 17, Actor 18, Actor 19"
 	if got := strings.Join(byRole[roleActor], ", "); got != wantCast {
 		t.Errorf("cast\n %s\nwant\n %s", got, wantCast)
 	}
@@ -208,13 +209,14 @@ producer The Producer (903) Executive Producer | - | 0 | 6
 composer The Composer (904) Original Music Composer | - | 0 | 6`
 
 // A series' creators are credited from its details, read in the one request
-// that reads its credits, whichever way the series is refreshed: each creator
+// that reads its credits, whichever way the series is read (enriched,
+// identified, refreshPeople, the change list): each creator
 // in TMDB's order, with the job Creator. A creator who directed or wrote it
 // has a credit in that role too and is one person; someone's Writer and
 // Co-Writer jobs are one credit; the cast says whom each plays and in how many
 // episodes.
 func TestASeriesIsCreditedWithItsCreators(t *testing.T) {
-	for _, path := range []string{"enrichment", "refreshPeople", "change list"} {
+	for _, path := range []string{"enrichment", "identify", "refreshPeople", "change list"} {
 		t.Run(path, func(t *testing.T) {
 			st := storetest.Open(t)
 			f := newFakeTMDB(t)
@@ -223,6 +225,11 @@ func TestASeriesIsCreditedWithItsCreators(t *testing.T) {
 			switch path {
 			case "enrichment":
 				enrich(t, s, show1)
+			case "identify":
+				id := int64(9100)
+				if status, msg, err := s.IdentifyOne(context.Background(), show1, "", &id); err != nil || status != statusDone {
+					t.Fatalf("IdentifyOne: %s %q %v", status, msg, err)
+				}
 			case "refreshPeople":
 				res, err := s.RefreshPeople(context.Background(), true)
 				if err != nil {
