@@ -16,6 +16,9 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/zaentrum/katalog-manager/internal/auth"
+	"github.com/zaentrum/katalog-manager/internal/auth/authtest"
+	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
@@ -30,14 +33,28 @@ func streamToken(subject string, exp time.Time) string {
 	return payload + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
+// testConfig tells callers apart as the platform's realm does, and roots the
+// library in dir.
+func testConfig(dir string) config.Config {
+	return config.Config{AdminRole: "zaentrum-admin", AddonRole: "zaentrum-addon", RolesClaim: auth.DefaultRolesClaim,
+		ServiceClients: []string{"zaentrum-manager"}, NFSRoot: dir + "/media", PackagesRoot: dir + "/packages"}
+}
+
 // router serves the REST routes as the service does: behind the auth
-// middleware, which takes a stream token and, its issuer unreachable, no
-// bearer token.
+// middleware, which takes a stream token and the bearer tokens of a test
+// issuer.
 func router(t *testing.T, st *store.Store) http.Handler {
+	h, _ := server(t, st, testConfig(t.TempDir()))
+	return h
+}
+
+// server is router with cfg, and the issuer whose tokens it takes.
+func server(t *testing.T, st *store.Store, cfg config.Config) (http.Handler, *authtest.Issuer) {
 	t.Helper()
+	iss := authtest.NewIssuer(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel) // stops the verifier's discovery retries
-	jwt, err := auth.NewJWTVerifier(ctx, "http://127.0.0.1:1/realms/test", "katalog", false, false)
+	t.Cleanup(cancel) // stops the verifier's discovery retries, if any
+	jwt, err := auth.NewJWTVerifier(ctx, iss.URL, "chino", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,9 +65,9 @@ func router(t *testing.T, st *store.Store) http.Handler {
 	r := chi.NewRouter()
 	r.Group(func(pr chi.Router) {
 		pr.Use(auth.NewMiddleware(jwt, stream).Handler)
-		New(Deps{Store: st}).Register(pr)
+		New(Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool())}).Register(pr)
 	})
-	return r
+	return r, iss
 }
 
 func get(h http.Handler, path string, header ...string) *httptest.ResponseRecorder {
