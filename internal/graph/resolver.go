@@ -806,6 +806,9 @@ func (r *Resolver) CreateSetting(ctx context.Context, args struct {
 	if err := r.allow(ctx, "Mutation.createSetting"); err != nil {
 		return nil, err
 	}
+	if isSecretSetting(args.Key) {
+		return nil, errSecretSetting(args.Key)
+	}
 	valueType := "string"
 	if args.ValueType != nil && *args.ValueType != "" {
 		valueType = *args.ValueType
@@ -825,6 +828,11 @@ func (r *Resolver) UpdateSetting(ctx context.Context, args struct {
 }) (*settingResolver, error) {
 	if err := r.allow(ctx, "Mutation.updateSetting"); err != nil {
 		return nil, err
+	}
+	if cur, err := r.store.GetSetting(ctx, string(args.ID)); err != nil {
+		return nil, err
+	} else if cur != nil && isSecretSetting(cur.Key) {
+		return nil, errSecretSetting(cur.Key)
 	}
 	s, err := r.store.UpdateSetting(ctx, string(args.ID), args.ValueText, args.ValueType, args.Description)
 	if err != nil || s == nil {

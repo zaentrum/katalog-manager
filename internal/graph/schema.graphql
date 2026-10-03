@@ -311,12 +311,24 @@ type DownloadJob {
   stateCriticality: Int
 }
 
+# A setting. A secret one (isSecret: a credential, such as an API key) is
+# write-only: its value is never returned, isSet says whether it has one, and
+# setSecretSetting and clearSecretSetting are the only ways to change it.
 type Setting {
   id: ID!
   key: String!
-  valueText: String!
+  # the value; null for a secret
+  valueText: String
   valueType: String!
   description: String
+  # a credential: the keys the service reads as API keys (tmdb.api_key,
+  # omdb.api_key, fanart.api_key, fanart.client_key) and any key that names
+  # one (a secret, a token, a password, a credential, an API key or a key)
+  isSecret: Boolean!
+  # whether it holds a value that is not blank
+  isSet: Boolean!
+  # when it was last written
+  updatedAt: Time
 }
 
 type EnrichmentStatusCode {
@@ -587,8 +599,16 @@ type Mutation {
   setItemGenres(id: ID!, genres: [String!]!): Item!
   setItemTags(id: ID!, tags: [String!]!): Item!
 
-  # settings (key read-only after create)
+  # settings (key read-only after create). createSetting and updateSetting
+  # refuse a secret setting (Setting.isSecret): its value is set with
+  # setSecretSetting and cleared with clearSecretSetting.
   createSetting(key: String!, valueText: String!, valueType: String, description: String): Setting!
   updateSetting(id: ID!, valueText: String, valueType: String, description: String): Setting!
   deleteSetting(id: ID!): Boolean!
+  # Sets a secret setting to value (not blank), creating it when there is
+  # none. Write-only: the result says it is set, never what it is.
+  setSecretSetting(key: String!, value: String!): Setting!
+  # Clears a secret setting, so the service falls back to its environment
+  # default; false when there was none.
+  clearSecretSetting(key: String!): Boolean!
 }

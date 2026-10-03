@@ -329,16 +329,6 @@ func (r *downloadJobResolver) CompletedAt() *graphql.Time { return gtime(r.m.Com
 func (r *downloadJobResolver) LastEventAt() *graphql.Time { return gtime(r.m.LastEventAt) }
 func (r *downloadJobResolver) StateCriticality() *int32   { return r.m.StateCriticality }
 
-// ---- Setting ----
-
-type settingResolver struct{ m *model.Setting }
-
-func (r *settingResolver) ID() graphql.ID       { return gid(r.m.ID) }
-func (r *settingResolver) Key() string          { return r.m.Key }
-func (r *settingResolver) ValueText() string    { return r.m.ValueText }
-func (r *settingResolver) ValueType() string    { return r.m.ValueType }
-func (r *settingResolver) Description() *string { return r.m.Description }
-
 // ---- DeletedItem ----
 
 type deletedItemResolver struct{ m *model.DeletedItem }

@@ -120,6 +120,61 @@ func (s *Store) UpdateSetting(ctx context.Context, id string, valueText, valueTy
 	return &x, nil
 }
 
+// SetSettingByKey sets the value of the setting with key (of every one, when
+// the table holds the key twice), creating it with the type string when there
+// is none, and returns it. One set of a key runs at a time, so two never both
+// create it.
+func (s *Store) SetSettingByKey(ctx context.Context, key, valueText string) (*model.Setting, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('com_nalet_katalog_settings:' || $1))`, key); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `UPDATE com_nalet_katalog_settings SET valuetext = $2, modifiedat = now()
+		WHERE key = $1 RETURNING `+settingCols, key, valueText)
+	if err != nil {
+		return nil, err
+	}
+	var x *model.Setting
+	for rows.Next() {
+		var row model.Setting
+		if err := scanSetting(rows, &row); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if x == nil || row.ID < x.ID {
+			x = &row
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if x == nil {
+		x = &model.Setting{}
+		if err := scanSetting(tx.QueryRow(ctx, `INSERT INTO com_nalet_katalog_settings
+			(id, createdat, modifiedat, key, valuetext, valuetype)
+			VALUES (gen_random_uuid()::varchar, now(), now(), $1, $2, 'string')
+			RETURNING `+settingCols, key, valueText), x); err != nil {
+			return nil, err
+		}
+	}
+	return x, tx.Commit(ctx)
+}
+
+// DeleteSettingsByKey deletes the settings with key, and says whether there
+// were any.
+func (s *Store) DeleteSettingsByKey(ctx context.Context, key string) (bool, error) {
+	ct, err := s.pool.Exec(ctx, `DELETE FROM com_nalet_katalog_settings WHERE key = $1`, key)
+	if err != nil {
+		return false, err
+	}
+	return ct.RowsAffected() > 0, nil
+}
+
 func (s *Store) DeleteSetting(ctx context.Context, id string) (bool, error) {
 	ct, err := s.pool.Exec(ctx, `DELETE FROM com_nalet_katalog_settings WHERE id = $1`, id)
 	if err != nil {

@@ -315,4 +315,10 @@ CREATE TABLE com_nalet_katalog_itemchapters (
   item_id VARCHAR(36) NOT NULL, startms BIGINT NOT NULL, endms BIGINT NOT NULL, title VARCHAR(120),
   ordinal INTEGER
 );
+CREATE TABLE com_nalet_katalog_settings (
+  id VARCHAR(36) NOT NULL PRIMARY KEY,
+  createdat TIMESTAMP, createdby VARCHAR(255), modifiedat TIMESTAMP, modifiedby VARCHAR(255),
+  key VARCHAR(120) NOT NULL, valuetext VARCHAR(2000) NOT NULL DEFAULT '',
+  valuetype VARCHAR(20) NOT NULL DEFAULT 'string', description TEXT
+);
 `
