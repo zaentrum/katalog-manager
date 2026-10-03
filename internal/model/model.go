@@ -209,11 +209,17 @@ type ItemGenre struct {
 	GenreID string
 }
 
+// ItemPerson is a credit: a person in a role on a title, once per person and
+// role. The rest is what TMDB says of it (db/migrations/032), nil when unknown.
 type ItemPerson struct {
-	ID       string
-	ItemID   string
-	PersonID string
-	Role     string
+	ID           string
+	ItemID       string
+	PersonID     string
+	Role         string  // a role (ValidRole), e.g. one of CreditRoles
+	Job          *string // the person's jobs in the role, joined with ", "
+	Character    *string // whom an actor plays
+	Order        *int32  // the credit's place in its role, 0 first
+	EpisodeCount *int32  // the episodes of a series the person is credited in, in the role
 }
 
 type ItemTag struct {

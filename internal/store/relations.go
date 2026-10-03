@@ -244,21 +244,30 @@ func (s *Store) GenresByItem(ctx context.Context, id string) ([]*model.Genre, er
 	return out, rows.Err()
 }
 
-// PeopleByItem returns the item-person link rows and the parallel person rows.
+// PeopleByItem returns an item's credits and the parallel person rows, in the
+// order a title lists its credits: by role (those of model.CreditRoles in its
+// order, then any other role, by role), then by their order (unknown last),
+// then by name. A credit's job, character, order and episodes are read through
+// to_jsonb of its row, which carries the columns the table has: a catalog
+// without migration 032 has its credits' roles alone.
 func (s *Store) PeopleByItem(ctx context.Context, id string) ([]*model.ItemPerson, []*model.Person, error) {
 	var links []*model.ItemPerson
 	var people []*model.Person
 	var ip *model.ItemPerson
 	err := s.queryPeople(ctx, func(cols string) string {
-		return `SELECT ip.id, ip.item_id, ip.person_id, ip.role, ` + cols + `
-			FROM com_nalet_katalog_itempeople ip JOIN com_nalet_katalog_people p ON p.id = ip.person_id
-			WHERE ip.item_id = $1 ORDER BY ip.role, p.name, p.id`
+		return `SELECT ip.id, ip.item_id, ip.person_id, ip.role, ip.d->>'job', ip.d->>'charactername',
+				(ip.d->>'ordinal')::int, (ip.d->>'episodecount')::int, ` + cols + `
+			FROM (SELECT c.id, c.item_id, c.person_id, c.role, to_jsonb(c) AS d
+			      FROM com_nalet_katalog_itempeople c WHERE c.item_id = $1) ip
+			JOIN com_nalet_katalog_people p ON p.id = ip.person_id
+			ORDER BY array_position($2::text[], ip.role::text) NULLS LAST, ip.role,
+				(ip.d->>'ordinal')::int NULLS LAST, p.name, p.id, ip.id`
 	}, func() []any {
 		ip = &model.ItemPerson{}
-		return []any{&ip.ID, &ip.ItemID, &ip.PersonID, &ip.Role}
+		return []any{&ip.ID, &ip.ItemID, &ip.PersonID, &ip.Role, &ip.Job, &ip.Character, &ip.Order, &ip.EpisodeCount}
 	}, func(p *model.Person) {
 		links, people = append(links, ip), append(people, p)
-	}, id)
+	}, id, model.CreditRoles)
 	return links, people, err
 }
 

@@ -77,6 +77,7 @@ func (r *peopleRefreshResultResolver) TitlesLocked() int32        { return r.m.T
 func (r *peopleRefreshResultResolver) PeopleMatched() int32       { return r.m.PeopleMatched }
 func (r *peopleRefreshResultResolver) PeopleCreated() int32       { return r.m.PeopleCreated }
 func (r *peopleRefreshResultResolver) CreditsAdded() int32        { return r.m.CreditsAdded }
+func (r *peopleRefreshResultResolver) CreditsUpdated() int32      { return r.m.CreditsUpdated }
 func (r *peopleRefreshResultResolver) CreditsDropped() int32      { return r.m.CreditsDropped }
 func (r *peopleRefreshResultResolver) CreditsRelinked() int32     { return r.m.CreditsRelinked }
 func (r *peopleRefreshResultResolver) PeopleDeleted() int32       { return r.m.PeopleDeleted }

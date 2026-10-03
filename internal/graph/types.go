@@ -183,8 +183,12 @@ type itemPersonResolver struct {
 	person *model.Person
 }
 
-func (r *itemPersonResolver) ID() graphql.ID { return gid(r.m.ID) }
-func (r *itemPersonResolver) Role() string   { return r.m.Role }
+func (r *itemPersonResolver) ID() graphql.ID       { return gid(r.m.ID) }
+func (r *itemPersonResolver) Role() string         { return r.m.Role }
+func (r *itemPersonResolver) Job() *string         { return r.m.Job }
+func (r *itemPersonResolver) Character() *string   { return r.m.Character }
+func (r *itemPersonResolver) Order() *int32        { return r.m.Order }
+func (r *itemPersonResolver) EpisodeCount() *int32 { return r.m.EpisodeCount }
 func (r *itemPersonResolver) Person() *personResolver {
 	if r.person == nil {
 		return &personResolver{m: &model.Person{ID: r.m.PersonID}}

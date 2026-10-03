@@ -54,6 +54,7 @@ type Item {
   processingSteps: [ItemProcessingStep!]!
   overallStatus: ItemOverallStatus
   genres: [Genre!]!
+  # the title's credits, by role, then order, then name (see ItemPerson)
   people: [ItemPerson!]!
   tags: [String!]!
 }
@@ -179,9 +180,27 @@ type FieldOrigin {
   origin: String!
 }
 
+# A credit: someone a title credits, in a role, once per person and role. A
+# role is a lowercase word: actor, creator, director, writer, producer,
+# composer, cinematographer, editor, or another. A title lists its credits by
+# role in that order (any other role after them, by role), then by order
+# (unknown last), then by the person's name. job, character, order and
+# episodeCount are what TMDB says of the credit, null when unknown (always on
+# a catalog older than migration 032).
 type ItemPerson {
   id: ID!
   role: String!
+  # the person's jobs in the role, as TMDB names them, joined with ", "
+  # ("Writer, Co-Writer"); "Creator" for a series' creator; null for an actor
+  job: String
+  # whom an actor plays; for a series every character, the most episodes
+  # first, joined with " / "
+  character: String
+  # the credit's place in its role, 0 first: a film actor's billing order,
+  # otherwise the rank (a series' by the episodes each is credited in)
+  order: Int
+  # the episodes of a series the person is credited in, in the role
+  episodeCount: Int
   person: Person!
 }
 
@@ -370,9 +389,13 @@ type PeopleRefreshResult {
   peopleMatched: Int!
   # credited people the catalog did not hold yet
   peopleCreated: Int!
-  # credits titles gained from TMDB, and credits TMDB no longer lists, gone
+  # credits titles gained from TMDB, and credits TMDB no longer lists (or in a
+  # role no longer among KATALOG_CREDIT_ROLES), gone
   creditsAdded: Int!
   creditsDropped: Int!
+  # credits kept whose job, character, order or episodeCount TMDB changed:
+  # changed in place
+  creditsUpdated: Int!
   # credits once matched to a namesake by name, now on the person credited
   creditsRelinked: Int!
   # people no title credits any more: deleted, and in the deletion log
@@ -510,8 +533,9 @@ type Mutation {
   identify(id: ID!, title: String, tmdbId: Int): EnrichResult!
   enrichPending(limit: Int, type: String): EnrichPendingResult!
   # Backfill people from TMDB: read the TMDB credits of titles again, so each
-  # title credits exactly whom TMDB lists (a person known only by name is
-  # matched by it once; a credit TMDB no longer lists goes, and a person no
+  # title credits exactly whom TMDB lists, in the roles KATALOG_CREDIT_ROLES
+  # names (a person known only by name is matched by it once; a credit TMDB no
+  # longer lists goes, one TMDB says more of changes in place, and a person no
   # title credits any more is deleted, in the deletion log), then read the
   # people's details and profiles. all: every title and every person with a
   # TMDB id; otherwise only the titles crediting someone without one, and the
