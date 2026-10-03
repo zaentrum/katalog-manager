@@ -23,11 +23,13 @@ var (
 )
 
 // isSecretSetting reports whether the setting key holds a credential: one of
-// secretSettingKeys, or a key that names one. Its value is write-only: no
-// field returns it, and only setSecretSetting and clearSecretSetting change
-// it. A key taken for a secret that is none is merely write-only too; one
-// taken for none that is a secret would be read back, so the words are wide.
+// secretSettingKeys, or a key that names one, spaces around it aside. Its
+// value is write-only: no field returns it, and only setSecretSetting and
+// clearSecretSetting change it. A key taken for a secret that is none is
+// merely write-only too; one taken for none that is a secret would be read
+// back, so the words are wide.
 func isSecretSetting(key string) bool {
+	key = strings.TrimSpace(key)
 	return slices.Contains(secretSettingKeys, key) || secretWords.MatchString(key) || secretKeySuffix.MatchString(key)
 }
 

@@ -143,6 +143,7 @@ func TestTheGeneralSettingWritesRefuseSecrets(t *testing.T) {
 	for q, says := range map[string]string{
 		`mutation { createSetting(key: "tmdb.api_key", valueText: "x") { id } }`:  "tmdb.api_key is a secret setting: set it with setSecretSetting",
 		`mutation { createSetting(key: "smtp.password", valueText: "x") { id } }`: "smtp.password is a secret setting",
+		`mutation { createSetting(key: "license.key ", valueText: "x") { id } }`:  "license.key  is a secret setting",
 		`mutation { updateSetting(id: "s3", valueText: "x") { id } }`:             "fanart.client_key is a secret setting",
 		`mutation { updateSetting(id: "s4", description: "x") { id } }`:           "alerts.token is a secret setting",
 	} {
@@ -177,6 +178,7 @@ func TestIsSecretSetting(t *testing.T) {
 		"TMDB_API_KEY": true, "subtitles.apikey": true, "webhooks.api-key": true, "smtp.password": true,
 		"db.passwd": true, "oauth.client_secret": true, "Secret": true, "trailers.token": true,
 		"registry.credentials": true, "license.key": true, "signing_key": true, "key": true,
+		" license.key ": true, "signing_key\n": true, "\tkey": true,
 		"validate.small_file_threshold_mb": false, "packager.languages": false, "scanner.roots": false,
 		"monkey.count": false, "keyboard.layout": false, "keys.sorted": false, "": false,
 	} {
