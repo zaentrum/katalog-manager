@@ -23,12 +23,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// The roles a credit links a person to a title in.
-const (
-	roleActor    = "actor"
-	roleDirector = "director"
-)
-
 // peopleReady reports whether migration 030 is in place. Without it a person
 // is only a name, and credits link people by name as they always did.
 func (s *Service) peopleReady(ctx context.Context) bool {
@@ -46,6 +40,23 @@ func (s *Service) peopleReady(ctx context.Context) bool {
 	return true
 }
 
+// creditDetailsReady reports whether migration 032 is in place. Without it a
+// credit is a person in a role, and what TMDB says of it besides is not kept.
+func (s *Service) creditDetailsReady(ctx context.Context) bool {
+	if s.detailsOK.Load() {
+		return true
+	}
+	if s.detailsCheck == nil {
+		return false
+	}
+	ok, err := s.detailsCheck(ctx)
+	if err != nil || !ok {
+		return false
+	}
+	s.detailsOK.Store(true)
+	return true
+}
+
 // applyCredits makes a title's credits TMDB's (replaceCredits), and a credited
 // person the catalog has not read from TMDB yet gets their details and profile.
 // A person whose details cannot be had is logged and left for later: it never
@@ -53,11 +64,8 @@ func (s *Service) peopleReady(ctx context.Context) bool {
 // they were).
 func (s *Service) applyCredits(ctx context.Context, itemID string, c *tmdbCredits) {
 	if !s.peopleReady(ctx) {
-		for _, d := range c.Crew {
-			s.upsertPersonByName(ctx, itemID, d.Name, roleDirector)
-		}
-		for _, a := range c.Cast {
-			s.upsertPersonByName(ctx, itemID, a.Name, roleActor)
+		for _, cr := range c.List {
+			s.upsertPersonByName(ctx, itemID, cr.Name, cr.Role)
 		}
 		return
 	}
@@ -66,9 +74,9 @@ func (s *Service) applyCredits(ctx context.Context, itemID string, c *tmdbCredit
 		log.Printf("tmdb: credits of item %s: %v; left as they were", itemID, err)
 		return
 	}
-	if ch.added+ch.dropped+ch.relinked+ch.deleted > 0 {
-		log.Printf("tmdb: credits of item %s follow TMDB: %d added, %d dropped, %d moved off a namesake; "+
-			"%d people no title credits any more deleted", itemID, ch.added, ch.dropped, ch.relinked, ch.deleted)
+	if ch.added+ch.updated+ch.dropped+ch.relinked+ch.deleted > 0 {
+		log.Printf("tmdb: credits of item %s follow TMDB: %d added, %d updated, %d dropped, %d moved off a namesake; "+
+			"%d people no title credits any more deleted", itemID, ch.added, ch.updated, ch.dropped, ch.relinked, ch.deleted)
 	}
 	s.fetchUnreadPeople(ctx, ch.people)
 }

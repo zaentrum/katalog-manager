@@ -33,7 +33,7 @@ func longShow(f *fakeTMDB) {
 
 const longShowCredits = "actor Early Recurring (306), actor In One Episode (307), actor Lead One (301), " +
 	"actor Lead Two (302), actor New In Season Three (308), actor Season One Regular (303), " +
-	"actor Season Two Regular (304), actor Seasons One And Two (305), " +
+	"actor Season Two Regular (304), actor Seasons One And Two (305), cinematographer Their Camera (403), " +
 	"director Finale Director (402), director Pilot Director (401)"
 
 // A series' credits are its people of every season: refreshing it — enriching
@@ -69,8 +69,10 @@ func TestSeriesCreditsComeFromEverySeason(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if res.CreditsDropped != 0 || res.PeopleDeleted != 0 || res.CreditsAdded != 2 {
-					t.Errorf("refreshPeople %+v: want the two new credits added and none dropped", counts(res))
+				// Added: the actor new in season three, the finale's director and the
+				// cinematographer; the eight credits there were take their details.
+				if res.CreditsDropped != 0 || res.PeopleDeleted != 0 || res.CreditsAdded != 3 || res.CreditsUpdated != 8 {
+					t.Errorf("refreshPeople %+v: want the three new credits added, the eight updated and none dropped", counts(res))
 				}
 			case "change list":
 				f.changed("tv", "2026-10-02", 20)
@@ -91,7 +93,9 @@ func TestSeriesCreditsComeFromEverySeason(t *testing.T) {
 
 // Of a series' aggregate credits the catalog keeps the 20 in the most episodes,
 // a tie going to TMDB's billing order, then the lower TMDB id; and the 20 who
-// directed the most episodes, of the crew only those whose job is Director.
+// directed the most episodes. The rest of the crew is credited by job: a
+// director of photography as a cinematographer, a writer as a writer, while an
+// assistant director is not kept.
 func TestSeriesCreditsKeepTheMostEpisodes(t *testing.T) {
 	f := newFakeTMDB(t)
 	var people []aggPerson
@@ -118,25 +122,28 @@ func TestSeriesCreditsKeepTheMostEpisodes(t *testing.T) {
 	if !ok {
 		t.Fatal("aggregate credits not read")
 	}
-	var cast, crew []string
-	for _, p := range cr.Cast {
-		cast = append(cast, p.Name)
-	}
-	for _, p := range cr.Crew {
-		crew = append(crew, p.Name)
+	byRole := map[string][]string{}
+	for _, p := range cr.List {
+		if p.Order != len(byRole[p.Role]) {
+			t.Errorf("%s %s has order %d, want their rank %d", p.Role, p.Name, p.Order, len(byRole[p.Role]))
+		}
+		byRole[p.Role] = append(byRole[p.Role], p.Name)
 	}
 	// Billing order breaks the tie of 12 and 13 (13 is billed first: order 17
 	// against 18), and the lower id the tie of 12 and "Tied On Billing".
 	wantCast := "Actor 01, Actor 02, Actor 03, Actor 04, Actor 05, Actor 06, Actor 07, Actor 08, Actor 09, Actor 10, " +
 		"Actor 11, Actor 13, Actor 12, Tied On Billing, Actor 14, Actor 15, Actor 16, Actor 17, Actor 18, Actor 19"
-	if got := strings.Join(cast, ", "); got != wantCast {
+	if got := strings.Join(byRole[roleActor], ", "); got != wantCast {
 		t.Errorf("cast\n %s\nwant\n %s", got, wantCast)
 	}
 	wantCrew := "Director 01, Director 02, Director 03, Director 04, Director 05, Director 06, Director 07, " +
 		"Director 08, Director 09, Director 10, Director 11, Director 12, Director 13, Director 14, Director 15, " +
 		"Director 16, Director 17, Director 18, Director 19, Director 20"
-	if got := strings.Join(crew, ", "); got != wantCrew {
+	if got := strings.Join(byRole[roleDirector], ", "); got != wantCrew {
 		t.Errorf("directors\n %s\nwant\n %s", got, wantCrew)
+	}
+	if got := fmt.Sprint(byRole[roleCinematographer], byRole[roleWriter], len(cr.List)); got != "[Of Photography] [A Writer] 42" {
+		t.Errorf("the rest of the crew: cinematographers, writers and all credits %s, want [Of Photography] [A Writer] 42", got)
 	}
 	if got := f.calls("/3/tv/7/"); len(got) != 1 || !strings.HasPrefix(got[0], "/3/tv/7/aggregate_credits?") {
 		t.Errorf("requests %q, want aggregate_credits only", got)

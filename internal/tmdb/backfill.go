@@ -68,6 +68,7 @@ func (s *Service) RefreshPeople(ctx context.Context, all bool) (graph.PeopleRefr
 		res.PeopleMatched += int32(ch.matched)
 		res.PeopleCreated += int32(ch.created)
 		res.CreditsAdded += int32(ch.added)
+		res.CreditsUpdated += int32(ch.updated)
 		res.CreditsDropped += int32(ch.dropped)
 		res.CreditsRelinked += int32(ch.relinked)
 		res.PeopleDeleted += int32(ch.deleted)
@@ -101,10 +102,11 @@ func (s *Service) RefreshPeople(ctx context.Context, all bool) (graph.PeopleRefr
 		return res, err
 	}
 	res.FinishedAt = time.Now().UTC()
-	log.Printf("tmdb: people refresh all=%v: titles read=%d failed=%d locked=%d; credits added=%d dropped=%d "+
-		"relinked=%d; people matched=%d created=%d deleted=%d fetched=%d locked=%d notFound=%d failed=%d "+
+	log.Printf("tmdb: people refresh all=%v: titles read=%d failed=%d locked=%d; credits added=%d updated=%d "+
+		"dropped=%d relinked=%d; people matched=%d created=%d deleted=%d fetched=%d locked=%d notFound=%d failed=%d "+
 		"withoutTmdbId=%d (%s)", all,
-		res.TitlesRead, res.TitlesFailed, res.TitlesLocked, res.CreditsAdded, res.CreditsDropped, res.CreditsRelinked,
+		res.TitlesRead, res.TitlesFailed, res.TitlesLocked, res.CreditsAdded, res.CreditsUpdated, res.CreditsDropped,
+		res.CreditsRelinked,
 		res.PeopleMatched, res.PeopleCreated, res.PeopleDeleted, res.PeopleFetched, res.PeopleLocked,
 		res.PeopleNotFound, res.PeopleFailed, res.PeopleWithoutTmdbID,
 		res.FinishedAt.Sub(res.StartedAt).Round(time.Millisecond))

@@ -48,9 +48,12 @@ type Service struct {
 
 	// peopleCheck reports whether migration 030 is in place; peopleOK
 	// remembers once it is (a migration is not undone under a running service).
-	peopleCheck func(context.Context) (bool, error)
-	peopleOK    atomic.Bool
-	refreshing  atomic.Bool // a RefreshPeople run is under way
+	// detailsCheck and detailsOK are the same for migration 032.
+	peopleCheck  func(context.Context) (bool, error)
+	peopleOK     atomic.Bool
+	detailsCheck func(context.Context) (bool, error)
+	detailsOK    atomic.Bool
+	refreshing   atomic.Bool // a RefreshPeople run is under way
 
 	maxChangePages int // 0: TMDB's, maxChangePages; a test lowers it
 }
@@ -71,6 +74,11 @@ func New(st storePool, cfg config.Config, steps *processing.Steps, ch *chaptersd
 		PeopleReady(context.Context) (bool, error)
 	}); ok {
 		s.peopleCheck = pc.PeopleReady
+	}
+	if dc, ok := st.(interface {
+		CreditDetailsReady(context.Context) (bool, error)
+	}); ok {
+		s.detailsCheck = dc.CreditDetailsReady
 	}
 	s.tmdb = newClient(s.keyFor("tmdb.api_key", cfg.TMDBAPIKey), cfg.TMDBLanguage)
 	s.fanart = newFanartClient(

@@ -108,7 +108,9 @@ func TestCreditsFollowTMDBForTheTwoShorts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := counts(res), (graph.PeopleRefreshResult{TitlesRead: 2, CreditsDropped: 26, PeopleDeleted: 26}); got != want {
+	// The directors' credits stay, and take what TMDB says of them: their job and order.
+	if got, want := counts(res), (graph.PeopleRefreshResult{TitlesRead: 2, CreditsUpdated: 2, CreditsDropped: 26,
+		PeopleDeleted: 26}); got != want {
 		t.Errorf("refreshPeople:\n got  %+v\n want %+v", got, want)
 	}
 	if got, want := credits(t, st, spring), fmt.Sprintf("director Andreas Goralczyk (%d)", springDirector); got != want {
@@ -304,17 +306,19 @@ func TestReplaceCreditsCountsWhatItDid(t *testing.T) {
 		('l1', $1, 'john-501', 'actor'), ('l2', $1, 'gone', 'actor'), ('l3', $1, 'stays', 'actor'),
 		('l4', $1, 'stays', 'actor')`, film1) // a link stored twice
 
-	ch, err := s.replaceCredits(context.Background(), film1, &tmdbCredits{
-		Cast: []tmdbCredit{{502, "John Namesake"}, {300, "Stays"}, {300, "Stays"}, {600, "New Face"}},
-		Crew: []tmdbCredit{{300, "Stays"}},
-	})
+	ch, err := s.replaceCredits(context.Background(), film1, &tmdbCredits{List: []tmdbCredit{
+		{ID: 502, Name: "John Namesake", Role: roleActor}, {ID: 300, Name: "Stays", Role: roleActor},
+		{ID: 300, Name: "Stays", Role: roleActor}, {ID: 600, Name: "New Face", Role: roleActor},
+		{ID: 300, Name: "Stays", Role: roleDirector},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ch.people = nil
-	if want := (creditChange{created: 2, added: 2, dropped: 2, relinked: 1, deleted: 2}); !reflect.DeepEqual(ch, want) {
-		// added: New Face as actor, Stays as director; relinked: John onto the other John;
-		// dropped: Gone Actor and the second copy of Stays; deleted: John 501 and Gone Actor
+	if want := (creditChange{created: 2, added: 2, updated: 1, dropped: 2, relinked: 1, deleted: 2}); !reflect.DeepEqual(ch, want) {
+		// added: New Face as actor, Stays as director; updated: Stays as actor, who now has an order;
+		// relinked: John onto the other John; dropped: Gone Actor and the second copy of Stays;
+		// deleted: John 501 and Gone Actor
 		t.Errorf("change %+v, want %+v", ch, want)
 	}
 	if got := credits(t, st, film1); got != "actor John Namesake (502), actor New Face (600), actor Stays (300), director Stays (300)" {

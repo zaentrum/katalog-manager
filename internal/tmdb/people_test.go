@@ -93,7 +93,7 @@ func TestCreditsFindTheirPeopleByTMDBID(t *testing.T) {
 		('l1', $1, 'old-ada', 'actor'), ('l2', $1, 'old-john', 'actor'), ('l3', $2, 'old-john', 'actor')`, film1, film2)
 	f.cast("movie/10", []string{"101", "Ada Example"}, []string{"501", "John Namesake"},
 		[]string{"300", "Cara New Name"}, []string{"401", "Dan Twin"}, []string{"601", "Dee Director", "Director"},
-		[]string{"602", "Writer Not Kept", "Screenplay"})
+		[]string{"602", "Art Not Kept", "Art Direction"})
 	f.cast("movie/11", []string{"502", "John Namesake"})
 
 	enrich(t, s, film1)

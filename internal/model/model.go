@@ -4,7 +4,22 @@
 // package wraps them into GraphQL resolvers.
 package model
 
-import "time"
+import (
+	"regexp"
+	"time"
+)
+
+// CreditRoles are the roles the catalog knows a title to credit people in, in
+// the order a title lists its credits; TMDB's credits give each of them. A
+// role is any lowercase word (ValidRole): a credit in another role lists after
+// these, by role.
+var CreditRoles = []string{"actor", "creator", "director", "writer", "producer", "composer", "cinematographer", "editor"}
+
+var roleRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
+
+// ValidRole reports whether s is a role: a lowercase letter, then up to 39
+// lowercase letters, digits and hyphens.
+func ValidRole(s string) bool { return roleRE.MatchString(s) }
 
 // Vocabularies ported verbatim from the CAP service (SPEC §3).
 var (

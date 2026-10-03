@@ -40,6 +40,7 @@ type PeopleRefreshResult struct {
 	PeopleMatched       int32 // people without a TMDB id who got theirs from a credit
 	PeopleCreated       int32 // credited people the catalog did not hold yet
 	CreditsAdded        int32 // credits titles gained from TMDB
+	CreditsUpdated      int32 // credits whose job, character, order or episodes changed, in place
 	CreditsDropped      int32 // credits TMDB no longer lists, gone
 	CreditsRelinked     int32 // credits matched to a namesake, now on the person credited
 	PeopleDeleted       int32 // people no title credits any more: deleted, in the deletion log

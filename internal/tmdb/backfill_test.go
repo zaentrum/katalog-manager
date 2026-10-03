@@ -52,9 +52,10 @@ func TestRefreshPeopleBackfillsPeopleKnownByName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The five credits that stay take what TMDB says of them (their order, a job).
 	if got, want := counts(res), (graph.PeopleRefreshResult{TitlesRead: 3, TitlesFailed: 1, PeopleMatched: 4,
-		PeopleCreated: 1, CreditsAdded: 1, CreditsDropped: 1, PeopleDeleted: 1, PeopleFetched: 3, PeopleLocked: 1,
-		PeopleNotFound: 1, PeopleWithoutTmdbID: 1}); got != want {
+		PeopleCreated: 1, CreditsAdded: 1, CreditsUpdated: 5, CreditsDropped: 1, PeopleDeleted: 1, PeopleFetched: 3,
+		PeopleLocked: 1, PeopleNotFound: 1, PeopleWithoutTmdbID: 1}); got != want {
 		t.Errorf("first run:\n got  %+v\n want %+v", got, want)
 	}
 	if res.StartedAt.IsZero() || res.FinishedAt.Before(res.StartedAt) {
@@ -99,8 +100,8 @@ func TestRefreshPeopleBackfillsPeopleKnownByName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := counts(res), (graph.PeopleRefreshResult{TitlesRead: 4, PeopleMatched: 1, PeopleFetched: 4,
-		PeopleLocked: 1, PeopleNotFound: 1}); got != want {
+	if got, want := counts(res), (graph.PeopleRefreshResult{TitlesRead: 4, PeopleMatched: 1, CreditsUpdated: 1,
+		PeopleFetched: 4, PeopleLocked: 1, PeopleNotFound: 1}); got != want {
 		t.Errorf("run with all:\n got  %+v\n want %+v", got, want)
 	}
 }

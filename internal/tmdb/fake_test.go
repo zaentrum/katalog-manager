@@ -30,6 +30,7 @@ type fakeTMDB struct {
 	tvs      map[int64]map[string]any            // GET /tv/{id}
 	credits  map[string][]map[string]any         // "movie/10" or "tv/20": cast entries; a "job" makes crew
 	every    map[string][]aggPerson              // "tv/20": a series' credits over every season (aggregate_credits)
+	allRaw   map[string]map[string]any           // "tv/20": the same, as TMDB answers it (wins over every)
 	people   map[int64]*fakePerson               // GET /person/{id}
 	images   map[string][]byte                   // GET /t/p/{size}{path}, by path
 	changes  map[string]map[string][]int64       // kind → day (YYYY-MM-DD) → ids changed that day
@@ -61,6 +62,7 @@ func newFakeTMDB(t testing.TB) *fakeTMDB {
 		tvs:      map[int64]map[string]any{},
 		credits:  map[string][]map[string]any{},
 		every:    map[string][]aggPerson{},
+		allRaw:   map[string]map[string]any{},
 		people:   map[int64]*fakePerson{},
 		images:   map[string][]byte{},
 		changes:  map[string]map[string][]int64{},
@@ -109,21 +111,60 @@ func (f *fakeTMDB) tv(id int64, name string) {
 	f.tvs[id] = map[string]any{"id": id, "name": name, "overview": "About " + name, "first_air_date": "2021-01-01"}
 }
 
-// cast sets a title's credits ("movie/10"): each entry is a TMDB id and a name;
-// a third string makes it crew with that job.
+// cast sets a title's credits ("movie/10"): each entry is a TMDB id and a name,
+// billed in the order given; a third string makes it crew with that job, in
+// the department a fourth names (by default the one TMDB files the job under).
 func (f *fakeTMDB) cast(title string, entries ...[]string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []map[string]any
+	var cast, crew []map[string]any
 	for _, e := range entries {
 		id, _ := strconv.ParseInt(e[0], 10, 64)
 		m := map[string]any{"id": id, "name": e[1]}
-		if len(e) > 2 {
-			m["job"] = e[2]
+		switch {
+		case len(e) > 3:
+			m["job"], m["department"] = e[2], e[3]
+		case len(e) > 2:
+			m["job"], m["department"] = e[2], departmentOf(e[2])
+		default:
+			m["order"], m["character"] = len(cast), ""
 		}
-		out = append(out, m)
+		if m["job"] != nil {
+			crew = append(crew, m)
+		} else {
+			cast = append(cast, m)
+		}
 	}
-	f.credits[title] = out
+	f.titleCredits(title, cast, crew)
+}
+
+// titleCredits sets a title's credits ("movie/10") as TMDB answers them: its
+// cast and crew entries.
+func (f *fakeTMDB) titleCredits(title string, cast, crew []map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.credits[title] = append(append([]map[string]any{}, cast...), crew...)
+}
+
+// departmentOf is the department TMDB files a crew job under, for the jobs
+// these tests use.
+func departmentOf(job string) string {
+	switch job {
+	case "Director", "Co-Director", "Series Director", "Assistant Director", "Second Unit Director":
+		return "Directing"
+	case "Writer", "Screenplay", "Story", "Co-Writer", "Teleplay", "Novel":
+		return "Writing"
+	case "Director of Photography", "Camera Operator":
+		return "Camera"
+	case "Original Music Composer", "Music", "Composer", "Music Supervisor":
+		return "Sound"
+	case "Editor", "Colorist":
+		return "Editing"
+	case "Art Direction", "Production Design":
+		return "Art"
+	}
+	if strings.Contains(job, "Producer") {
+		return "Production"
+	}
+	return "Crew"
 }
 
 // aggPerson is someone in a series' credits over every season: the episodes
@@ -142,6 +183,52 @@ func (f *fakeTMDB) aggregate(title string, people ...aggPerson) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.every[title] = people
+}
+
+// aggregateAsTMDB sets a series' credits over every season ("tv/20") as TMDB
+// answers them: its cast entries (with their roles) and crew entries (one per
+// person and department, with their jobs).
+func (f *fakeTMDB) aggregateAsTMDB(title string, cast, crew []map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.allRaw[title] = map[string]any{"cast": cast, "crew": crew}
+}
+
+// hasAggregate reports whether the fake holds a series' aggregate credits.
+// Like aggregateJSON it is called with f.mu held.
+func (f *fakeTMDB) hasAggregate(title string) bool {
+	return f.allRaw[title] != nil || f.every[title] != nil || f.credits[title] != nil
+}
+
+// aggregateJSON is a series' aggregate credits as TMDB answers them; ok is
+// false when the fake holds none for it.
+func (f *fakeTMDB) aggregateJSON(title string) (map[string]any, bool) {
+	if raw, ok := f.allRaw[title]; ok {
+		return raw, true
+	}
+	every := f.every[title]
+	if every == nil {
+		if f.credits[title] == nil {
+			return nil, false
+		}
+		for i, e := range f.credits[title] {
+			job, _ := e["job"].(string)
+			every = append(every, aggPerson{e["id"].(int64), e["name"].(string), 1, i, job})
+		}
+	}
+	cast, crew := []any{}, []any{}
+	for _, p := range every {
+		if p.job == "" {
+			cast = append(cast, map[string]any{"id": p.id, "name": p.name, "order": p.order,
+				"total_episode_count": p.episodes, "known_for_department": "Acting",
+				"roles": []any{map[string]any{"character": "Someone", "episode_count": p.episodes}}})
+		} else {
+			crew = append(crew, map[string]any{"id": p.id, "name": p.name, "department": departmentOf(p.job),
+				"total_episode_count": p.episodes,
+				"jobs":                []any{map[string]any{"job": p.job, "episode_count": p.episodes}}})
+		}
+	}
+	return map[string]any{"cast": cast, "crew": crew}, true
 }
 
 func (f *fakeTMDB) person(id int64, p *fakePerson) {
@@ -293,27 +380,9 @@ func (f *fakeTMDB) serve(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		answer(map[string]any{"id": id, "cast": cast, "crew": crew})
-	case len(seg) == 3 && seg[2] == "aggregate_credits" && (f.every[seg[0]+"/"+seg[1]] != nil || f.credits[seg[0]+"/"+seg[1]] != nil):
-		every := f.every[seg[0]+"/"+seg[1]]
-		if every == nil {
-			for i, e := range f.credits[seg[0]+"/"+seg[1]] {
-				job, _ := e["job"].(string)
-				every = append(every, aggPerson{e["id"].(int64), e["name"].(string), 1, i, job})
-			}
-		}
-		cast, crew := []any{}, []any{}
-		for _, p := range every {
-			if p.job == "" {
-				cast = append(cast, map[string]any{"id": p.id, "name": p.name, "order": p.order,
-					"total_episode_count": p.episodes, "known_for_department": "Acting",
-					"roles": []any{map[string]any{"character": "Someone", "episode_count": p.episodes}}})
-			} else {
-				crew = append(crew, map[string]any{"id": p.id, "name": p.name, "department": "Directing",
-					"total_episode_count": p.episodes,
-					"jobs":                []any{map[string]any{"job": p.job, "episode_count": p.episodes}}})
-			}
-		}
-		answer(map[string]any{"id": id, "cast": cast, "crew": crew})
+	case len(seg) == 3 && seg[2] == "aggregate_credits" && f.hasAggregate(seg[0]+"/"+seg[1]):
+		every, _ := f.aggregateJSON(seg[0] + "/" + seg[1])
+		answer(map[string]any{"id": id, "cast": every["cast"], "crew": every["crew"]})
 	case len(seg) == 3 && (seg[2] == "videos" || seg[2] == "external_ids"):
 		answer(map[string]any{"id": id, "results": []any{}})
 	case len(seg) == 2 && seg[0] == "person" && f.people[id] != nil:

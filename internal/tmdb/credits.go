@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/store"
@@ -15,10 +16,12 @@ import (
 
 // A title's credits follow TMDB. Whenever the catalog reads a title's TMDB
 // credits — enriching it, the refreshPeople backfill, the change-list refresh —
-// they replace the title's credits: a person TMDB lists is credited, a credit
-// TMDB no longer lists goes, and a person no title credits after that is
-// deleted (and logged). Only a title whose metadata is locked, or whose
-// lockedfields name its credits, keeps them as they are.
+// they replace the title's credits: a person TMDB lists is credited, in each
+// role TMDB lists them in (roles.go), a credit TMDB no longer lists goes, and
+// a person no title credits after that is deleted (and logged). A credit is a
+// person in a role; what TMDB says of one it keeps — the job, the character,
+// the order, the episodes — changes in place. Only a title whose metadata is
+// locked, or whose lockedfields name its credits, keeps them as they are.
 //
 // This is safe because every credit in the catalog is TMDB's: there is no way
 // to add one by hand. A feature that adds credits by hand must mark the ones
@@ -38,6 +41,7 @@ type creditChange struct {
 	matched  int      // people without a TMDB id that a credit gave theirs
 	created  int      // credited people the catalog did not hold yet
 	added    int      // credits the title gained
+	updated  int      // credits kept whose job, character, order or episodes changed, in place
 	dropped  int      // credits TMDB no longer lists, gone
 	relinked int      // credits that were on a namesake and are now on the person credited
 	deleted  int      // people no title credits any more, deleted and logged
@@ -47,15 +51,46 @@ type creditChange struct {
 // link is one credit: a person in a role.
 type link struct{ person, role string }
 
+// creditDetails are what a credit says besides its role (migration 032), NULL
+// where TMDB says nothing.
+type creditDetails struct {
+	job, character  pgtype.Text
+	order, episodes pgtype.Int4
+}
+
+// detailsOf are the details of a credit TMDB gives.
+func detailsOf(c tmdbCredit) creditDetails {
+	text := func(s string) pgtype.Text { return pgtype.Text{String: s, Valid: s != ""} }
+	d := creditDetails{
+		job:       text(clip(oneLine(c.Job), 255)),
+		character: text(oneLine(c.Character)),
+		order:     pgtype.Int4{Int32: int32(c.Order), Valid: true},
+	}
+	if c.Episodes != nil {
+		d.episodes = pgtype.Int4{Int32: int32(*c.Episodes), Valid: true}
+	}
+	return d
+}
+
+// credited is what TMDB credits a person with in a role.
+type credited struct {
+	name    string
+	details creditDetails
+}
+
 // replaceCredits makes a title's credits TMDB's list c, in one transaction,
 // unless the title keeps its credits (metadatalocked, or credits or people in
 // its lockedfields). Each credited person is found by TMDB id (a person known
-// only by name is matched by it once), or created. The people whom no title
-// credits once the title's dropped credits are gone are deleted with their
-// images and recorded in the deletion log, attributed to whoever asked (the
-// principal on ctx, or the service). On any failure nothing changes.
+// only by name is matched by it once), or created. A credit the title keeps
+// takes what TMDB now says of it (its job, character, order and episodes) in
+// place. The people whom no title credits once the title's dropped credits are
+// gone are deleted with their images and recorded in the deletion log,
+// attributed to whoever asked (the principal on ctx, or the service). On any
+// failure nothing changes. A catalog without migration 032 keeps the credits'
+// roles alone.
 func (s *Service) replaceCredits(ctx context.Context, itemID string, c *tmdbCredits) (creditChange, error) {
 	var out creditChange
+	detailed := s.creditDetailsReady(ctx)
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		out = creditChange{}
 		var title string
@@ -76,13 +111,13 @@ func (s *Service) replaceCredits(ctx context.Context, itemID string, c *tmdbCred
 		}
 
 		// What TMDB credits: each person once per role, in TMDB's order.
-		want := map[link]string{} // → the credited name
+		want := map[link]credited{}
 		var order []link
 		seen := map[string]bool{}
-		credit := func(role string, cr tmdbCredit) error {
+		for _, cr := range c.List {
 			name := clip(oneLine(cr.Name), 255)
 			if name == "" {
-				return nil
+				continue
 			}
 			id, how, err := findOrCreatePerson(ctx, tx, cr.ID, name)
 			if err != nil {
@@ -94,39 +129,36 @@ func (s *Service) replaceCredits(ctx context.Context, itemID string, c *tmdbCred
 			case personCreated:
 				out.created++
 			}
-			if l := (link{id, role}); want[l] == "" {
-				want[l] = name
+			if l := (link{id, cr.Role}); want[l].name == "" {
+				want[l] = credited{name, detailsOf(cr)}
 				order = append(order, l)
 			}
 			if !seen[id] {
 				seen[id] = true
 				out.people = append(out.people, id)
 			}
-			return nil
-		}
-		for _, d := range c.Crew {
-			if err := credit(roleDirector, d); err != nil {
-				return err
-			}
-		}
-		for _, a := range c.Cast {
-			if err := credit(roleActor, a); err != nil {
-				return err
-			}
 		}
 
 		// What the title credits now.
-		rows, err := tx.Query(ctx, `SELECT ip.id, ip.person_id, ip.role, COALESCE(p.name, '')
+		details := `NULL::text, NULL::text, NULL::int, NULL::int`
+		if detailed {
+			details = `ip.job, ip.charactername, ip.ordinal, ip.episodecount`
+		}
+		rows, err := tx.Query(ctx, `SELECT ip.id, ip.person_id, ip.role, COALESCE(p.name, ''), `+details+`
 			FROM com_nalet_katalog_itempeople ip LEFT JOIN com_nalet_katalog_people p ON p.id = ip.person_id
 			WHERE ip.item_id = $1 ORDER BY ip.id FOR UPDATE OF ip`, itemID)
 		if err != nil {
 			return err
 		}
-		type held struct{ id, person, role, name string }
+		type held struct {
+			id, person, role, name string
+			details                creditDetails
+		}
 		var have []held
 		for rows.Next() {
 			var h held
-			if err := rows.Scan(&h.id, &h.person, &h.role, &h.name); err != nil {
+			d := &h.details
+			if err := rows.Scan(&h.id, &h.person, &h.role, &h.name, &d.job, &d.character, &d.order, &d.episodes); err != nil {
 				rows.Close()
 				return err
 			}
@@ -138,22 +170,27 @@ func (s *Service) replaceCredits(ctx context.Context, itemID string, c *tmdbCred
 		}
 
 		kept := map[link]bool{}
-		var drop, uncredited []string
+		var drop, uncredited, update []string
+		var updates []creditDetails
 		var dropped []held
 		for _, h := range have {
 			l := link{h.person, h.role}
-			if want[l] != "" && !kept[l] {
+			if w := want[l]; w.name != "" && !kept[l] {
 				kept[l] = true
+				if detailed && h.details != w.details {
+					update, updates = append(update, h.id), append(updates, w.details)
+				}
 				continue
 			}
 			drop, uncredited, dropped = append(drop, h.id), append(uncredited, h.person), append(dropped, h)
 		}
 		var addPeople, addRoles []string
+		var adds []creditDetails
 		gained := map[string]int{} // role + name → credits gained under that name
 		for _, l := range order {
 			if !kept[l] {
-				addPeople, addRoles = append(addPeople, l.person), append(addRoles, l.role)
-				gained[l.role+"\x00"+want[l]]++
+				addPeople, addRoles, adds = append(addPeople, l.person), append(addRoles, l.role), append(adds, want[l].details)
+				gained[l.role+"\x00"+want[l].name]++
 			}
 		}
 		for _, h := range dropped { // a credit that moved from a namesake to the person credited
@@ -162,14 +199,32 @@ func (s *Service) replaceCredits(ctx context.Context, itemID string, c *tmdbCred
 				out.relinked++
 			}
 		}
-		out.added, out.dropped = len(addPeople)-out.relinked, len(drop)-out.relinked
+		out.added, out.dropped, out.updated = len(addPeople)-out.relinked, len(drop)-out.relinked, len(update)
 
 		if len(drop) > 0 {
 			if _, err := tx.Exec(ctx, `DELETE FROM com_nalet_katalog_itempeople WHERE id = ANY($1::text[])`, drop); err != nil {
 				return err
 			}
 		}
-		if len(addPeople) > 0 {
+		if len(update) > 0 {
+			jobs, chars, orders, episodes := columnsOf(updates)
+			if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_itempeople ip
+				SET job = u.job, charactername = u.ch, ordinal = u.ord, episodecount = u.ep
+				FROM unnest($1::text[], $2::text[], $3::text[], $4::int[], $5::int[]) AS u(id, job, ch, ord, ep)
+				WHERE ip.id = u.id`, update, jobs, chars, orders, episodes); err != nil {
+				return err
+			}
+		}
+		if len(addPeople) > 0 && detailed {
+			jobs, chars, orders, episodes := columnsOf(adds)
+			if _, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_itempeople
+					(id, item_id, person_id, role, job, charactername, ordinal, episodecount)
+				SELECT gen_random_uuid()::varchar, $1, p, r, j, ch, o, e
+				FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::int[], $7::int[]) AS c(p, r, j, ch, o, e)`,
+				itemID, addPeople, addRoles, jobs, chars, orders, episodes); err != nil {
+				return err
+			}
+		} else if len(addPeople) > 0 {
 			if _, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_itempeople (id, item_id, person_id, role)
 				SELECT gen_random_uuid()::varchar, $1, p, r FROM unnest($2::text[], $3::text[]) AS c(p, r)`,
 				itemID, addPeople, addRoles); err != nil {
@@ -183,6 +238,15 @@ func (s *Service) replaceCredits(ctx context.Context, itemID string, c *tmdbCred
 		return err
 	})
 	return out, err
+}
+
+// columnsOf are the credits' details column by column, for unnest.
+func columnsOf(ds []creditDetails) (jobs, chars []pgtype.Text, orders, episodes []pgtype.Int4) {
+	for _, d := range ds {
+		jobs, chars = append(jobs, d.job), append(chars, d.character)
+		orders, episodes = append(orders, d.order), append(episodes, d.episodes)
+	}
+	return jobs, chars, orders, episodes
 }
 
 // inTx runs fn in a transaction and commits it, and runs it again (up to three
