@@ -11,7 +11,9 @@ The surface is split deliberately:
 
 - **GraphQL** (`/query`) — the operator/UI read graph and mutations: catalog
   reads (`items`, `movies`, `series`, `episodes`, `albums`, `item` with nested
-  facets + computed fields), `searchItems`, `scanJobs`, `downloadJobs`,
+  facets + computed fields; an item's `people` are its credits, each a person
+  in a role with its job, character, order and episode count), `searchItems`,
+  `scanJobs`, `downloadJobs`,
   `settings`, `deletedItems` (the deletion log, read-only), `people` and
   `person` (a person's TMDB details, locks and field origins), `referenceSync`
   (the change-list refresh's cursors and last runs, read-only), and the operator
@@ -48,8 +50,11 @@ schema in the order of their numbers, and each is idempotent:
   every item the catalog deletes, and every person it deletes because no title
   credits them any more (type `person`). A title's credits follow TMDB: read
   from TMDB, they replace the title's credits, and a person left uncredited
-  goes. The service creates the log at startup when it is missing; where its
-  role may not create tables, apply the file by hand.
+  goes. They come in every role TMDB's credits give — its cast as actors, a
+  series' creators, and of the crew its directors, writers, producers,
+  composers, cinematographers and editors — one credit per person and role.
+  The service creates the log at startup when it is missing; where its role
+  may not create tables, apply the file by hand.
 - `030_people.sql` gives a person their TMDB id and details (dates, places,
   biography per language, also-known-as names, locks and field origins), adds
   their images (`com_nalet_katalog_personartwork`) and the cursors of TMDB's
