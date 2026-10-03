@@ -48,7 +48,8 @@ func (s *Service) RefreshPeople(ctx context.Context, all bool) (graph.PeopleRefr
 		if t.typ == "movie" {
 			c, ok = s.tmdb.getCredits(ctx, t.tmdbID)
 		} else {
-			c, ok = s.tmdb.getTvAggregateCredits(ctx, t.tmdbID)
+			_, c, ok = s.tmdb.getTv(ctx, t.tmdbID) // a series' credits come with its details
+			ok = ok && c != nil
 		}
 		if !ok {
 			res.TitlesFailed++

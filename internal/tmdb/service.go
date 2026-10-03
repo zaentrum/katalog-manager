@@ -447,7 +447,7 @@ func (s *Service) enrichSeries(ctx context.Context, id, title string, year *int)
 	}
 	s.upsertExternalID(ctx, id, "tmdb", strconv.FormatInt(tmdbID, 10))
 
-	t, ok := s.tmdb.getTv(ctx, tmdbID)
+	t, credits, ok := s.tmdb.getTv(ctx, tmdbID) // its credits and creators come with it
 	if !ok {
 		msg := "tv detail fetch returned nothing"
 		s.markStatus(ctx, id, "failed", &msg)
@@ -455,8 +455,8 @@ func (s *Service) enrichSeries(ctx context.Context, id, title string, year *int)
 	}
 	s.applyTv(ctx, id, t)
 
-	if c, ok := s.tmdb.getTvAggregateCredits(ctx, tmdbID); ok {
-		s.applyCredits(ctx, id, c)
+	if credits != nil {
+		s.applyCredits(ctx, id, credits)
 	}
 	s.applyTrailerLinks(ctx, id, s.tmdb.getTvVideos(ctx, tmdbID))
 

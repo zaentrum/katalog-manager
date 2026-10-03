@@ -31,6 +31,8 @@ type fakeTMDB struct {
 	credits  map[string][]map[string]any         // "movie/10" or "tv/20": cast entries; a "job" makes crew
 	every    map[string][]aggPerson              // "tv/20": a series' credits over every season (aggregate_credits)
 	allRaw   map[string]map[string]any           // "tv/20": the same, as TMDB answers it (wins over every)
+	creators map[string][]map[string]any         // "tv/20": a series' created_by
+	bare     map[int64]bool                      // GET /tv/{id} answers no appended credits
 	people   map[int64]*fakePerson               // GET /person/{id}
 	images   map[string][]byte                   // GET /t/p/{size}{path}, by path
 	changes  map[string]map[string][]int64       // kind → day (YYYY-MM-DD) → ids changed that day
@@ -63,6 +65,8 @@ func newFakeTMDB(t testing.TB) *fakeTMDB {
 		credits:  map[string][]map[string]any{},
 		every:    map[string][]aggPerson{},
 		allRaw:   map[string]map[string]any{},
+		creators: map[string][]map[string]any{},
+		bare:     map[int64]bool{},
 		people:   map[int64]*fakePerson{},
 		images:   map[string][]byte{},
 		changes:  map[string]map[string][]int64{},
@@ -192,6 +196,49 @@ func (f *fakeTMDB) aggregateAsTMDB(title string, cast, crew []map[string]any) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.allRaw[title] = map[string]any{"cast": cast, "crew": crew}
+}
+
+// createdBy sets a series' creators ("tv/20"), in TMDB's order: each entry is
+// a TMDB id and a name.
+func (f *fakeTMDB) createdBy(title string, people ...[]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []map[string]any
+	for _, p := range people {
+		id, _ := strconv.ParseInt(p[0], 10, 64)
+		out = append(out, map[string]any{"id": id, "name": p[1], "credit_id": "c" + p[0], "gender": 0})
+	}
+	f.creators[title] = out
+}
+
+// withoutCredits makes GET /tv/{id} answer the series' details alone, whatever
+// append_to_response asks for.
+func (f *fakeTMDB) withoutCredits(id int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bare[id] = true
+}
+
+// tvJSON is GET /tv/{id} as TMDB answers it, with what append_to_response
+// asks for: aggregate_credits, empty when the fake holds none for the series,
+// as TMDB answers for a series nobody is credited in.
+func (f *fakeTMDB) tvJSON(id int64, q url.Values) map[string]any {
+	key := "tv/" + strconv.FormatInt(id, 10)
+	out := map[string]any{"created_by": []any{}}
+	for k, v := range f.tvs[id] {
+		out[k] = v
+	}
+	if f.creators[key] != nil {
+		out["created_by"] = f.creators[key]
+	}
+	if strings.Contains(q.Get("append_to_response"), "aggregate_credits") && !f.bare[id] {
+		every, ok := f.aggregateJSON(key)
+		if !ok {
+			every = map[string]any{"cast": []any{}, "crew": []any{}}
+		}
+		out["aggregate_credits"] = every
+	}
+	return out
 }
 
 // hasAggregate reports whether the fake holds a series' aggregate credits.
@@ -369,7 +416,7 @@ func (f *fakeTMDB) serve(w http.ResponseWriter, r *http.Request) {
 	case len(seg) == 2 && seg[0] == "movie" && f.movies[id] != nil:
 		answer(f.movies[id])
 	case len(seg) == 2 && seg[0] == "tv" && f.tvs[id] != nil:
-		answer(f.tvs[id])
+		answer(f.tvJSON(id, q))
 	case len(seg) == 3 && seg[2] == "credits" && f.credits[seg[0]+"/"+seg[1]] != nil:
 		var cast, crew []map[string]any
 		for _, e := range f.credits[seg[0]+"/"+seg[1]] {

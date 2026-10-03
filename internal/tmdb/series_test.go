@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
 
@@ -87,6 +88,16 @@ func TestSeriesCreditsComeFromEverySeason(t *testing.T) {
 			if got := f.calls("/3/tv/20/credits"); len(got) != 0 {
 				t.Errorf("the latest season's credits were read: %q", got)
 			}
+			// One request reads the series with its credits.
+			var reads []string
+			for _, r := range f.calls("/3/tv/20") {
+				if strings.HasPrefix(r, "/3/tv/20?") || strings.Contains(r, "credits") {
+					reads = append(reads, r)
+				}
+			}
+			if len(reads) != 1 || reads[0] != "/3/tv/20?language=en-US&append_to_response=aggregate_credits" {
+				t.Errorf("after %s the series and its credits were read with %q, want one request", path, reads)
+			}
 		})
 	}
 }
@@ -114,13 +125,14 @@ func TestSeriesCreditsKeepTheMostEpisodes(t *testing.T) {
 		aggPerson{3001, "Of Photography", 99, 0, "Director of Photography"},
 		aggPerson{3002, "An Assistant", 98, 0, "Assistant Director"},
 		aggPerson{3003, "A Writer", 97, 0, "Writer"})
+	f.tv(7, "A Long Show")
 	f.aggregate("tv/7", people...)
 	c := newClient(func() string { return "test-token" }, "en-US")
 	c.apiBase, c.http = f.srv.URL+"/3", &http.Client{Transport: loopbackOnly{}, Timeout: 10 * time.Second}
 
-	cr, ok := c.getTvAggregateCredits(context.Background(), 7)
-	if !ok {
-		t.Fatal("aggregate credits not read")
+	_, cr, ok := c.getTv(context.Background(), 7)
+	if !ok || cr == nil {
+		t.Fatal("the series and its aggregate credits not read")
 	}
 	byRole := map[string][]string{}
 	for _, p := range cr.List {
@@ -145,7 +157,125 @@ func TestSeriesCreditsKeepTheMostEpisodes(t *testing.T) {
 	if got := fmt.Sprint(byRole[roleCinematographer], byRole[roleWriter], len(cr.List)); got != "[Of Photography] [A Writer] 42" {
 		t.Errorf("the rest of the crew: cinematographers, writers and all credits %s, want [Of Photography] [A Writer] 42", got)
 	}
-	if got := f.calls("/3/tv/7/"); len(got) != 1 || !strings.HasPrefix(got[0], "/3/tv/7/aggregate_credits?") {
-		t.Errorf("requests %q, want aggregate_credits only", got)
+	if got := f.calls("/3/tv/7"); len(got) != 1 || got[0] != "/3/tv/7?language=en-US&append_to_response=aggregate_credits" {
+		t.Errorf("requests %q, want the series' details with its aggregate credits, one request", got)
+	}
+}
+
+// pioneerOne gives the catalog a web series shaped like Pioneer One's credits
+// on TMDB (the people and the ids are stand-ins): two creators, one of whom
+// directed it and the other wrote it, as Writer and as Co-Writer; a producer
+// and a composer; a gaffer the catalog does not credit; and a cast whose
+// characters and episodes TMDB counts over every season.
+func pioneerOne(t *testing.T, st *store.Store, f *fakeTMDB) {
+	t.Helper()
+	addTitle(t, st, show1, "series", "Pioneer One", 9100)
+	f.tv(9100, "Pioneer One")
+	f.createdBy("tv/9100", []string{"901", "First Creator"}, []string{"902", "Second Creator"})
+	role := func(character string, episodes int) map[string]any {
+		return map[string]any{"credit_id": "r", "character": character, "episode_count": episodes}
+	}
+	job := func(name string, episodes int) map[string]any {
+		return map[string]any{"credit_id": "j", "job": name, "episode_count": episodes}
+	}
+	f.aggregateAsTMDB("tv/9100", []map[string]any{
+		{"id": 911, "name": "Lead Agent", "order": 0, "total_episode_count": 6, "roles": []any{role("Agent Lead", 6)}},
+		{"id": 912, "name": "The Cosmonaut", "order": 1, "total_episode_count": 5,
+			"roles": []any{role("Cosmonaut (young)", 1), role("Cosmonaut", 5)}},
+		{"id": 913, "name": "A Guest", "order": 2, "total_episode_count": 1, "roles": []any{role("Guest", 1)}},
+	}, []map[string]any{
+		{"id": 901, "name": "First Creator", "department": "Directing", "total_episode_count": 6,
+			"jobs": []any{job("Director", 6)}},
+		{"id": 902, "name": "Second Creator", "department": "Writing", "total_episode_count": 6,
+			"jobs": []any{job("Co-Writer", 2), job("Writer", 4)}},
+		{"id": 903, "name": "The Producer", "department": "Production", "total_episode_count": 6,
+			"jobs": []any{job("Executive Producer", 6)}},
+		{"id": 904, "name": "The Composer", "department": "Sound", "total_episode_count": 6,
+			"jobs": []any{job("Original Music Composer", 6)}},
+		{"id": 905, "name": "The Gaffer", "department": "Lighting", "total_episode_count": 6,
+			"jobs": []any{job("Gaffer", 6)}},
+	})
+}
+
+const pioneerOneCredits = `actor Lead Agent (911) - | Agent Lead | 0 | 6
+actor The Cosmonaut (912) - | Cosmonaut / Cosmonaut (young) | 1 | 5
+actor A Guest (913) - | Guest | 2 | 1
+creator First Creator (901) Creator | - | 0 | -
+creator Second Creator (902) Creator | - | 1 | -
+director First Creator (901) Director | - | 0 | 6
+writer Second Creator (902) Writer, Co-Writer | - | 0 | 6
+producer The Producer (903) Executive Producer | - | 0 | 6
+composer The Composer (904) Original Music Composer | - | 0 | 6`
+
+// A series' creators are credited from its details, read in the one request
+// that reads its credits, whichever way the series is refreshed: each creator
+// in TMDB's order, with the job Creator. A creator who directed or wrote it
+// has a credit in that role too and is one person; someone's Writer and
+// Co-Writer jobs are one credit; the cast says whom each plays and in how many
+// episodes.
+func TestASeriesIsCreditedWithItsCreators(t *testing.T) {
+	for _, path := range []string{"enrichment", "refreshPeople", "change list"} {
+		t.Run(path, func(t *testing.T) {
+			st := storetest.Open(t)
+			f := newFakeTMDB(t)
+			s := newTestService(t, st, f, "en-US")
+			pioneerOne(t, st, f)
+			switch path {
+			case "enrichment":
+				enrich(t, s, show1)
+			case "refreshPeople":
+				res, err := s.RefreshPeople(context.Background(), true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if res.TitlesRead != 1 || res.CreditsAdded != 9 || res.PeopleCreated != 7 {
+					t.Errorf("refreshPeople %+v: want one title read, its 9 credits added and 7 people made", counts(res))
+				}
+			case "change list":
+				f.changed("tv", "2026-10-02", 9100)
+				runSync(t, s, syncNow)
+			}
+			if got := creditLines(t, st, show1); got != pioneerOneCredits {
+				t.Errorf("after %s the credits\n%s\nwant\n%s", path, got, pioneerOneCredits)
+			}
+			if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_people`); n != 7 {
+				t.Errorf("%d people, want 7: each creator once, and no gaffer", n)
+			}
+			if got := f.calls("/3/tv/9100"); len(got) == 0 || got[0] != "/3/tv/9100?language=en-US&append_to_response=aggregate_credits" {
+				t.Errorf("the series was read with %q", got)
+			}
+			for _, r := range f.calls("/3/tv/9100/") {
+				if strings.Contains(r, "credits") {
+					t.Errorf("credits read apart from the series' details: %s", r)
+				}
+			}
+		})
+	}
+}
+
+// An answer that carries the series' details but not its credits leaves its
+// credits as they are: it is not TMDB saying nobody is credited. refreshPeople
+// counts such a title as one whose credits could not be read.
+func TestSeriesDetailsWithoutCreditsLeaveTheCredits(t *testing.T) {
+	st := storetest.Open(t)
+	f := newFakeTMDB(t)
+	s := newTestService(t, st, f, "en-US")
+	pioneerOne(t, st, f)
+	enrich(t, s, show1)
+	f.withoutCredits(9100)
+
+	enrich(t, s, show1)
+	if got := creditLines(t, st, show1); got != pioneerOneCredits {
+		t.Errorf("credits after details without them:\n%s", got)
+	}
+	res, err := s.RefreshPeople(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.TitlesFailed != 1 || res.TitlesRead != 0 || res.CreditsDropped != 0 || res.PeopleDeleted != 0 {
+		t.Errorf("refreshPeople %+v: want the series failed and nothing dropped", counts(res))
+	}
+	if got := creditLines(t, st, show1); got != pioneerOneCredits {
+		t.Errorf("credits after refreshPeople:\n%s", got)
 	}
 }

@@ -39,6 +39,36 @@ func creditLines(t *testing.T, st *store.Store, itemID string) string {
 	return strings.Join(out, "\n")
 }
 
+// Every role the catalog knows comes from TMDB's credits, and a title's
+// credits come in the order of the roles, however TMDB lists them.
+func TestEveryRoleTheCatalogKnowsComesFromTMDB(t *testing.T) {
+	var n tvAggregateJSON
+	crew := []any{}
+	for i, dj := range [][2]string{{"Editing", "Editor"}, {"Camera", "Director of Photography"}, {"Sound", "Music"},
+		{"Production", "Producer"}, {"Writing", "Teleplay"}, {"Directing", "Series Director"}} {
+		crew = append(crew, map[string]any{"id": 10 + i, "name": dj[1], "department": dj[0], "total_episode_count": 1,
+			"jobs": []any{map[string]any{"job": dj[1], "episode_count": 1}}})
+	}
+	decode(t, map[string]any{"crew": crew, "cast": []any{map[string]any{"id": 1, "name": "Plays", "total_episode_count": 1}}}, &n)
+	l := newCreditList(true)
+	n.list(l)
+	l.creator(2, "Creates")
+	var roles []string
+	for _, c := range l.credits().List {
+		if len(roles) == 0 || roles[len(roles)-1] != c.Role {
+			roles = append(roles, c.Role)
+		}
+	}
+	if strings.Join(roles, " ") != strings.Join(model.CreditRoles, " ") {
+		t.Errorf("roles %v, want every role the catalog knows, in its order: %v", roles, model.CreditRoles)
+	}
+	for _, role := range model.CreditRoles {
+		if !model.ValidRole(role) {
+			t.Errorf("%q is not a role", role)
+		}
+	}
+}
+
 // Of a crew, the catalog keeps the jobs it knows, each in its role, and
 // nothing else.
 func TestCrewRoles(t *testing.T) {

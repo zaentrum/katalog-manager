@@ -355,13 +355,20 @@ func (c *client) getMovie(ctx context.Context, id int64) (*tmdbMovie, bool) {
 	}, true
 }
 
-func (c *client) getTv(ctx context.Context, id int64) (*tmdbTv, bool) {
+// getTv reads a series' details and, in the same request, its credits: over
+// every season (aggregate_credits), with its creators (created_by). The
+// credits are nil when TMDB's answer carries none, so that a series' credits
+// are left as they are rather than taken for empty. TMDB's plain credits of a
+// series are its latest season's only; replacing a series' credits with them
+// would drop everyone of the seasons before.
+func (c *client) getTv(ctx context.Context, id int64) (*tmdbTv, *tmdbCredits, bool) {
 	if !c.enabled() {
-		return nil, false
+		return nil, nil, false
 	}
-	body, ok := c.getJSON(ctx, c.apiBase+"/tv/"+strconv.FormatInt(id, 10)+"?language="+url.QueryEscape(c.language))
+	body, ok := c.getJSON(ctx, c.apiBase+"/tv/"+strconv.FormatInt(id, 10)+"?language="+url.QueryEscape(c.language)+
+		"&append_to_response=aggregate_credits")
 	if !ok {
-		return nil, false
+		return nil, nil, false
 	}
 	var n struct {
 		ID             int64   `json:"id"`
@@ -376,13 +383,27 @@ func (c *client) getTv(ctx context.Context, id int64) (*tmdbTv, bool) {
 		Genres         []struct {
 			Name string `json:"name"`
 		} `json:"genres"`
+		CreatedBy []struct {
+			ID   int64  `json:"id"`
+			Name string `json:"name"`
+		} `json:"created_by"`
+		AggregateCredits *tvAggregateJSON `json:"aggregate_credits"`
 	}
 	if err := json.Unmarshal(body, &n); err != nil {
-		return nil, false
+		return nil, nil, false
 	}
 	runtime := 0
 	if len(n.EpisodeRunTime) > 0 {
 		runtime = n.EpisodeRunTime[0]
+	}
+	var credits *tmdbCredits
+	if n.AggregateCredits != nil {
+		l := newCreditList(true)
+		for _, p := range n.CreatedBy {
+			l.creator(p.ID, p.Name)
+		}
+		n.AggregateCredits.list(l)
+		credits = l.credits()
 	}
 	return &tmdbTv{
 		ID:             n.ID,
@@ -395,7 +416,7 @@ func (c *client) getTv(ctx context.Context, id int64) (*tmdbTv, bool) {
 		PosterPath:     deref(n.PosterPath),
 		BackdropPath:   deref(n.BackdropPath),
 		Genres:         genreNames(n.Genres),
-	}, true
+	}, credits, true
 }
 
 // getTvExternalIDs returns a series' imdb + TheTVDB ids (the latter keys fanart.tv
@@ -459,7 +480,8 @@ func (c *client) getTvEpisode(ctx context.Context, tvID int64, season, episode i
 //
 // A title's credits replace what the catalog credits it with, so each read
 // must be the title's whole list as the catalog keeps it, never a part of it
-// (roles.go says which credits that is).
+// (roles.go says which credits that is). A series' credits come with its
+// details (getTv).
 
 // getCredits reads a film's credits (movieCreditsJSON.credits).
 func (c *client) getCredits(ctx context.Context, id int64) (*tmdbCredits, bool) {
@@ -475,27 +497,6 @@ func (c *client) getCredits(ctx context.Context, id int64) (*tmdbCredits, bool) 
 		return nil, false
 	}
 	return n.credits(), true
-}
-
-// getTvAggregateCredits reads a series' credits over every season
-// (aggregate_credits), ranked by the episodes each person is credited in.
-// TMDB's plain credits of a series are its latest season's only; replacing a
-// series' credits with them would drop everyone of the seasons before.
-func (c *client) getTvAggregateCredits(ctx context.Context, id int64) (*tmdbCredits, bool) {
-	if !c.enabled() {
-		return nil, false
-	}
-	body, ok := c.getJSON(ctx, c.apiBase+"/tv/"+strconv.FormatInt(id, 10)+"/aggregate_credits?language="+url.QueryEscape(c.language))
-	if !ok {
-		return nil, false
-	}
-	var n tvAggregateJSON
-	if err := json.Unmarshal(body, &n); err != nil {
-		return nil, false
-	}
-	l := newCreditList(true)
-	n.list(l)
-	return l.credits(), true
 }
 
 // --- people ---

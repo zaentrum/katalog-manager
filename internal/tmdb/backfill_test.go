@@ -42,6 +42,7 @@ func TestRefreshPeopleBackfillsPeopleKnownByName(t *testing.T) {
 		film1, film2, show1, film3)
 	f.cast("movie/10", []string{"101", "Ada Example"}, []string{"102", "Ben Example", "Director"})
 	f.cast("movie/11", []string{"103", "Cy Example"}, []string{"105", "New Person"})
+	f.tv(20, "A Show")
 	f.cast("tv/20", []string{"101", "Ada Example"}, []string{"104", "Dot Example"})
 	f.failing("/3/movie/12/credits", 500)
 	for id, name := range map[int64]string{101: "Ada Example", 102: "Ben Example", 103: "Cy Example", 105: "New Person"} {
