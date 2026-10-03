@@ -68,14 +68,14 @@ func get(h http.Handler, path string, header ...string) *httptest.ResponseRecord
 // artwork; a caller holding it gets 304, and a person without one 404.
 func TestPersonPortrait(t *testing.T) {
 	st := storetest.Open(t)
-	primary, older := []byte("\xff\xd8\xff primary portrait"), []byte("\x89PNG an older one")
+	primary, older := []byte("\x89PNG the primary portrait"), []byte("\xff\xd8\xff an older one")
 	sum := sha256.Sum256(primary)
 	etag := `"` + hex.EncodeToString(sum[:]) + `"`
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ('p1', 'Ada'), ('p2', 'Ben'), ('p3', 'Cy')`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_personartwork (id, person_id, kind, contenttype, bytes, sha256, isprimary)
-		VALUES ('a1', 'p1', 'profile', 'image/png', $1, encode(sha256($1), 'hex'), false),
-		       ('a2', 'p1', 'profile', 'image/jpeg', $2, $3, true),
-		       ('a3', 'p2', 'profile', 'image/png', $1, encode(sha256($1), 'hex'), false)`,
+		VALUES ('a1', 'p1', 'profile', 'image/jpeg', $1, encode(sha256($1), 'hex'), false),
+		       ('a2', 'p1', 'profile', 'image/png', $2, $3, true),
+		       ('a3', 'p2', 'profile', 'image/jpeg', $1, encode(sha256($1), 'hex'), false)`,
 		older, primary, hex.EncodeToString(sum[:]))
 	h := router(t, st)
 	tok := "?stream=" + streamToken("viewer-1", time.Now().Add(time.Hour))
@@ -85,7 +85,7 @@ func TestPersonPortrait(t *testing.T) {
 		if w.Code != http.StatusOK || !bytes.Equal(w.Body.Bytes(), primary) {
 			t.Fatalf("%sp1/profile: %d %q, want 200 and the primary portrait", base, w.Code, w.Body.Bytes())
 		}
-		for k, want := range map[string]string{"Content-Type": "image/jpeg", "ETag": etag, "Cache-Control": "public, max-age=604800"} {
+		for k, want := range map[string]string{"Content-Type": "image/png", "ETag": etag, "Cache-Control": "public, max-age=604800"} {
 			if got := w.Header().Get(k); got != want {
 				t.Errorf("%s: %s %q, want %q", base, k, got, want)
 			}

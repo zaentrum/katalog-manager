@@ -253,6 +253,9 @@ func TestCreditCaps(t *testing.T) {
 	decode(t, map[string]any{"cast": filmCast, "crew": filmCrew}, &film)
 	decode(t, map[string]any{"cast": seriesCast, "crew": seriesCrew}, &series)
 	l := newCreditList(true)
+	for i := 1; i <= 12; i++ { // a series keeps every creator
+		l.creator(int64(500+i), fmt.Sprintf("creator %02d", i))
+	}
 	series.list(l)
 	for _, tc := range []struct {
 		what    string
@@ -260,7 +263,7 @@ func TestCreditCaps(t *testing.T) {
 		want    string
 	}{
 		{"film", film.credits(), "actor 12, director 23, writer 10, producer 10, composer 10, cinematographer 10, editor 10"},
-		{"series", l.credits(), "actor 20, director 20, writer 10, producer 10, composer 10, cinematographer 10, editor 10"},
+		{"series", l.credits(), "actor 20, creator 12, director 20, writer 10, producer 10, composer 10, cinematographer 10, editor 10"},
 	} {
 		n, last := map[string]int{}, map[string]string{}
 		for _, c := range tc.credits.List {
@@ -296,24 +299,26 @@ func decode(t *testing.T, v any, dst any) {
 	}
 }
 
-// Someone a film bills twice, as two characters, is one credit, with both
-// characters in billing order and the first billing; someone with two jobs in
-// one role is one credit, with both jobs in TMDB's order. Their credits are
-// ranked as TMDB lists them.
+// A film's actors rank by TMDB's billing order, which is each one's order;
+// someone billed twice, as two characters, is one credit, with both
+// characters in billing order and the first billing. Someone with two jobs in
+// one role is one credit, with both jobs in TMDB's order, and the crew ranks
+// as TMDB lists it. Nobody without a name is credited.
 func TestFilmCreditsOfOnePersonInOneRole(t *testing.T) {
 	var n movieCreditsJSON
 	decode(t, map[string]any{
 		"cast": []any{
 			map[string]any{"id": 1, "name": "Twin", "character": "Alice's Sister", "order": 2},
-			map[string]any{"id": 2, "name": "Other", "character": "Bob", "order": 1},
+			map[string]any{"id": 2, "name": "Other", "character": "Bob", "order": 5},
 			map[string]any{"id": 1, "name": "Twin", "character": "Alice", "order": 0},
-			map[string]any{"id": 3, "name": "  ", "character": "Nobody", "order": 3},
+			map[string]any{"id": 3, "name": "  ", "character": "Nobody", "order": 1},
+			map[string]any{"id": 6, "name": "Billed Before Other", "character": "Carol", "order": 3},
 		},
 		"crew": []any{
 			map[string]any{"id": 5, "name": "Second Writer", "department": "Writing", "job": "Novel"},
-			map[string]any{"id": 4, "name": "Writes Twice", "department": "Writing", "job": "Screenplay"},
 			map[string]any{"id": 4, "name": "Writes Twice", "department": "Writing", "job": "Story"},
 			map[string]any{"id": 4, "name": "Writes Twice", "department": "Writing", "job": "Screenplay"},
+			map[string]any{"id": 4, "name": "Writes Twice", "department": "Writing", "job": "Story"},
 		},
 	}, &n)
 	var got []string
@@ -321,11 +326,37 @@ func TestFilmCreditsOfOnePersonInOneRole(t *testing.T) {
 		got = append(got, fmt.Sprintf("%s %s %q %q %d %v", c.Role, c.Name, c.Job, c.Character, c.Order, c.Episodes))
 	}
 	want := `actor Twin "" "Alice / Alice's Sister" 0 <nil>
-actor Other "" "Bob" 1 <nil>
+actor Billed Before Other "" "Carol" 3 <nil>
+actor Other "" "Bob" 5 <nil>
 writer Second Writer "Novel" "" 0 <nil>
-writer Writes Twice "Screenplay, Story" "" 1 <nil>`
+writer Writes Twice "Story, Screenplay" "" 1 <nil>`
 	if strings.Join(got, "\n") != want {
 		t.Errorf("credits:\n%s\nwant\n%s", strings.Join(got, "\n"), want)
+	}
+}
+
+// A series' creators come in TMDB's order, whatever their ids or the episodes
+// they are in otherwise, each with the job Creator and no episodes.
+func TestCreatorsComeInTMDBsOrder(t *testing.T) {
+	l := newCreditList(true)
+	var n tvAggregateJSON
+	decode(t, map[string]any{"crew": []any{map[string]any{"id": 10, "name": "Second", "department": "Writing",
+		"total_episode_count": 9, "jobs": []any{map[string]any{"job": "Writer", "episode_count": 9}}}}}, &n)
+	n.list(l)
+	for _, c := range []struct {
+		id   int64
+		name string
+	}{{30, "First"}, {10, "Second"}, {20, "Third"}, {30, "First"}} {
+		l.creator(c.id, c.name)
+	}
+	var got []string
+	for _, c := range l.credits().List {
+		if c.Role == roleCreator {
+			got = append(got, fmt.Sprintf("%s %q %d %v", c.Name, c.Job, c.Order, c.Episodes))
+		}
+	}
+	if want := `First "Creator" 0 <nil>, Second "Creator" 1 <nil>, Third "Creator" 2 <nil>`; strings.Join(got, ", ") != want {
+		t.Errorf("creators %s, want %s", strings.Join(got, ", "), want)
 	}
 }
 

@@ -314,15 +314,15 @@ var creditKeys = []string{"personId", "name", "role", "job", "character", "order
 // creditsWithDetails are the credits fillCredits gives, with their details, as
 // the export lists them.
 const creditsWithDetails = `[
-		{"personId": "p-ben", "name": "Ben", "role": "actor", "job": null, "character": "First / Young First", "order": 0, "episodeCount": 6},
-		{"personId": "p-ada", "name": "Ada", "role": "actor", "job": null, "character": "Second", "order": 1, "episodeCount": 4},
-		{"personId": "p-ida", "name": "Ida", "role": "actor", "job": null, "character": null, "order": null, "episodeCount": null},
-		{"personId": "p-hal", "name": "Hal", "role": "creator", "job": "Creator", "character": null, "order": 0, "episodeCount": null},
-		{"personId": "p-cy", "name": "Cy", "role": "director", "job": "Director", "character": null, "order": 0, "episodeCount": 3},
-		{"personId": "p-eve", "name": "Eve", "role": "writer", "job": "Writer, Co-Writer", "character": null, "order": 0, "episodeCount": 2},
-		{"personId": "p-dee", "name": "Dee", "role": "writer", "job": null, "character": null, "order": null, "episodeCount": null},
-		{"personId": "p-gus", "name": "Gus", "role": "gaffer", "job": null, "character": null, "order": null, "episodeCount": null},
-		{"personId": "p-fay", "name": "Fay", "role": "narrator", "job": null, "character": null, "order": null, "episodeCount": null}]`
+		{"personId": "p-8", "name": "Ben", "role": "actor", "job": null, "character": "First / Young First", "order": 0, "episodeCount": 6},
+		{"personId": "p-9", "name": "Ada", "role": "actor", "job": null, "character": "Second", "order": 1, "episodeCount": 4},
+		{"personId": "p-1", "name": "Ida", "role": "actor", "job": null, "character": null, "order": null, "episodeCount": null},
+		{"personId": "p-2", "name": "Hal", "role": "creator", "job": "Creator", "character": null, "order": 0, "episodeCount": null},
+		{"personId": "p-7", "name": "Cy", "role": "director", "job": "Director", "character": null, "order": 0, "episodeCount": 3},
+		{"personId": "p-5", "name": "Eve", "role": "writer", "job": "Writer, Co-Writer", "character": null, "order": 0, "episodeCount": 2},
+		{"personId": "p-6", "name": "Dee", "role": "writer", "job": null, "character": null, "order": null, "episodeCount": null},
+		{"personId": "p-3", "name": "Gus", "role": "gaffer", "job": null, "character": null, "order": null, "episodeCount": null},
+		{"personId": "p-4", "name": "Fay", "role": "narrator", "job": null, "character": null, "order": null, "episodeCount": null}]`
 
 // fillCredits gives the catalog a title crediting people in roles the catalog
 // knows and in two it does not, some of them without an order, with what TMDB
@@ -330,13 +330,13 @@ const creditsWithDetails = `[
 func fillCredits(t *testing.T, st *store.Store, details bool) {
 	t.Helper()
 	storetest.AddItem(t, st, "m1", "movie", "A Film", "")
-	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ('p-ada', 'Ada'), ('p-ben', 'Ben'),
-		('p-cy', 'Cy'), ('p-dee', 'Dee'), ('p-eve', 'Eve'), ('p-fay', 'Fay'), ('p-gus', 'Gus'), ('p-hal', 'Hal'),
-		('p-ida', 'Ida')`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ('p-9', 'Ada'), ('p-8', 'Ben'),
+		('p-7', 'Cy'), ('p-6', 'Dee'), ('p-5', 'Eve'), ('p-4', 'Fay'), ('p-3', 'Gus'), ('p-2', 'Hal'),
+		('p-1', 'Ida')`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itempeople (id, item_id, person_id, role) VALUES
-		('c1', 'm1', 'p-fay', 'narrator'), ('c2', 'm1', 'p-eve', 'writer'), ('c3', 'm1', 'p-ada', 'actor'),
-		('c4', 'm1', 'p-gus', 'gaffer'), ('c5', 'm1', 'p-cy', 'director'), ('c6', 'm1', 'p-dee', 'writer'),
-		('c7', 'm1', 'p-ben', 'actor'), ('c8', 'm1', 'p-hal', 'creator'), ('c9', 'm1', 'p-ida', 'actor')`)
+		('c1', 'm1', 'p-4', 'narrator'), ('c2', 'm1', 'p-5', 'writer'), ('c3', 'm1', 'p-9', 'actor'),
+		('c4', 'm1', 'p-3', 'gaffer'), ('c5', 'm1', 'p-7', 'director'), ('c6', 'm1', 'p-6', 'writer'),
+		('c7', 'm1', 'p-8', 'actor'), ('c8', 'm1', 'p-2', 'creator'), ('c9', 'm1', 'p-1', 'actor')`)
 	if details {
 		storetest.Exec(t, st, `UPDATE com_nalet_katalog_itempeople SET ordinal = d.o, job = d.j, charactername = d.c,
 			episodecount = d.e FROM (VALUES ('c3', 1, NULL, 'Second', 4), ('c7', 0, NULL, 'First / Young First', 6),
@@ -442,14 +442,14 @@ func TestExportCreditsWithoutMigration032(t *testing.T) {
 		}
 		fillCredits(t, st, false)
 		sameCredits(t, st, runExport(t, st), `[
-			{"personId": "p-ada", "name": "Ada", "role": "actor", "job": null, "character": null, "order": null, "episodeCount": null},
-			{"personId": "p-ben", "name": "Ben", "role": "actor", "job": null, "character": null, "order": null, "episodeCount": null},
-			{"personId": "p-ida", "name": "Ida", "role": "actor", "job": null, "character": null, "order": null, "episodeCount": null},
-			{"personId": "p-hal", "name": "Hal", "role": "creator", "job": null, "character": null, "order": null, "episodeCount": null},
-			{"personId": "p-cy", "name": "Cy", "role": "director", "job": null, "character": null, "order": null, "episodeCount": null},
-			{"personId": "p-dee", "name": "Dee", "role": "writer", "job": null, "character": null, "order": null, "episodeCount": null},
-			{"personId": "p-eve", "name": "Eve", "role": "writer", "job": null, "character": null, "order": null, "episodeCount": null},
-			{"personId": "p-gus", "name": "Gus", "role": "gaffer", "job": null, "character": null, "order": null, "episodeCount": null},
-			{"personId": "p-fay", "name": "Fay", "role": "narrator", "job": null, "character": null, "order": null, "episodeCount": null}]`)
+			{"personId": "p-9", "name": "Ada", "role": "actor", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-8", "name": "Ben", "role": "actor", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-1", "name": "Ida", "role": "actor", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-2", "name": "Hal", "role": "creator", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-7", "name": "Cy", "role": "director", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-6", "name": "Dee", "role": "writer", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-5", "name": "Eve", "role": "writer", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-3", "name": "Gus", "role": "gaffer", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-4", "name": "Fay", "role": "narrator", "job": null, "character": null, "order": null, "episodeCount": null}]`)
 	}
 }
