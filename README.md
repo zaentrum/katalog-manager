@@ -15,7 +15,9 @@ The surface is split deliberately:
   in a role with its job, character, order and episode count), `searchItems`,
   `scanJobs`, `downloadJobs`,
   `settings`, `deletedItems` (the deletion log, read-only), `people` and
-  `person` (a person's TMDB details, locks and field origins), `referenceSync`
+  `person` (a person's TMDB details, locks and field origins, and their
+  `credits`: every title that credits them, newest first, each with its role,
+  job, character, order and episode count), `referenceSync`
   (the change-list refresh's cursors and last runs, read-only), and the operator
   actions (`triggerScan`, `enrichOne`/`enrichPending`, `refreshPeople`,
   `packageItem`, `validateItem`, `fetchTrailers`, `addDownload`/`cancelDownload`,
