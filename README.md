@@ -24,6 +24,9 @@ The surface is split deliberately:
   kept exactly compatible with the clients and workers that depend on it:
   - `GET /api/artwork/{id}/{kind}` — raw image bytes (bearer JWT **or** a
     `?stream=` HMAC token, verified byte-for-byte against chino-api's minter).
+  - `GET /api/artwork/person/{personId}/profile` — a person's primary
+    portrait, authorized and cached like a title's artwork, with an `ETag` of
+    its sha256 (`If-None-Match` gets a 304); 404 when they have none.
   - `GET /api/play/{itemId}` — HTTP byte-range streaming.
   - `GET /api/subtitles/...` — VTT/SRT→VTT/passthrough.
   - `POST /api/analyze/claim`, `PUT /api/analyze/items/{id}/steps/{step}`,

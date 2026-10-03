@@ -4,10 +4,15 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// artworkCaching is how long a client may keep an image it was served.
+const artworkCaching = "public, max-age=604800"
 
 // maxArtworkBytes caps an uploaded artwork image (an analyzer-extracted keyframe
 // is well under this; the limit just bounds a hostile/oversized upload).
@@ -113,7 +118,57 @@ func (h *Handlers) getArtwork(w http.ResponseWriter, r *http.Request) {
 		ct = *contentType
 	}
 	w.Header().Set("Content-Type", ct)
-	w.Header().Set("Cache-Control", "public, max-age=604800")
+	w.Header().Set("Cache-Control", artworkCaching)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(bytes)
+}
+
+// getPersonProfile serves a person's primary profile portrait from
+// com_nalet_katalog_personartwork: its bytes, with their content type, an ETag
+// of their sha256 and the caching of a title's artwork; 304 when the caller
+// holds them already (If-None-Match names the ETag), 404 when the person has
+// none, and on a catalog that keeps no images of people (older than migration
+// 030). It sits beside a title's artwork, so it takes what that takes: a
+// bearer JWT, or a ?stream= token.
+func (h *Handlers) getPersonProfile(w http.ResponseWriter, r *http.Request) {
+	var contentType, sum string
+	var bytes []byte
+	err := h.d.Store.Pool().QueryRow(reqCtx(r), `SELECT contenttype, sha256, bytes FROM com_nalet_katalog_personartwork
+		WHERE person_id = $1 AND kind = 'profile' AND isprimary`, chi.URLParam(r, "personId")).Scan(&contentType, &sum, &bytes)
+	var pe *pgconn.PgError
+	switch {
+	case errors.Is(err, pgx.ErrNoRows), errors.As(err, &pe) && pe.Code == "42P01": // no image, or no table of them
+		http.NotFound(w, r)
+		return
+	case err != nil:
+		http.Error(w, "portrait lookup failed", http.StatusInternalServerError)
+		return
+	case len(bytes) == 0:
+		http.NotFound(w, r)
+		return
+	}
+	etag := `"` + strings.TrimSpace(sum) + `"`
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", artworkCaching)
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	if contentType = strings.TrimSpace(contentType); contentType == "" {
+		contentType = "image/jpeg"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(bytes)
+}
+
+// etagMatches reports whether an If-None-Match header names etag, compared
+// weakly as a GET's is; "*" names any.
+func etagMatches(header, etag string) bool {
+	for _, tag := range strings.Split(header, ",") {
+		if tag = strings.TrimSpace(tag); tag == "*" || strings.TrimPrefix(tag, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }

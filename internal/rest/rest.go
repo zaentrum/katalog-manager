@@ -43,6 +43,9 @@ func (h *Handlers) Register(r chi.Router) {
 	// reachable from outside.
 	r.Get("/api/manage/artwork/{itemId}/{kind}", h.getArtwork)
 	r.Put("/api/artwork/{itemId}/{kind}", h.putArtwork) // analyzer-extracted keyframe upload
+	// A person's portrait, read like a title's artwork, at both mount points.
+	r.Get("/api/artwork/person/{personId}/profile", h.getPersonProfile)
+	r.Get("/api/manage/artwork/person/{personId}/profile", h.getPersonProfile)
 	r.Get("/api/play/{itemId}", h.getPlay)
 	r.Get("/api/subtitles/items/{itemId}", h.listSubtitles)
 	r.Get("/api/subtitles/{subId}", h.getSubtitle)
