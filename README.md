@@ -56,6 +56,11 @@ schema in the order of their numbers, and each is idempotent:
 - `031_item_locked_fields.sql` gives a title `lockedfields`: with `credits` (or
   `people`) among them, TMDB neither adds nor drops a credit of the title, as
   with `metadatalocked`. Applied at startup like 030.
+- `032_credit_details.sql` gives a credit what TMDB says of it besides its
+  role: the job (`job`), the character (`charactername`), its place in the
+  role (`ordinal`) and a series' episodes (`episodecount`), all unknown for a
+  credit older than it. A credit is still the title, the person and the role;
+  these change in place. Applied at startup like 030.
 
 ## Configuration
 

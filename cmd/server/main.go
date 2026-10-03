@@ -77,6 +77,12 @@ func run() error {
 	if err := st.EnsureItemLockedFields(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/031_item_locked_fields.sql is missing and could not be applied: %v; only metadataLocked keeps a title's credits until it is", err)
 	}
+	// What a credit says besides its role (migration 032): the job, character,
+	// order and episodes TMDB gives it. Without it credits keep their roles
+	// alone, as before.
+	if err := st.EnsureCreditDetails(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/032_credit_details.sql is missing and could not be applied: %v; credits keep only their roles until it is", err)
+	}
 
 	steps := processing.New(st.Pool())
 
