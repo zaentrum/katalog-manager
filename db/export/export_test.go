@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
@@ -276,6 +277,7 @@ func TestExportThroughPsqlPrintsOnlyTheDocument(t *testing.T) {
 	}
 	st := storetest.Open(t)
 	fillPeople(t, st)
+	fillCredits(t, st, true)
 	var schema string
 	if err := st.Pool().QueryRow(context.Background(), `SELECT current_schema()`).Scan(&schema); err != nil {
 		t.Fatal(err)
@@ -297,8 +299,157 @@ func TestExportThroughPsqlPrintsOnlyTheDocument(t *testing.T) {
 	}
 	var direct any
 	_ = json.Unmarshal(runExport(t, st), &direct)
-	gotPeople, wantPeople := doc.(map[string]any)["people"], direct.(map[string]any)["people"]
-	if !reflect.DeepEqual(gotPeople, wantPeople) {
-		t.Error("psql and the test exported different people")
+	for _, key := range []string{"people", "items"} {
+		if !reflect.DeepEqual(doc.(map[string]any)[key], direct.(map[string]any)[key]) {
+			t.Errorf("psql and the test exported different %s", key)
+		}
+	}
+	sameCredits(t, st, out, creditsWithDetails)
+}
+
+// The keys of a credit, in the order the tools that read the export are
+// written against.
+var creditKeys = []string{"personId", "name", "role", "job", "character", "order", "episodeCount"}
+
+// creditsWithDetails are the credits fillCredits gives, with their details, as
+// the export lists them.
+const creditsWithDetails = `[
+		{"personId": "p-ben", "name": "Ben", "role": "actor", "job": null, "character": "First / Young First", "order": 0, "episodeCount": 6},
+		{"personId": "p-ada", "name": "Ada", "role": "actor", "job": null, "character": "Second", "order": 1, "episodeCount": 4},
+		{"personId": "p-ida", "name": "Ida", "role": "actor", "job": null, "character": null, "order": null, "episodeCount": null},
+		{"personId": "p-hal", "name": "Hal", "role": "creator", "job": "Creator", "character": null, "order": 0, "episodeCount": null},
+		{"personId": "p-cy", "name": "Cy", "role": "director", "job": "Director", "character": null, "order": 0, "episodeCount": 3},
+		{"personId": "p-eve", "name": "Eve", "role": "writer", "job": "Writer, Co-Writer", "character": null, "order": 0, "episodeCount": 2},
+		{"personId": "p-dee", "name": "Dee", "role": "writer", "job": null, "character": null, "order": null, "episodeCount": null},
+		{"personId": "p-gus", "name": "Gus", "role": "gaffer", "job": null, "character": null, "order": null, "episodeCount": null},
+		{"personId": "p-fay", "name": "Fay", "role": "narrator", "job": null, "character": null, "order": null, "episodeCount": null}]`
+
+// fillCredits gives the catalog a title crediting people in roles the catalog
+// knows and in two it does not, some of them without an order, with what TMDB
+// says of each when the catalog keeps that (migration 032).
+func fillCredits(t *testing.T, st *store.Store, details bool) {
+	t.Helper()
+	storetest.AddItem(t, st, "m1", "movie", "A Film", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ('p-ada', 'Ada'), ('p-ben', 'Ben'),
+		('p-cy', 'Cy'), ('p-dee', 'Dee'), ('p-eve', 'Eve'), ('p-fay', 'Fay'), ('p-gus', 'Gus'), ('p-hal', 'Hal'),
+		('p-ida', 'Ida')`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itempeople (id, item_id, person_id, role) VALUES
+		('c1', 'm1', 'p-fay', 'narrator'), ('c2', 'm1', 'p-eve', 'writer'), ('c3', 'm1', 'p-ada', 'actor'),
+		('c4', 'm1', 'p-gus', 'gaffer'), ('c5', 'm1', 'p-cy', 'director'), ('c6', 'm1', 'p-dee', 'writer'),
+		('c7', 'm1', 'p-ben', 'actor'), ('c8', 'm1', 'p-hal', 'creator'), ('c9', 'm1', 'p-ida', 'actor')`)
+	if details {
+		storetest.Exec(t, st, `UPDATE com_nalet_katalog_itempeople SET ordinal = d.o, job = d.j, charactername = d.c,
+			episodecount = d.e FROM (VALUES ('c3', 1, NULL, 'Second', 4), ('c7', 0, NULL, 'First / Young First', 6),
+				('c5', 0, 'Director', NULL, 3), ('c2', 0, 'Writer, Co-Writer', NULL, 2),
+				('c8', 0, 'Creator', NULL, NULL)) AS d(id, o, j, c, e)
+			WHERE com_nalet_katalog_itempeople.id = d.id`)
+	}
+}
+
+// itemPeople is the export's people of an item.
+func itemPeople(t *testing.T, doc []byte, id string) json.RawMessage {
+	t.Helper()
+	var items []struct {
+		ID     string          `json:"id"`
+		People json.RawMessage `json:"people"`
+	}
+	if err := json.Unmarshal(section(t, doc, "items"), &items); err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range items {
+		if it.ID == id {
+			return it.People
+		}
+	}
+	t.Fatalf("the export has no item %s", id)
+	return nil
+}
+
+// sameCredits fails t unless the export's credits of m1 are want, each with
+// the keys of a credit in their order, in the order GraphQL lists them.
+func sameCredits(t *testing.T, st *store.Store, doc []byte, want string) {
+	t.Helper()
+	raw := itemPeople(t, doc, "m1")
+	var got, expected any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(want), &expected); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, expected) {
+		pretty, _ := json.MarshalIndent(got, "", "  ")
+		t.Errorf("the credits of m1:\n%s\nwant\n%s", pretty, want)
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		t.Fatal(err)
+	}
+	var exported []string
+	for _, e := range entries {
+		if k := keys(t, e); !reflect.DeepEqual(k, creditKeys) {
+			t.Errorf("a credit's keys: %v, want %v", k, creditKeys)
+		}
+		var c struct{ PersonID, Role string }
+		if err := json.Unmarshal(e, &c); err != nil {
+			t.Fatal(err)
+		}
+		exported = append(exported, c.Role+" "+c.PersonID)
+	}
+	links, _, err := st.PeopleByItem(context.Background(), "m1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed []string
+	for _, l := range links {
+		listed = append(listed, l.Role+" "+l.PersonID)
+	}
+	if strings.Join(exported, ", ") != strings.Join(listed, ", ") {
+		t.Errorf("the export lists the credits\n %s\nGraphQL\n %s", strings.Join(exported, ", "), strings.Join(listed, ", "))
+	}
+}
+
+// An item's people are its credits with what TMDB says of each, in the order
+// a title lists them: by role (the roles the catalog knows in their order,
+// then any other, by role), then by order, unknown last, then by name — the
+// order GraphQL lists them in.
+func TestExportCredits(t *testing.T) {
+	st := storetest.Open(t)
+	fillCredits(t, st, true)
+	sameCredits(t, st, runExport(t, st), creditsWithDetails)
+
+	// The roles' order in the export is the catalog's.
+	raw, err := os.ReadFile("library-export.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := "array['" + strings.Join(model.CreditRoles, "', '") + "']"
+	if !strings.Contains(string(raw), roles) {
+		t.Errorf("library-export.sql does not order credits by %s", roles)
+	}
+}
+
+// On a catalog without migration 032 (and without 030) an item's credits
+// still export, each with every key, null where the catalog knows nothing,
+// by role and name.
+func TestExportCreditsWithoutMigration032(t *testing.T) {
+	for _, with030 := range []bool{true, false} {
+		st := storetest.OpenBase(t)
+		if with030 {
+			if err := st.EnsurePeople(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		fillCredits(t, st, false)
+		sameCredits(t, st, runExport(t, st), `[
+			{"personId": "p-ada", "name": "Ada", "role": "actor", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-ben", "name": "Ben", "role": "actor", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-ida", "name": "Ida", "role": "actor", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-hal", "name": "Hal", "role": "creator", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-cy", "name": "Cy", "role": "director", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-dee", "name": "Dee", "role": "writer", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-eve", "name": "Eve", "role": "writer", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-gus", "name": "Gus", "role": "gaffer", "job": null, "character": null, "order": null, "episodeCount": null},
+			{"personId": "p-fay", "name": "Fay", "role": "narrator", "job": null, "character": null, "order": null, "episodeCount": null}]`)
 	}
 }

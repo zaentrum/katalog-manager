@@ -6,6 +6,17 @@
 -- database. Artwork bytes travel base64-encoded; everything else is plain JSON.
 -- Run it as before: psql -Atf - < catalog-export.sql > catalog.json
 --
+-- An item's people are its credits, in the order a title lists them: by role
+-- (actor, creator, director, writer, producer, composer, cinematographer,
+-- editor, then any other role, by role), then by order (unknown last), then
+-- by name:
+--   [{"personId", "name", "role", "job", "character", "order", "episodeCount"}]
+-- job is the person's jobs in the role joined with ", ", character whom an
+-- actor plays, order the credit's place in its role (0 first), episodeCount a
+-- series' episodes the person is credited in, in the role; each null when
+-- unknown, as on a catalog without migration 032, whose credits are read
+-- through to_jsonb of their rows for that reason.
+--
 -- deletedItems is katalog-manager's deletion log (db/migrations/029), so that a
 -- verification can tell a record the catalog deleted (an orphan: sweep it) from
 -- one it lost (restore it): [{"id","type","deletedAt","deletedBy"}], ordered by
@@ -52,7 +63,9 @@ select json_build_object(
         'externalIds', (select coalesce(json_agg(json_build_object('source', e.source, 'externalId', e.externalid)), '[]') from com_nalet_katalog_itemexternalids e where e.item_id = i.id),
         'genres', (select coalesce(json_agg(g.name order by g.name), '[]') from com_nalet_katalog_itemgenres ig join com_nalet_katalog_genres g on g.id = ig.genre_id where ig.item_id = i.id),
         'tags', (select coalesce(json_agg(t.tag order by t.tag), '[]') from com_nalet_katalog_itemtags t where t.item_id = i.id),
-        'people', (select coalesce(json_agg(json_build_object('personId', p.id, 'name', p.name, 'role', ip.role)), '[]') from com_nalet_katalog_itempeople ip join com_nalet_katalog_people p on p.id = ip.person_id where ip.item_id = i.id),
+        'people', (select coalesce(json_agg(json_build_object('personId', c.person_id, 'name', c.name, 'role', c.role, 'job', c.d->>'job', 'character', c.d->>'charactername', 'order', (c.d->>'ordinal')::int, 'episodeCount', (c.d->>'episodecount')::int)
+                     order by array_position(array['actor', 'creator', 'director', 'writer', 'producer', 'composer', 'cinematographer', 'editor'], c.role::text) nulls last, c.role, (c.d->>'ordinal')::int nulls last, c.name, c.person_id, c.id), '[]')
+                   from (select ip.id, ip.person_id, ip.role, p.name, to_jsonb(ip) as d from com_nalet_katalog_itempeople ip join com_nalet_katalog_people p on p.id = ip.person_id where ip.item_id = i.id) c),
         'chapters', (select coalesce(json_agg(json_build_object('startMs', c.startms, 'endMs', c.endms, 'title', c.title, 'ordinal', c.ordinal) order by c.ordinal), '[]') from com_nalet_katalog_itemchapters c where c.item_id = i.id),
         'segments', (select coalesce(json_agg(json_build_object('kind', s.kind, 'startMs', s.startms, 'endMs', s.endms, 'source', s.source, 'confidence', s.confidence, 'label', s.label) order by s.startms), '[]') from com_nalet_katalog_mediasegments s where s.item_id = i.id),
         'playbackAssets', (select coalesce(json_agg(json_build_object('id', a.id, 'path', a.path, 'kind', a.kind, 'codec', a.codec, 'resolution', a.resolution, 'bitrateKbps', a.bitratekbps, 'sizeBytes', a.sizebytes, 'hash', a.hash, 'isPrimary', a.isprimary, 'audioCodec', a.audiocodec, 'audioLanguage', a.audiolanguage, 'audioChannels', a.audiochannels, 'audioBitrateKbps', a.audiobitratekbps, 'audioTrackCount', a.audiotrackcount, 'subtitleTrackCount', a.subtitletrackcount, 'durationMs', a.durationms)), '[]') from com_nalet_katalog_playbackassets a where a.item_id = i.id),
