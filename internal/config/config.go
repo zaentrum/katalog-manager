@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/model"
 )
 
@@ -29,6 +30,18 @@ type Config struct {
 	Audience         string // KATALOG_AUDIENCE (default "katalog")
 	AudienceRequired bool   // katalog.audience.required (default false -> issuer-only)
 	AuthDisabled     bool   // AUTH_DISABLED (default false)
+
+	// Who may do what (auth.Policy). An administrator's token carries
+	// AdminRole; the platform's service account is a token issued to one of
+	// ServiceClients; an addon's service account carries AddonRole. Roles are
+	// read at RolesClaim.
+	AdminRole  string // KATALOG_ADMIN_ROLE (default "zaentrum-admin", as portal-api's PORTAL_ADMIN_ROLE)
+	AddonRole  string // KATALOG_ADDON_ROLE (default "zaentrum-addon", as portal-api's PORTAL_ADDON_ROLE)
+	RolesClaim string // KATALOG_ROLES_CLAIM (default "realm_access.roles", where Keycloak puts realm roles)
+	// The OIDC clients (azp) of the service account the pipeline workers and
+	// the scan Job use. Only confidential clients that mint tokens for
+	// themselves alone belong here.
+	ServiceClients []string // KATALOG_SERVICE_CLIENTS (comma-separated; default KEYCLOAK_KATALOG_CLIENT_ID, else "zaentrum-manager")
 
 	// Stream token (base64-encoded HMAC key; blank -> stream tokens disabled)
 	StreamSigningKey string // STREAM_SIGNING_KEY
@@ -200,11 +213,53 @@ func creditRoles(v string) ([]string, error) {
 	return out, nil
 }
 
+// rolesClaim reads KATALOG_ROLES_CLAIM: a dot-separated path into a token's
+// claims, every step of it a name. A path with an empty step would never find
+// a role, so nobody would be an administrator; it is an error instead.
+func rolesClaim(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return auth.DefaultRolesClaim, nil
+	}
+	for _, step := range strings.Split(v, ".") {
+		if strings.TrimSpace(step) != step || step == "" {
+			return "", fmt.Errorf("KATALOG_ROLES_CLAIM: %q is not a claim path: names joined by dots, "+
+				"as %s", v, auth.DefaultRolesClaim)
+		}
+	}
+	return v, nil
+}
+
+// serviceClients reads KATALOG_SERVICE_CLIENTS, a comma-separated list of
+// OIDC clients. Unset, it is the client the deployment gives the service for
+// the workers' client credentials (KEYCLOAK_KATALOG_CLIENT_ID), or the
+// bundled realm's zaentrum-manager.
+func serviceClients() []string {
+	v := envDefault(envDefault("zaentrum-manager", "KEYCLOAK_KATALOG_CLIENT_ID"), "KATALOG_SERVICE_CLIENTS")
+	var out []string
+	for _, c := range strings.Split(v, ",") {
+		if c = strings.TrimSpace(c); c != "" && !slices.Contains(out, c) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// Policy is who may do what (auth.Policy), as the configuration says.
+func (c Config) Policy() auth.Policy {
+	return auth.Policy{AdminRole: c.AdminRole, AddonRole: c.AddonRole, RolesClaim: c.RolesClaim,
+		ServiceClients: c.ServiceClients}
+}
+
 // Load reads configuration from the process environment. A value that cannot
 // mean anything sensible fails it: KATALOG_CREDIT_ROLES naming something that
-// is not a role TMDB's credits give.
+// is not a role TMDB's credits give, or KATALOG_ROLES_CLAIM no claim path.
 func Load() (Config, error) {
 	roles, err := creditRoles(env("KATALOG_CREDIT_ROLES"))
+	if err != nil {
+		return Config{}, err
+	}
+	claim, err := rolesClaim(env("KATALOG_ROLES_CLAIM"))
 	if err != nil {
 		return Config{}, err
 	}
@@ -219,6 +274,11 @@ func Load() (Config, error) {
 		Audience:         envDefault("katalog", "KATALOG_AUDIENCE"),
 		AudienceRequired: envBool(false, "KATALOG_AUDIENCE_REQUIRED"),
 		AuthDisabled:     envBool(false, "AUTH_DISABLED"),
+
+		AdminRole:      envDefault("zaentrum-admin", "KATALOG_ADMIN_ROLE"),
+		AddonRole:      envDefault("zaentrum-addon", "KATALOG_ADDON_ROLE"),
+		RolesClaim:     claim,
+		ServiceClients: serviceClients(),
 
 		StreamSigningKey: env("STREAM_SIGNING_KEY"),
 
