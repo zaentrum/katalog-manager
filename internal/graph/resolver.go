@@ -6,6 +6,7 @@ import (
 	"time"
 
 	graphql "github.com/graph-gophers/graphql-go"
+	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
@@ -97,15 +98,17 @@ type DownloadGateway interface {
 	Clients(ctx context.Context) (string, error)
 }
 
-// Resolver is the GraphQL root (Query + Mutation).
+// Resolver is the GraphQL root (Query + Mutation). Every root field asks
+// allow first (access.go).
 type Resolver struct {
-	store *store.Store
-	cfg   config.Config
-	svc   Services
+	store  *store.Store
+	cfg    config.Config
+	svc    Services
+	access auth.Policy
 }
 
 func NewResolver(s *store.Store, cfg config.Config, svc Services) *Resolver {
-	return &Resolver{store: s, cfg: cfg, svc: svc}
+	return &Resolver{store: s, cfg: cfg, svc: svc, access: cfg.Policy()}
 }
 
 func deref32(p *int32) int32 {
@@ -141,6 +144,9 @@ func idStr(p *graphql.ID) *string {
 // ===================== Queries =====================
 
 func (r *Resolver) Item(ctx context.Context, args struct{ ID graphql.ID }) (*itemResolver, error) {
+	if err := r.allow(ctx, "Query.item"); err != nil {
+		return nil, err
+	}
 	row, err := r.store.GetItem(ctx, string(args.ID))
 	if err != nil || row == nil {
 		return nil, err
@@ -166,6 +172,9 @@ func (r *Resolver) listItems(ctx context.Context, f store.ItemFilter) ([]*itemRe
 }
 
 func (r *Resolver) Items(ctx context.Context, args itemsArgs) ([]*itemResolver, error) {
+	if err := r.allow(ctx, "Query.items"); err != nil {
+		return nil, err
+	}
 	return r.listItems(ctx, store.ItemFilter{
 		Type: args.Type, Genre: args.Genre, Year: args.Year, Search: args.Search,
 		Limit: deref32(args.Limit), Offset: deref32(args.Offset),
@@ -173,6 +182,9 @@ func (r *Resolver) Items(ctx context.Context, args itemsArgs) ([]*itemResolver, 
 }
 
 func (r *Resolver) Movies(ctx context.Context, args itemsArgs) ([]*itemResolver, error) {
+	if err := r.allow(ctx, "Query.movies"); err != nil {
+		return nil, err
+	}
 	t := "movie"
 	return r.listItems(ctx, store.ItemFilter{
 		Type: &t, Genre: args.Genre, Year: args.Year, Search: args.Search,
@@ -181,6 +193,9 @@ func (r *Resolver) Movies(ctx context.Context, args itemsArgs) ([]*itemResolver,
 }
 
 func (r *Resolver) Series(ctx context.Context, args itemsArgs) ([]*itemResolver, error) {
+	if err := r.allow(ctx, "Query.series"); err != nil {
+		return nil, err
+	}
 	t := "series"
 	return r.listItems(ctx, store.ItemFilter{
 		Type: &t, Genre: args.Genre, Year: args.Year, Search: args.Search,
@@ -194,6 +209,9 @@ func (r *Resolver) Episodes(ctx context.Context, args struct {
 	Limit    *int32
 	Offset   *int32
 }) ([]*itemResolver, error) {
+	if err := r.allow(ctx, "Query.episodes"); err != nil {
+		return nil, err
+	}
 	t := "episode"
 	f := store.ItemFilter{Type: &t, Limit: deref32(args.Limit), Offset: deref32(args.Offset)}
 	if args.SeasonID != nil {
@@ -210,6 +228,9 @@ func (r *Resolver) Albums(ctx context.Context, args struct {
 	Limit  *int32
 	Offset *int32
 }) ([]*itemResolver, error) {
+	if err := r.allow(ctx, "Query.albums"); err != nil {
+		return nil, err
+	}
 	t := "album"
 	return r.listItems(ctx, store.ItemFilter{Type: &t, Limit: deref32(args.Limit), Offset: deref32(args.Offset)})
 }
@@ -222,6 +243,9 @@ func (r *Resolver) SearchItems(ctx context.Context, args struct {
 	Limit  *int32
 	Offset *int32
 }) (*searchResultResolver, error) {
+	if err := r.allow(ctx, "Query.searchItems"); err != nil {
+		return nil, err
+	}
 	limit := deref32(args.Limit)
 	offset := deref32(args.Offset)
 	items, scores, err := r.store.SearchItems(ctx, store.SearchFilter{
@@ -255,6 +279,9 @@ func (r *Resolver) SearchItems(ctx context.Context, args struct {
 }
 
 func (r *Resolver) ScanJob(ctx context.Context, args struct{ ID graphql.ID }) (*scanJobResolver, error) {
+	if err := r.allow(ctx, "Query.scanJob"); err != nil {
+		return nil, err
+	}
 	j, err := r.store.GetScanJob(ctx, string(args.ID))
 	if err != nil || j == nil {
 		return nil, err
@@ -263,6 +290,9 @@ func (r *Resolver) ScanJob(ctx context.Context, args struct{ ID graphql.ID }) (*
 }
 
 func (r *Resolver) ScanJobs(ctx context.Context, args struct{ Limit *int32 }) ([]*scanJobResolver, error) {
+	if err := r.allow(ctx, "Query.scanJobs"); err != nil {
+		return nil, err
+	}
 	js, err := r.store.ListScanJobs(ctx, deref32(args.Limit))
 	if err != nil {
 		return nil, err
@@ -275,6 +305,9 @@ func (r *Resolver) ScanJobs(ctx context.Context, args struct{ Limit *int32 }) ([
 }
 
 func (r *Resolver) Activity(ctx context.Context, args struct{ Limit *int32 }) ([]*activityEventResolver, error) {
+	if err := r.allow(ctx, "Query.activity"); err != nil {
+		return nil, err
+	}
 	rows, err := r.store.ActivityFeed(ctx, deref32(args.Limit))
 	if err != nil {
 		return nil, err
@@ -287,6 +320,9 @@ func (r *Resolver) Activity(ctx context.Context, args struct{ Limit *int32 }) ([
 }
 
 func (r *Resolver) DownloadJobs(ctx context.Context, args struct{ Limit *int32 }) ([]*downloadJobResolver, error) {
+	if err := r.allow(ctx, "Query.downloadJobs"); err != nil {
+		return nil, err
+	}
 	js, err := r.store.ListDownloadJobs(ctx, deref32(args.Limit))
 	if err != nil {
 		return nil, err
@@ -299,6 +335,9 @@ func (r *Resolver) DownloadJobs(ctx context.Context, args struct{ Limit *int32 }
 }
 
 func (r *Resolver) DownloadClients(ctx context.Context) (string, error) {
+	if err := r.allow(ctx, "Query.downloadClients"); err != nil {
+		return "", err
+	}
 	if r.svc.DLGateway == nil {
 		return "[]", nil
 	}
@@ -306,6 +345,9 @@ func (r *Resolver) DownloadClients(ctx context.Context) (string, error) {
 }
 
 func (r *Resolver) Settings(ctx context.Context) ([]*settingResolver, error) {
+	if err := r.allow(ctx, "Query.settings"); err != nil {
+		return nil, err
+	}
 	ss, err := r.store.ListSettings(ctx)
 	if err != nil {
 		return nil, err
@@ -318,6 +360,9 @@ func (r *Resolver) Settings(ctx context.Context) ([]*settingResolver, error) {
 }
 
 func (r *Resolver) Genres(ctx context.Context) ([]*genreResolver, error) {
+	if err := r.allow(ctx, "Query.genres"); err != nil {
+		return nil, err
+	}
 	gs, err := r.store.ListGenres(ctx)
 	if err != nil {
 		return nil, err
@@ -330,6 +375,9 @@ func (r *Resolver) Genres(ctx context.Context) ([]*genreResolver, error) {
 }
 
 func (r *Resolver) People(ctx context.Context) ([]*personResolver, error) {
+	if err := r.allow(ctx, "Query.people"); err != nil {
+		return nil, err
+	}
 	ps, err := r.store.ListPeople(ctx)
 	if err != nil {
 		return nil, err
@@ -342,6 +390,9 @@ func (r *Resolver) People(ctx context.Context) ([]*personResolver, error) {
 }
 
 func (r *Resolver) Person(ctx context.Context, args struct{ ID graphql.ID }) (*personResolver, error) {
+	if err := r.allow(ctx, "Query.person"); err != nil {
+		return nil, err
+	}
 	p, err := r.store.GetPerson(ctx, string(args.ID))
 	if err != nil || p == nil {
 		return nil, err
@@ -349,11 +400,17 @@ func (r *Resolver) Person(ctx context.Context, args struct{ ID graphql.ID }) (*p
 	return &personResolver{m: p, s: r.store}, nil
 }
 
-func (r *Resolver) EnrichStatus(ctx context.Context) *enrichStatusResolver {
-	return &enrichStatusResolver{tmdbEnabled: r.cfg.TMDBEnabled()}
+func (r *Resolver) EnrichStatus(ctx context.Context) (*enrichStatusResolver, error) {
+	if err := r.allow(ctx, "Query.enrichStatus"); err != nil {
+		return nil, err
+	}
+	return &enrichStatusResolver{tmdbEnabled: r.cfg.TMDBEnabled()}, nil
 }
 
 func (r *Resolver) EnrichmentStatusCodes(ctx context.Context) ([]*enrichmentStatusCodeResolver, error) {
+	if err := r.allow(ctx, "Query.enrichmentStatusCodes"); err != nil {
+		return nil, err
+	}
 	cs, err := r.store.ListEnrichmentStatusCodes(ctx)
 	if err != nil {
 		return nil, err
@@ -369,6 +426,9 @@ func (r *Resolver) DeletedItems(ctx context.Context, args struct {
 	Since *graphql.Time
 	Limit *int32
 }) ([]*deletedItemResolver, error) {
+	if err := r.allow(ctx, "Query.deletedItems"); err != nil {
+		return nil, err
+	}
 	var since *time.Time
 	if args.Since != nil {
 		since = &args.Since.Time
@@ -385,6 +445,9 @@ func (r *Resolver) DeletedItems(ctx context.Context, args struct {
 }
 
 func (r *Resolver) ReferenceSync(ctx context.Context) ([]*referenceSyncResolver, error) {
+	if err := r.allow(ctx, "Query.referenceSync"); err != nil {
+		return nil, err
+	}
 	rs, err := r.store.ListReferenceSync(ctx)
 	if err != nil {
 		return nil, err
@@ -399,6 +462,9 @@ func (r *Resolver) ReferenceSync(ctx context.Context) ([]*referenceSyncResolver,
 // ===================== Mutations =====================
 
 func (r *Resolver) TriggerScan(ctx context.Context, args struct{ Source *string }) (*scanJobResolver, error) {
+	if err := r.allow(ctx, "Mutation.triggerScan"); err != nil {
+		return nil, err
+	}
 	if r.svc.Scanner == nil {
 		return nil, errNotConfigured
 	}
@@ -418,6 +484,9 @@ func (r *Resolver) TriggerScan(ctx context.Context, args struct{ Source *string 
 }
 
 func (r *Resolver) EnrichOne(ctx context.Context, args struct{ ID graphql.ID }) (*enrichResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.enrichOne"); err != nil {
+		return nil, err
+	}
 	if r.svc.Enricher == nil {
 		return nil, errNotConfigured
 	}
@@ -439,6 +508,9 @@ func (r *Resolver) Identify(ctx context.Context, args struct {
 	Title  *string
 	TmdbID *int32
 }) (*enrichResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.identify"); err != nil {
+		return nil, err
+	}
 	if r.svc.Enricher == nil {
 		return nil, errNotConfigured
 	}
@@ -462,6 +534,9 @@ func (r *Resolver) EnrichPending(ctx context.Context, args struct {
 	Limit *int32
 	Type  *string
 }) (*enrichPendingResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.enrichPending"); err != nil {
+		return nil, err
+	}
 	if r.svc.Enricher == nil {
 		return nil, errNotConfigured
 	}
@@ -479,6 +554,9 @@ func (r *Resolver) EnrichPending(ctx context.Context, args struct {
 
 // RefreshPeople is the operator's backfill of people from TMDB.
 func (r *Resolver) RefreshPeople(ctx context.Context, args struct{ All *bool }) (*peopleRefreshResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.refreshPeople"); err != nil {
+		return nil, err
+	}
 	if r.svc.People == nil {
 		return nil, errNotConfigured
 	}
@@ -490,6 +568,9 @@ func (r *Resolver) RefreshPeople(ctx context.Context, args struct{ All *bool }) 
 }
 
 func (r *Resolver) BackfillEpisodeBackdrops(ctx context.Context) (*backfillResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.backfillEpisodeBackdrops"); err != nil {
+		return nil, err
+	}
 	if r.svc.Enricher == nil {
 		return nil, errNotConfigured
 	}
@@ -501,6 +582,9 @@ func (r *Resolver) BackfillEpisodeBackdrops(ctx context.Context) (*backfillResul
 }
 
 func (r *Resolver) RetryNotFound(ctx context.Context, args struct{ Type *string }) (*retryResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.retryNotFound"); err != nil {
+		return nil, err
+	}
 	if r.svc.Enricher == nil {
 		return nil, errNotConfigured
 	}
@@ -517,6 +601,9 @@ func (r *Resolver) RetryNotFound(ctx context.Context, args struct{ Type *string 
 }
 
 func (r *Resolver) PackageItem(ctx context.Context, args struct{ ID graphql.ID }) (*packageResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.packageItem"); err != nil {
+		return nil, err
+	}
 	if r.svc.Packager == nil {
 		return nil, errNotConfigured
 	}
@@ -528,6 +615,9 @@ func (r *Resolver) PackageItem(ctx context.Context, args struct{ ID graphql.ID }
 }
 
 func (r *Resolver) ValidateItem(ctx context.Context, args struct{ ID graphql.ID }) (*validateResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.validateItem"); err != nil {
+		return nil, err
+	}
 	if r.svc.Validator == nil {
 		return nil, errNotConfigured
 	}
@@ -539,6 +629,9 @@ func (r *Resolver) ValidateItem(ctx context.Context, args struct{ ID graphql.ID 
 }
 
 func (r *Resolver) FetchTrailers(ctx context.Context, args struct{ ID graphql.ID }) (*fetchTrailersResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.fetchTrailers"); err != nil {
+		return nil, err
+	}
 	if r.svc.Trailers == nil {
 		return nil, errNotConfigured
 	}
@@ -555,6 +648,9 @@ func (r *Resolver) AddDownload(ctx context.Context, args struct {
 	Title        *string
 	WantedItemID *string
 }) (*downloadCommandResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.addDownload"); err != nil {
+		return nil, err
+	}
 	if r.svc.DLGateway == nil {
 		return nil, errNotConfigured
 	}
@@ -577,6 +673,9 @@ func (r *Resolver) CancelDownload(ctx context.Context, args struct {
 	Adapter     string
 	ClientJobID string
 }) (*downloadCommandResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.cancelDownload"); err != nil {
+		return nil, err
+	}
 	if r.svc.DLGateway == nil {
 		return nil, errNotConfigured
 	}
@@ -617,6 +716,9 @@ func (in itemInput) toWrite() store.ItemWrite {
 }
 
 func (r *Resolver) CreateItem(ctx context.Context, args struct{ Input itemInput }) (*itemResolver, error) {
+	if err := r.allow(ctx, "Mutation.createItem"); err != nil {
+		return nil, err
+	}
 	it, err := r.store.CreateItem(ctx, args.Input.toWrite())
 	if err != nil {
 		return nil, err
@@ -628,6 +730,9 @@ func (r *Resolver) UpdateItem(ctx context.Context, args struct {
 	ID    graphql.ID
 	Input itemInput
 }) (*itemResolver, error) {
+	if err := r.allow(ctx, "Mutation.updateItem"); err != nil {
+		return nil, err
+	}
 	it, err := r.store.UpdateItem(ctx, string(args.ID), args.Input.toWrite())
 	if err != nil || it == nil {
 		return nil, err
@@ -641,6 +746,9 @@ func (r *Resolver) DeleteItem(ctx context.Context, args struct {
 	DeletePackages *bool
 	Reason         *string
 }) (*deleteItemResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.deleteItem"); err != nil {
+		return nil, err
+	}
 	if r.svc.Remover == nil {
 		return nil, errNotConfigured
 	}
@@ -659,6 +767,9 @@ func (r *Resolver) SetItemGenres(ctx context.Context, args struct {
 	ID     graphql.ID
 	Genres []string
 }) (*itemResolver, error) {
+	if err := r.allow(ctx, "Mutation.setItemGenres"); err != nil {
+		return nil, err
+	}
 	if err := r.store.SetItemGenres(ctx, string(args.ID), args.Genres); err != nil {
 		return nil, err
 	}
@@ -673,6 +784,9 @@ func (r *Resolver) SetItemTags(ctx context.Context, args struct {
 	ID   graphql.ID
 	Tags []string
 }) (*itemResolver, error) {
+	if err := r.allow(ctx, "Mutation.setItemTags"); err != nil {
+		return nil, err
+	}
 	if err := r.store.SetItemTags(ctx, string(args.ID), args.Tags); err != nil {
 		return nil, err
 	}
@@ -689,6 +803,9 @@ func (r *Resolver) CreateSetting(ctx context.Context, args struct {
 	ValueType   *string
 	Description *string
 }) (*settingResolver, error) {
+	if err := r.allow(ctx, "Mutation.createSetting"); err != nil {
+		return nil, err
+	}
 	valueType := "string"
 	if args.ValueType != nil && *args.ValueType != "" {
 		valueType = *args.ValueType
@@ -706,6 +823,9 @@ func (r *Resolver) UpdateSetting(ctx context.Context, args struct {
 	ValueType   *string
 	Description *string
 }) (*settingResolver, error) {
+	if err := r.allow(ctx, "Mutation.updateSetting"); err != nil {
+		return nil, err
+	}
 	s, err := r.store.UpdateSetting(ctx, string(args.ID), args.ValueText, args.ValueType, args.Description)
 	if err != nil || s == nil {
 		return nil, err
@@ -714,5 +834,8 @@ func (r *Resolver) UpdateSetting(ctx context.Context, args struct {
 }
 
 func (r *Resolver) DeleteSetting(ctx context.Context, args struct{ ID graphql.ID }) (bool, error) {
+	if err := r.allow(ctx, "Mutation.deleteSetting"); err != nil {
+		return false, err
+	}
 	return r.store.DeleteSetting(ctx, string(args.ID))
 }

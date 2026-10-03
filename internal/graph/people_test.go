@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
@@ -16,7 +15,7 @@ const personFields = `id name sortName alsoKnownAs birthDate deathDate birthPlac
 
 func query(t *testing.T, st *store.Store, q string) string {
 	t.Helper()
-	resp := MustSchema(NewResolver(st, config.Config{}, Services{})).Exec(context.Background(), q, "", nil)
+	resp := MustSchema(NewResolver(st, testConfig, Services{})).Exec(as(admin), q, "", nil)
 	if len(resp.Errors) > 0 {
 		t.Fatalf("%s: %v", q, resp.Errors)
 	}
@@ -85,8 +84,8 @@ func TestRefreshPeopleMutation(t *testing.T) {
 		all  bool
 	}{{"(all: true)", true}, {"", false}} {
 		fp := &fakePeople{}
-		schema := MustSchema(NewResolver(nil, config.Config{}, Services{People: fp}))
-		resp := schema.Exec(context.Background(), `mutation { refreshPeople`+tc.args+` { titlesRead titlesFailed
+		schema := MustSchema(NewResolver(nil, testConfig, Services{People: fp}))
+		resp := schema.Exec(as(admin), `mutation { refreshPeople`+tc.args+` { titlesRead titlesFailed
 			titlesLocked peopleMatched peopleCreated creditsAdded creditsUpdated creditsDropped creditsRelinked
 			peopleDeleted peopleFetched peopleLocked peopleNotFound peopleFailed peopleWithoutTmdbId startedAt finishedAt } }`, "", nil)
 		if len(resp.Errors) > 0 {
@@ -103,7 +102,7 @@ func TestRefreshPeopleMutation(t *testing.T) {
 			t.Errorf("got  %s\nwant %s", got, want)
 		}
 	}
-	resp := MustSchema(NewResolver(nil, config.Config{}, Services{})).Exec(context.Background(),
+	resp := MustSchema(NewResolver(nil, testConfig, Services{})).Exec(as(admin),
 		`mutation { refreshPeople(all: true) { titlesRead } }`, "", nil)
 	if len(resp.Errors) == 0 {
 		t.Error("refreshPeople without a refresher answered")

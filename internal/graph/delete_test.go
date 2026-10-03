@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
 
@@ -15,9 +14,9 @@ func TestDeletedItemsQuery(t *testing.T) {
 		('a', 'movie', 'Oldest', '2026-09-30 22:30:00', 'subject-1', NULL),
 		('b', 'episode', 'Middle', '2026-10-01 08:00:00', 'katalog-manager/scanner', NULL),
 		('c', 'series', 'Newest', '2026-10-02 12:00:00.250', 'subject-2', 'a duplicate')`)
-	schema := MustSchema(NewResolver(st, config.Config{}, Services{}))
+	schema := MustSchema(NewResolver(st, testConfig, Services{}))
 
-	resp := schema.Exec(context.Background(), `{
+	resp := schema.Exec(as(admin), `{
 		deletedItems(since: "2026-10-01T10:00:00+02:00") { id type title deletedAt deletedBy reason }
 	}`, "", nil)
 	if len(resp.Errors) > 0 {
@@ -51,8 +50,8 @@ func TestDeleteItemPassesTheReason(t *testing.T) {
 		{`mutation { deleteItem(id: "x") { deleted } }`, ""},
 	} {
 		rm := &fakeRemover{}
-		schema := MustSchema(NewResolver(nil, config.Config{}, Services{Remover: rm}))
-		resp := schema.Exec(context.Background(), tc.query, "", nil)
+		schema := MustSchema(NewResolver(nil, testConfig, Services{Remover: rm}))
+		resp := schema.Exec(as(admin), tc.query, "", nil)
 		if len(resp.Errors) > 0 {
 			t.Fatalf("%s: %v", tc.query, resp.Errors)
 		}
