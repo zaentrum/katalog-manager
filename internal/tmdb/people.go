@@ -21,6 +21,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/zaentrum/katalog-manager/internal/auth"
 )
 
 // peopleReady reports whether migration 030 is in place. Without it a person
@@ -554,13 +556,20 @@ func jsonStringMap(raw []byte) map[string]string {
 }
 
 // linkPerson links a person to an item in a role, once (credits as they were
-// stored before migration 030).
+// stored before migration 030). An item that gains the credit is modified, by
+// whoever asked, in the statement that adds it; one that has it already is
+// not touched.
 func (s *Service) linkPerson(ctx context.Context, itemID, personID, role string) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO com_nalet_katalog_itempeople (id, item_id, person_id, role)
-		SELECT gen_random_uuid()::varchar, $1::text, $2::text, $3::text
-		WHERE NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itempeople
-		                  WHERE item_id = $1::text AND person_id = $2::text AND role = $3::text)`,
-		itemID, personID, role)
+	_, err := s.pool.Exec(ctx, `WITH added AS (
+			INSERT INTO com_nalet_katalog_itempeople (id, item_id, person_id, role)
+			SELECT gen_random_uuid()::varchar, $1::text, $2::text, $3::text
+			WHERE NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itempeople
+			                  WHERE item_id = $1::text AND person_id = $2::text AND role = $3::text)
+			RETURNING item_id
+		)
+		UPDATE com_nalet_katalog_items SET modifiedat = now(), modifiedby = $4
+		WHERE id IN (SELECT item_id FROM added)`,
+		itemID, personID, role, clip(auth.Actor(ctx, "katalog-manager/tmdb"), 255))
 	return err
 }
 

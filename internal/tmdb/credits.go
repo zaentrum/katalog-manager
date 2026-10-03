@@ -87,9 +87,11 @@ type credited struct {
 // takes what TMDB now says of it (its job, character, order and episodes) in
 // place. The people whom no title credits once the title's dropped credits are
 // gone are deleted with their images and recorded in the deletion log,
-// attributed to whoever asked (the principal on ctx, or the service). On any
-// failure nothing changes. A catalog without migration 032 keeps the credits'
-// roles alone.
+// attributed to whoever asked (the principal on ctx, or the service). A title
+// whose credits change (one added, dropped, moved off a namesake or updated)
+// is modified by whoever asked, and one whose credits stay as they were is
+// not touched. On any failure nothing changes. A catalog without migration
+// 032 keeps the credits' roles alone.
 func (s *Service) replaceCredits(ctx context.Context, itemID string, c *tmdbCredits) (creditChange, error) {
 	var out creditChange
 	detailed := s.creditDetailsReady(ctx)
@@ -233,8 +235,16 @@ func (s *Service) replaceCredits(ctx context.Context, itemID string, c *tmdbCred
 				return err
 			}
 		}
+		by := auth.Actor(ctx, "katalog-manager/tmdb")
+		if out.added+out.updated+out.dropped+out.relinked > 0 {
+			// The title changed: a record projected from it is stale now.
+			if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_items SET modifiedat = now(), modifiedby = $2
+				WHERE id = $1`, itemID, clip(by, 255)); err != nil {
+				return err
+			}
+		}
 		out.deleted, err = store.DeleteUncreditedPeople(ctx, tx, uncredited, store.Deletion{
-			By:     auth.Actor(ctx, "katalog-manager/tmdb"),
+			By:     by,
 			Reason: fmt.Sprintf("no title credits them any more: TMDB's credits of %q no longer list them", title),
 		})
 		return err

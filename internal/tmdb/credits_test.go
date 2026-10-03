@@ -389,3 +389,116 @@ func waitForALockWait(t *testing.T, st *store.Store) {
 	}
 	t.Fatal("no session came to wait for the lock")
 }
+
+// modified is whether an item was modified since modifiedOld set it back:
+// "true <modifiedby>" when its modifiedat moved, "false <modifiedby>" when not.
+func modified(t *testing.T, st *store.Store, itemID string) string {
+	t.Helper()
+	var got string
+	if err := st.Pool().QueryRow(context.Background(), `SELECT (modifiedat > '2000-01-01')::text || ' ' ||
+		COALESCE(modifiedby, '-') FROM com_nalet_katalog_items WHERE id = $1`, itemID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// modifiedOld sets an item's modifiedat and modifiedby back to long ago and
+// nobody.
+func modifiedOld(t *testing.T, st *store.Store, itemID string) {
+	t.Helper()
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET modifiedat = '2000-01-01', modifiedby = 'nobody'
+		WHERE id = $1`, itemID)
+}
+
+// A title whose credits change — one added, dropped or updated in place — is
+// modified, by whoever changed them (the principal, or the service), so that
+// a record projected from it knows it is stale; a refresh that changes none of
+// its credits does not touch it, and neither does one of a locked title.
+func TestCreditsThatChangeModifyTheTitle(t *testing.T) {
+	st := storetest.Open(t)
+	f := newFakeTMDB(t)
+	s := newTestService(t, st, f, "en-US")
+	sintel(t, st, f)
+	operator := auth.WithPrincipal(context.Background(), &auth.Principal{Subject: "operator-1"})
+	for _, step := range []struct {
+		what      string
+		ctx       context.Context
+		character string
+		producer  bool
+		lock      bool
+		want      string
+	}{
+		{"its credits added", operator, "Sintel", true, false, "true operator-1"},
+		{"nothing changed", operator, "Sintel", true, false, "false nobody"},
+		{"a character changed", context.Background(), "Sintel (voice)", true, false, "true katalog-manager/tmdb"},
+		{"nothing changed again", context.Background(), "Sintel (voice)", true, false, "false nobody"},
+		{"a credit dropped", operator, "Sintel (voice)", false, false, "true operator-1"},
+		{"a locked title", operator, "Sintel", true, true, "false nobody"},
+	} {
+		f.titleCredits("movie/45745", sintelCast(step.character), sintelCrew(step.producer))
+		if step.lock {
+			storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET lockedfields = '["credits"]' WHERE id = $1`, film1)
+		}
+		modifiedOld(t, st, film1)
+		res, err := s.RefreshPeople(step.ctx, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := modified(t, st, film1); got != step.want {
+			t.Errorf("%s (%+v): modified %s, want %s", step.what, counts(res), got, step.want)
+		}
+	}
+
+	// Enrichment changes them the same way. (It moves modifiedat in any case,
+	// for the title's other fields; modifiedby says who changed its credits.)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET lockedfields = NULL WHERE id = $1`, film1)
+	f.titleCredits("movie/45745", sintelCast("Sintel"), sintelCrew(false))
+	modifiedOld(t, st, film1)
+	enrich(t, s, film1)
+	if got := modified(t, st, film1); got != "true katalog-manager/tmdb" {
+		t.Errorf("enriched with a character changed: modified %s", got)
+	}
+}
+
+// The title is modified in the transaction that changes its credits: when
+// that cannot go through, neither does the change to the title.
+func TestCreditsThatCannotBeStoredDoNotModifyTheTitle(t *testing.T) {
+	st := storetest.Open(t)
+	f := newFakeTMDB(t)
+	s := newTestService(t, st, f, "en-US")
+	twoShorts(t, st, f)
+	storetest.Exec(t, st, `DROP TABLE com_nalet_katalog_deleteditems`) // its stale people cannot be logged
+	modifiedOld(t, st, spring)
+	if _, err := s.RefreshPeople(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if got := modified(t, st, spring); got != "false nobody" {
+		t.Errorf("credits that could not be replaced modified the title: %s", got)
+	}
+}
+
+// A catalog without migration 030 links credits by name, and the title that
+// gains one is modified; one that has them all already is not.
+func TestLinkingByNameModifiesTheTitleThatGainsACredit(t *testing.T) {
+	st := storetest.OpenBase(t)
+	if err := st.EnsureDeletionLog(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeTMDB(t)
+	s := newTestService(t, st, f, "en-US")
+	addTitle(t, st, film1, "movie", "First Film", 10)
+	f.movie(10, "First Film")
+	f.cast("movie/10", []string{"101", "Ada Example"}, []string{"601", "Dee Director", "Director"})
+	operator := auth.WithPrincipal(context.Background(), &auth.Principal{Subject: "operator-1"})
+	for _, want := range []string{"operator-1", "nobody"} { // linked; then linked already
+		modifiedOld(t, st, film1)
+		if status, msg, err := s.EnrichOne(operator, film1); err != nil || status != statusDone {
+			t.Fatalf("EnrichOne: %s %q %v", status, msg, err)
+		}
+		var by string
+		storetestScan(t, st, `SELECT modifiedby FROM com_nalet_katalog_items WHERE id = '`+film1+`'`, &by)
+		if by != want {
+			t.Errorf("modified by %s, want %s", by, want)
+		}
+	}
+}

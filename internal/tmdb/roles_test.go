@@ -120,10 +120,20 @@ func sintel(t *testing.T, st *store.Store, f *fakeTMDB) {
 	t.Helper()
 	addTitle(t, st, film1, "movie", "Sintel", 45745)
 	f.movie(45745, "Sintel")
-	f.titleCredits("movie/45745", []map[string]any{
-		{"id": 701, "name": "First Voice", "character": "Sintel", "order": 0},
+	f.titleCredits("movie/45745", sintelCast("Sintel"), sintelCrew(true))
+}
+
+// sintelCast is the film's cast as TMDB lists it, its lead voicing character.
+func sintelCast(character string) []map[string]any {
+	return []map[string]any{
+		{"id": 701, "name": "First Voice", "character": character, "order": 0},
 		{"id": 702, "name": "Second Voice", "character": "Shaman", "order": 1},
-	}, []map[string]any{
+	}
+}
+
+// sintelCrew is the film's crew as TMDB lists it, its producer among it or not.
+func sintelCrew(producer bool) []map[string]any {
+	crew := []map[string]any{
 		{"id": 801, "name": "The Director", "department": "Directing", "job": "Director"},
 		{"id": 802, "name": "The Writer", "department": "Writing", "job": "Writer"},
 		{"id": 801, "name": "The Director", "department": "Writing", "job": "Story"},
@@ -131,7 +141,11 @@ func sintel(t *testing.T, st *store.Store, f *fakeTMDB) {
 		{"id": 804, "name": "The Composer", "department": "Sound", "job": "Music"},
 		{"id": 805, "name": "The Art Director", "department": "Art", "job": "Art Direction"},
 		{"id": 806, "name": "The Casting Director", "department": "Production", "job": "Casting"},
-	})
+	}
+	if !producer {
+		crew = slices.DeleteFunc(crew, func(c map[string]any) bool { return c["job"] == "Producer" })
+	}
+	return crew
 }
 
 const sintelCredits = `actor First Voice (701) - | Sintel | 0 | -
@@ -188,16 +202,7 @@ func TestACharacterChangeUpdatesTheCreditInPlace(t *testing.T) {
 	storetestScan(t, st, `SELECT ip.id, ip.person_id FROM com_nalet_katalog_itempeople ip
 		JOIN com_nalet_katalog_people p ON p.id = ip.person_id WHERE p.tmdbpersonid = '701'`, &credit, &person)
 
-	f.titleCredits("movie/45745", []map[string]any{
-		{"id": 701, "name": "First Voice", "character": "Sintel (voice)", "order": 0},
-		{"id": 702, "name": "Second Voice", "character": "Shaman", "order": 1},
-	}, []map[string]any{
-		{"id": 801, "name": "The Director", "department": "Directing", "job": "Director"},
-		{"id": 802, "name": "The Writer", "department": "Writing", "job": "Writer"},
-		{"id": 801, "name": "The Director", "department": "Writing", "job": "Story"},
-		{"id": 803, "name": "The Producer", "department": "Production", "job": "Producer"},
-		{"id": 804, "name": "The Composer", "department": "Sound", "job": "Music"},
-	})
+	f.titleCredits("movie/45745", sintelCast("Sintel (voice)"), sintelCrew(true))
 	res, err := s.RefreshPeople(context.Background(), true)
 	if err != nil {
 		t.Fatal(err)
