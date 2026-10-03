@@ -21,7 +21,10 @@ The surface is split deliberately:
   (the change-list refresh's cursors and last runs, read-only), and the operator
   actions (`triggerScan`, `enrichOne`/`enrichPending`, `refreshPeople`,
   `packageItem`, `validateItem`, `fetchTrailers`, `addDownload`/`cancelDownload`,
-  item + settings CRUD). Schema-first via
+  item + settings CRUD; a secret setting, such as an API key, is write-only:
+  `setSecretSetting`/`clearSecretSetting`, and no field returns its value).
+  It is the catalog console's: every field is an administrator's (see
+  [Who may do what](#who-may-do-what)). Schema-first via
   [graph-gophers/graphql-go](https://github.com/graph-gophers/graphql-go) — the
   SDL is `internal/graph/schema.graphql`; resolvers are plain Go methods.
 - **REST** (`/api/*`) — everything that is byte-oriented or a machine contract,
@@ -33,11 +36,37 @@ The surface is split deliberately:
     its sha256 (`If-None-Match` gets a 304); 404 when they have none.
   - `GET /api/play/{itemId}` — HTTP byte-range streaming.
   - `GET /api/subtitles/...` — VTT/SRT→VTT/passthrough.
-  - `POST /api/analyze/claim`, `PUT /api/analyze/items/{id}/steps/{step}`,
+  - `GET /api/analyze/items/{id}`, `PUT /api/analyze/items/{id}/steps/{step}`,
     `PUT/DELETE /api/segments|chapters/items/{id}`,
     `POST /api/items/{id}/packaging-complete` — the analyzer/packager worker
     protocol.
+  - `POST /api/ingest` — an addon hands a file on disk to the catalog.
   - Kafka `stube.download.client.*` consumer — projects the downloads read model.
+
+## Who may do what
+
+The service authenticates bearer tokens of its issuer (and, on an artwork
+read, a stream token), then tells three callers apart: an **administrator**,
+whose token carries the admin role; the platform's **service account**, a
+token issued to one of its clients (`azp`), which the pipeline workers and a
+deployment's scan Job mint with client credentials; and an **addon**'s service
+account, whose token carries the addon role. Everyone else signed in is a
+**viewer**.
+
+| Operation | Who may |
+|---|---|
+| every GraphQL query and mutation (the catalog with its paths on disk, scan and download jobs, activity, settings, the deletion log, every change) | admin |
+| GraphQL `triggerScan` | admin, service account |
+| `GET /api/manage/stream` (the console's live stream) | admin |
+| `GET /api/artwork/...`, `/api/manage/artwork/...` (also a person's portrait) | any signed-in caller, or a stream token |
+| `GET /api/play/...`, `GET /api/subtitles/...` | any signed-in caller |
+| `PUT /api/artwork/...`, `/api/analyze/*`, segments, chapters, `packaging-complete` | admin, service account |
+| `POST /api/ingest` | admin, service account, addon |
+
+A refused GraphQL field answers with an error whose `extensions.code` is
+`FORBIDDEN` and whose message names the role; a refused route answers 403
+with `{"error": "..."}`. Introspection and `__typename` answer any signed-in
+caller.
 
 ## Data
 
@@ -81,7 +110,20 @@ Env vars mirror the previous service so existing manifests keep working — see
 `SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI`, `STREAM_SIGNING_KEY`,
 `TMDB_API_KEY`, `SCANNER_NFS_ROOT`, `DOWNLOAD_GATEWAY_URL`,
 `DOWNLOAD_GATEWAY_EVENTS_ENABLED`, `KAFKA_BROKERS`, `ODOWNLOADER_URL/TOKEN`.
-`AUTH_DISABLED=true` turns off auth for local dev.
+`AUTH_DISABLED=true` turns off auth for local dev: every caller may then do
+anything.
+
+Who may do what: `KATALOG_ADMIN_ROLE` (default `zaentrum-admin`, as the
+portal's `PORTAL_ADMIN_ROLE`) is the role an administrator's token carries,
+`KATALOG_ADDON_ROLE` (default `zaentrum-addon`) an addon's.
+`KATALOG_ROLES_CLAIM` (default `realm_access.roles`, where Keycloak puts realm
+roles) is where a token carries its roles, a dot-separated path into its
+claims; one with an empty step stops the service at startup.
+`KATALOG_SERVICE_CLIENTS` is a comma-separated list of the service account's
+OIDC clients; unset, it is `KEYCLOAK_KATALOG_CLIENT_ID` (the client a
+deployment gives the workers), else `zaentrum-manager`. Name only confidential
+clients that mint tokens for themselves alone: any token issued to one counts
+as the service account.
 
 `TMDB_REFRESH_INTERVAL` (a Go duration, default `24h`; `0` or `off` turns it
 off) is how often the people and titles the catalog holds are refreshed from
