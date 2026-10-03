@@ -49,7 +49,7 @@ func (h *Handlers) Register(r chi.Router) {
 		r.Use(pol.Require(auth.Viewer))
 		r.Get("/api/artwork/{itemId}/{kind}", h.getArtwork)
 		// Also serve artwork READS under /api/manage — the same reason GraphQL is
-		// mounted twice in cmd/server/main.go. Only /api/manage is published by a
+		// mounted twice in cmd/server/routes.go. Only /api/manage is published by a
 		// Route, so the bare /api/artwork path is unreachable from a browser and
 		// every image in the catalog console 404'd, in every environment.
 		//

@@ -15,7 +15,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/graph-gophers/graphql-go/relay"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/zaentrum/katalog-manager/internal/auth"
@@ -99,6 +98,12 @@ func run() error {
 		return err
 	}
 	authMW := auth.NewMiddleware(jwtVerifier, streamVerifier)
+	if cfg.AuthDisabled || cfg.OIDCIssuer == "" {
+		log.Printf("auth: OFF (AUTH_DISABLED or no issuer) — every caller may do anything")
+	} else {
+		log.Printf("auth: admins carry the %s role and addons the %s role (at %s); the service account is %v",
+			cfg.AdminRole, cfg.AddonRole, cfg.RolesClaim, cfg.ServiceClients)
+	}
 
 	// Catalog pipeline event producer (nil-safe no-op when no brokers). The
 	// scanner emits discovered through it; the enricher emits enriched.
@@ -226,18 +231,8 @@ func run() error {
 	}
 
 	// Authenticated surface.
-	r.Group(func(pr chi.Router) {
-		pr.Use(authMW.Handler)
-		gqlHandler := &relay.Handler{Schema: schema}
-		pr.Handle("/query", gqlHandler)
-		pr.Handle("/graphql", gqlHandler)
-		// Also serve GraphQL under the /api/manage prefix so it resolves behind
-		// the demo's path-routing (the portal's katalog console posts there).
-		pr.Handle("/api/manage/query", gqlHandler)
-		pr.Handle("/api/manage/graphql", gqlHandler)
-		pr.Get("/api/manage/stream", broker.Handler)
-		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: steps, Events: eventProducer}).Register(pr)
-	})
+	routes(r, authMW.Handler, cfg.Policy(), schema, broker.Handler,
+		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: steps, Events: eventProducer}))
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
