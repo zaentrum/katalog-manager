@@ -53,6 +53,8 @@ schema in the order of their numbers, and each is idempotent:
   goes. They come in every role TMDB's credits give — its cast as actors, a
   series' creators, and of the crew its directors, writers, producers,
   composers, cinematographers and editors — one credit per person and role.
+  A title whose credits change is modified with them (`modifiedat`,
+  `modifiedby`), so a record projected from it knows it is stale.
   The service creates the log at startup when it is missing; where its role
   may not create tables, apply the file by hand.
 - `030_people.sql` gives a person their TMDB id and details (dates, places,
