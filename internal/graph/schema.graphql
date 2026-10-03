@@ -168,6 +168,9 @@ type Person {
   createdAt: Time
   # when their data last changed
   modifiedAt: Time
+  # every title that credits them, in each role, newest title first (see
+  # PersonCredit)
+  credits: [PersonCredit!]!
 }
 
 type LocalizedText {
@@ -202,6 +205,24 @@ type ItemPerson {
   # the episodes of a series the person is credited in, in the role
   episodeCount: Int
   person: Person!
+}
+
+# A credit seen from the person (ItemPerson seen from the title): the title
+# that credits them, in a role, with what TMDB says of the credit. A person's
+# credits come newest title first: by year (a title without one in its
+# parent's, an episode in its series'), unknown last; the titles of a year by
+# name, a title under its parent's name after the parent (an episode under its
+# series', by season and episode); and a title's credits by role as the title
+# lists them. The title and its parent come with the credits, in the one query
+# that reads them; anything else of the title is read as for any item.
+type PersonCredit {
+  id: ID!
+  role: String!
+  job: String
+  character: String
+  order: Int
+  episodeCount: Int
+  item: Item!
 }
 
 type ItemArtwork {

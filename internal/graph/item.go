@@ -14,6 +14,11 @@ import (
 type itemResolver struct {
 	m *model.Item
 	s *store.Store
+	// With parentRead the parent was read with the item (a person's credit
+	// reads its title's): parent, nil when there is none. Without, Parent
+	// reads it.
+	parent     *model.Item
+	parentRead bool
 }
 
 func newItemResolver(m *model.Item, s *store.Store) *itemResolver {
@@ -105,6 +110,9 @@ func (r *itemResolver) MetadataLocked(ctx context.Context) (bool, error) {
 func (r *itemResolver) Parent(ctx context.Context) (*itemResolver, error) {
 	if r.m.ParentID == nil {
 		return nil, nil
+	}
+	if r.parentRead {
+		return newItemResolver(r.parent, r.s), nil
 	}
 	p, err := r.s.GetItemBase(ctx, *r.m.ParentID)
 	if err != nil || p == nil {
@@ -260,7 +268,7 @@ func (r *itemResolver) People(ctx context.Context) ([]*itemPersonResolver, error
 		if i < len(people) {
 			p = people[i]
 		}
-		out = append(out, &itemPersonResolver{m: x, person: p})
+		out = append(out, &itemPersonResolver{m: x, person: p, s: r.s})
 	}
 	return out, nil
 }

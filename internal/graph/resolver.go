@@ -336,7 +336,7 @@ func (r *Resolver) People(ctx context.Context) ([]*personResolver, error) {
 	}
 	out := make([]*personResolver, 0, len(ps))
 	for _, p := range ps {
-		out = append(out, &personResolver{m: p})
+		out = append(out, &personResolver{m: p, s: r.store})
 	}
 	return out, nil
 }
@@ -346,7 +346,7 @@ func (r *Resolver) Person(ctx context.Context, args struct{ ID graphql.ID }) (*p
 	if err != nil || p == nil {
 		return nil, err
 	}
-	return &personResolver{m: p}, nil
+	return &personResolver{m: p, s: r.store}, nil
 }
 
 func (r *Resolver) EnrichStatus(ctx context.Context) *enrichStatusResolver {

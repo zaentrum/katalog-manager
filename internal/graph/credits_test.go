@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
@@ -88,5 +89,85 @@ func TestItemPeopleQueryWithoutMigration032(t *testing.T) {
 		if got := query(t, st, creditFields); got != want {
 			t.Errorf("with 030 %v:\n got  %s\n want %s", with030, got, want)
 		}
+	}
+}
+
+// A person's credits read with their titles and an episode's series, newest
+// title first, a title's credits by role (the order is the store's, see
+// store.CreditsByPerson); through people and an item's people too.
+func TestPersonCreditsQuery(t *testing.T) {
+	st := storetest.Open(t)
+	withItemView(t, st)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_items (id, type, title, year, parent_id, seasonnumber,
+		episodenumber, createdat, modifiedat) VALUES
+		('s1', 'series', 'A Show', 2010, NULL, NULL, NULL, now(), now()),
+		('e1', 'episode', 'Pilot', 2011, 's1', 1, 2, now(), now()),
+		('m1', 'movie', 'A Film', 2012, NULL, NULL, NULL, now(), now())`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ('p1', 'Ada'), ('p2', 'Ben')`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itempeople (id, item_id, person_id, role, job, charactername,
+		ordinal, episodecount) VALUES
+		('c1', 's1', 'p1', 'writer', 'Writer, Co-Writer', NULL, 0, 6), ('c2', 's1', 'p1', 'actor', NULL, 'Self', 1, 6),
+		('c3', 'e1', 'p1', 'actor', NULL, 'Guest', 4, NULL), ('c4', 'm1', 'p1', 'director', 'Director', NULL, 0, NULL),
+		('c5', 'm1', 'p2', 'actor', NULL, 'Lead', 0, NULL)`)
+
+	got := query(t, st, `{ person(id: "p1") { credits { id role job character order episodeCount
+		item { id type title year seasonNumber episodeNumber posterUrl parent { id type title year } } } } }`)
+	want := `{"person":{"credits":[` +
+		`{"id":"c4","role":"director","job":"Director","character":null,"order":0,"episodeCount":null,` +
+		`"item":{"id":"m1","type":"movie","title":"A Film","year":2012,"seasonNumber":null,"episodeNumber":null,` +
+		`"posterUrl":"/api/manage/artwork/m1/poster","parent":null}},` +
+		`{"id":"c3","role":"actor","job":null,"character":"Guest","order":4,"episodeCount":null,` +
+		`"item":{"id":"e1","type":"episode","title":"Pilot","year":2011,"seasonNumber":1,"episodeNumber":2,` +
+		`"posterUrl":"/api/manage/artwork/e1/poster","parent":{"id":"s1","type":"series","title":"A Show","year":2010}}},` +
+		`{"id":"c2","role":"actor","job":null,"character":"Self","order":1,"episodeCount":6,` +
+		`"item":{"id":"s1","type":"series","title":"A Show","year":2010,"seasonNumber":null,"episodeNumber":null,` +
+		`"posterUrl":"/api/manage/artwork/s1/poster","parent":null}},` +
+		`{"id":"c1","role":"writer","job":"Writer, Co-Writer","character":null,"order":0,"episodeCount":6,` +
+		`"item":{"id":"s1","type":"series","title":"A Show","year":2010,"seasonNumber":null,"episodeNumber":null,` +
+		`"posterUrl":"/api/manage/artwork/s1/poster","parent":null}}]}}`
+	if got != want {
+		t.Errorf("Ada's credits:\n got  %s\n want %s", got, want)
+	}
+
+	if got, want := query(t, st, `{ people { name credits { id } } }`),
+		`{"people":[{"name":"Ada","credits":[{"id":"c4"},{"id":"c3"},{"id":"c2"},{"id":"c1"}]},`+
+			`{"name":"Ben","credits":[{"id":"c5"}]}]}`; got != want {
+		t.Errorf("people:\n got  %s\n want %s", got, want)
+	}
+	if got, want := query(t, st, `{ item(id: "m1") { people { person { name credits { item { title } } } } } }`),
+		`{"item":{"people":[{"person":{"name":"Ben","credits":[{"item":{"title":"A Film"}}]}},`+
+			`{"person":{"name":"Ada","credits":[{"item":{"title":"A Film"}},{"item":{"title":"Pilot"}},`+
+			`{"item":{"title":"A Show"}},{"item":{"title":"A Show"}}]}}]}}`; got != want {
+		t.Errorf("an item's people:\n got  %s\n want %s", got, want)
+	}
+	if got := query(t, st, `{ person(id: "p2") { credits { item { parent { id } } } } }`); got !=
+		`{"person":{"credits":[{"item":{"parent":null}}]}}` {
+		t.Errorf("a film's parent: %s", got)
+	}
+}
+
+// A credit's title answers for its parent with the one read with it, and reads
+// nothing more: the store is not asked again (here there is none to ask).
+func TestPersonCreditTitleParentComesWithIt(t *testing.T) {
+	ctx := context.Background()
+	show := &model.Item{ID: "s1", Type: "series", Title: "A Show"}
+	parentID := "s1"
+	withParent := &personCreditResolver{m: &model.PersonCredit{
+		ItemPerson: model.ItemPerson{ID: "c1", Role: "actor"},
+		Item:       model.Item{ID: "e1", Type: "episode", Title: "Pilot", ParentID: &parentID},
+		Parent:     show,
+	}}
+	p, err := withParent.Item().Parent(ctx)
+	if err != nil || p == nil || p.m != show {
+		t.Fatalf("the parent of a credit's episode: %+v, %v", p, err)
+	}
+
+	gone := "gone"
+	orphan := &personCreditResolver{m: &model.PersonCredit{
+		ItemPerson: model.ItemPerson{ID: "c2", Role: "actor"},
+		Item:       model.Item{ID: "e2", Type: "episode", Title: "Orphan", ParentID: &gone},
+	}}
+	if p, err := orphan.Item().Parent(ctx); err != nil || p != nil {
+		t.Fatalf("the parent of a credit's episode whose series is gone: %+v, %v", p, err)
 	}
 }

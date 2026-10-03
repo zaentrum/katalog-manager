@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"context"
 	"sort"
 
 	graphql "github.com/graph-gophers/graphql-go"
@@ -115,7 +116,10 @@ type genreResolver struct{ m *model.Genre }
 func (r *genreResolver) ID() graphql.ID { return gid(r.m.ID) }
 func (r *genreResolver) Name() string   { return r.m.Name }
 
-type personResolver struct{ m *model.Person }
+type personResolver struct {
+	m *model.Person
+	s *store.Store
+}
 
 func (r *personResolver) ID() graphql.ID              { return gid(r.m.ID) }
 func (r *personResolver) Name() string                { return r.m.Name }
@@ -152,6 +156,36 @@ func (r *personResolver) FieldOrigins() []*fieldOriginResolver {
 	return out
 }
 
+// Credits reads the person's credits with their titles, in one query.
+func (r *personResolver) Credits(ctx context.Context) ([]*personCreditResolver, error) {
+	cs, err := r.s.CreditsByPerson(ctx, r.m.ID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*personCreditResolver, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, &personCreditResolver{m: c, s: r.s})
+	}
+	return out, nil
+}
+
+// personCreditResolver is a person's credit; its title comes with its parent,
+// read with the credit.
+type personCreditResolver struct {
+	m *model.PersonCredit
+	s *store.Store
+}
+
+func (r *personCreditResolver) ID() graphql.ID       { return gid(r.m.ID) }
+func (r *personCreditResolver) Role() string         { return r.m.Role }
+func (r *personCreditResolver) Job() *string         { return r.m.Job }
+func (r *personCreditResolver) Character() *string   { return r.m.Character }
+func (r *personCreditResolver) Order() *int32        { return r.m.Order }
+func (r *personCreditResolver) EpisodeCount() *int32 { return r.m.EpisodeCount }
+func (r *personCreditResolver) Item() *itemResolver {
+	return &itemResolver{m: &r.m.Item, s: r.s, parent: r.m.Parent, parentRead: true}
+}
+
 type localizedTextResolver struct{ language, text string }
 
 func (r *localizedTextResolver) Language() string { return r.language }
@@ -181,6 +215,7 @@ func sortedKeys(m map[string]string) []string {
 type itemPersonResolver struct {
 	m      *model.ItemPerson
 	person *model.Person
+	s      *store.Store
 }
 
 func (r *itemPersonResolver) ID() graphql.ID       { return gid(r.m.ID) }
@@ -191,9 +226,9 @@ func (r *itemPersonResolver) Order() *int32        { return r.m.Order }
 func (r *itemPersonResolver) EpisodeCount() *int32 { return r.m.EpisodeCount }
 func (r *itemPersonResolver) Person() *personResolver {
 	if r.person == nil {
-		return &personResolver{m: &model.Person{ID: r.m.PersonID}}
+		return &personResolver{m: &model.Person{ID: r.m.PersonID}, s: r.s}
 	}
-	return &personResolver{m: r.person}
+	return &personResolver{m: r.person, s: r.s}
 }
 
 // ---- ItemArtwork / ItemExternalId ----
