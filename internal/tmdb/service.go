@@ -19,6 +19,7 @@ import (
 
 	"github.com/zaentrum/katalog-manager/internal/chaptersdb"
 	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 )
 
@@ -45,6 +46,11 @@ type Service struct {
 	tmdb   *client
 	fanart *fanartClient // artwork-only fallback for poster/backdrop TMDB is missing
 	omdb   *omdbClient   // metadata fallback (description/rating/poster + title-match)
+
+	// roles are the roles a title's credits follow TMDB in
+	// (KATALOG_CREDIT_ROLES): TMDB's credits in any other are not read, and a
+	// title's credits in them go.
+	roles map[string]bool
 
 	// peopleCheck reports whether migration 030 is in place; peopleOK
 	// remembers once it is (a migration is not undone under a running service).
@@ -79,6 +85,14 @@ func New(st storePool, cfg config.Config, steps *processing.Steps, ch *chaptersd
 		CreditDetailsReady(context.Context) (bool, error)
 	}); ok {
 		s.detailsCheck = dc.CreditDetailsReady
+	}
+	roles := cfg.CreditRoles
+	if len(roles) == 0 {
+		roles = model.CreditRoles
+	}
+	s.roles = map[string]bool{}
+	for _, r := range roles {
+		s.roles[r] = true
 	}
 	s.tmdb = newClient(s.keyFor("tmdb.api_key", cfg.TMDBAPIKey), cfg.TMDBLanguage)
 	s.fanart = newFanartClient(

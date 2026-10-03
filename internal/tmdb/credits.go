@@ -78,9 +78,11 @@ type credited struct {
 	details creditDetails
 }
 
-// replaceCredits makes a title's credits TMDB's list c, in one transaction,
-// unless the title keeps its credits (metadatalocked, or credits or people in
-// its lockedfields). Each credited person is found by TMDB id (a person known
+// replaceCredits makes a title's credits TMDB's list c in the roles credits
+// follow TMDB in (KATALOG_CREDIT_ROLES), in one transaction, unless the title
+// keeps its credits (metadatalocked, or credits or people in its
+// lockedfields): a credit in any other role goes like one TMDB no longer
+// lists. Each credited person is found by TMDB id (a person known
 // only by name is matched by it once), or created. A credit the title keeps
 // takes what TMDB now says of it (its job, character, order and episodes) in
 // place. The people whom no title credits once the title's dropped credits are
@@ -116,7 +118,7 @@ func (s *Service) replaceCredits(ctx context.Context, itemID string, c *tmdbCred
 		seen := map[string]bool{}
 		for _, cr := range c.List {
 			name := clip(oneLine(cr.Name), 255)
-			if name == "" {
+			if name == "" || !s.roles[cr.Role] {
 				continue
 			}
 			id, how, err := findOrCreatePerson(ctx, tx, cr.ID, name)

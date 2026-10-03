@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
@@ -404,5 +406,66 @@ func TestCreditsWithoutMigration032KeepTheirRoles(t *testing.T) {
 	}
 	if got := creditLines(t, st, film1); got != sintelCredits {
 		t.Errorf("credits after 032:\n%s\nwant\n%s", got, sintelCredits)
+	}
+}
+
+// Credits follow TMDB in the roles KATALOG_CREDIT_ROLES names: once a role is
+// no longer among them, refreshing a title drops its credits in that role,
+// like credits TMDB no longer lists, and a person no title credits after that
+// is deleted and logged, as before; a person still credited in another role
+// stays. A catalog without migration 030 links only the roles named.
+func TestARoleNoLongerNamedIsDroppedOnRefresh(t *testing.T) {
+	t.Setenv("KATALOG_CREDIT_ROLES", "actor,director,producer,composer") // no writers
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{CreditRoles: loaded.CreditRoles}
+	withoutWriters := strings.Join(slices.DeleteFunc(strings.Split(sintelCredits, "\n"),
+		func(l string) bool { return strings.HasPrefix(l, "writer ") }), "\n")
+	for _, path := range []string{"refreshPeople", "enrichment"} {
+		t.Run(path, func(t *testing.T) {
+			st := storetest.Open(t)
+			f := newFakeTMDB(t)
+			sintel(t, st, f)
+			enrich(t, newTestService(t, st, f, "en-US"), film1) // every role
+			s := newTestServiceWith(t, st, f, cfg)
+			if path == "refreshPeople" {
+				res, err := s.RefreshPeople(context.Background(), true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := counts(res); got.CreditsDropped != 2 || got.PeopleDeleted != 1 || got.CreditsAdded != 0 ||
+					got.CreditsUpdated != 0 {
+					t.Errorf("refreshPeople %+v: want the two writer credits dropped and the writer deleted", got)
+				}
+			} else {
+				enrich(t, s, film1)
+			}
+			if got := creditLines(t, st, film1); got != withoutWriters {
+				t.Errorf("credits:\n%s\nwant\n%s", got, withoutWriters)
+			}
+			want := `The Writer by katalog-manager/tmdb: no title credits them any more: TMDB's credits of "Sintel" no longer list them`
+			if got := loggedPeople(t, st); strings.Join(got, "\n") != want {
+				t.Errorf("the deletion log's people:\n%s\nwant\n%s", strings.Join(got, "\n"), want)
+			}
+			if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_people WHERE tmdbpersonid = '801'`); n != 1 {
+				t.Error("the director who also wrote it was deleted with the writer credit")
+			}
+		})
+	}
+
+	st := storetest.OpenBase(t)
+	if err := st.EnsureDeletionLog(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeTMDB(t)
+	sintel(t, st, f)
+	enrich(t, newTestServiceWith(t, st, f, config.Config{CreditRoles: []string{"actor"}}), film1)
+	var linked string
+	storetestScan(t, st, `SELECT string_agg(ip.role || ' ' || p.name, ', ' ORDER BY ip.role, p.name)
+		FROM com_nalet_katalog_itempeople ip JOIN com_nalet_katalog_people p ON p.id = ip.person_id`, &linked)
+	if linked != "actor First Voice, actor Second Voice" {
+		t.Errorf("without 030, with actors alone named, the credits are %s", linked)
 	}
 }

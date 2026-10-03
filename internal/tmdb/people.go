@@ -65,7 +65,9 @@ func (s *Service) creditDetailsReady(ctx context.Context) bool {
 func (s *Service) applyCredits(ctx context.Context, itemID string, c *tmdbCredits) {
 	if !s.peopleReady(ctx) {
 		for _, cr := range c.List {
-			s.upsertPersonByName(ctx, itemID, cr.Name, cr.Role)
+			if s.roles[cr.Role] {
+				s.upsertPersonByName(ctx, itemID, cr.Name, cr.Role)
+			}
 		}
 		return
 	}

@@ -83,7 +83,14 @@ func newFakeTMDB(t testing.TB) *fakeTMDB {
 // else: every client's transport refuses a host that is not this machine.
 func newTestService(t testing.TB, st *store.Store, f *fakeTMDB, language string) *Service {
 	t.Helper()
-	cfg := config.Config{TMDBAPIKey: "test-token", TMDBLanguage: language}
+	return newTestServiceWith(t, st, f, config.Config{TMDBLanguage: language})
+}
+
+// newTestServiceWith is newTestService configured with cfg, its TMDB key the
+// fake's.
+func newTestServiceWith(t testing.TB, st *store.Store, f *fakeTMDB, cfg config.Config) *Service {
+	t.Helper()
+	cfg.TMDBAPIKey = "test-token"
 	s := New(st, cfg, processing.New(st.Pool()), nil, nil)
 	s.tmdb.apiBase, s.tmdb.imageBase = f.srv.URL+"/3", f.srv.URL+"/t/p"
 	s.tmdb.retryUnit = time.Millisecond

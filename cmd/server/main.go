@@ -41,7 +41,10 @@ func main() {
 }
 
 func run() error {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
 	// Tenant topic prefix — must be set before any Kafka producer/consumer starts.
 	events.Configure(cfg.KafkaTopicPrefix)
 

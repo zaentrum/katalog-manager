@@ -4,10 +4,15 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/zaentrum/katalog-manager/internal/model"
 )
 
 type Config struct {
@@ -38,6 +43,10 @@ type Config struct {
 	// How often the people and titles the catalog holds are refreshed from
 	// TMDB's change lists. Idle while there is no TMDB key.
 	TMDBRefreshInterval time.Duration // TMDB_REFRESH_INTERVAL (default 24h; 0 or off disables)
+	// The roles a title's credits follow TMDB in: credits in them are read
+	// from TMDB, and a refresh drops a title's credits in any other role. Empty
+	// is every role TMDB's credits give (model.CreditRoles).
+	CreditRoles []string // KATALOG_CREDIT_ROLES (a comma-separated list; default all of them)
 
 	// fanart.tv artwork fallback (fills poster/backdrop TMDB is missing). Blank -> off.
 	FanartAPIKey    string // FANART_API_KEY (project key)
@@ -154,8 +163,51 @@ func normalizeDSN(s string) string {
 	return s
 }
 
-// Load reads configuration from the process environment.
-func Load() Config {
+// creditRoles reads KATALOG_CREDIT_ROLES: a comma-separated list of the roles
+// credits are read from TMDB in, each a role TMDB's credits give; every one of
+// them when v is blank. The roles come in the order of model.CreditRoles, each
+// once. A token that is not such a role, or a list that names none, is an
+// error: a mistyped role would otherwise drop every credit in the role meant.
+func creditRoles(v string) ([]string, error) {
+	if strings.TrimSpace(v) == "" {
+		return slices.Clone(model.CreditRoles), nil
+	}
+	named := map[string]bool{}
+	for _, tok := range strings.Split(v, ",") {
+		tok = strings.TrimSpace(tok)
+		switch {
+		case tok == "":
+			continue
+		case !model.ValidRole(tok):
+			return nil, fmt.Errorf("KATALOG_CREDIT_ROLES: %q is not a role: a role is a lowercase letter, "+
+				"then up to 39 lowercase letters, digits and hyphens", tok)
+		case !slices.Contains(model.CreditRoles, tok):
+			return nil, fmt.Errorf("KATALOG_CREDIT_ROLES: TMDB's credits give no role %q; they give %s",
+				tok, strings.Join(model.CreditRoles, ", "))
+		}
+		named[tok] = true
+	}
+	var out []string
+	for _, role := range model.CreditRoles {
+		if named[role] {
+			out = append(out, role)
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("KATALOG_CREDIT_ROLES names no role; leave it unset for all of them: " +
+			strings.Join(model.CreditRoles, ", "))
+	}
+	return out, nil
+}
+
+// Load reads configuration from the process environment. A value that cannot
+// mean anything sensible fails it: KATALOG_CREDIT_ROLES naming something that
+// is not a role TMDB's credits give.
+func Load() (Config, error) {
+	roles, err := creditRoles(env("KATALOG_CREDIT_ROLES"))
+	if err != nil {
+		return Config{}, err
+	}
 	packages := envDefault("/var/lib/katalog/packages", "PACKAGES_ROOT")
 	c := Config{
 		Port:             envDefault("8080", "SERVER_PORT"),
@@ -176,6 +228,7 @@ func Load() Config {
 		TMDBAPIKey:          envDefault(DefaultTMDBToken, "TMDB_API_KEY"),
 		TMDBLanguage:        envDefault("en-US", "TMDB_LANGUAGE"),
 		TMDBRefreshInterval: envDuration(24*time.Hour, "TMDB_REFRESH_INTERVAL"),
+		CreditRoles:         roles,
 
 		FanartAPIKey:    envDefault(DefaultFanartKey, "FANART_API_KEY"),
 		FanartClientKey: envDefault("", "FANART_CLIENT_KEY"),
@@ -199,7 +252,7 @@ func Load() Config {
 		ODownloaderInbox:   envDefault(packages+"/_inbox", "ODOWNLOADER_INBOX"),
 		ODownloaderTimeout: envInt(60, "ODOWNLOADER_TIMEOUT_MIN"),
 	}
-	return c
+	return c, nil
 }
 
 // DefaultTMDBToken is the bundled default TMDB v4 read-access token, injected at

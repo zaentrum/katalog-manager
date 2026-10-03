@@ -78,6 +78,14 @@ to today and only what the catalog holds is refreshed; the cursor moves on once
 a run went through. It idles while there is no TMDB key, and one instance runs
 it at a time.
 
+`KATALOG_CREDIT_ROLES` (a comma-separated list, by default every role:
+`actor,creator,director,writer,producer,composer,cinematographer,editor`) are
+the roles a title's credits follow TMDB in: TMDB's credits in them are read,
+and a refresh drops a title's credits in any other role, as it drops those
+TMDB no longer lists (a person no title credits after that is deleted, in the
+deletion log). Anything in it that is not one of these roles stops the
+service at startup with an error that says so.
+
 ## Develop
 
 ```bash
