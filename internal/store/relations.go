@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/zaentrum/katalog-manager/internal/model"
@@ -12,8 +13,46 @@ const itemBaseCols = `id, createdat, createdby, modifiedat, modifiedby, type, ti
 	year, description, rating, durationms, parent_id, seasonnumber, episodenumber, tagline`
 
 func scanItemBase(row pgx.Row, i *model.Item) error {
-	return row.Scan(&i.ID, &i.CreatedAt, &i.CreatedBy, &i.ModifiedAt, &i.ModifiedBy, &i.Type, &i.Title,
-		&i.SortTitle, &i.Year, &i.Description, &i.Rating, &i.DurationMs, &i.ParentID, &i.SeasonNumber, &i.EpisodeNumber, &i.Tagline)
+	return row.Scan(itemBaseDest(i)...)
+}
+
+// itemBaseDest is where the itemBaseCols columns of a row go.
+func itemBaseDest(i *model.Item) []any {
+	return []any{&i.ID, &i.CreatedAt, &i.CreatedBy, &i.ModifiedAt, &i.ModifiedBy, &i.Type, &i.Title,
+		&i.SortTitle, &i.Year, &i.Description, &i.Rating, &i.DurationMs, &i.ParentID, &i.SeasonNumber, &i.EpisodeNumber, &i.Tagline}
+}
+
+// qualified is cols, a comma-separated list of columns, each qualified with alias.
+func qualified(alias, cols string) string {
+	names := strings.Split(cols, ",")
+	for n, c := range names {
+		names[n] = alias + "." + strings.TrimSpace(c)
+	}
+	return strings.Join(names, ", ")
+}
+
+// maybeItem receives the itemBaseCols of a row a LEFT JOIN may not have found:
+// the columns NOT NULL in the table may be NULL there.
+type maybeItem struct {
+	id, typ, title *string
+	m              model.Item
+}
+
+// dest is itemBaseDest with the id, type and title (columns 0, 5 and 6 of
+// itemBaseCols) going where a NULL can go.
+func (n *maybeItem) dest() []any {
+	d := itemBaseDest(&n.m)
+	d[0], d[5], d[6] = &n.id, &n.typ, &n.title
+	return d
+}
+
+// item is the row, or nil when there was none (a row has its type and title).
+func (n *maybeItem) item() *model.Item {
+	if n.id == nil {
+		return nil
+	}
+	n.m.ID, n.m.Type, n.m.Title = *n.id, *n.typ, *n.title
+	return &n.m
 }
 
 // ChildrenByParent returns the items whose parent_id is the given id, ordered
@@ -269,6 +308,46 @@ func (s *Store) PeopleByItem(ctx context.Context, id string) ([]*model.ItemPerso
 		links, people = append(links, ip), append(people, p)
 	}, id, model.CreditRoles)
 	return links, people, err
+}
+
+// CreditsByPerson returns a person's credits, each with the title that gives
+// it and that title's parent (an episode's series), in one query. They come
+// newest title first: by year, a title without one in its parent's year,
+// unknown last; the titles of a year by name, a title under its parent's name
+// after the parent, by season and episode, then by their own name and id; and
+// a title's credits by role as the title lists them (those of
+// model.CreditRoles in its order, then any other role, by role). A credit's
+// details are read as PeopleByItem reads them, so a catalog without migration
+// 032 has its credits' roles alone. A credit whose title is not in the catalog
+// is left out.
+func (s *Store) CreditsByPerson(ctx context.Context, personID string) ([]*model.PersonCredit, error) {
+	rows, err := s.pool.Query(ctx, `SELECT c.id, c.item_id, c.person_id, c.role, c.d->>'job', c.d->>'charactername',
+			(c.d->>'ordinal')::int, (c.d->>'episodecount')::int, `+qualified("i", itemBaseCols)+`,
+			`+qualified("pa", itemBaseCols)+`
+		FROM (SELECT ip.id, ip.item_id, ip.person_id, ip.role, to_jsonb(ip) AS d
+		      FROM com_nalet_katalog_itempeople ip WHERE ip.person_id = $1) c
+		JOIN com_nalet_katalog_items i ON i.id = c.item_id
+		LEFT JOIN com_nalet_katalog_items pa ON pa.id = i.parent_id
+		ORDER BY COALESCE(i.year, pa.year) DESC NULLS LAST, COALESCE(pa.title, i.title),
+			i.seasonnumber NULLS FIRST, i.episodenumber NULLS FIRST, i.title, i.id,
+			array_position($2::text[], c.role::text) NULLS LAST, c.role, c.id`, personID, model.CreditRoles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*model.PersonCredit
+	for rows.Next() {
+		var c model.PersonCredit
+		var parent maybeItem
+		dest := []any{&c.ID, &c.ItemID, &c.PersonID, &c.Role, &c.Job, &c.Character, &c.Order, &c.EpisodeCount}
+		dest = append(append(dest, itemBaseDest(&c.Item)...), parent.dest()...)
+		if err := rows.Scan(dest...); err != nil {
+			return nil, err
+		}
+		c.Parent = parent.item()
+		out = append(out, &c)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) TagsByItem(ctx context.Context, id string) ([]string, error) {

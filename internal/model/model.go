@@ -222,6 +222,14 @@ type ItemPerson struct {
 	EpisodeCount *int32  // the episodes of a series the person is credited in, in the role
 }
 
+// PersonCredit is a credit seen from the person: the credit, the title that
+// gives it, and that title's parent (an episode's series), read together.
+type PersonCredit struct {
+	ItemPerson
+	Item   Item
+	Parent *Item // nil when the title has none, or its parent is not in the catalog
+}
+
 type ItemTag struct {
 	ID     string
 	ItemID string
