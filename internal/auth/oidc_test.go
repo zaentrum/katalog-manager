@@ -56,7 +56,8 @@ func TestActor(t *testing.T) {
 }
 
 // TestNewJWTVerifier_DisabledAuthorizesAll confirms the disabled/blank-issuer
-// path still authorizes every caller as "anonymous".
+// path still authorizes every caller as "anonymous", who may do anything: a
+// service with its auth off has nobody to tell apart.
 func TestNewJWTVerifier_DisabledAuthorizesAll(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -73,8 +74,11 @@ func TestNewJWTVerifier_DisabledAuthorizesAll(t *testing.T) {
 			}
 			req := httptest.NewRequest(http.MethodGet, "/api/manage/query", nil)
 			p, ok := v.verifyBearer(context.Background(), req)
-			if !ok || p == nil || p.Subject != "anonymous" {
-				t.Fatalf("disabled verifier should authorize as anonymous, got ok=%v p=%+v", ok, p)
+			if !ok || p == nil || p.Subject != "anonymous" || !p.Unrestricted {
+				t.Fatalf("disabled verifier should authorize as anonymous, unrestricted, got ok=%v p=%+v", ok, p)
+			}
+			if !(Policy{}).IsAdmin(p) {
+				t.Fatal("the caller of a service with its auth off is not an admin")
 			}
 		})
 	}

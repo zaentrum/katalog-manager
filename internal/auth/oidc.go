@@ -17,10 +17,20 @@ var (
 	errStreamKeyTooShort  = errors.New("STREAM_SIGNING_KEY must be at least 16 bytes (base64-decoded)")
 )
 
-// Principal identifies an authenticated caller.
+// Principal identifies an authenticated caller. What it may do is the
+// Policy's to say (access.go).
 type Principal struct {
 	Subject string
 	Stream  bool // true when authenticated via a stream token (ROLE_STREAM)
+	// Client is the OIDC client the bearer token was issued to: its azp
+	// claim, or client_id where an issuer names it so.
+	Client string
+	// Claims are the bearer token's claims; the Policy reads the roles from
+	// them.
+	Claims map[string]any
+	// Unrestricted is the caller of a service whose auth is off
+	// (AUTH_DISABLED, or no issuer): it may do anything.
+	Unrestricted bool
 }
 
 type ctxKey int
@@ -72,7 +82,8 @@ type JWTVerifier struct {
 }
 
 // NewJWTVerifier builds a verifier. When disabled is true or issuer is blank,
-// every request is authorized (principal subject "anonymous"). Otherwise it
+// every request is authorized (principal subject "anonymous", unrestricted:
+// a no-IdP dev convenience that must not run in a cluster). Otherwise it
 // attempts OIDC discovery once; discovery failure is non-fatal (see the type
 // doc) — the caller keeps running and the verifier self-heals in the background.
 func NewJWTVerifier(ctx context.Context, issuer, audience string, audienceRequired, disabled bool) (*JWTVerifier, error) {
@@ -154,12 +165,13 @@ func (j *JWTVerifier) tokenVerifier() *oidc.IDTokenVerifier {
 	return j.verifier
 }
 
-// verifyBearer extracts and validates the Authorization bearer token. Before
-// discovery has completed it fails closed (returns not-authenticated) rather
-// than authorizing.
+// verifyBearer extracts and validates the Authorization bearer token, and
+// returns its caller with the token's client and claims. Before discovery has
+// completed it fails closed (returns not-authenticated) rather than
+// authorizing.
 func (j *JWTVerifier) verifyBearer(ctx context.Context, r *http.Request) (*Principal, bool) {
 	if j.disabled {
-		return &Principal{Subject: "anonymous"}, true
+		return &Principal{Subject: "anonymous", Unrestricted: true}, true
 	}
 	verifier := j.tokenVerifier()
 	if verifier == nil {
@@ -178,5 +190,16 @@ func (j *JWTVerifier) verifyBearer(ctx context.Context, r *http.Request) (*Princ
 	if err != nil {
 		return nil, false
 	}
-	return &Principal{Subject: tok.Subject}, true
+	p := &Principal{Subject: tok.Subject}
+	var claims map[string]any
+	if err := tok.Claims(&claims); err == nil {
+		p.Claims = claims
+		for _, k := range []string{"azp", "client_id"} {
+			if c, ok := claims[k].(string); ok && c != "" {
+				p.Client = c
+				break
+			}
+		}
+	}
+	return p, true
 }

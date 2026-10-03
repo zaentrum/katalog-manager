@@ -8,11 +8,13 @@ import (
 // Middleware wires JWT + stream-token authentication into the request chain,
 // mirroring the CAP SecurityConfig (SPEC §6):
 //   - /healthz, /actuator/health/** , /katalog/** are public.
-//   - /api/artwork/** accepts a valid bearer JWT OR a ?stream= token.
+//   - a read (GET, HEAD) of /api/artwork/** accepts a valid bearer JWT OR a
+//     ?stream= token.
 //   - everything else requires a valid bearer JWT.
 //
-// When AuthDisabled is set the JWTVerifier is in disabled mode and authorizes
-// every request.
+// It authenticates; what a caller may do is the Policy's (access.go), applied
+// by the routes and the GraphQL fields. When AuthDisabled is set the
+// JWTVerifier is in disabled mode and authorizes every request.
 type Middleware struct {
 	jwt    *JWTVerifier
 	stream *StreamVerifier
@@ -47,7 +49,10 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 		// an <img> tag cannot send an Authorization header. Both mount points
 		// count: /api/artwork is the in-cluster one, /api/manage/artwork is
 		// the one published by a Route and therefore the one browsers use.
-		if (strings.HasPrefix(path, "/api/artwork/") ||
+		// Never on a write: the analyzer's PUT of a keyframe takes a bearer
+		// token, and a viewer's stream token must not stand in for it.
+		read := r.Method == http.MethodGet || r.Method == http.MethodHead
+		if read && (strings.HasPrefix(path, "/api/artwork/") ||
 			strings.HasPrefix(path, "/api/manage/artwork/")) && m.stream.Configured() {
 			if tok := r.URL.Query().Get("stream"); tok != "" {
 				if sub, ok := m.stream.Verify(tok); ok {
