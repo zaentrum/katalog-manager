@@ -316,6 +316,15 @@ func (r *activityEventResolver) StartedAt() *graphql.Time  { return gtime(r.m.St
 func (r *activityEventResolver) FinishedAt() *graphql.Time { return gtime(r.m.FinishedAt) }
 func (r *activityEventResolver) UpdatedAt() *graphql.Time  { return gtime(r.m.UpdatedAt) }
 
+// ---- CatalogStats ----
+
+type catalogStatsResolver struct{ m store.CatalogCounts }
+
+func (r *catalogStatsResolver) Movies() int32   { return r.m.Movies }
+func (r *catalogStatsResolver) Series() int32   { return r.m.Series }
+func (r *catalogStatsResolver) Episodes() int32 { return r.m.Episodes }
+func (r *catalogStatsResolver) People() int32   { return r.m.People }
+
 // ---- DeletedItem ----
 
 type deletedItemResolver struct{ m *model.DeletedItem }

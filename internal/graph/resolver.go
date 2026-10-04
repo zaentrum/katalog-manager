@@ -240,22 +240,15 @@ func (r *Resolver) SearchItems(ctx context.Context, args struct {
 	}
 	limit := deref32(args.Limit)
 	offset := deref32(args.Offset)
-	items, scores, err := r.store.SearchItems(ctx, store.SearchFilter{
+	page, total, err := r.store.SearchItems(ctx, store.SearchFilter{
 		Q: args.Q, Type: args.Type, Genre: args.Genre, Year: args.Year, Limit: limit, Offset: offset,
 	})
 	if err != nil {
 		return nil, err
 	}
-	hits := make([]SearchItem, 0, len(items))
-	for i := range items {
-		var sc *float64
-		if i < len(scores) {
-			sc = scores[i]
-		}
-		hits = append(hits, SearchItem{
-			ID: items[i].ID, Type: items[i].Type, Title: items[i].Title,
-			Year: items[i].Year, Rating: items[i].Rating, Score: sc,
-		})
+	hits := make([]SearchItem, 0, len(page))
+	for _, h := range page {
+		hits = append(hits, SearchItem{ID: h.ID, Type: h.Type, Title: h.Title, Year: h.Year, Rating: h.Rating, Score: h.Score})
 	}
 	resLimit := limit
 	if resLimit <= 0 || resLimit > 200 {
@@ -266,8 +259,21 @@ func (r *Resolver) SearchItems(ctx context.Context, args struct {
 		resOffset = 0
 	}
 	return &searchResultResolver{m: SearchResult{
-		Items: hits, Total: int32(len(hits)), Limit: resLimit, Offset: resOffset,
+		Items: hits, Total: total, Limit: resLimit, Offset: resOffset,
 	}}, nil
+}
+
+// CatalogStats counts what the catalog holds: its movies, series and
+// episodes, and its people.
+func (r *Resolver) CatalogStats(ctx context.Context) (*catalogStatsResolver, error) {
+	if err := r.allow(ctx, "Query.catalogStats"); err != nil {
+		return nil, err
+	}
+	c, err := r.store.CatalogCounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &catalogStatsResolver{m: c}, nil
 }
 
 func (r *Resolver) ScanJob(ctx context.Context, args struct{ ID graphql.ID }) (*scanJobResolver, error) {

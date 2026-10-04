@@ -13,8 +13,8 @@ import (
 // writer, and viewers read the catalog through katalog-api and its images
 // through chino-api's artwork proxy, which reaches this service only on the
 // REST artwork routes. So every field is an administrator's: what the catalog
-// holds down to its paths on disk and the pipeline's errors, the scan jobs,
-// the settings, the deletion log, and every change. The one
+// holds down to its paths on disk and the pipeline's errors, how much it
+// holds, the scan jobs, the settings, the deletion log, and every change. The one
 // other caller is the scan Job a deployment runs after it starts, which calls
 // triggerScan with the platform's service account.
 //
@@ -28,6 +28,7 @@ var fieldAccess = map[string]auth.Access{
 	"Query.episodes":              auth.Admin,
 	"Query.albums":                auth.Admin,
 	"Query.searchItems":           auth.Admin,
+	"Query.catalogStats":          auth.Admin, // the portal's setup checklist reads it with an admin's token
 	"Query.scanJob":               auth.Admin,
 	"Query.scanJobs":              auth.Admin,
 	"Query.activity":              auth.Admin,

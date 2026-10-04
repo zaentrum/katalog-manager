@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-
-	"github.com/zaentrum/katalog-manager/internal/model"
 )
 
 // SearchHit is a lightweight search result row.
@@ -31,8 +29,12 @@ type SearchFilter struct {
 // SearchItems runs a relevance-ranked title search with optional type/genre/year
 // filters. Score is exact=1.0 / prefix=0.8 / contains=0.5 (0 when no query), which
 // avoids depending on a tsvector/pg_trgm column not present in every deployment.
-// Returns the page and its size (the CAP's `total` is the page size, not a full count).
-func (s *Store) SearchItems(ctx context.Context, f SearchFilter) ([]model.Item, []*float64, error) {
+//
+// It returns the page asked for (limit, default 50 and at most 200, from offset)
+// and how many items match in all, counted with the same filters. A page that
+// holds fewer items than the limit ends the matches, so it tells the total
+// itself; any other page has it counted.
+func (s *Store) SearchItems(ctx context.Context, f SearchFilter) ([]SearchHit, int32, error) {
 	var where []string
 	var args []any
 	add := func(cond string, val any) {
@@ -64,21 +66,17 @@ func (s *Store) SearchItems(ctx context.Context, f SearchFilter) ([]model.Item, 
 		add(`id IN (SELECT ig.item_id FROM com_nalet_katalog_itemgenres ig
 			JOIN com_nalet_katalog_genres g ON g.id = ig.genre_id WHERE g.name = $%d)`, *f.Genre)
 	}
-
-	query := `SELECT id, type, title, year, rating, ` + scoreExpr + ` AS score
-		FROM com_nalet_katalog_items`
+	from := ` FROM com_nalet_katalog_items`
 	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
+		from += " WHERE " + strings.Join(where, " AND ")
 	}
-	query += " ORDER BY score DESC, title"
+	filters := len(args)
 
+	query := `SELECT id, type, title, year, rating, ` + scoreExpr + ` AS score` + from + ` ORDER BY score DESC, title`
 	limit := clampLimit(f.Limit)
 	args = append(args, limit)
 	query += fmt.Sprintf(" LIMIT $%d", len(args))
-	offset := f.Offset
-	if offset < 0 {
-		offset = 0
-	}
+	offset := max(f.Offset, 0)
 	if offset > 0 {
 		args = append(args, offset)
 		query += fmt.Sprintf(" OFFSET $%d", len(args))
@@ -86,19 +84,26 @@ func (s *Store) SearchItems(ctx context.Context, f SearchFilter) ([]model.Item, 
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
-	var items []model.Item
-	var scores []*float64
+	var hits []SearchHit
 	for rows.Next() {
-		var it model.Item
-		var score *float64
-		if err := rows.Scan(&it.ID, &it.Type, &it.Title, &it.Year, &it.Rating, &score); err != nil {
-			return nil, nil, err
+		var h SearchHit
+		if err := rows.Scan(&h.ID, &h.Type, &h.Title, &h.Year, &h.Rating, &h.Score); err != nil {
+			return nil, 0, err
 		}
-		items = append(items, it)
-		scores = append(scores, score)
+		hits = append(hits, h)
 	}
-	return items, scores, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if n := int32(len(hits)); n > 0 && n < limit || n == 0 && offset == 0 {
+		return hits, offset + n, nil
+	}
+	var total int32
+	if err := s.pool.QueryRow(ctx, `SELECT count(*)::int`+from, args[:filters]...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	return hits, total, nil
 }

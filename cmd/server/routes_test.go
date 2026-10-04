@@ -261,6 +261,7 @@ var operations = []struct{ doc, calls string }{
 	{`{ episodes { id } }`, ""},
 	{`{ albums { id } }`, ""},
 	{`{ searchItems(q: "Film") { total items { id } } }`, ""},
+	{`{ catalogStats { movies series episodes people } }`, ""},
 	{`{ scanJob(id: "none") { id } }`, ""},
 	{`{ scanJobs { id } }`, ""},
 	{`{ activity { id } }`, ""},

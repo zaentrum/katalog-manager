@@ -457,10 +457,23 @@ type SearchItem {
 }
 
 type SearchResult {
+  # the page: at most limit items from offset, the best match first
   items: [SearchItem!]!
+  # how many items match in all, counted with the same filters (not the
+  # page's length)
   total: Int!
   limit: Int!
   offset: Int!
+}
+
+# How much the catalog holds, each counted in full: its movies, its series,
+# the episodes of its series, and its people (everyone a title credits: the
+# catalog deletes a person no title credits any more).
+type CatalogStats {
+  movies: Int!
+  series: Int!
+  episodes: Int!
+  people: Int!
 }
 
 type EnrichStatus {
@@ -600,6 +613,9 @@ type Query {
   albums(limit: Int, offset: Int): [Item!]!
 
   searchItems(q: String, type: String, genre: String, year: Int, limit: Int, offset: Int): SearchResult!
+  # How many movies, series, episodes and people the catalog holds. The
+  # lists are paged; this counts.
+  catalogStats: CatalogStats!
 
   scanJob(id: ID!): ScanJob
   scanJobs(limit: Int): [ScanJob!]!

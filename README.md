@@ -13,8 +13,11 @@ The surface is split deliberately:
 - **GraphQL** (`/query`) — the operator/UI read graph and mutations: catalog
   reads (`items`, `movies`, `series`, `episodes`, `albums`, `item` with nested
   facets + computed fields; an item's `people` are its credits, each a person
-  in a role with its job, character, order and episode count), `searchItems`,
-  `scanJobs`, `settings`, `deletedItems` (the deletion log, read-only), `people` and
+  in a role with its job, character, order and episode count), `searchItems`
+  (a page of matches, and in `total` how many match in all), `catalogStats`
+  (how many movies, series, episodes and people the catalog holds, counted
+  rather than paged), `scanJobs`, `settings`, `deletedItems` (the deletion
+  log, read-only), `people` and
   `person` (a person's TMDB details, locks and field origins, and their
   `credits`: every title that credits them, newest first, each with its role,
   job, character, order and episode count), `referenceSync`
