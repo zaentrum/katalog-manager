@@ -95,3 +95,17 @@ func (s *Store) SetMinAgeOverride(ctx context.Context, id string, age *int32, by
 	}
 	return tag.RowsAffected() > 0, nil
 }
+
+// VisibleAt reports whether a viewer capped at age may be served the item id:
+// it is rated at most age (RatedAgeSQL), or nothing rates it and
+// showUnrated. false for an item there is not, as for one rated above the
+// cap, and on a catalog without migration 036, which rates nothing.
+func (s *Store) VisibleAt(ctx context.Context, id string, age int, showUnrated bool) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_items i `+ParentJoinSQL+`
+		WHERE i.id = $1 AND (`+RatedAgeSQL+` <= $2::int OR ($3 AND `+RatedAgeSQL+` IS NULL)))`, id, age, showUnrated).Scan(&ok)
+	if undefinedColumn(err) {
+		return false, nil
+	}
+	return ok, err
+}

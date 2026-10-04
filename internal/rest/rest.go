@@ -24,6 +24,9 @@ type Deps struct {
 // Handlers groups the REST handlers.
 type Handlers struct {
 	d Deps
+	// unrated is the setting that says whether a capped viewer is served
+	// unrated titles (ratings.go).
+	unrated unratedPolicy
 }
 
 func New(d Deps) *Handlers { return &Handlers{d: d} }
@@ -33,7 +36,9 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 //
 //   - viewers: the reads a player makes, artwork (chino-api proxies posters
 //     and portraits here with the viewer's token or stream token; the console
-//     reads them at /api/manage/artwork), playback and subtitles;
+//     reads them at /api/manage/artwork), playback and subtitles; a viewer
+//     capped at an age (max_rating) is answered for a title rated above the
+//     cap as for a title there is not (ratings.go);
 //   - workers (an admin, or the platform's service account the analyzer,
 //     transcoder and packager mint tokens with): the worker protocol, which
 //     hands out paths on disk and writes the pipeline's results, and the

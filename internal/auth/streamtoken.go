@@ -45,13 +45,24 @@ func (v *StreamVerifier) Configured() bool { return v != nil && v.key != nil }
 
 // Verify returns the embedded userID when the signature is valid and the token
 // has not expired, else ("", false). Never panics for malformed/expired input.
+// The userID is the subject, without the rating cap a capped viewer's token
+// carries (VerifyCapped).
 func (v *StreamVerifier) Verify(token string) (string, bool) {
+	sub, _, ok := v.VerifyCapped(token)
+	return sub, ok
+}
+
+// VerifyCapped is Verify with the rating cap the token carries: the age a
+// capped viewer's token was minted with ("<subject>;max_rating=<age>" in the
+// user part), nil for a token that carries none (an uncapped viewer's, and
+// every token older than the caps).
+func (v *StreamVerifier) VerifyCapped(token string) (subject string, maxRating *int, ok bool) {
 	if v == nil || v.key == nil || token == "" {
-		return "", false
+		return "", nil, false
 	}
 	dot := strings.IndexByte(token, '.')
 	if dot < 1 || dot == len(token)-1 {
-		return "", false
+		return "", nil, false
 	}
 	payload := token[:dot]
 	sig := token[dot+1:]
@@ -62,30 +73,31 @@ func (v *StreamVerifier) Verify(token string) (string, bool) {
 
 	got, err := urlDecode(sig)
 	if err != nil {
-		return "", false
+		return "", nil, false
 	}
 	body, err := urlDecode(payload)
 	if err != nil {
-		return "", false
+		return "", nil, false
 	}
 	if !hmac.Equal(expected, got) {
-		return "", false
+		return "", nil, false
 	}
 
 	decoded := string(body)
 	pipe := strings.IndexByte(decoded, '|')
 	if pipe < 1 {
-		return "", false
+		return "", nil, false
 	}
 	userID := decoded[:pipe]
 	expUnix, err := strconv.ParseInt(decoded[pipe+1:], 10, 64)
 	if err != nil {
-		return "", false
+		return "", nil, false
 	}
 	if time.Now().Unix() > expUnix {
-		return "", false
+		return "", nil, false
 	}
-	return userID, true
+	subject, maxRating = splitCap(userID)
+	return subject, maxRating, true
 }
 
 // urlDecode accepts URL-safe base64 with or without padding (Java's

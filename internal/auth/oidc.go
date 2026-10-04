@@ -31,6 +31,9 @@ type Principal struct {
 	// Unrestricted is the caller of a service whose auth is off
 	// (AUTH_DISABLED, or no issuer): it may do anything.
 	Unrestricted bool
+	// streamCap is the rating cap a stream token carries (MaxRating); nil
+	// for one that carries none, and for a bearer, whose claims say.
+	streamCap *int
 }
 
 type ctxKey int

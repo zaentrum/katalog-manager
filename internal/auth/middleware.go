@@ -55,8 +55,8 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 		if read && (strings.HasPrefix(path, "/api/artwork/") ||
 			strings.HasPrefix(path, "/api/manage/artwork/")) && m.stream.Configured() {
 			if tok := r.URL.Query().Get("stream"); tok != "" {
-				if sub, ok := m.stream.Verify(tok); ok {
-					ctx := WithPrincipal(r.Context(), &Principal{Subject: sub, Stream: true})
+				if sub, maxRating, ok := m.stream.VerifyCapped(tok); ok {
+					ctx := WithPrincipal(r.Context(), &Principal{Subject: sub, Stream: true, streamCap: maxRating})
 					next.ServeHTTP(w, r.WithContext(ctx))
 					return
 				}

@@ -17,8 +17,14 @@ import (
 // failure (table may not exist) is swallowed -> {"subtitles": []} so the player
 // hides captions. Each entry carries id/lang/label, optional format (omitted
 // when null), url "/api/subtitles/<id>", and default:true only when isdefault.
+// A viewer capped at an age is answered the empty list for a title it may not
+// be served, as for one without subtitles (ratings.go).
 func (h *Handlers) listSubtitles(w http.ResponseWriter, r *http.Request) {
 	itemID := chi.URLParam(r, "itemId")
+	if hidden, err := h.hiddenFrom(r, itemID); err != nil || hidden { // as for a title without subtitles
+		writeJSON(w, http.StatusOK, map[string]any{"subtitles": []any{}})
+		return
+	}
 
 	rows, err := h.d.Store.Pool().Query(reqCtx(r),
 		`SELECT id, format, lang, label, isdefault
@@ -65,21 +71,30 @@ var srtTimeRe = regexp.MustCompile(`(\d{2}:\d{2}:\d{2}),(\d{3})`)
 // getSubtitle ports SubtitlesController#serve: serve a track. pgs/vobsub/dvb
 // pass through with their octet MIME; everything else is served as text/vtt
 // (SRT converted live; non-WEBVTT text gets a WEBVTT header prepended).
-// Cache-Control private, max-age=300. 404 on unknown id or missing file.
+// Cache-Control private, max-age=300. 404 on unknown id or missing file, and
+// for a viewer capped at an age a subtitle of a title it may not be served
+// (ratings.go).
 func (h *Handlers) getSubtitle(w http.ResponseWriter, r *http.Request) {
 	subID := chi.URLParam(r, "subId")
 
-	var path string
+	var itemID, path string
 	var format *string
 	err := h.d.Store.Pool().QueryRow(reqCtx(r),
-		`SELECT path, format FROM com_nalet_katalog_subtitleassets WHERE id = $1 LIMIT 1`,
-		subID).Scan(&path, &format)
+		`SELECT item_id, path, format FROM com_nalet_katalog_subtitleassets WHERE id = $1 LIMIT 1`,
+		subID).Scan(&itemID, &path, &format)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.Error(w, "unknown subtitle", http.StatusNotFound)
 			return
 		}
 		http.Error(w, "subtitle lookup failed", http.StatusInternalServerError)
+		return
+	}
+	if hidden, err := h.hiddenFrom(r, itemID); err != nil {
+		http.Error(w, "subtitle lookup failed", http.StatusInternalServerError)
+		return
+	} else if hidden { // as for a subtitle there is not
+		http.Error(w, "unknown subtitle", http.StatusNotFound)
 		return
 	}
 

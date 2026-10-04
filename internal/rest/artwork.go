@@ -88,9 +88,19 @@ func (h *Handlers) putArtwork(w http.ResponseWriter, r *http.Request) {
 // still for the episode) inherits its series parent's artwork, so episode tiles /
 // backdrops render the show image instead of a blank. Own artwork always wins;
 // items with no parent (movies) are unaffected.
+//
+// A viewer capped at an age is answered 404 for a title it may not be served,
+// as for one without artwork (ratings.go).
 func (h *Handlers) getArtwork(w http.ResponseWriter, r *http.Request) {
 	itemID := chi.URLParam(r, "itemId")
 	kind := chi.URLParam(r, "kind")
+	if hidden, err := h.hiddenFrom(r, itemID); err != nil {
+		http.Error(w, "artwork lookup failed", http.StatusInternalServerError)
+		return
+	} else if hidden { // as for a title without artwork
+		http.NotFound(w, r)
+		return
+	}
 
 	var contentType *string
 	var bytes []byte

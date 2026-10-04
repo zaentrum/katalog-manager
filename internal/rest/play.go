@@ -17,10 +17,19 @@ import (
 // resolve the primary asset (isprimary=true) else fall back ORDER BY path; 404
 // when no asset row or the file is missing/unreadable. http.ServeContent does
 // the range parsing + Content-Range/Content-Length emission (RFC 7233), which
-// subsumes the hand-rolled Java parser.
+// subsumes the hand-rolled Java parser. A viewer capped at an age is answered
+// 404 for a title it may not be served, as for one without an asset
+// (ratings.go).
 func (h *Handlers) getPlay(w http.ResponseWriter, r *http.Request) {
 	itemID := chi.URLParam(r, "itemId")
 	ctx := reqCtx(r)
+	if hidden, err := h.hiddenFrom(r, itemID); err != nil {
+		http.Error(w, "playback asset lookup failed", http.StatusInternalServerError)
+		return
+	} else if hidden { // as for a title without a playback asset
+		http.Error(w, "no playback asset for item", http.StatusNotFound)
+		return
+	}
 
 	var path string
 	err := h.d.Store.Pool().QueryRow(ctx,
