@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/zaentrum/katalog-manager/internal/processing"
+	"github.com/zaentrum/katalog-manager/internal/sourceprobe"
 )
 
 // analyzerSteps are the per-file analyzer-owned steps (ANALYZER_STEPS in the
@@ -376,6 +377,14 @@ func (h *Handlers) putStep(w http.ResponseWriter, r *http.Request) {
 		switch status {
 		case processing.StatusDone, processing.StatusNotApplicable, processing.StatusSkipped:
 			_ = h.d.Steps.PromoteTranscodeToPackage(ctx, id, status)
+		}
+		// The transcoder probed the source before it planned, and says its
+		// codec and resolution in the details: the source asset keeps them
+		// (best-effort, as the promotion).
+		if (status == processing.StatusDone || status == processing.StatusNotApplicable) && body.Details != nil {
+			if _, err := sourceprobe.Fill(ctx, h.d.Store.Pool(), id, sourceprobe.FromTranscodeDetails(*body.Details)); err != nil {
+				log.Printf("putStep: %v", err)
+			}
 		}
 	}
 

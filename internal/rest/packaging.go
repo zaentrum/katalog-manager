@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/zaentrum/katalog-manager/internal/events"
+	"github.com/zaentrum/katalog-manager/internal/sourceprobe"
 )
 
 // packagingComplete ports ItemActionsController#ingestPackagingManifest: the
@@ -44,37 +45,22 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 	audioRends := asListOfMap(renditions["audio"])
 	subtitles := asListOfMap(manifest["subtitles"])
 
-	// 1. Source PlaybackAsset enrichment (COALESCE only the ffprobe-sourced cols).
-	srcCodec := asString(source["videoCodec"])
-	srcResolution := asString(source["resolution"])
-	srcBitrateBps, srcBitrateOK := asLong(source["bitrateBps"])
-	srcSize, srcSizeOK := asLong(source["size"])
-	srcDurMs, srcDurOK := asLong(source["durationMs"])
-
-	var srcBitrateKbps *int
-	switch {
-	case srcBitrateOK && srcBitrateBps > 0:
-		v := int(srcBitrateBps / 1000)
-		srcBitrateKbps = &v
-	case srcSizeOK && srcDurOK && srcDurMs > 0:
-		v := int((srcSize * 8) / srcDurMs)
-		srcBitrateKbps = &v
-	}
-	var srcSizePtr *int64
-	if srcSizeOK {
-		srcSizePtr = &srcSize
-	}
-
-	if _, err := pool.Exec(ctx, `
-		UPDATE com_nalet_katalog_playbackassets
-		SET codec       = COALESCE($1, codec),
-		    resolution  = COALESCE($2, resolution),
-		    bitratekbps = COALESCE($3, bitratekbps),
-		    sizebytes   = COALESCE($4, sizebytes)
-		WHERE item_id = $5 AND isprimary = true AND kind = 'primary'`,
-		srcCodec, srcResolution, srcBitrateKbps, srcSizePtr, itemID); err != nil {
+	// 1. Source PlaybackAsset enrichment: what a source block says of the
+	// source (a present value wins), then the packaged duration for a source
+	// that has none (the packager probes what it packages: the source for a
+	// copy, the transcode, equal up to a frame, for an encode). The v2
+	// manifest has no source block; the transcoder's report filled the codec
+	// and resolution (putStep).
+	src := sourceFromManifest(source)
+	if _, err := sourceprobe.Fill(ctx, pool, itemID, src); err != nil {
 		http.Error(w, "source enrich failed", http.StatusInternalServerError)
 		return
+	}
+	if d, ok := asLong(manifest["durationMs"]); ok && d > 0 {
+		if err := sourceprobe.FillEmpty(ctx, pool, itemID, sourceprobe.Probe{DurationMs: &d}); err != nil {
+			http.Error(w, "source enrich failed", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// 2. Packaged PlaybackAsset row: DELETE then INSERT (only when video rends exist).
@@ -206,7 +192,8 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 		h.d.Events.EmitItem(ctx, events.TopicPackaged, ev)
 	}
 
-	sourceEnriched := srcCodec != nil || srcResolution != nil || srcBitrateKbps != nil
+	sourceEnriched := src.Codec != nil || src.Resolution != nil || src.BitrateKbps != nil ||
+		(src.SizeBytes != nil && src.DurationMs != nil && *src.DurationMs > 0)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"itemId":               itemID,
 		"sourceEnriched":       sourceEnriched,
@@ -214,6 +201,43 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 		"subtitlesWritten":     subsWritten,
 		"audioTracks":          len(audioRends),
 	})
+}
+
+// sourceFromManifest reads a manifest's source block: the v1 manifest's names
+// (videoCodec, resolution, bitrateBps, size, durationMs) or the transcoder's
+// contract's (codec, width, height, bitRate), as a packager may forward it.
+func sourceFromManifest(source map[string]any) sourceprobe.Probe {
+	var p sourceprobe.Probe
+	for _, k := range []string{"videoCodec", "codec"} {
+		if c := asString(source[k]); c != nil && trimBlank(*c) != "" {
+			v := trimBlank(*c)
+			p.Codec = &v
+			break
+		}
+	}
+	if r := asString(source["resolution"]); r != nil && trimBlank(*r) != "" {
+		v := trimBlank(*r)
+		p.Resolution = &v
+	} else if wd, ok := asInt(source["width"]); ok && wd > 0 {
+		if ht, ok := asInt(source["height"]); ok && ht > 0 {
+			v := strconv.Itoa(wd) + "x" + strconv.Itoa(ht)
+			p.Resolution = &v
+		}
+	}
+	for _, k := range []string{"bitrateBps", "bitRate", "bit_rate"} {
+		if bps, ok := asLong(source[k]); ok && bps > 0 {
+			v := bps / 1000
+			p.BitrateKbps = &v
+			break
+		}
+	}
+	if n, ok := asLong(source["size"]); ok && n > 0 {
+		p.SizeBytes = &n
+	}
+	if d, ok := asLong(source["durationMs"]); ok && d > 0 {
+		p.DurationMs = &d
+	}
+	return p
 }
 
 // packageRootFor reconstructs the sharded package directory for an item,
