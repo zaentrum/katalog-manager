@@ -25,18 +25,24 @@ func ratedCatalog(t *testing.T) *store.Store {
 	storetest.AddItem(t, st, "e1", "episode", "Pilot", "s1")
 	storetest.AddItem(t, st, "e2", "episode", "Finale", "s1")
 	storetest.AddItem(t, st, "e3", "episode", "Orphan", "gone")
+	storetest.AddItem(t, st, "e4", "episode", "Rated Itself", "s1")
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET certification = '12', certification_country = 'DE',
 		min_age = 12, certification_fetched_at = '2026-10-01 08:00:00+00' WHERE id = 'm1'`)
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET certification_fetched_at = '2026-10-01 08:00:00+00' WHERE id = 'm2'`)
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET certification = 'TV-14', certification_country = 'US',
 		min_age = 14 WHERE id = 's1'`)
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET min_age_override = 18 WHERE id = 'e2'`)
+	// An episode is rated as its series: a rating of its own, which
+	// enrichment never gives one, counts only where the series has none.
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET certification = '6', certification_country = 'DE',
+		min_age = 6 WHERE id IN ('e3', 'e4')`)
 	return st
 }
 
 // A title's age rating is what TMDB certifies it as, in its country, with
 // the age it means; an episode is held to its series' unless an admin rated
-// it, and one whose series is not there is unrated.
+// it, a rating of its own counting only when its series has none (one whose
+// series is not there).
 func TestAgeRating(t *testing.T) {
 	st := ratedCatalog(t)
 	for id, want := range map[string]string{
@@ -45,7 +51,8 @@ func TestAgeRating(t *testing.T) {
 		"s1": `{"certification":"TV-14","country":"US","minAge":14,"minAgeOverride":null,"effectiveMinAge":14,"fetchedAt":null}`,
 		"e1": `{"certification":null,"country":null,"minAge":null,"minAgeOverride":null,"effectiveMinAge":14,"fetchedAt":null}`,
 		"e2": `{"certification":null,"country":null,"minAge":null,"minAgeOverride":18,"effectiveMinAge":18,"fetchedAt":null}`,
-		"e3": `{"certification":null,"country":null,"minAge":null,"minAgeOverride":null,"effectiveMinAge":null,"fetchedAt":null}`,
+		"e3": `{"certification":"6","country":"DE","minAge":6,"minAgeOverride":null,"effectiveMinAge":6,"fetchedAt":null}`,
+		"e4": `{"certification":"6","country":"DE","minAge":6,"minAgeOverride":null,"effectiveMinAge":14,"fetchedAt":null}`,
 	} {
 		if got := query(t, st, `{ item(id: "`+id+`") { `+ageRatingFields+` } }`); got != `{"item":{"ageRating":`+want+`}}` {
 			t.Errorf("%s:\n got  %s\n want %s", id, got, want)
@@ -54,7 +61,7 @@ func TestAgeRating(t *testing.T) {
 	// A list reads each title's rating.
 	if got, want := query(t, st, `{ series { id ageRating { effectiveMinAge } children { id ageRating { effectiveMinAge } } } }`),
 		`{"series":[{"id":"s1","ageRating":{"effectiveMinAge":14},"children":[{"id":"e2","ageRating":{"effectiveMinAge":18}},`+
-			`{"id":"e1","ageRating":{"effectiveMinAge":14}}]}]}`; got != want {
+			`{"id":"e1","ageRating":{"effectiveMinAge":14}},{"id":"e4","ageRating":{"effectiveMinAge":14}}]}]}`; got != want {
 		t.Errorf("series:\n got  %s\n want %s", got, want)
 	}
 }
