@@ -84,6 +84,10 @@ func (f *fakes) RefreshPeople(context.Context, bool) (graph.PeopleRefreshResult,
 	f.called("refresh people")
 	return graph.PeopleRefreshResult{}, nil
 }
+func (f *fakes) BackfillRatings(context.Context, bool) (graph.RatingsBackfillResult, error) {
+	f.called("backfill ratings")
+	return graph.RatingsBackfillResult{}, nil
+}
 func (f *fakes) PackageItem(_ context.Context, id string) (graph.PackageResult, error) {
 	f.called("package " + id)
 	return graph.PackageResult{}, nil
@@ -191,7 +195,7 @@ func newInstanceWith(t *testing.T, pipeline func(*store.Store) graph.Pipeline) *
 		pipe = pipeline(st)
 	}
 	schema := graph.MustSchema(graph.NewResolver(st, cfg, graph.Services{Scanner: f, Enricher: f, People: f,
-		Packager: f, Validator: f, Remover: f, Pipeline: pipe, Secrets: f}))
+		Ratings: f, Packager: f, Validator: f, Remover: f, Pipeline: pipe, Secrets: f}))
 	r := chi.NewRouter()
 	routes(r, auth.NewMiddleware(jwt, sv).Handler, cfg.Policy(), schema, stream.NewBroker().Handler,
 		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool())}))
@@ -300,6 +304,8 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { identify(id: "m1", title: "A Film", tmdbId: 1) { status } }`, "identify m1"},
 	{`mutation { enrichPending(limit: 1) { queued } }`, "enrich pending"},
 	{`mutation { refreshPeople(all: false) { titlesRead } }`, "refresh people"},
+	{`mutation { backfillRatings(all: false) { titlesRead countries } }`, "backfill ratings"},
+	{`mutation { setMinAgeOverride(id: "m1", minAge: 12) { id ageRating { effectiveMinAge } } }`, ""},
 	{`mutation { backfillEpisodeBackdrops { artwork } }`, "backfill backdrops"},
 	{`mutation { backfillSourceProbes { assets filled unknown } }`, ""},
 	{`mutation { retryNotFound { reset } }`, "retry not found"},

@@ -73,6 +73,25 @@ type enrichPendingResultResolver struct{ m EnrichPendingResult }
 func (r *enrichPendingResultResolver) Queued() int32 { return r.m.Queued }
 func (r *enrichPendingResultResolver) Type() *string { return r.m.Type }
 
+type ratingsBackfillResultResolver struct{ m RatingsBackfillResult }
+
+func (r *ratingsBackfillResultResolver) TitlesRead() int32    { return r.m.TitlesRead }
+func (r *ratingsBackfillResultResolver) TitlesRated() int32   { return r.m.TitlesRated }
+func (r *ratingsBackfillResultResolver) TitlesUnrated() int32 { return r.m.TitlesUnrated }
+func (r *ratingsBackfillResultResolver) TitlesFailed() int32  { return r.m.TitlesFailed }
+func (r *ratingsBackfillResultResolver) Countries() []string {
+	if r.m.Countries == nil {
+		return []string{}
+	}
+	return r.m.Countries
+}
+func (r *ratingsBackfillResultResolver) StartedAt() graphql.Time {
+	return graphql.Time{Time: r.m.StartedAt}
+}
+func (r *ratingsBackfillResultResolver) FinishedAt() graphql.Time {
+	return graphql.Time{Time: r.m.FinishedAt}
+}
+
 type peopleRefreshResultResolver struct{ m PeopleRefreshResult }
 
 func (r *peopleRefreshResultResolver) TitlesRead() int32          { return r.m.TitlesRead }

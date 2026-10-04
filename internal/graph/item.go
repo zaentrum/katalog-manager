@@ -276,3 +276,24 @@ func (r *itemResolver) People(ctx context.Context) ([]*itemPersonResolver, error
 func (r *itemResolver) Tags(ctx context.Context) ([]string, error) {
 	return r.s.TagsByItem(ctx, r.m.ID)
 }
+
+// AgeRating is the title's age rating, in one read of the item and its
+// parent.
+func (r *itemResolver) AgeRating(ctx context.Context) (*ageRatingResolver, error) {
+	m, err := r.s.ItemRating(ctx, r.m.ID)
+	if err != nil || m == nil {
+		return nil, err
+	}
+	return &ageRatingResolver{m: m}, nil
+}
+
+// ---- AgeRating ----
+
+type ageRatingResolver struct{ m *model.ItemRating }
+
+func (r *ageRatingResolver) Certification() *string   { return r.m.Certification }
+func (r *ageRatingResolver) Country() *string         { return r.m.Country }
+func (r *ageRatingResolver) MinAge() *int32           { return r.m.MinAge }
+func (r *ageRatingResolver) MinAgeOverride() *int32   { return r.m.MinAgeOverride }
+func (r *ageRatingResolver) EffectiveMinAge() *int32  { return r.m.Effective }
+func (r *ageRatingResolver) FetchedAt() *graphql.Time { return gtime(r.m.FetchedAt) }

@@ -251,7 +251,7 @@ func TestARatingFollowsTMDB(t *testing.T) {
 	ctx := context.Background()
 	rate := func() {
 		t.Helper()
-		if _, err := s.rateTitle(ctx, film1, "movie", 10); err != nil {
+		if _, err := s.rateTitle(ctx, film1, "movie", 10, ratings.Countries(ratings.DefaultCountries)); err != nil {
 			t.Fatalf("rateTitle: %v", err)
 		}
 	}
@@ -265,7 +265,7 @@ func TestARatingFollowsTMDB(t *testing.T) {
 
 	for _, broken := range []int{500, 404} {
 		f.failing("/3/movie/10/release_dates", broken)
-		if _, err := s.rateTitle(ctx, film1, "movie", 10); err == nil {
+		if _, err := s.rateTitle(ctx, film1, "movie", 10, ratings.Countries(ratings.DefaultCountries)); err == nil {
 			t.Errorf("TMDB answering %d: no error", broken)
 		}
 		enrich(t, s, film1) // the title is enriched all the same
@@ -313,5 +313,102 @@ func TestEnrichmentWithoutTheRatingsMigration(t *testing.T) {
 	}
 	if got := strings.Join(f.calls("/3/movie/10?"), ","); got == "" {
 		t.Error("the film's details were not read")
+	}
+}
+
+// backfillRatings reads the certifications of the movies and series with a
+// TMDB id that were never read, or of all of them, and rates each; a title
+// TMDB cannot be read for is failed and keeps its rating, and the next run
+// tries it again. Episodes and titles without a TMDB id are not read.
+func TestBackfillRatings(t *testing.T) {
+	st := storetest.Open(t)
+	f := newFakeTMDB(t)
+	s := newTestService(t, st, f, "en-US")
+	ctx := context.Background()
+	addTitle(t, st, film1, "movie", "Fight", 550)
+	addTitle(t, st, "m2", "movie", "Read Before", 20)
+	addTitle(t, st, "m3", "movie", "Nowhere Rated", 30)
+	addTitle(t, st, "m4", "movie", "Broken", 40)
+	addTitle(t, st, show1, "series", "A Show", 1399)
+	storetest.AddItem(t, st, "e1", "episode", "Pilot", show1)
+	storetest.AddItem(t, st, "m5", "movie", "No TMDB id", "")
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET certification = '6', certification_country = 'DE', min_age = 6,
+		certification_fetched_at = '2026-01-01' WHERE id = 'm2'`)
+	f.certify("movie/550", fixture(t, "movie-550-release_dates.json"))
+	f.certify("movie/20", []byte(`{"results": [{"iso_3166_1": "DE", "release_dates": [{"certification": "12", "type": 3}]}]}`))
+	f.certify("movie/30", []byte(`{"results": [{"iso_3166_1": "GB", "release_dates": [{"certification": "15", "type": 3}]}]}`))
+	f.certify("tv/1399", fixture(t, "tv-1399-content_ratings.json"))
+	f.failing("/3/movie/40/release_dates", 503)
+
+	res, err := s.BackfillRatings(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprintf("%d %d %d %d %v", res.TitlesRead, res.TitlesRated, res.TitlesUnrated, res.TitlesFailed, res.Countries); got != "3 2 1 1 [CH DE US]" {
+		t.Errorf("the first run read/rated/unrated/failed %s, want 3 2 1 1 in CH, DE, US", got)
+	}
+	for id, want := range map[string]string{film1: "18 CH 18 fetched", show1: "16 DE 16 fetched", "m3": "- - - fetched",
+		"m2": "6 DE 6 fetched", "m4": "- - -", "e1": "- - -", "m5": "- - -"} {
+		if got := rating(t, st, id); got != want {
+			t.Errorf("%s rated %q, want %q", id, got, want)
+		}
+	}
+	if got := f.calls("/3/movie/20/"); len(got) != 0 {
+		t.Errorf("a title read before was read again: %q", got)
+	}
+	if res.StartedAt.IsZero() || res.FinishedAt.Before(res.StartedAt) {
+		t.Errorf("started %s, finished %s", res.StartedAt, res.FinishedAt)
+	}
+
+	// The next run reads what failed; all reads everything again.
+	f.failing("/3/movie/40/release_dates", 0)
+	f.certify("movie/40", []byte(`{"results": [{"iso_3166_1": "US", "release_dates": [{"certification": "PG-13", "type": 4}]}]}`))
+	f.forget()
+	if res, err = s.BackfillRatings(ctx, false); err != nil || res.TitlesRead != 1 || res.TitlesRated != 1 {
+		t.Errorf("the second run: %+v %v, want the failed title read and rated", res, err)
+	}
+	if got := rating(t, st, "m4"); got != "PG-13 US 13 fetched" {
+		t.Errorf("the title that failed, read again: %q", got)
+	}
+	if res, err = s.BackfillRatings(ctx, true); err != nil || res.TitlesRead != 5 || res.TitlesRated != 4 || res.TitlesUnrated != 1 {
+		t.Errorf("all: %+v %v, want the five titles with a TMDB id read", res, err)
+	}
+	if got := rating(t, st, "m2"); got != "12 DE 12 fetched" {
+		t.Errorf("a title read again with all: %q", got)
+	}
+}
+
+// One backfill runs at a time; without a TMDB key, or without migration 036,
+// there is none.
+func TestBackfillRatingsRefuses(t *testing.T) {
+	st := storetest.Open(t)
+	f := newFakeTMDB(t)
+	s := newTestService(t, st, f, "en-US")
+	addTitle(t, st, film1, "movie", "Fight", 550)
+	f.certify("movie/550", fixture(t, "movie-550-release_dates.json"))
+	arrived, release := f.hold("/3/movie/550/release_dates")
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.BackfillRatings(context.Background(), true)
+		done <- err
+	}()
+	<-arrived
+	if _, err := s.BackfillRatings(context.Background(), true); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Errorf("a second run while one runs: %v, want it refused", err)
+	}
+	release()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	s.tmdb.key = func() string { return "" }
+	if _, err := s.BackfillRatings(context.Background(), true); err == nil || !strings.Contains(err.Error(), "TMDB API key") {
+		t.Errorf("without a TMDB key: %v", err)
+	}
+
+	base := storetest.OpenBase(t)
+	if _, err := newTestService(t, base, f, "en-US").BackfillRatings(context.Background(), true); err == nil ||
+		!strings.Contains(err.Error(), "036_item_ratings.sql") {
+		t.Errorf("without 036: %v", err)
 	}
 }

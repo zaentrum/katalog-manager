@@ -57,6 +57,23 @@ type Item struct {
 	Tagline       *string
 }
 
+// ItemRating is a title's age rating (db/migrations/036): the certification
+// TMDB gives it in the first country of ratings.countries that rates it, that
+// country and the minimum age the certification means (all three nil when
+// none does), an admin's override, the age a capped viewer is held to and
+// when TMDB's certifications were last read.
+type ItemRating struct {
+	Certification  *string // as TMDB gives it: "12", "PG-13", "TV-MA"
+	Country        *string // ISO 3166-1 alpha-2: "DE"
+	MinAge         *int32
+	MinAgeOverride *int32
+	// Effective is the age a capped viewer is held to: the override, else its
+	// parent's override, else its parent's MinAge (an episode is rated as its
+	// series), else its own MinAge; nil: unrated.
+	Effective *int32
+	FetchedAt *time.Time // nil: never read
+}
+
 // Computed columns the katalogservice_* views add (kept alongside Item when a
 // view row is read). Pointers are nil when the row came from a base-table read.
 type ItemComputed struct {

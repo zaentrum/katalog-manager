@@ -48,6 +48,8 @@ var fieldAccess = map[string]auth.Access{
 	"Mutation.identify":                 auth.Admin,
 	"Mutation.enrichPending":            auth.Admin,
 	"Mutation.refreshPeople":            auth.Admin,
+	"Mutation.backfillRatings":          auth.Admin,
+	"Mutation.setMinAgeOverride":        auth.Admin,
 	"Mutation.backfillEpisodeBackdrops": auth.Admin,
 	"Mutation.backfillSourceProbes":     auth.Admin,
 	"Mutation.retryNotFound":            auth.Admin,

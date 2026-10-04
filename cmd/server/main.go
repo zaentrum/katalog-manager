@@ -208,6 +208,7 @@ func run() error {
 		Scanner:   scan,
 		Enricher:  enricher,
 		People:    enricher,
+		Ratings:   enricher,
 		Packager:  actions,
 		Validator: actions,
 		Remover:   actions,

@@ -57,6 +57,35 @@ type Item {
   # the title's credits, by role, then order, then name (see ItemPerson)
   people: [ItemPerson!]!
   tags: [String!]!
+  # the title's age rating (see AgeRating); an episode is rated as its series
+  ageRating: AgeRating
+}
+
+# A title's age rating. A kid's account is capped at an age (the max_rating
+# claim of its access token) and is served only the titles rated at most that
+# age, and unrated ones only when the setting ratings.unrated_for_capped says
+# show. The rating comes from the certifications TMDB gives the title in the
+# countries the setting ratings.countries names (CH,DE,US by default): the
+# first of them that rates it wins, and of its certifications the strictest.
+# An admin's minAgeOverride wins over it. Everything is null on a catalog
+# older than migration 036, which rates nothing.
+type AgeRating {
+  # the certification as TMDB gives it ("12", "PG-13", "TV-MA") and its
+  # country (ISO 3166-1 alpha-2, "DE"); null when no country of the list
+  # rates the title, and for an episode, which is rated as its series
+  certification: String
+  country: String
+  # the minimum age, in years, the certification means
+  minAge: Int
+  # an admin's rating of the title, in years (setMinAgeOverride); it wins
+  # over minAge, and a series' over its episodes'
+  minAgeOverride: Int
+  # the age a capped viewer must be to be served the title: its override,
+  # else its series' override, else its series' minAge (for an episode),
+  # else its minAge; null: unrated
+  effectiveMinAge: Int
+  # when TMDB's certifications of the title were last read; null: never
+  fetchedAt: Time
 }
 
 type PlaybackAsset {
@@ -533,6 +562,22 @@ type SourceProbeBackfillResult {
   unknown: Int!
 }
 
+# What a backfillRatings run did.
+type RatingsBackfillResult {
+  # titles whose certifications were read from TMDB: those a country of the
+  # list rates, and those none rates (unrated)
+  titlesRead: Int!
+  titlesRated: Int!
+  titlesUnrated: Int!
+  # titles whose certifications could not be read or stored: they keep the
+  # rating they had, and a later run tries again
+  titlesFailed: Int!
+  # the countries asked, in order (ratings.countries)
+  countries: [String!]!
+  startedAt: Time!
+  finishedAt: Time!
+}
+
 # What a refreshPeople run did.
 type PeopleRefreshResult {
   # titles whose TMDB credits were read again, those whose credits could not
@@ -711,6 +756,18 @@ type Mutation {
   # The run finishes even when the caller stops waiting (its counts are
   # logged); one runs at a time.
   refreshPeople(all: Boolean): PeopleRefreshResult!
+  # Rates titles from TMDB's certifications, as enrichment does (AgeRating):
+  # reads the release dates of the movies and the content ratings of the
+  # series that have a TMDB id. all: every one of them; otherwise only those
+  # TMDB was never read for (ageRating.fetchedAt null), so running it again
+  # picks up what a failure left. Episodes are rated as their series. The run
+  # finishes even when the caller stops waiting (its counts are logged); one
+  # runs at a time.
+  backfillRatings(all: Boolean): RatingsBackfillResult!
+  # Rates a title by hand: minAge, in years (0 to 21), wins over the rating
+  # TMDB's certification gives it, and a series' over its episodes' unless an
+  # episode has its own; null clears it. null when there is no such item.
+  setMinAgeOverride(id: ID!, minAge: Int): Item
   backfillEpisodeBackdrops: BackfillResult!
   # Fills what a title's source asset lacks of its probe (its video codec,
   # resolution, duration and bit rate) from what the catalog has recorded:

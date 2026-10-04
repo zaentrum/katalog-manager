@@ -22,11 +22,29 @@ type Services struct {
 	Scanner   ScanRunner
 	Enricher  Enricher
 	People    PeopleRefresher
+	Ratings   RatingsBackfiller
 	Packager  Packager
 	Validator Validator
 	Remover   Remover
 	Pipeline  Pipeline
 	Secrets   SecretChecker
+}
+
+// RatingsBackfiller rates titles from TMDB's certifications (implemented by
+// tmdb).
+type RatingsBackfiller interface {
+	BackfillRatings(ctx context.Context, all bool) (RatingsBackfillResult, error)
+}
+
+// RatingsBackfillResult reports what a BackfillRatings run did.
+type RatingsBackfillResult struct {
+	TitlesRead    int32    // titles whose certifications were read from TMDB
+	TitlesRated   int32    // of them, those a country of the list rates
+	TitlesUnrated int32    // of them, those none rates
+	TitlesFailed  int32    // titles whose certifications could not be read or stored
+	Countries     []string // the countries asked, in order
+	StartedAt     time.Time
+	FinishedAt    time.Time
 }
 
 // PeopleRefresher backfills people from TMDB (implemented by tmdb).
@@ -539,6 +557,41 @@ func (r *Resolver) RefreshPeople(ctx context.Context, args struct{ All *bool }) 
 		return nil, err
 	}
 	return &peopleRefreshResultResolver{m: res}, nil
+}
+
+// BackfillRatings is the operator's backfill of ratings from TMDB.
+func (r *Resolver) BackfillRatings(ctx context.Context, args struct{ All *bool }) (*ratingsBackfillResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.backfillRatings"); err != nil {
+		return nil, err
+	}
+	if r.svc.Ratings == nil {
+		return nil, errNotConfigured
+	}
+	res, err := r.svc.Ratings.BackfillRatings(ctx, derefBool(args.All))
+	if err != nil {
+		return nil, err
+	}
+	return &ratingsBackfillResultResolver{m: res}, nil
+}
+
+// SetMinAgeOverride rates a title by hand; a nil minAge clears it. nil when
+// there is no such item.
+func (r *Resolver) SetMinAgeOverride(ctx context.Context, args struct {
+	ID     graphql.ID
+	MinAge *int32
+}) (*itemResolver, error) {
+	if err := r.allow(ctx, "Mutation.setMinAgeOverride"); err != nil {
+		return nil, err
+	}
+	found, err := r.store.SetMinAgeOverride(ctx, string(args.ID), args.MinAge, auth.Actor(ctx, "katalog-manager"))
+	if err != nil || !found {
+		return nil, err
+	}
+	it, err := r.store.GetItemBase(ctx, string(args.ID))
+	if err != nil || it == nil {
+		return nil, err
+	}
+	return newItemResolver(it, r.store), nil
 }
 
 func (r *Resolver) BackfillEpisodeBackdrops(ctx context.Context) (*backfillResultResolver, error) {

@@ -7,8 +7,10 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/auth"
+	"github.com/zaentrum/katalog-manager/internal/graph"
 	"github.com/zaentrum/katalog-manager/internal/ratings"
 )
 
@@ -125,17 +127,17 @@ func (s *Service) ratingsReady(ctx context.Context) bool {
 }
 
 // rateTitle reads the certifications TMDB gives the title itemID (a movie or
-// a series, typ, with TMDB id tmdbID) and keeps its rating: the first country
-// of ratings.countries that rates it wins (ratings.Choose), its certification,
-// the country and the minimum age it means; no certification at all when none
-// of them rates it. Either way it stamps when TMDB was read, and a title whose
+// a series, typ, with TMDB id tmdbID) and keeps its rating: the first of
+// countries that rates it wins (ratings.Choose), its certification, the
+// country and the minimum age it means; no certification at all when none of
+// them rates it. Either way it stamps when TMDB was read, and a title whose
 // rating changed is modified with it. rated says whether a country rated it.
 //
 // When TMDB could not be read, the title keeps the rating it had, and err says
 // why; on a catalog without migration 036 there is nothing to keep it in, and
 // nothing is read. metadataLocked does not stop it: an admin rates a title by
 // hand with its min_age_override, which wins over this rating.
-func (s *Service) rateTitle(ctx context.Context, itemID, typ string, tmdbID int64) (rated bool, err error) {
+func (s *Service) rateTitle(ctx context.Context, itemID, typ string, tmdbID int64, countries []string) (rated bool, err error) {
 	if !s.ratingsReady(ctx) {
 		return false, errRatingsMissing
 	}
@@ -143,7 +145,7 @@ func (s *Service) rateTitle(ctx context.Context, itemID, typ string, tmdbID int6
 	if err != nil {
 		return false, err
 	}
-	r, rated := ratings.Choose(s.ratingCountries(ctx), certs)
+	r, rated := ratings.Choose(countries, certs)
 	var cert, country *string
 	var age *int32
 	if rated {
@@ -169,7 +171,77 @@ var errRatingsMissing = errors.New("the ratings migration (db/migrations/036_ite
 // Its rating failing fails nothing else: the title stays as it was rated, and
 // the next enrichment, the change lists or backfillRatings read it again.
 func (s *Service) rateEnriched(ctx context.Context, itemID, typ string, tmdbID int64) {
-	if _, err := s.rateTitle(ctx, itemID, typ, tmdbID); err != nil && !errors.Is(err, errRatingsMissing) {
+	if _, err := s.rateTitle(ctx, itemID, typ, tmdbID, s.ratingCountries(ctx)); err != nil && !errors.Is(err, errRatingsMissing) {
 		log.Printf("tmdb: the certifications of %s %s (TMDB %d) could not be read: %v", typ, itemID, tmdbID, err)
 	}
+}
+
+// BackfillRatings is the operator's backfill of ratings
+// (graph.RatingsBackfiller): it reads TMDB's certifications of the movies and
+// series that have a TMDB id and rates each as enrichment does (rateTitle),
+// in the countries ratings.countries names when the run starts. With all it
+// reads every one of them; without, only those TMDB has never been read for,
+// so running it again picks up what a failure left. Episodes are rated as
+// their series and are not read. The run goes on even when the caller stops
+// waiting (its counts are logged), and only one runs at a time.
+func (s *Service) BackfillRatings(ctx context.Context, all bool) (graph.RatingsBackfillResult, error) {
+	var res graph.RatingsBackfillResult
+	if !s.tmdb.enabled() {
+		return res, errors.New("TMDB API key not configured")
+	}
+	if !s.ratingsReady(ctx) {
+		return res, errRatingsMissing
+	}
+	if !s.backfillingRatings.CompareAndSwap(false, true) {
+		return res, errors.New("a ratings backfill is already running")
+	}
+	defer s.backfillingRatings.Store(false)
+	ctx = context.WithoutCancel(ctx)
+	res.StartedAt = time.Now().UTC()
+	res.Countries = s.ratingCountries(ctx)
+
+	rows, err := s.pool.Query(ctx, `SELECT i.id, i.type, e.externalid
+		FROM com_nalet_katalog_items i
+		JOIN com_nalet_katalog_itemexternalids e ON e.item_id = i.id AND e.source = 'tmdb'
+		WHERE i.type IN ('movie', 'series') AND ($1 OR i.certification_fetched_at IS NULL)
+		ORDER BY i.type, i.id`, all)
+	if err != nil {
+		return res, err
+	}
+	var titles []titleRef
+	for rows.Next() {
+		var t titleRef
+		var ext string
+		if err := rows.Scan(&t.id, &t.typ, &ext); err != nil {
+			rows.Close()
+			return res, err
+		}
+		if t.tmdbID, err = strconv.ParseInt(strings.TrimSpace(ext), 10, 64); err == nil {
+			titles = append(titles, t)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return res, err
+	}
+
+	for _, t := range titles {
+		rated, err := s.rateTitle(ctx, t.id, t.typ, t.tmdbID, res.Countries)
+		switch {
+		case err != nil:
+			res.TitlesFailed++
+			log.Printf("tmdb: ratings backfill: the certifications of %s %s (TMDB %d) could not be read: %v", t.typ, t.id, t.tmdbID, err)
+		case rated:
+			res.TitlesRead++
+			res.TitlesRated++
+		default:
+			res.TitlesRead++
+			res.TitlesUnrated++
+		}
+	}
+	res.FinishedAt = time.Now().UTC()
+	log.Printf("tmdb: ratings backfill all=%v in %s: titles read=%d rated=%d unrated=%d failed=%d (%s)", all,
+		strings.Join(res.Countries, ","), res.TitlesRead, res.TitlesRated, res.TitlesUnrated, res.TitlesFailed,
+		res.FinishedAt.Sub(res.StartedAt).Round(time.Millisecond))
+	return res, nil
 }

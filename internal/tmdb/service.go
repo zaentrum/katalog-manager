@@ -60,9 +60,10 @@ type Service struct {
 	detailsCheck func(context.Context) (bool, error)
 	detailsOK    atomic.Bool
 	// ratingsCheck and ratingsOK are the same for migration 036.
-	ratingsCheck func(context.Context) (bool, error)
-	ratingsOK    atomic.Bool
-	refreshing   atomic.Bool // a RefreshPeople run is under way
+	ratingsCheck       func(context.Context) (bool, error)
+	ratingsOK          atomic.Bool
+	refreshing         atomic.Bool // a RefreshPeople run is under way
+	backfillingRatings atomic.Bool // a BackfillRatings run is under way
 
 	maxChangePages int // 0: TMDB's, maxChangePages; a test lowers it
 }
