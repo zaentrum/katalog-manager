@@ -68,30 +68,24 @@ func Backfill(ctx context.Context, pool *pgxpool.Pool) (BackfillResult, error) {
 			if kbps == nil && next.BitrateKbps == nil && d != nil && *d > 0 && size != nil && *size > 0 {
 				next.BitrateKbps = num(*size * 8 / *d)
 			}
+			// What the source gains; the write below keeps what it has, also
+			// a value a worker wrote since this read.
 			gained := false
 			if codec == nil && next.Codec != nil {
 				res.Codecs++
 				gained = true
-			} else {
-				next.Codec = nil
 			}
 			if resolution == nil && next.Resolution != nil {
 				res.Resolutions++
 				gained = true
-			} else {
-				next.Resolution = nil
 			}
 			if dur == nil && next.DurationMs != nil {
 				res.Durations++
 				gained = true
-			} else {
-				next.DurationMs = nil
 			}
 			if kbps == nil && next.BitrateKbps != nil {
 				res.Bitrates++
 				gained = true
-			} else {
-				next.BitrateKbps = nil
 			}
 			if !gained {
 				res.Unknown++
