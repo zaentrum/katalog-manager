@@ -13,6 +13,7 @@ type Pipeline interface {
 	RetryStep(ctx context.Context, itemID, step string) (RetryStepResult, error)
 	RetryFailed(ctx context.Context, step string) (RetryFailedResult, error)
 	Overview(ctx context.Context, step string, limit, offset int32) (ProcessingOverview, error)
+	Policy(ctx context.Context) (RetryPolicyInfo, error)
 }
 
 // RetryStepResult says what a retryStep call did.
@@ -85,6 +86,21 @@ func (r *Resolver) ProcessingOverview(ctx context.Context, args struct {
 		return nil, err
 	}
 	return &processingOverviewResolver{m: o}, nil
+}
+
+// RetryPolicy says how the service retries a step.
+func (r *Resolver) RetryPolicy(ctx context.Context) (*retryPolicyResolver, error) {
+	if err := r.allow(ctx, "Query.retryPolicy"); err != nil {
+		return nil, err
+	}
+	if r.svc.Pipeline == nil {
+		return nil, errNotConfigured
+	}
+	p, err := r.svc.Pipeline.Policy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &retryPolicyResolver{m: p}, nil
 }
 
 // RetryStep retries a step of an item now.

@@ -577,6 +577,14 @@ func TestTheOverview(t *testing.T) {
 	if o, _ := New(st, testPolicy, &bus{}, 0).Overview(context.Background(), "", 0, 0); o.Retry.Automatic || !o.Retry.Available {
 		t.Errorf("no sweep: %+v", o.Retry)
 	}
+	if p, err := s.Policy(context.Background()); err != nil || p != r {
+		t.Errorf("the policy alone: %+v, %v; want the overview's %+v", p, err, r)
+	}
+	one := testPolicy
+	one.MaxAttempts = 1
+	if p, _ := New(st, one, &bus{}, time.Second).Policy(context.Background()); p.Automatic || !p.Available || p.MaxAttempts != 1 {
+		t.Errorf("one attempt: %+v, want no automatic retries", p)
+	}
 }
 
 func TestLabel(t *testing.T) {

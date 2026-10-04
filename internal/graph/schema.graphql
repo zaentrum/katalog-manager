@@ -627,6 +627,9 @@ type Query {
   # when given), the latest failure first: at most limit (default 50, max
   # 200), from offset.
   processingOverview(step: String, limit: Int, offset: Int): ProcessingOverview!
+  # How the service retries a step, as the overview says it, without its
+  # counts.
+  retryPolicy: RetryPolicy!
 }
 
 # ---------------------------------------------------------------------------

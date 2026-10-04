@@ -40,6 +40,7 @@ var fieldAccess = map[string]auth.Access{
 	"Query.deletedItems":          auth.Admin,
 	"Query.referenceSync":         auth.Admin,
 	"Query.processingOverview":    auth.Admin,
+	"Query.retryPolicy":           auth.Admin,
 
 	"Mutation.triggerScan":              auth.Worker, // the scan Job's
 	"Mutation.enrichOne":                auth.Admin,

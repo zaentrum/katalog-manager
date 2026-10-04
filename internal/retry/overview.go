@@ -23,18 +23,7 @@ func (s *Service) Overview(ctx context.Context, step string, limit, offset int32
 		limit = 50
 	}
 	offset = max(offset, 0)
-	why := s.unavailable(ctx)
-	o.Retry = graph.RetryPolicyInfo{
-		Automatic:         why == "" && s.automatic(),
-		Available:         why == "",
-		MaxAttempts:       int32(s.pol.MaxAttempts),
-		BackoffSeconds:    int32(s.pol.Backoff.Seconds()),
-		BackoffMaxSeconds: int32(s.pol.BackoffMax.Seconds()),
-		IntervalSeconds:   int32(s.interval.Seconds()),
-	}
-	if why != "" {
-		o.Retry.Reason = &why
-	}
+	o.Retry, _ = s.Policy(ctx)
 	// Without migration 033 the steps have no retries to read: the counts
 	// read what there is.
 	retries := s.migrated.Load()
@@ -130,6 +119,23 @@ func (s *Service) Overview(ctx context.Context, step string, limit, offset int32
 		o.Failed = append(o.Failed, f)
 	}
 	return o, rows.Err()
+}
+
+// Policy says how the service retries a step, and whether it can.
+func (s *Service) Policy(ctx context.Context) (graph.RetryPolicyInfo, error) {
+	why := s.unavailable(ctx)
+	p := graph.RetryPolicyInfo{
+		Automatic:         why == "" && s.automatic(),
+		Available:         why == "",
+		MaxAttempts:       int32(s.pol.MaxAttempts),
+		BackoffSeconds:    int32(s.pol.Backoff.Seconds()),
+		BackoffMaxSeconds: int32(s.pol.BackoffMax.Seconds()),
+		IntervalSeconds:   int32(s.interval.Seconds()),
+	}
+	if why != "" {
+		p.Reason = &why
+	}
+	return p, nil
 }
 
 func utc(t *time.Time) *time.Time {

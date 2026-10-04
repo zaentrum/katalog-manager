@@ -108,6 +108,10 @@ func (f *fakes) Overview(context.Context, string, int32, int32) (graph.Processin
 	f.called("processing overview")
 	return graph.ProcessingOverview{}, nil
 }
+func (f *fakes) Policy(context.Context) (graph.RetryPolicyInfo, error) {
+	f.called("retry policy")
+	return graph.RetryPolicyInfo{MaxAttempts: 3}, nil
+}
 
 // The secrets the instance holds; no answer may carry one.
 const tmdbSecret, fanartSecret, omdbSecret = "tmdb-secret-token", "fanart-secret-key", "omdb-secret-key"
@@ -269,6 +273,7 @@ var operations = []struct{ doc, calls string }{
 	{`{ deletedItems { id } }`, ""},
 	{`{ referenceSync { kind } }`, ""},
 	{`{ processingOverview(step: "transcode") { failedTotal steps { step failed } failed { itemId } retry { available } } }`, "processing overview"},
+	{`{ retryPolicy { available automatic maxAttempts reason } }`, "retry policy"},
 
 	{`mutation { triggerScan(source: "nfs") { id status } }`, "scan nfs"},
 	{`mutation { enrichOne(id: "m1") { status } }`, "enrich m1"},
