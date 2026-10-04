@@ -90,6 +90,15 @@ func (r *processingStepResolver) Attempts() *int32          { return r.m.Attempt
 func (r *processingStepResolver) Error() *string            { return r.m.Error }
 func (r *processingStepResolver) Details() *string          { return r.m.Details }
 func (r *processingStepResolver) StatusCriticality() *int32 { return r.m.StatusCriticality }
+func (r *processingStepResolver) Failures() int32           { return r.m.Failures }
+func (r *processingStepResolver) LastError() *string        { return r.m.LastError }
+func (r *processingStepResolver) NextRetryAt() *graphql.Time {
+	return gtime(r.m.NextRetryAt)
+}
+func (r *processingStepResolver) DispatchedAt() *graphql.Time {
+	return gtime(r.m.DispatchedAt)
+}
+func (r *processingStepResolver) UpdatedAt() *graphql.Time { return gtime(r.m.ModifiedAt) }
 
 // ---- ItemOverallStatus ----
 

@@ -96,6 +96,18 @@ func (f *fakes) RemoveItem(_ context.Context, id string, files, packages bool, _
 	f.called(fmt.Sprintf("remove %s, files %v, packages %v", id, files, packages))
 	return graph.RemoveResult{Deleted: true, ItemsRemoved: 1}, nil
 }
+func (f *fakes) RetryStep(_ context.Context, itemID, step string) (graph.RetryStepResult, error) {
+	f.called("retry " + itemID + " " + step)
+	return graph.RetryStepResult{ItemID: itemID, Step: step, Message: "left alone"}, nil
+}
+func (f *fakes) RetryFailed(_ context.Context, step string) (graph.RetryFailedResult, error) {
+	f.called("retry the failed " + step)
+	return graph.RetryFailedResult{Message: "none"}, nil
+}
+func (f *fakes) Overview(context.Context, string, int32, int32) (graph.ProcessingOverview, error) {
+	f.called("processing overview")
+	return graph.ProcessingOverview{}, nil
+}
 
 // The secrets the instance holds; no answer may carry one.
 const tmdbSecret, fanartSecret, omdbSecret = "tmdb-secret-token", "fanart-secret-key", "omdb-secret-key"
@@ -116,12 +128,21 @@ var streamKey = []byte("0123456789abcdef0123456789abcdef")
 
 func newInstance(t *testing.T) *instance {
 	t.Helper()
+	return newInstanceWith(t, nil)
+}
+
+// newInstanceWith is newInstance with the pipeline's retries pipeline makes
+// of the instance's store (nil: a fake).
+func newInstanceWith(t *testing.T, pipeline func(*store.Store) graph.Pipeline) *instance {
+	t.Helper()
 	st := storetest.Open(t)
 	storetest.Exec(t, st, `CREATE VIEW katalogservice_items AS SELECT id, createdat, createdby, modifiedat, modifiedby,
 		type, title, sorttitle, year, description, rating, durationms, parent_id, seasonnumber, episodenumber, tagline,
 		NULL::varchar AS posterurl, NULL::varchar AS backdropurl, NULL::bigint AS runtimemin, NULL::varchar AS yeartext
 		FROM com_nalet_katalog_items`)
 	storetest.AddItem(t, st, "m1", "movie", "A Film", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemprocessingsteps (id, createdat, modifiedat, item_id, step, status,
+		attempts, error, failures, lasterror) VALUES ('st-m1', now(), now(), 'm1', 'transcode', 'failed', 3, 'ffmpeg exited 1', 1, 'ffmpeg exited 1')`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ('p1', 'Ada')`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES
 		('set-tmdb', 'tmdb.api_key', $1), ('set-fanart', 'fanart.api_key', $2),
@@ -142,8 +163,12 @@ func newInstance(t *testing.T) *instance {
 		t.Fatal(err)
 	}
 	f := &fakes{st: st}
+	var pipe graph.Pipeline = f
+	if pipeline != nil {
+		pipe = pipeline(st)
+	}
 	schema := graph.MustSchema(graph.NewResolver(st, cfg, graph.Services{Scanner: f, Enricher: f, People: f,
-		Packager: f, Validator: f, Remover: f}))
+		Packager: f, Validator: f, Remover: f, Pipeline: pipe}))
 	r := chi.NewRouter()
 	routes(r, auth.NewMiddleware(jwt, sv).Handler, cfg.Policy(), schema, stream.NewBroker().Handler,
 		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool())}))
@@ -210,7 +235,8 @@ func fingerprint(t *testing.T, st *store.Store) string {
 	t.Helper()
 	var b strings.Builder
 	for _, table := range []string{"com_nalet_katalog_items", "com_nalet_katalog_itemgenres", "com_nalet_katalog_itemtags",
-		"com_nalet_katalog_genres", "com_nalet_katalog_settings", "com_nalet_katalog_scanjobs"} {
+		"com_nalet_katalog_genres", "com_nalet_katalog_settings", "com_nalet_katalog_scanjobs",
+		"com_nalet_katalog_itemprocessingsteps"} {
 		var rows string
 		if err := st.Pool().QueryRow(context.Background(),
 			`SELECT coalesce(string_agg(x::text, '|' ORDER BY x::text), '') FROM `+table+` x`).Scan(&rows); err != nil {
@@ -224,7 +250,7 @@ func fingerprint(t *testing.T, st *store.Store) string {
 // operations calls every root field of the schema, each with what its fakes
 // record for an admin (none for a field that calls no integration).
 var operations = []struct{ doc, calls string }{
-	{`{ item(id: "m1") { id title } }`, ""},
+	{`{ item(id: "m1") { id title processingSteps { step status failures lastError nextRetryAt dispatchedAt updatedAt } } }`, ""},
 	{`{ items(limit: 5) { id } }`, ""},
 	{`{ movies { id } }`, ""},
 	{`{ series { id } }`, ""},
@@ -242,6 +268,7 @@ var operations = []struct{ doc, calls string }{
 	{`{ enrichmentStatusCodes { code } }`, ""},
 	{`{ deletedItems { id } }`, ""},
 	{`{ referenceSync { kind } }`, ""},
+	{`{ processingOverview(step: "transcode") { failedTotal steps { step failed } failed { itemId } retry { available } } }`, "processing overview"},
 
 	{`mutation { triggerScan(source: "nfs") { id status } }`, "scan nfs"},
 	{`mutation { enrichOne(id: "m1") { status } }`, "enrich m1"},
@@ -250,6 +277,8 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { refreshPeople(all: false) { titlesRead } }`, "refresh people"},
 	{`mutation { backfillEpisodeBackdrops { artwork } }`, "backfill backdrops"},
 	{`mutation { retryNotFound { reset } }`, "retry not found"},
+	{`mutation { retryStep(itemId: "m1", step: "transcode") { retried message } }`, "retry m1 transcode"},
+	{`mutation { retryFailed(step: "package") { retried message } }`, "retry the failed package"},
 	{`mutation { packageItem(id: "m1") { status } }`, "package m1"},
 	{`mutation { validateItem(id: "m1") { code } }`, "validate m1"},
 	{`mutation { createItem(input: {type: "movie", title: "Made Here"}) { id } }`, ""},

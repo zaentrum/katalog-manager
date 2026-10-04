@@ -1,0 +1,196 @@
+package graph
+
+import (
+	"context"
+	"time"
+
+	graphql "github.com/graph-gophers/graphql-go"
+)
+
+// Pipeline retries the processing steps and says what the pipeline holds
+// (implemented by retry).
+type Pipeline interface {
+	RetryStep(ctx context.Context, itemID, step string) (RetryStepResult, error)
+	RetryFailed(ctx context.Context, step string) (RetryFailedResult, error)
+	Overview(ctx context.Context, step string, limit, offset int32) (ProcessingOverview, error)
+}
+
+// RetryStepResult says what a retryStep call did.
+type RetryStepResult struct {
+	ItemID  string
+	Step    string
+	Retried bool
+	Status  *string // the step's status after the call; nil for a step the item does not have
+	Message string
+}
+
+// RetryFailedResult says what a retryFailed call did.
+type RetryFailedResult struct {
+	Retried int32 // steps whose trigger was sent again
+	Items   int32 // items those events went to
+	NotSent int32 // steps whose event could not be sent, left failed
+	Step    *string
+	Message string
+}
+
+// ProcessingOverview is what the pipeline holds and what failed.
+type ProcessingOverview struct {
+	Steps       []StepCounts
+	Failed      []FailedStep
+	FailedTotal int32
+	Retry       RetryPolicyInfo
+}
+
+// StepCounts are the items in each state of a step.
+type StepCounts struct {
+	Step                                                      string
+	Pending, InProgress, Done, Failed, Skipped, NotApplicable int32
+	Retrying, Stalled                                         int32
+	TimeoutSeconds                                            int32
+}
+
+// FailedStep is a failed step and its item.
+type FailedStep struct {
+	ItemID, ItemTitle, ItemType string
+	SeriesID, SeriesTitle       *string
+	SeasonNumber, EpisodeNumber *int32
+	Step                        string
+	Failures                    int32
+	LastError                   *string
+	FailedAt, NextRetryAt       *time.Time
+}
+
+// RetryPolicyInfo is how the service retries a step, and whether it can.
+type RetryPolicyInfo struct {
+	Automatic, Available                                            bool
+	Reason                                                          *string
+	MaxAttempts, BackoffSeconds, BackoffMaxSeconds, IntervalSeconds int32
+}
+
+// ProcessingOverview says what the pipeline holds, step by step, and lists
+// the failed steps.
+func (r *Resolver) ProcessingOverview(ctx context.Context, args struct {
+	Step   *string
+	Limit  *int32
+	Offset *int32
+}) (*processingOverviewResolver, error) {
+	if err := r.allow(ctx, "Query.processingOverview"); err != nil {
+		return nil, err
+	}
+	if r.svc.Pipeline == nil {
+		return nil, errNotConfigured
+	}
+	o, err := r.svc.Pipeline.Overview(ctx, strDeref(args.Step), deref32(args.Limit), deref32(args.Offset))
+	if err != nil {
+		return nil, err
+	}
+	return &processingOverviewResolver{m: o}, nil
+}
+
+// RetryStep retries a step of an item now.
+func (r *Resolver) RetryStep(ctx context.Context, args struct {
+	ItemID graphql.ID
+	Step   string
+}) (*retryStepResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.retryStep"); err != nil {
+		return nil, err
+	}
+	if r.svc.Pipeline == nil {
+		return nil, errNotConfigured
+	}
+	res, err := r.svc.Pipeline.RetryStep(ctx, string(args.ItemID), args.Step)
+	if err != nil {
+		return nil, err
+	}
+	return &retryStepResultResolver{m: res}, nil
+}
+
+// RetryFailed retries every failed step, of one step when given.
+func (r *Resolver) RetryFailed(ctx context.Context, args struct{ Step *string }) (*retryFailedResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.retryFailed"); err != nil {
+		return nil, err
+	}
+	if r.svc.Pipeline == nil {
+		return nil, errNotConfigured
+	}
+	res, err := r.svc.Pipeline.RetryFailed(ctx, strDeref(args.Step))
+	if err != nil {
+		return nil, err
+	}
+	return &retryFailedResultResolver{m: res}, nil
+}
+
+type processingOverviewResolver struct{ m ProcessingOverview }
+
+func (r *processingOverviewResolver) Steps() []*stepCountsResolver {
+	out := make([]*stepCountsResolver, 0, len(r.m.Steps))
+	for i := range r.m.Steps {
+		out = append(out, &stepCountsResolver{m: r.m.Steps[i]})
+	}
+	return out
+}
+func (r *processingOverviewResolver) Failed() []*failedStepResolver {
+	out := make([]*failedStepResolver, 0, len(r.m.Failed))
+	for i := range r.m.Failed {
+		out = append(out, &failedStepResolver{m: r.m.Failed[i]})
+	}
+	return out
+}
+func (r *processingOverviewResolver) FailedTotal() int32 { return r.m.FailedTotal }
+func (r *processingOverviewResolver) Retry() *retryPolicyResolver {
+	return &retryPolicyResolver{m: r.m.Retry}
+}
+
+type stepCountsResolver struct{ m StepCounts }
+
+func (r *stepCountsResolver) Step() string          { return r.m.Step }
+func (r *stepCountsResolver) Pending() int32        { return r.m.Pending }
+func (r *stepCountsResolver) InProgress() int32     { return r.m.InProgress }
+func (r *stepCountsResolver) Done() int32           { return r.m.Done }
+func (r *stepCountsResolver) Failed() int32         { return r.m.Failed }
+func (r *stepCountsResolver) Skipped() int32        { return r.m.Skipped }
+func (r *stepCountsResolver) NotApplicable() int32  { return r.m.NotApplicable }
+func (r *stepCountsResolver) Retrying() int32       { return r.m.Retrying }
+func (r *stepCountsResolver) Stalled() int32        { return r.m.Stalled }
+func (r *stepCountsResolver) TimeoutSeconds() int32 { return r.m.TimeoutSeconds }
+
+type failedStepResolver struct{ m FailedStep }
+
+func (r *failedStepResolver) ItemID() graphql.ID         { return gid(r.m.ItemID) }
+func (r *failedStepResolver) ItemTitle() string          { return r.m.ItemTitle }
+func (r *failedStepResolver) ItemType() string           { return r.m.ItemType }
+func (r *failedStepResolver) SeriesID() *graphql.ID      { return gidptr(r.m.SeriesID) }
+func (r *failedStepResolver) SeriesTitle() *string       { return r.m.SeriesTitle }
+func (r *failedStepResolver) SeasonNumber() *int32       { return r.m.SeasonNumber }
+func (r *failedStepResolver) EpisodeNumber() *int32      { return r.m.EpisodeNumber }
+func (r *failedStepResolver) Step() string               { return r.m.Step }
+func (r *failedStepResolver) Failures() int32            { return r.m.Failures }
+func (r *failedStepResolver) LastError() *string         { return r.m.LastError }
+func (r *failedStepResolver) FailedAt() *graphql.Time    { return gtime(r.m.FailedAt) }
+func (r *failedStepResolver) NextRetryAt() *graphql.Time { return gtime(r.m.NextRetryAt) }
+
+type retryPolicyResolver struct{ m RetryPolicyInfo }
+
+func (r *retryPolicyResolver) Automatic() bool          { return r.m.Automatic }
+func (r *retryPolicyResolver) Available() bool          { return r.m.Available }
+func (r *retryPolicyResolver) Reason() *string          { return r.m.Reason }
+func (r *retryPolicyResolver) MaxAttempts() int32       { return r.m.MaxAttempts }
+func (r *retryPolicyResolver) BackoffSeconds() int32    { return r.m.BackoffSeconds }
+func (r *retryPolicyResolver) BackoffMaxSeconds() int32 { return r.m.BackoffMaxSeconds }
+func (r *retryPolicyResolver) IntervalSeconds() int32   { return r.m.IntervalSeconds }
+
+type retryStepResultResolver struct{ m RetryStepResult }
+
+func (r *retryStepResultResolver) ItemID() graphql.ID { return gid(r.m.ItemID) }
+func (r *retryStepResultResolver) Step() string       { return r.m.Step }
+func (r *retryStepResultResolver) Retried() bool      { return r.m.Retried }
+func (r *retryStepResultResolver) Status() *string    { return r.m.Status }
+func (r *retryStepResultResolver) Message() string    { return r.m.Message }
+
+type retryFailedResultResolver struct{ m RetryFailedResult }
+
+func (r *retryFailedResultResolver) Retried() int32  { return r.m.Retried }
+func (r *retryFailedResultResolver) Items() int32    { return r.m.Items }
+func (r *retryFailedResultResolver) NotSent() int32  { return r.m.NotSent }
+func (r *retryFailedResultResolver) Step() *string   { return r.m.Step }
+func (r *retryFailedResultResolver) Message() string { return r.m.Message }

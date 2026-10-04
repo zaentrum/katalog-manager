@@ -144,6 +144,11 @@ type ItemProcessingStep struct {
 	Error             *string
 	Details           *string
 	StatusCriticality *int32 // view-computed
+	// What migration 033 keeps of its retries (0 and nil without it).
+	Failures     int32
+	LastError    *string
+	NextRetryAt  *time.Time
+	DispatchedAt *time.Time
 }
 
 type ItemOverallStatus struct {

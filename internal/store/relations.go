@@ -229,10 +229,20 @@ func (s *Store) DiagnosticsByItem(ctx context.Context, id string) (*model.ItemDi
 	return &x, nil
 }
 
+// StepsByItem returns an item's processing steps in the order the pipeline
+// runs them (model.Steps; a step it does not know last, by name). It reads the
+// table, with the status criticality the KatalogService view computes (failed
+// 1, in progress or pending 2, done 3, else 0), and what migration 033 keeps
+// of a step's retries through to_jsonb of its row: none (0, NULL) on a
+// catalog without it.
 func (s *Store) StepsByItem(ctx context.Context, id string) ([]*model.ItemProcessingStep, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, createdat, modifiedat, item_id, step, status, startedat,
-		finishedat, attempts, error, details, statuscriticality
-		FROM katalogservice_itemprocessingsteps WHERE item_id = $1 ORDER BY modifiedat DESC NULLS LAST`, id)
+	rows, err := s.pool.Query(ctx, `SELECT s.id, s.createdat, s.modifiedat, s.item_id, s.step, s.status, s.startedat,
+		s.finishedat, s.attempts, s.error, s.details,
+		CASE s.status WHEN 'failed' THEN 1 WHEN 'in_progress' THEN 2 WHEN 'pending' THEN 2 WHEN 'done' THEN 3 ELSE 0 END,
+		COALESCE((s.d->>'failures')::int, 0), s.d->>'lasterror',
+		(s.d->>'nextretryat')::timestamptz, (s.d->>'dispatchedat')::timestamptz
+		FROM (SELECT t.*, to_jsonb(t) AS d FROM com_nalet_katalog_itemprocessingsteps t WHERE t.item_id = $1) s
+		ORDER BY array_position($2::text[], s.step::text) NULLS LAST, s.step`, id, model.Steps)
 	if err != nil {
 		return nil, err
 	}
@@ -240,10 +250,14 @@ func (s *Store) StepsByItem(ctx context.Context, id string) ([]*model.ItemProces
 	var out []*model.ItemProcessingStep
 	for rows.Next() {
 		var x model.ItemProcessingStep
+		var crit int32
 		if err := rows.Scan(&x.ID, &x.CreatedAt, &x.ModifiedAt, &x.ItemID, &x.Step, &x.Status, &x.StartedAt,
-			&x.FinishedAt, &x.Attempts, &x.Error, &x.Details, &x.StatusCriticality); err != nil {
+			&x.FinishedAt, &x.Attempts, &x.Error, &x.Details, &crit,
+			&x.Failures, &x.LastError, &x.NextRetryAt, &x.DispatchedAt); err != nil {
 			return nil, err
 		}
+		x.StatusCriticality = &crit
+		x.NextRetryAt, x.DispatchedAt = utc(x.NextRetryAt), utc(x.DispatchedAt)
 		out = append(out, &x)
 	}
 	return out, rows.Err()

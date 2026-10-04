@@ -24,6 +24,7 @@ type Services struct {
 	Packager  Packager
 	Validator Validator
 	Remover   Remover
+	Pipeline  Pipeline
 }
 
 // PeopleRefresher backfills people from TMDB (implemented by tmdb).

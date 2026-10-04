@@ -110,6 +110,11 @@ type ItemChapter {
   ordinal: Int
 }
 
+# A step of an item's processing, as its worker last reported it. A step
+# that fails is retried by the service (see retryStep and
+# ProcessingOverview.retry): its trigger event is sent again after a backoff,
+# a bounded number of times. A catalog without migration 033 keeps no
+# failures, last error or retry (0 and null).
 type ItemProcessingStep {
   id: ID!
   itemId: ID!
@@ -117,10 +122,26 @@ type ItemProcessingStep {
   status: String!
   startedAt: Time
   finishedAt: Time
+  # how often the step was written: every report of its worker counts
   attempts: Int
   error: String
   details: String
   statusCriticality: Int
+  # its failed runs in a row: 0 unless it failed since it last succeeded (or
+  # was skipped, not applicable or retried by an admin); a run its timeout
+  # cut short counts
+  failures: Int!
+  # the error of its last failed run, credentials redacted; kept while it is
+  # retried and after
+  lastError: String
+  # when the service retries it by itself; null unless it failed with an
+  # attempt left
+  nextRetryAt: Time
+  # when the service last sent its trigger event again, while no worker has
+  # reported on it since
+  dispatchedAt: Time
+  # when it was last written: for a step in progress, its worker's last word
+  updatedAt: Time
 }
 
 type ItemOverallStatus {
@@ -265,6 +286,75 @@ type ItemDiagnostics {
   ffprobeData: String
   folderListing: String
   notes: String
+}
+
+# What the pipeline holds, step by step, and the steps that failed.
+type ProcessingOverview {
+  # every step, in the order the pipeline runs them, with how many items are
+  # in each state of it
+  steps: [ProcessingStepCounts!]!
+  # the failed steps (of one step when asked), the latest failure first
+  failed: [FailedStep!]!
+  # how many steps failed (of one step when asked)
+  failedTotal: Int!
+  # how the service retries a step
+  retry: RetryPolicy!
+}
+
+type ProcessingStepCounts {
+  step: String!
+  pending: Int!
+  inProgress: Int!
+  done: Int!
+  failed: Int!
+  skipped: Int!
+  notApplicable: Int!
+  # of the failed, those the service retries by itself
+  retrying: Int!
+  # in progress with no word from the worker, or sent again and not started,
+  # for longer than the step's timeout: what the service reaps next
+  stalled: Int!
+  # how long the step may be in progress without a word from its worker
+  timeoutSeconds: Int!
+}
+
+# A failed step and its item (an episode with its series and its place in
+# it).
+type FailedStep {
+  itemId: ID!
+  itemTitle: String!
+  itemType: String!
+  seriesId: ID
+  seriesTitle: String
+  seasonNumber: Int
+  episodeNumber: Int
+  step: String!
+  failures: Int!
+  # the error of its last failed run, credentials redacted
+  lastError: String
+  failedAt: Time
+  # when the service retries it by itself; null when it does not (no attempt
+  # left, or failed before the service kept its retries)
+  nextRetryAt: Time
+}
+
+# How the service retries a step. A failed step is retried by itself after a
+# backoff (backoffSeconds after its first failure, doubled with every
+# failure after, at most backoffMaxSeconds) until it has run maxAttempts
+# times in a row; a step in progress without a word from its worker for
+# longer than its timeout is taken for a failed run.
+type RetryPolicy {
+  # the service sends due retries and reaps silent steps by itself
+  automatic: Boolean!
+  # a step can be retried at all: the service has an event bus and migration
+  # 033; reason says why not
+  available: Boolean!
+  reason: String
+  maxAttempts: Int!
+  backoffSeconds: Int!
+  backoffMaxSeconds: Int!
+  # how often the service looks for due retries and silent steps
+  intervalSeconds: Int!
 }
 
 type ScanJob {
@@ -434,6 +524,27 @@ type RetryResult {
   type: String
 }
 
+# What a retryStep call did. retried says whether the step's trigger event
+# was sent again; message says what happened, or why not.
+type RetryStepResult {
+  itemId: ID!
+  step: String!
+  retried: Boolean!
+  # the step's status after the call; null when the item has no such step
+  status: String
+  message: String!
+}
+
+# What a retryFailed call did: the steps retried, the items their events
+# went to, and the steps whose event could not be sent (left failed).
+type RetryFailedResult {
+  retried: Int!
+  items: Int!
+  notSent: Int!
+  step: String
+  message: String!
+}
+
 type DeleteItemResult {
   deleted: Boolean!
   itemsRemoved: Int!
@@ -498,6 +609,11 @@ type Query {
   # The daily refresh from TMDB's change lists, one entry per list that has
   # run, by kind. Read-only.
   referenceSync: [ReferenceSync!]!
+
+  # What the pipeline holds, step by step, and the failed steps (of one step
+  # when given), the latest failure first: at most limit (default 50, max
+  # 200), from offset.
+  processingOverview(step: String, limit: Int, offset: Int): ProcessingOverview!
 }
 
 # ---------------------------------------------------------------------------
@@ -541,6 +657,17 @@ type Mutation {
   refreshPeople(all: Boolean): PeopleRefreshResult!
   backfillEpisodeBackdrops: BackfillResult!
   retryNotFound(type: String): RetryResult!
+  # Retries a step of an item now: sends the event that triggers its worker
+  # again. It retries a failed step (with or without attempts left), and one
+  # in progress with no word from its worker, or waiting for one to start
+  # it, for longer than its timeout; the step's failures in a row start
+  # afresh. A step in progress or waiting within its timeout is left alone (a
+  # retry would run it twice), and one done, not applicable or skipped is
+  # terminal; the result says so.
+  retryStep(itemId: ID!, step: String!): RetryStepResult!
+  # Retries every failed step (of one step when given) as retryStep does.
+  # The run finishes even when the caller stops waiting; one runs at a time.
+  retryFailed(step: String): RetryFailedResult!
   packageItem(id: ID!): PackageResult!
   validateItem(id: ID!): ValidateResult!
 

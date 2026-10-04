@@ -39,6 +39,7 @@ var fieldAccess = map[string]auth.Access{
 	"Query.enrichmentStatusCodes": auth.Admin,
 	"Query.deletedItems":          auth.Admin,
 	"Query.referenceSync":         auth.Admin,
+	"Query.processingOverview":    auth.Admin,
 
 	"Mutation.triggerScan":              auth.Worker, // the scan Job's
 	"Mutation.enrichOne":                auth.Admin,
@@ -47,6 +48,8 @@ var fieldAccess = map[string]auth.Access{
 	"Mutation.refreshPeople":            auth.Admin,
 	"Mutation.backfillEpisodeBackdrops": auth.Admin,
 	"Mutation.retryNotFound":            auth.Admin,
+	"Mutation.retryStep":                auth.Admin,
+	"Mutation.retryFailed":              auth.Admin,
 	"Mutation.packageItem":              auth.Admin,
 	"Mutation.validateItem":             auth.Admin,
 	"Mutation.createItem":               auth.Admin,
