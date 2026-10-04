@@ -1,11 +1,15 @@
 // Package processing ports the CAP ProcessingStepService — the upsert/reset/
-// promote logic over com_nalet_katalog_itemprocessingsteps (SPEC §3).
+// promote logic over com_nalet_katalog_itemprocessingsteps (SPEC §3) — and
+// keeps what the service needs to retry a step: its failures in a row, its
+// last error and when it is retried next (migration 033).
 package processing
 
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -19,10 +23,16 @@ const (
 	StatusNotApplicable = "not_applicable"
 )
 
-var validSteps = map[string]bool{
-	"scan": true, "tmdb": true, "tidb": true, "chapter": true, "chromaprint": true,
-	"blackframe": true, "silence": true, "subtitle": true, "transcode": true, "package": true,
-}
+// StepOrder is every step, in the order the pipeline runs them.
+var StepOrder = []string{"scan", "tmdb", "tidb", "chapter", "chromaprint", "blackframe", "silence", "subtitle", "transcode", "package"}
+
+var validSteps = func() map[string]bool {
+	m := map[string]bool{}
+	for _, s := range StepOrder {
+		m[s] = true
+	}
+	return m
+}()
 
 var validStatuses = map[string]bool{
 	StatusPending: true, StatusInProgress: true, StatusDone: true,
@@ -37,10 +47,28 @@ var (
 
 // Steps owns the processing-step audit table.
 type Steps struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	policy Policy
+	// legacy is set once the table turned out to lack migration 033's
+	// columns: then a step's status, error and details are written as
+	// before the migration, and nothing of its retries is kept.
+	legacy *atomic.Bool
 }
 
-func New(pool *pgxpool.Pool) *Steps { return &Steps{pool: pool} }
+// New is the step table's writer, retrying by DefaultPolicy.
+func New(pool *pgxpool.Pool) *Steps {
+	return &Steps{pool: pool, policy: DefaultPolicy(), legacy: &atomic.Bool{}}
+}
+
+// WithPolicy is s retrying by p.
+func (s *Steps) WithPolicy(p Policy) *Steps {
+	c := *s
+	c.policy = p
+	return &c
+}
+
+// Policy is how s retries a step.
+func (s *Steps) Policy() Policy { return s.policy }
 
 func ValidStep(s string) bool   { return validSteps[s] }
 func ValidStatus(s string) bool { return validStatuses[s] }
@@ -53,7 +81,17 @@ func ValidStatus(s string) bool { return validStatuses[s] }
 //     terminal status (NOT not_applicable).
 //
 // The error is kept as CleanError makes it: credentials redacted, at most 500
-// characters.
+// characters. With migration 033 it also keeps the step's retries:
+//   - a step that turns failed counts a failure (failures+1; 1 on insert),
+//     keeps the error as its last error, and is scheduled for a retry by
+//     itself (nextretryat) when the policy retries that many failures in a
+//     row; a failure reported again (failed while failed) counts nothing and
+//     keeps its schedule, and its last error unless it gives a new one;
+//   - done, skipped and not_applicable end the failures in a row (0); no
+//     status but failed has a retry scheduled; skipped is terminal and never
+//     retried;
+//   - any report of a worker answers a trigger the service sent again
+//     (dispatchedat is cleared).
 func (s *Steps) Upsert(ctx context.Context, itemID, step, status string, errMsg, details *string) error {
 	if !validSteps[step] {
 		return ErrBadStep
@@ -62,30 +100,18 @@ func (s *Steps) Upsert(ctx context.Context, itemID, step, status string, errMsg,
 		return ErrBadStatus
 	}
 	em := cleanError(errMsg)
-	const tbl = "com_nalet_katalog_itemprocessingsteps"
-	// $3 (status) is cast to text at every use. Under pgx's extended protocol
-	// Postgres deduces one type for a parameter at parse time; using bare $3 both
-	// as the varchar `status` value AND inside `= 'in_progress'` / `IN (...)`
-	// comparisons yields "inconsistent types deduced for parameter $3" (42P08).
-	// psql never hit this (simple protocol inlines the literal). The explicit
-	// ::text casts pin $3 to a single type. See analyzer step-upsert regression.
-	tag, err := s.pool.Exec(ctx, `INSERT INTO `+tbl+`
-		(id, createdat, modifiedat, item_id, step, status, startedat, finishedat, attempts, error, details)
-		VALUES (gen_random_uuid()::varchar, now(), now(), $1, $2, $3::text,
-			CASE WHEN $3::text = 'in_progress' THEN now() ELSE NULL END,
-			CASE WHEN $3::text IN ('done','failed','skipped') THEN now() ELSE NULL END,
-			1, $4, $5)
-		ON CONFLICT (item_id, step) DO UPDATE SET
-			modifiedat = now(),
-			status     = EXCLUDED.status,
-			attempts   = `+tbl+`.attempts + 1,
-			startedat  = CASE WHEN EXCLUDED.status = 'in_progress' AND `+tbl+`.startedat IS NULL
-			                  THEN now() ELSE `+tbl+`.startedat END,
-			finishedat = CASE WHEN EXCLUDED.status IN ('done','failed','skipped') THEN now()
-			                  ELSE `+tbl+`.finishedat END,
-			error      = EXCLUDED.error,
-			details    = EXCLUDED.details`,
-		itemID, step, status, em, details)
+	if !s.legacy.Load() {
+		err := s.exec(ctx, upsertSQL, itemID, step, status, em, details, s.policy.delays())
+		if !missingRetryColumns(err) {
+			return err
+		}
+		s.legacy.Store(true)
+	}
+	return s.exec(ctx, legacyUpsertSQL, itemID, step, status, em, details)
+}
+
+func (s *Steps) exec(ctx context.Context, sql string, args ...any) error {
+	tag, err := s.pool.Exec(ctx, sql, args...)
 	if err != nil {
 		return err
 	}
@@ -95,13 +121,100 @@ func (s *Steps) Upsert(ctx context.Context, itemID, step, status string, errMsg,
 	return nil
 }
 
+// missingRetryColumns reports whether err is Postgres saying a column does
+// not exist (42703): the table lacks migration 033.
+func missingRetryColumns(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "42703"
+}
+
+const tbl = "com_nalet_katalog_itemprocessingsteps"
+
+// $3 (status) is cast to text at every use. Under pgx's extended protocol
+// Postgres deduces one type for a parameter at parse time; using bare $3 both
+// as the varchar `status` value AND inside `= 'in_progress'` / `IN (...)`
+// comparisons yields "inconsistent types deduced for parameter $3" (42P08).
+// psql never hit this (simple protocol inlines the literal). The explicit
+// ::text casts pin $3 to a single type. See analyzer step-upsert regression.
+const legacyUpsertSQL = `INSERT INTO ` + tbl + `
+		(id, createdat, modifiedat, item_id, step, status, startedat, finishedat, attempts, error, details)
+		VALUES (gen_random_uuid()::varchar, now(), now(), $1, $2, $3::text,
+			CASE WHEN $3::text = 'in_progress' THEN now() ELSE NULL END,
+			CASE WHEN $3::text IN ('done','failed','skipped') THEN now() ELSE NULL END,
+			1, $4, $5)
+		ON CONFLICT (item_id, step) DO UPDATE SET
+			modifiedat = now(),
+			status     = EXCLUDED.status,
+			attempts   = ` + tbl + `.attempts + 1,
+			startedat  = CASE WHEN EXCLUDED.status = 'in_progress' AND ` + tbl + `.startedat IS NULL
+			                  THEN now() ELSE ` + tbl + `.startedat END,
+			finishedat = CASE WHEN EXCLUDED.status IN ('done','failed','skipped') THEN now()
+			                  ELSE ` + tbl + `.finishedat END,
+			error      = EXCLUDED.error,
+			details    = EXCLUDED.details`
+
+// upsertSQL is legacyUpsertSQL keeping the step's retries; $4 (the error) is
+// cast to text at both its uses for the reason $3 is. $6 are the
+// seconds to wait after a step's 1st, 2nd, ... failure in a row
+// (Policy.delays): a failure beyond them schedules no retry, as the array's
+// element is NULL. Every SET expression reads the row as it was.
+const upsertSQL = `INSERT INTO ` + tbl + `
+		(id, createdat, modifiedat, item_id, step, status, startedat, finishedat, attempts, error, details,
+		 failures, lasterror, nextretryat, dispatchedat)
+		VALUES (gen_random_uuid()::varchar, now(), now(), $1, $2, $3::text,
+			CASE WHEN $3::text = 'in_progress' THEN now() ELSE NULL END,
+			CASE WHEN $3::text IN ('done','failed','skipped') THEN now() ELSE NULL END,
+			1, $4::text, $5,
+			CASE WHEN $3::text = 'failed' THEN 1 ELSE 0 END,
+			CASE WHEN $3::text = 'failed' THEN $4::text ELSE NULL END,
+			CASE WHEN $3::text = 'failed' THEN now() + make_interval(secs => ($6::float8[])[1]) END,
+			NULL)
+		ON CONFLICT (item_id, step) DO UPDATE SET
+			modifiedat = now(),
+			status     = EXCLUDED.status,
+			attempts   = ` + tbl + `.attempts + 1,
+			startedat  = CASE WHEN EXCLUDED.status = 'in_progress' AND ` + tbl + `.startedat IS NULL
+			                  THEN now() ELSE ` + tbl + `.startedat END,
+			finishedat = CASE WHEN EXCLUDED.status IN ('done','failed','skipped') THEN now()
+			                  ELSE ` + tbl + `.finishedat END,
+			error      = EXCLUDED.error,
+			details    = EXCLUDED.details,
+			failures   = CASE
+				WHEN EXCLUDED.status = 'failed' AND ` + tbl + `.status <> 'failed' THEN ` + tbl + `.failures + 1
+				WHEN EXCLUDED.status IN ('done','skipped','not_applicable') THEN 0
+				ELSE ` + tbl + `.failures END,
+			lasterror  = CASE
+				WHEN EXCLUDED.status <> 'failed' THEN ` + tbl + `.lasterror
+				WHEN ` + tbl + `.status = 'failed' THEN COALESCE(EXCLUDED.error, ` + tbl + `.lasterror)
+				ELSE EXCLUDED.error END,
+			nextretryat = CASE
+				WHEN EXCLUDED.status <> 'failed' THEN NULL
+				WHEN ` + tbl + `.status = 'failed' THEN ` + tbl + `.nextretryat
+				ELSE now() + make_interval(secs => ($6::float8[])[` + tbl + `.failures + 1]) END,
+			dispatchedat = NULL`
+
 // ResetForItems sets the given steps back to pending for the given items
 // (startedat/finishedat/error = NULL, modifiedat = now; attempts preserved).
+// A step reset is waiting for its worker afresh: no failures in a row, no
+// retry scheduled (its last error stays, as the record of what it met).
 func (s *Steps) ResetForItems(ctx context.Context, itemIDs, steps []string) (int64, error) {
 	if len(itemIDs) == 0 || len(steps) == 0 {
 		return 0, nil
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE com_nalet_katalog_itemprocessingsteps SET
+	if !s.legacy.Load() {
+		tag, err := s.pool.Exec(ctx, `UPDATE `+tbl+` SET
+			status = 'pending', startedat = NULL, finishedat = NULL, error = NULL, modifiedat = now(),
+			failures = 0, nextretryat = NULL, dispatchedat = NULL
+			WHERE item_id = ANY($1) AND step = ANY($2)`, itemIDs, steps)
+		if !missingRetryColumns(err) {
+			if err != nil {
+				return 0, err
+			}
+			return tag.RowsAffected(), nil
+		}
+		s.legacy.Store(true)
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE `+tbl+` SET
 		status = 'pending', startedat = NULL, finishedat = NULL, error = NULL, modifiedat = now()
 		WHERE item_id = ANY($1) AND step = ANY($2)`, itemIDs, steps)
 	if err != nil {
