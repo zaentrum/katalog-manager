@@ -228,7 +228,7 @@ func run() error {
 
 	// Authenticated surface.
 	routes(r, authMW.Handler, cfg.Policy(), schema, broker.Handler,
-		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: steps, Events: eventProducer}))
+		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: steps, Events: eventProducer, Packager: actions}))
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

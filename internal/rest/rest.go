@@ -14,10 +14,11 @@ import (
 
 // Deps are the dependencies the REST handlers need.
 type Deps struct {
-	Store  *store.Store
-	Cfg    config.Config
-	Steps  *processing.Steps
-	Events *events.Producer // nil-safe: packaged-event emit no-ops without a bus
+	Store    *store.Store
+	Cfg      config.Config
+	Steps    *processing.Steps
+	Events   *events.Producer // nil-safe: packaged-event emit no-ops without a bus
+	Packager Packager         // nil: POST /api/items/{id}/package answers 503
 }
 
 // Handlers groups the REST handlers.
@@ -37,11 +38,13 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 //     transcoder and packager mint tokens with): the worker protocol, which
 //     hands out paths on disk and writes the pipeline's results, and the
 //     settings that are no secret;
-//   - ingest (a worker, or an addon's service account): POST /api/ingest.
+//   - ingest (a worker, or an addon's service account): POST /api/ingest;
+//   - admins: POST /api/items/{id}/package, the packaging action an admin's
+//     client forwards (chino-api's admin route).
 //
 // Bodies are implemented in the per-area files (artwork.go, play.go,
 // subtitles.go, analyzer.go, segments.go, chapters.go, packaging.go,
-// settings.go, ingest.go).
+// package.go, settings.go, ingest.go).
 func (h *Handlers) Register(r chi.Router) {
 	pol := h.d.Cfg.Policy()
 
@@ -95,6 +98,10 @@ func (h *Handlers) Register(r chi.Router) {
 		// secrets left out.
 		r.Get("/api/settings", h.getSettings)
 	})
+
+	// An admin's packaging action, as chino-api's admin route forwards it with
+	// the admin's bearer token: what GraphQL's packageItem does.
+	r.With(pol.Require(auth.Admin)).Post("/api/items/{id}/package", h.postPackage)
 
 	// External-file ingest: register a staged file (item + primary asset) and
 	// emit discovered so it flows the pipeline. Neutral machine contract used by

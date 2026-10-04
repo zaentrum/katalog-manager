@@ -45,6 +45,12 @@ The surface is split deliberately:
     separated) and `packager.keep_original_if_single`. A secret setting is
     left out, set or not.
   - `POST /api/ingest` — an addon hands a file on disk to the catalog.
+  - `POST /api/items/{id}/package` — an admin's packaging action, as
+    chino-api's admin route forwards it with the admin's token: what
+    GraphQL's `packageItem` does, answered as the CAP service did
+    (`{status, alreadyActive, message}`, a series'
+    `{episodesEnqueued, episodesTotal, message}`; 404 unknown, 400 not
+    packageable).
 
 ## Who may do what
 
@@ -65,6 +71,7 @@ account, whose token carries the addon role. Everyone else signed in is a
 | `GET /api/play/...`, `GET /api/subtitles/...` | any signed-in caller |
 | `PUT /api/artwork/...`, `/api/analyze/*`, segments, chapters, `packaging-complete`, `GET /api/settings` | admin, service account |
 | `POST /api/ingest` | admin, service account, addon |
+| `POST /api/items/{id}/package` | admin |
 
 A refused GraphQL field answers with an error whose `extensions.code` is
 `FORBIDDEN` and whose message names the role; a refused route answers 403

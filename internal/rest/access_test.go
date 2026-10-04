@@ -61,11 +61,14 @@ var routes = []route{
 	{http.MethodGet, "/api/settings", "", "worker"},
 
 	{http.MethodPost, "/api/ingest", `{"path": "MEDIA/new.mkv", "type": "movie", "title": "New"}`, "ingest"},
+
+	{http.MethodPost, "/api/items/m1/package", "", "admin"},
 }
 
 // Every route answers whom it is for, and refuses everyone else before it
 // does anything: a viewer reads artwork, playback and subtitles; the worker
-// protocol is the service account's and the admins'; an addon only ingests.
+// protocol is the service account's and the admins'; an addon only ingests;
+// the packaging action is an admin's alone.
 // A stream token reads artwork and nothing else, and no token gets nowhere.
 func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 	st := storetest.Open(t)
@@ -102,8 +105,8 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 		{"another confidential client", iss.Service(t, "zaentrum-other"), map[string]bool{"viewer": true}},
 		{"an addon", iss.Addon(t), map[string]bool{"viewer": true, "ingest": true}},
 		{"the service account", iss.Service(t, "zaentrum-manager"), map[string]bool{"viewer": true, "worker": true, "ingest": true}},
-		{"an admin", iss.Admin(t), map[string]bool{"viewer": true, "worker": true, "ingest": true}},
-		{"an admin through the CLI", iss.CLIAdmin(t), map[string]bool{"viewer": true, "worker": true, "ingest": true}},
+		{"an admin", iss.Admin(t), map[string]bool{"viewer": true, "worker": true, "ingest": true, "admin": true}},
+		{"an admin through the CLI", iss.CLIAdmin(t), map[string]bool{"viewer": true, "worker": true, "ingest": true, "admin": true}},
 	}
 
 	// Those who may not call a route first: nothing they ask for may happen.
