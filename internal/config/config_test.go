@@ -117,3 +117,66 @@ func TestRolesClaimThatIsNoPathFailsLoading(t *testing.T) {
 		}
 	}
 }
+
+// The retries of the processing steps: three runs in a row, a backoff from a
+// minute to an hour, a sweep every 30s and the steps' default timeouts,
+// unless the KATALOG_RETRY_* settings and KATALOG_STEP_TIMEOUTS say other.
+func TestRetryPolicy(t *testing.T) {
+	keys := []string{"KATALOG_RETRY_MAX_ATTEMPTS", "KATALOG_RETRY_BACKOFF", "KATALOG_RETRY_BACKOFF_MAX", "KATALOG_RETRY_INTERVAL", "KATALOG_STEP_TIMEOUTS"}
+	for _, tc := range []struct {
+		name              string
+		env               map[string]string
+		attempts          int
+		backoff, max, run time.Duration
+		transcode, tmdb   time.Duration
+	}{
+		{"unset", nil, 3, time.Minute, time.Hour, 30 * time.Second, 6 * time.Hour, 15 * time.Minute},
+		{"set", map[string]string{"KATALOG_RETRY_MAX_ATTEMPTS": " 5 ", "KATALOG_RETRY_BACKOFF": "30s", "KATALOG_RETRY_BACKOFF_MAX": "10m",
+			"KATALOG_RETRY_INTERVAL": "1m", "KATALOG_STEP_TIMEOUTS": "transcode=12h, tmdb=5m"},
+			5, 30 * time.Second, 10 * time.Minute, time.Minute, 12 * time.Hour, 5 * time.Minute},
+		{"one attempt, the sweep off", map[string]string{"KATALOG_RETRY_MAX_ATTEMPTS": "1", "KATALOG_RETRY_INTERVAL": "off"},
+			1, time.Minute, time.Hour, 0, 6 * time.Hour, 15 * time.Minute},
+		{"the sweep at 0", map[string]string{"KATALOG_RETRY_INTERVAL": "0"}, 3, time.Minute, time.Hour, 0, 6 * time.Hour, 15 * time.Minute},
+	} {
+		for _, k := range keys {
+			t.Setenv(k, tc.env[k])
+		}
+		cfg, err := Load()
+		if err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		p := cfg.RetryPolicy()
+		if p.MaxAttempts != tc.attempts || p.Backoff != tc.backoff || p.BackoffMax != tc.max || cfg.RetryInterval != tc.run ||
+			p.Timeout("transcode") != tc.transcode || p.Timeout("tmdb") != tc.tmdb || p.Timeout("package") != 2*time.Hour {
+			t.Errorf("%s: %+v, interval %s", tc.name, p, cfg.RetryInterval)
+		}
+	}
+}
+
+// A retry setting that is no number or duration it can take fails loading,
+// saying which and why.
+func TestRetrySettingsThatAreNoneFailLoading(t *testing.T) {
+	for _, tc := range []struct{ key, v, says string }{
+		{"KATALOG_RETRY_MAX_ATTEMPTS", "0", "not a number of attempts"},
+		{"KATALOG_RETRY_MAX_ATTEMPTS", "three", "not a number of attempts"},
+		{"KATALOG_RETRY_MAX_ATTEMPTS", "-2", "not a number of attempts"},
+		{"KATALOG_RETRY_BACKOFF", "soon", "not a duration above zero"},
+		{"KATALOG_RETRY_BACKOFF", "0s", "not a duration above zero"},
+		{"KATALOG_RETRY_BACKOFF_MAX", "-1m", "not a duration above zero"},
+		{"KATALOG_RETRY_BACKOFF_MAX", "30s", "is shorter than KATALOG_RETRY_BACKOFF"},
+		{"KATALOG_RETRY_INTERVAL", "often", "not a duration"},
+		{"KATALOG_RETRY_INTERVAL", "-5s", "not a duration"},
+		{"KATALOG_STEP_TIMEOUTS", "encode=2h", "KATALOG_STEP_TIMEOUTS: \"encode=2h\" is not a step's timeout"},
+		{"KATALOG_STEP_TIMEOUTS", "transcode=0s", "a duration above zero"},
+	} {
+		for _, k := range []string{"KATALOG_RETRY_MAX_ATTEMPTS", "KATALOG_RETRY_BACKOFF", "KATALOG_RETRY_BACKOFF_MAX", "KATALOG_RETRY_INTERVAL", "KATALOG_STEP_TIMEOUTS"} {
+			t.Setenv(k, "")
+		}
+		t.Setenv(tc.key, tc.v)
+		_, err := Load()
+		if err == nil || !strings.HasPrefix(err.Error(), tc.key) || !strings.Contains(err.Error(), tc.says) {
+			t.Errorf("%s=%q: %v, want an error that says %s", tc.key, tc.v, err, tc.says)
+		}
+	}
+}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/model"
+	"github.com/zaentrum/katalog-manager/internal/processing"
 )
 
 type Config struct {
@@ -85,6 +86,18 @@ type Config struct {
 	// stube.catalog.item.enriched, which the analyzer consumes, and so on down the
 	// chain. Defaults ON whenever KAFKA_BROKERS is set (env override to force off).
 	CatalogEventsEnabled bool // CATALOG_EVENTS_ENABLED (default = KAFKA_BROKERS != "")
+
+	// Retries of the processing steps (processing.Policy): a step that fails,
+	// or whose worker goes silent for longer than its timeout, is retried by
+	// sending its trigger event again, after a backoff, a bounded number of
+	// times.
+	RetryMaxAttempts int           // KATALOG_RETRY_MAX_ATTEMPTS (default 3: a step's runs in a row, its first included; 1 retries nothing by itself)
+	RetryBackoff     time.Duration // KATALOG_RETRY_BACKOFF (default 1m: the wait after a first failure, doubled with every failure after)
+	RetryBackoffMax  time.Duration // KATALOG_RETRY_BACKOFF_MAX (default 1h: the longest wait)
+	RetryInterval    time.Duration // KATALOG_RETRY_INTERVAL (default 30s: how often due retries are sent and silent steps reaped; 0 or off: neither)
+	// How long a step may be in progress without a word from its worker,
+	// by step, over processing.DefaultTimeouts.
+	StepTimeouts map[string]time.Duration // KATALOG_STEP_TIMEOUTS ("transcode=12h,package=3h")
 }
 
 func env(keys ...string) string {
@@ -221,6 +234,92 @@ func serviceClients() []string {
 	return out
 }
 
+// retryAttempts reads KATALOG_RETRY_MAX_ATTEMPTS: a whole number of runs, 1
+// or more, 3 when unset.
+func retryAttempts(v string) (int, error) {
+	if strings.TrimSpace(v) == "" {
+		return 3, nil
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("KATALOG_RETRY_MAX_ATTEMPTS: %q is not a number of attempts: a whole number, 1 or more "+
+			"(1 retries nothing by itself)", v)
+	}
+	return n, nil
+}
+
+// positiveDuration reads a Go duration above zero, def when v is blank.
+func positiveDuration(name, v string, def time.Duration) (time.Duration, error) {
+	if strings.TrimSpace(v) == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(v))
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s: %q is not a duration above zero, as 90s or 5m", name, v)
+	}
+	return d, nil
+}
+
+// retryInterval reads KATALOG_RETRY_INTERVAL: a Go duration, 30s when unset;
+// 0 and off (or false, disabled, none) turn the automatic retries and the
+// reaper off.
+func retryInterval(v string) (time.Duration, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "":
+		return 30 * time.Second, nil
+	case "0", "off", "false", "disabled", "none":
+		return 0, nil
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(v))
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("KATALOG_RETRY_INTERVAL: %q is not a duration, as 30s, or off", v)
+	}
+	return d, nil
+}
+
+// retryConfig reads the KATALOG_RETRY_* settings and KATALOG_STEP_TIMEOUTS
+// into c. A value that cannot mean anything sensible is an error that says so.
+func retryConfig(c *Config) error {
+	var err error
+	if c.RetryMaxAttempts, err = retryAttempts(env("KATALOG_RETRY_MAX_ATTEMPTS")); err != nil {
+		return err
+	}
+	if c.RetryBackoff, err = positiveDuration("KATALOG_RETRY_BACKOFF", env("KATALOG_RETRY_BACKOFF"), time.Minute); err != nil {
+		return err
+	}
+	if c.RetryBackoffMax, err = positiveDuration("KATALOG_RETRY_BACKOFF_MAX", env("KATALOG_RETRY_BACKOFF_MAX"), time.Hour); err != nil {
+		return err
+	}
+	if c.RetryBackoffMax < c.RetryBackoff {
+		return fmt.Errorf("KATALOG_RETRY_BACKOFF_MAX (%s) is shorter than KATALOG_RETRY_BACKOFF (%s)", c.RetryBackoffMax, c.RetryBackoff)
+	}
+	if c.RetryInterval, err = retryInterval(env("KATALOG_RETRY_INTERVAL")); err != nil {
+		return err
+	}
+	if c.StepTimeouts, err = processing.ParseTimeouts(env("KATALOG_STEP_TIMEOUTS")); err != nil {
+		return fmt.Errorf("KATALOG_STEP_TIMEOUTS: %w", err)
+	}
+	return nil
+}
+
+// RetryPolicy is how the configuration says to retry a processing step.
+func (c Config) RetryPolicy() processing.Policy {
+	p := processing.DefaultPolicy()
+	if c.RetryMaxAttempts > 0 {
+		p.MaxAttempts = c.RetryMaxAttempts
+	}
+	if c.RetryBackoff > 0 {
+		p.Backoff = c.RetryBackoff
+	}
+	if c.RetryBackoffMax > 0 {
+		p.BackoffMax = max(c.RetryBackoffMax, p.Backoff)
+	}
+	for step, d := range c.StepTimeouts {
+		p.Timeouts[step] = d
+	}
+	return p
+}
+
 // Policy is who may do what (auth.Policy), as the configuration says.
 func (c Config) Policy() auth.Policy {
 	return auth.Policy{AdminRole: c.AdminRole, AddonRole: c.AddonRole, RolesClaim: c.RolesClaim,
@@ -229,7 +328,9 @@ func (c Config) Policy() auth.Policy {
 
 // Load reads configuration from the process environment. A value that cannot
 // mean anything sensible fails it: KATALOG_CREDIT_ROLES naming something that
-// is not a role TMDB's credits give, or KATALOG_ROLES_CLAIM no claim path.
+// is not a role TMDB's credits give, KATALOG_ROLES_CLAIM no claim path, or a
+// retry setting (KATALOG_RETRY_*, KATALOG_STEP_TIMEOUTS) that is no number or
+// duration it can take.
 func Load() (Config, error) {
 	roles, err := creditRoles(env("KATALOG_CREDIT_ROLES"))
 	if err != nil {
@@ -277,6 +378,9 @@ func Load() (Config, error) {
 		KafkaTopicPrefix:     envDefault("stube.", "KAFKA_TOPIC_PREFIX"),
 		KafkaCertDir:         envDefault("/etc/kafka-cert", "KAFKA_CERT_DIR"),
 		CatalogEventsEnabled: envBool(env("KAFKA_BROKERS") != "", "CATALOG_EVENTS_ENABLED"),
+	}
+	if err := retryConfig(&c); err != nil {
+		return Config{}, err
 	}
 	return c, nil
 }

@@ -90,7 +90,7 @@ func run() error {
 		log.Printf("catalog: migration db/migrations/033_step_retries.sql is missing and could not be applied: %v; no step is retried until it is", err)
 	}
 
-	steps := processing.New(st.Pool())
+	steps := processing.New(st.Pool()).WithPolicy(cfg.RetryPolicy())
 
 	// Auth: bearer JWT (issuer-only MVP) + stream-token (artwork only).
 	streamVerifier, err := auth.NewStreamVerifier(cfg.StreamSigningKey)
