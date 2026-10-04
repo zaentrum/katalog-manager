@@ -54,7 +54,7 @@ func Redact(s string) string {
 // (cut on a character, never inside one, so Postgres takes it). An error
 // that is blank is none.
 func CleanError(s string) *string {
-	s = strings.TrimSpace(Redact(strings.ToValidUTF8(s, "�")))
+	s = strings.TrimSpace(Redact(strings.ToValidUTF8(s, "\uFFFD")))
 	if s == "" {
 		return nil
 	}
