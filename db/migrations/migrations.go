@@ -6,7 +6,9 @@
 // migrations it cannot work without and applies each one at startup when its
 // objects are missing (see store.EnsureDeletionLog, store.EnsurePeople,
 // store.EnsureItemLockedFields, store.EnsureCreditDetails,
-// store.EnsureStepRetries and store.EnsureScanJobRunner).
+// store.EnsureStepRetries and store.EnsureScanJobRunner). It applies 035,
+// which drops what is left of a retired integration, at every start when any
+// of that is there (store.DropRetiredJobTables).
 package migrations
 
 import _ "embed"
@@ -46,3 +48,9 @@ var StepRetries string
 //
 //go:embed 034_scan_job_runner.sql
 var ScanJobRunner string
+
+// RetiredJobTables is 035_retired_job_tables.sql: it drops the job tables of
+// an integration the core no longer carries, each only while it is empty.
+//
+//go:embed 035_retired_job_tables.sql
+var RetiredJobTables string

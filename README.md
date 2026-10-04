@@ -95,12 +95,14 @@ caller.
 
 The service reuses the existing `katalog` Postgres database **unchanged** — the
 lowercase `com_nalet_katalog_*` tables and the computed `katalogservice_*` views.
-No destructive migration. The files in `db/migrations/` apply on top of the base
-schema in the order of their numbers, and each is idempotent:
+No migration destroys data: the one that drops anything (035) drops only tables
+nothing reads that hold no row. The files in `db/migrations/` apply on top of
+the base schema in the order of their numbers, and each is idempotent:
 
 - `028_go_rewrite.sql` creates nothing any more: the two objects it added
   served an integration the core no longer carries (see the file). A catalog
-  that applied it keeps them; nothing reads or writes them.
+  that applied it keeps them until 035 drops them; nothing reads or writes
+  them.
 - `029_deleted_items.sql` adds the deletion log, `com_nalet_katalog_deleteditems`:
   every item the catalog deletes, and every person it deletes because no title
   credits them any more (type `person`). A title's credits follow TMDB: read
@@ -139,6 +141,14 @@ schema in the order of their numbers, and each is idempotent:
   that walks (see [Lost scans](#lost-scans)). A job older than it names no
   runner. Applied at startup like 030; without it a scan a restart cuts short
   says running, as before.
+- `035_retired_job_tables.sql` drops what is left of the integration 028
+  served: its job table (`com_nalet_katalog_trailerjobs`) and the base
+  schema's read model of its job events (`com_nalet_katalog_downloadjobs`,
+  with its view `katalogservice_downloadjobs` and the index 028 put on it),
+  each only while it holds no row and never with anything else that hangs off
+  it. A table that holds rows is kept as it is, and the service says so once
+  at startup. Applied at every start: a base schema that creates the read
+  model again gets it dropped again.
 
 ## The pipeline heals itself
 

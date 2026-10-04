@@ -6,10 +6,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -95,6 +97,7 @@ func run() error {
 	if err := st.EnsureScanJobRunner(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/034_scan_job_runner.sql is missing and could not be applied: %v; a scan a restart cuts short says running until it is", err)
 	}
+	dropRetiredJobTables(bgCtx, st)
 
 	steps := processing.New(st.Pool()).WithPolicy(cfg.RetryPolicy())
 
@@ -266,6 +269,28 @@ func run() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// dropRetiredJobTables applies migration 035 at startup: the job tables of an
+// integration the core no longer carries go while they are empty. One that
+// holds rows is kept, and the log says so, once, with the tables it dropped.
+func dropRetiredJobTables(ctx context.Context, st *store.Store) {
+	dropped, kept, err := st.DropRetiredJobTables(ctx)
+	if err != nil {
+		log.Printf("catalog: migration db/migrations/035_retired_job_tables.sql could not be applied: %v; the retired job tables stay until it is", err)
+		return
+	}
+	if len(dropped) > 0 {
+		log.Printf("catalog: dropped the empty job tables of a retired integration (migration 035): %s", strings.Join(dropped, ", "))
+	}
+	if len(kept) > 0 {
+		held := make([]string, 0, len(kept))
+		for _, t := range kept {
+			held = append(held, fmt.Sprintf("%s (%d rows)", t.Name, t.Rows))
+		}
+		log.Printf("catalog: kept the job tables of a retired integration that hold rows: %s; nothing reads or writes them, "+
+			"and migration 035 drops a table only once it is empty", strings.Join(held, ", "))
+	}
 }
 
 // hasPrimaryAsset reports whether an item has a primary playback asset (a

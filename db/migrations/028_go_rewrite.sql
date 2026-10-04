@@ -8,5 +8,6 @@
 --
 -- A catalog that applied this file keeps com_nalet_katalog_trailerjobs and the
 -- index idx_downloadjobs_client; nothing reads or writes them any more.
--- Dropping them is a decision of its own, not one a migration makes in passing.
+-- Dropping them is a decision of its own, not one a migration makes in passing:
+-- 035_retired_job_tables.sql makes it, for a table only while it is empty.
 SELECT 1;
