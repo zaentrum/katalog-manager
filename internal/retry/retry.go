@@ -23,6 +23,13 @@
 // retry leaves it done), enriched for the analyzer's passes, analyzed for the
 // transcode and transcoded for the package. Each worker passes the chain on,
 // and its own idempotency guard skips the work that is done.
+//
+// The reaper takes a scan job silent for longer than the scan's timeout (the
+// scan step's) for lost too: its scanner, which gives it a word every so
+// often while it walks, is stuck or gone. The job is failed, saying so; a scan
+// is not retried by itself (an admin, or a deployment's scan Job, starts
+// another), so this needs no event bus and runs whatever the steps' retries
+// can do.
 package retry
 
 import (
@@ -117,7 +124,7 @@ func (s *Service) automatic() bool { return s.interval > 0 && s.pol.MaxAttempts 
 // Run sweeps every interval until ctx ends; with no interval it returns.
 func (s *Service) Run(ctx context.Context) {
 	if s.interval <= 0 {
-		log.Printf("retry: no sweep (KATALOG_RETRY_INTERVAL off): failed steps are retried by an admin only")
+		log.Printf("retry: no sweep (KATALOG_RETRY_INTERVAL off): failed steps are retried by an admin only, and no silent step or scan is reaped")
 		return
 	}
 	log.Printf("retry: sweeping every %s (up to %d runs in a row, a backoff from %s to %s)",
@@ -126,6 +133,11 @@ func (s *Service) Run(ctx context.Context) {
 	defer t.Stop()
 	said := ""
 	for {
+		if n, err := s.ReapScans(ctx); err != nil {
+			log.Printf("retry: %v", err)
+		} else if n > 0 {
+			log.Printf("retry: %d scans silent past the scan's timeout failed", n)
+		}
 		if why := s.unavailable(ctx); why != "" {
 			if why != said {
 				log.Printf("retry: the sweep idles: %s", why)
@@ -206,6 +218,19 @@ func (s *Service) reap(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("reap the silent steps: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// ReapScans fails the scan jobs whose scanner has said nothing for longer
+// than the scan's timeout, as reap takes a silent step for a failed run, and
+// returns how many. Run calls it on every sweep, an event bus or not.
+func (s *Service) ReapScans(ctx context.Context) (int, error) {
+	timeout := s.pol.Timeout("scan")
+	n, err := s.st.FailSilentScanJobs(ctx, timeout,
+		"timed out: no word from its scanner for "+Label(timeout)+" (the scan's timeout)")
+	if err != nil {
+		return 0, fmt.Errorf("reap the silent scans: %w", err)
+	}
+	return n, nil
 }
 
 // claimed is a step claimed for a retry.

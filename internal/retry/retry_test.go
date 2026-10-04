@@ -587,6 +587,76 @@ func TestTheOverview(t *testing.T) {
 	}
 }
 
+// scanState is a scan job's status and error, "-" for none.
+func scanState(t *testing.T, st *store.Store, id string) string {
+	t.Helper()
+	var out string
+	if err := st.Pool().QueryRow(context.Background(), `SELECT status || ' ' || COALESCE(errormessage, '-')
+		FROM com_nalet_katalog_scanjobs WHERE id = $1`, id).Scan(&out); err != nil {
+		t.Fatalf("the scan job %s: %v", id, err)
+	}
+	return out
+}
+
+// The reaper fails a scan job silent for longer than the scan's timeout, as
+// it takes a silent step for a failed run, and says so; a scan that spoke
+// within it runs on. The timeout is the scan's (KATALOG_STEP_TIMEOUTS), not a
+// step's default.
+func TestTheReaperFailsSilentScans(t *testing.T) {
+	st := storetest.Open(t)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_scanjobs (id, source, status, startedat, runner, heartbeatat) VALUES
+		('silent', 'nfs', 'running', localtimestamp - interval '3 hours', 'host-a/0001', now() - interval '20 minutes'),
+		('walking', 'nfs', 'running', localtimestamp - interval '3 hours', 'host-b/0001', now() - interval '10 seconds')`)
+	pol := testPolicy
+	pol.Timeouts = map[string]time.Duration{"scan": 15 * time.Minute}
+	pol.DefaultTimeout = time.Hour
+	n, err := New(st, pol, &bus{}, 30*time.Second).ReapScans(context.Background())
+	if err != nil || n != 1 {
+		t.Fatalf("ReapScans: %d, %v; want the silent scan", n, err)
+	}
+	if got := scanState(t, st, "silent"); got != "failed timed out: no word from its scanner for 15m (the scan's timeout)" {
+		t.Errorf("the silent scan: %s", got)
+	}
+	if got := scanState(t, st, "walking"); got != "running -" {
+		t.Errorf("the scan that walks: %s", got)
+	}
+
+	// By the default policy's 15 minutes too; a step's default is not the
+	// scan's timeout.
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_scanjobs SET status = 'running', errormessage = NULL WHERE id = 'silent'`)
+	long := testPolicy
+	long.Timeouts, long.DefaultTimeout = map[string]time.Duration{"scan": time.Hour}, time.Minute
+	if n, err := New(st, long, &bus{}, 30*time.Second).ReapScans(context.Background()); err != nil || n != 0 {
+		t.Errorf("a scan timeout of an hour: %d reaped, %v; want none", n, err)
+	}
+	if n, err := New(st, processing.DefaultPolicy(), &bus{}, 30*time.Second).ReapScans(context.Background()); err != nil || n != 1 {
+		t.Errorf("the default policy: %d reaped, %v; want the silent scan", n, err)
+	}
+}
+
+// The sweep reaps silent scans with no event bus to retry a step with: a
+// scan is not retried, and needs none.
+func TestTheSweepReapsScansWithoutABus(t *testing.T) {
+	st := storetest.Open(t)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_scanjobs (id, source, status, startedat, runner, heartbeatat)
+		VALUES ('silent', 'nfs', 'running', localtimestamp - interval '3 hours', 'host-a/0001', now() - interval '3 hours')`)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		New(st, processing.DefaultPolicy(), nil, time.Hour).Run(ctx)
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for scanState(t, st, "silent") == "running -" && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if got := scanState(t, st, "silent"); !strings.HasPrefix(got, "failed timed out: no word from its scanner for 15m") {
+		t.Errorf("the silent scan after the first sweep: %s", got)
+	}
+}
+
 func TestLabel(t *testing.T) {
 	for d, want := range map[time.Duration]string{6 * time.Hour: "6h", 90 * time.Minute: "1h30m", 15 * time.Minute: "15m",
 		90 * time.Second: "1m30s", 45 * time.Second: "45s", 2*time.Hour + 30*time.Second: "2h0m30s"} {

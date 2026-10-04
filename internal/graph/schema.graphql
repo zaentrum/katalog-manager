@@ -357,6 +357,11 @@ type RetryPolicy {
   intervalSeconds: Int!
 }
 
+# A scan of the library. status is running, done or failed. A scan the
+# service lost is failed, and errorMessage says how: one a restart cut short
+# ("interrupted: ..."), failed when the service starts again, and one whose
+# scanner has said nothing for longer than the scan's timeout ("timed out:
+# ..."), failed by the reaper. A scan that ends after all says so itself.
 type ScanJob {
   id: ID!
   source: String!

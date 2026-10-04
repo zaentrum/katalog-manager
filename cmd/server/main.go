@@ -90,6 +90,11 @@ func run() error {
 	if err := st.EnsureStepRetries(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/033_step_retries.sql is missing and could not be applied: %v; no step is retried until it is", err)
 	}
+	// Who runs a scan job, and its scanner's last word (migration 034). Without
+	// it a scan a restart cuts short says running for ever, as before.
+	if err := st.EnsureScanJobRunner(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/034_scan_job_runner.sql is missing and could not be applied: %v; a scan a restart cuts short says running until it is", err)
+	}
 
 	steps := processing.New(st.Pool()).WithPolicy(cfg.RetryPolicy())
 
@@ -139,6 +144,15 @@ func run() error {
 	}
 	enricher := tmdb.New(st, cfg, steps, chapters, settingLookup)
 	scan := scanner.New(st, cfg, steps, eventProducer)
+	// A scan runs in the process that started it, so one a previous process
+	// left running never ends: it is failed now, saying so, before this
+	// process starts a scan of its own. A scan another host runs is left to
+	// the reaper, which fails it once it is silent past the scan's timeout.
+	if n, err := scan.FailInterrupted(bgCtx); err != nil {
+		log.Printf("catalog: the scans a previous process left running could not be failed: %v", err)
+	} else if n > 0 {
+		log.Printf("catalog: %d scans a previous process left running are failed (%s)", n, scanner.InterruptedReason)
+	}
 	actions := itemactions.New(st, cfg, steps, eventProducer)
 	// The pipeline heals itself: a failed step is retried by sending its
 	// trigger event again, after a backoff, a bounded number of times, and a

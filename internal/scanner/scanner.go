@@ -9,16 +9,26 @@
 // The scan itself runs asynchronously: Trigger inserts a 'running' scanjobs row,
 // kicks off the walk in a goroutine, and returns the job id immediately. The
 // goroutine stamps the job 'done' or 'failed' via FinishScanJob.
+//
+// The goroutine is this process's: a process that stops while it scans never
+// stamps the job. So a job names the process that runs it (Runner), and the
+// walk gives it a word every so often (its heartbeat). At startup the service
+// fails, interrupted, the jobs a previous process of its host left running
+// (FailInterrupted), and the reaper (retry.Service.ReapScans) fails a job
+// silent for longer than the scan's timeout, timed out.
 package scanner
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,18 +43,59 @@ import (
 // item on its own.
 const deletedByScanner = "katalog-manager/scanner"
 
+// InterruptedReason is what a scan job a previous process left running says
+// once it is failed at startup.
+const InterruptedReason = "interrupted: the service restarted while the scan ran"
+
+// runner is this process, as the scan jobs it runs name it (Runner).
+var runner = func() string {
+	host, _ := os.Hostname()
+	host = strings.ReplaceAll(strings.TrimSpace(host), "/", "-")
+	if host == "" {
+		host = "unknown"
+	}
+	tag := make([]byte, 4)
+	_, _ = rand.Read(tag)
+	return host + "/" + hex.EncodeToString(tag)
+}()
+
+// Runner is this process, as a scan job it runs names it: "<host>/<boot>", the
+// host it runs on (a pod's name) and a tag it drew when it started. A job of
+// this host with another tag is a previous process's.
+func Runner() string { return runner }
+
 // Scanner is the NFS filesystem walker / upserter.
 type Scanner struct {
 	st    *store.Store
 	cfg   config.Config
 	steps *processing.Steps
 	prod  *events.Producer // nil-safe: emits stube.catalog.item.discovered on new items
+	// runner is the process the scan jobs it starts name (Runner).
+	runner string
+	// beat is how often at most a walk gives its job a word (beatInterval).
+	beat time.Duration
 }
 
 // New constructs a Scanner. Matches graph.ScanRunner structurally via Trigger.
 // prod may be nil (events disabled) — the producer is nil-safe.
 func New(st *store.Store, cfg config.Config, steps *processing.Steps, prod *events.Producer) *Scanner {
-	return &Scanner{st: st, cfg: cfg, steps: steps, prod: prod}
+	return &Scanner{st: st, cfg: cfg, steps: steps, prod: prod, runner: Runner(),
+		beat: beatInterval(cfg.RetryPolicy().Timeout("scan"))}
+}
+
+// beatInterval is how often at most a walk gives its job a word: every 30
+// seconds, or every third of the scan's timeout when that is shorter, so a
+// scan that walks is never silent for as long as its timeout.
+func beatInterval(timeout time.Duration) time.Duration {
+	return min(30*time.Second, timeout/3)
+}
+
+// FailInterrupted fails the scan jobs a previous process left running
+// (store.FailInterruptedScanJobs), saying InterruptedReason, and returns how
+// many: a scan runs in the process that started it, so one a restart cut short
+// never ends. main calls it at startup, before this process starts a scan.
+func (s *Scanner) FailInterrupted(ctx context.Context) (int, error) {
+	return s.st.FailInterruptedScanJobs(ctx, s.runner, InterruptedReason)
 }
 
 // Trigger validates the source, inserts a 'running' scan job, launches the walk
@@ -54,7 +105,7 @@ func (s *Scanner) Trigger(ctx context.Context, source string) (string, error) {
 	if source != "nfs" {
 		return "", errors.New("unsupported scan source: " + source)
 	}
-	job, err := s.st.InsertScanJob(ctx, "nfs", "running")
+	job, err := s.st.StartScanJob(ctx, "nfs", s.runner)
 	if err != nil {
 		return "", err
 	}
@@ -75,7 +126,7 @@ type scanResult struct {
 // missing root finishes the job cleanly (status done, zero counters — matching
 // the Java "warn + empty result, no error"); a walk error finishes it failed.
 func (s *Scanner) runScan(ctx context.Context, jobID string) {
-	res, err := s.walk(ctx)
+	res, err := s.walk(ctx, s.heartbeat(ctx, jobID))
 	if err != nil {
 		msg := err.Error()
 		// Java's failure branch updates only status/finishedat/errormessage, leaving
@@ -94,9 +145,26 @@ func (s *Scanner) runScan(ctx context.Context, jobID string) {
 	})
 }
 
-// walk performs the filesystem traversal. If the root does not exist it returns
-// an empty result and nil error (graceful no-op, like NfsScanner.scan).
-func (s *Scanner) walk(ctx context.Context) (scanResult, error) {
+// heartbeat is what a walk calls at every entry it visits: at most every
+// s.beat it gives the job a word (store.BeatScanJob). A scan that walks is so
+// never taken for lost, and one stuck on a single entry (a mount that hangs)
+// falls silent, for the reaper. A word that cannot be written is let go; the
+// next one may be.
+func (s *Scanner) heartbeat(ctx context.Context, jobID string) func() {
+	last := time.Now()
+	return func() {
+		if time.Since(last) < s.beat {
+			return
+		}
+		last = time.Now()
+		_ = s.st.BeatScanJob(ctx, jobID)
+	}
+}
+
+// walk performs the filesystem traversal, calling beat at every entry it
+// visits. If the root does not exist it returns an empty result and nil error
+// (graceful no-op, like NfsScanner.scan).
+func (s *Scanner) walk(ctx context.Context, beat func()) (scanResult, error) {
 	var res scanResult
 	root := s.cfg.NFSRoot
 
@@ -107,6 +175,7 @@ func (s *Scanner) walk(ctx context.Context) (scanResult, error) {
 	}
 
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		beat()
 		if err != nil {
 			// Per-entry errors (e.g. unreadable dir) are skipped, not fatal —
 			// mirrors the per-file try/catch in NfsScanner.visitFile.

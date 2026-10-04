@@ -128,6 +128,12 @@ schema in the order of their numbers, and each is idempotent:
   retry scheduled: the service retries what fails after it, an admin what
   failed before. Applied at startup like 030; without it the pipeline runs
   as before, and nothing retries a step.
+- `034_scan_job_runner.sql` gives a scan job the process that runs it
+  (`runner`, its host and a tag of the process's start) and its scanner's
+  last word (`heartbeatat`), so that a scan the service lost is told from one
+  that walks (see [Lost scans](#lost-scans)). A job older than it names no
+  runner. Applied at startup like 030; without it a scan a restart cuts short
+  says running, as before.
 
 ## The pipeline heals itself
 
@@ -165,6 +171,27 @@ worker passes the chain on, and its own guard skips work that is done.
   sends it again a backoff later. Every `KATALOG_RETRY_INTERVAL` (30s) the
   sweep reaps and sends what is due; without an event bus or migration 033
   nothing is retried, and the overview says why.
+
+### Lost scans
+
+A scan runs in the process that started it, which writes its end into its
+scan job. A process that stops while it scans never does, so the job is
+failed for it, and `errorMessage` says how:
+
+- **At startup**, before it starts a scan of its own, the service fails every
+  job still running that an earlier process of its host ran, and every one
+  that names no runner (older than migration 034): `interrupted: the service
+  restarted while the scan ran`. A job another host runs is left alone; its
+  process may be alive.
+- **The reaper.** A scan gives its job a word while it walks, every 30
+  seconds at most (a third of the timeout when that is shorter). A job
+  running without a word for longer than the scan's timeout (the `scan`
+  step's, 15m, `KATALOG_STEP_TIMEOUTS`) is failed by the sweep: `timed out: no
+  word from its scanner for 15m (the scan's timeout)`. A scan is not retried
+  by itself, so this needs no event bus; `KATALOG_RETRY_INTERVAL=off` turns
+  it off with the rest of the sweep.
+
+A scan that ends after all, late, writes its end over the failure.
 
 A title's source asset keeps what the workers probed it as: the codec and
 resolution the transcoder reports in its step's details, the duration the

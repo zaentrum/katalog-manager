@@ -54,7 +54,7 @@ func (f *fakes) take() []string {
 
 func (f *fakes) Trigger(ctx context.Context, source string) (string, error) {
 	f.called("scan " + source)
-	j, err := f.st.InsertScanJob(ctx, source, "running")
+	j, err := f.st.StartScanJob(ctx, source, "test-host/fake")
 	if err != nil {
 		return "", err
 	}

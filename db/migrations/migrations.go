@@ -5,8 +5,8 @@
 // Not every deployment runs this directory, so the service embeds the
 // migrations it cannot work without and applies each one at startup when its
 // objects are missing (see store.EnsureDeletionLog, store.EnsurePeople,
-// store.EnsureItemLockedFields, store.EnsureCreditDetails and
-// store.EnsureStepRetries).
+// store.EnsureItemLockedFields, store.EnsureCreditDetails,
+// store.EnsureStepRetries and store.EnsureScanJobRunner).
 package migrations
 
 import _ "embed"
@@ -40,3 +40,9 @@ var CreditDetails string
 //
 //go:embed 033_step_retries.sql
 var StepRetries string
+
+// ScanJobRunner is 034_scan_job_runner.sql: the process that runs a scan job,
+// and its scanner's last word.
+//
+//go:embed 034_scan_job_runner.sql
+var ScanJobRunner string
