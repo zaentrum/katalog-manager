@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -41,10 +42,18 @@ type Service struct {
 	st     *store.Store
 	cfg    config.Config
 	steps  *processing.Steps
-	events *events.Producer // nil-safe: removed-event emit no-ops without a bus
+	events bus
 }
 
-// New constructs the item-actions service.
+// bus is the event bus the service tells the pipeline through
+// (events.Producer, whose methods a nil producer answers too).
+type bus interface {
+	EmitItem(ctx context.Context, topic string, ev events.ItemEvent)
+	Enabled() bool
+	Publish(ctx context.Context, msgs []events.Message) []error
+}
+
+// New constructs the item-actions service; ev may be nil (no bus).
 func New(st *store.Store, cfg config.Config, steps *processing.Steps, ev *events.Producer) *Service {
 	return &Service{st: st, cfg: cfg, steps: steps, events: ev}
 }
@@ -65,6 +74,12 @@ func ptrI32(n int32) *int32   { return &n }
 //   - series                -> {EpisodesEnqueued, EpisodesTotal, Message}
 //   - movie/episode active  -> {Status:"<step> <status>", AlreadyActive:true, Message}
 //   - movie/episode fresh   -> {Status:"pending", AlreadyActive:false, Message}
+//
+// The pipeline is event-driven: an item enqueued waits for its transcoder,
+// which it tells by sending the event the transcoder consumes (analyzed),
+// as the retries do. A step whose event could not be sent is failed with a
+// retry scheduled (the sweep sends it again); without an event bus it waits,
+// and the result says nothing will start it.
 func (s *Service) PackageItem(ctx context.Context, id string) (graph.PackageResult, error) {
 	var typ, title string
 	err := s.st.Pool().QueryRow(ctx,
@@ -119,6 +134,7 @@ func (s *Service) PackageItem(ctx context.Context, id string) (graph.PackageResu
 			}
 			enqueued++
 		}
+		started := s.startTranscodes(ctx, epIDs, "episode")
 
 		total, err := s.episodeCount(ctx, id)
 		if err != nil {
@@ -129,7 +145,7 @@ func (s *Service) PackageItem(ctx context.Context, id string) (graph.PackageResu
 		if enqueued == 0 {
 			msg = "Nothing to enqueue — every eligible episode is already done, pending, or in progress."
 		} else {
-			msg = fmt.Sprintf("Enqueued %d episodes for packaging.", enqueued)
+			msg = fmt.Sprintf("Enqueued %d episodes for packaging.", enqueued) + started
 		}
 		return graph.PackageResult{
 			EpisodesEnqueued: ptrI32(enqueued),
@@ -164,13 +180,67 @@ func (s *Service) PackageItem(ctx context.Context, id string) (graph.PackageResu
 		nil, ptrStr("enqueued from object-page action")); err != nil {
 		return graph.PackageResult{}, err
 	}
+	started := s.startTranscodes(ctx, []string{id}, lower)
+	status := "pending"
+	if started != "" && s.events.Enabled() {
+		status = processing.StatusFailed
+	}
 	return graph.PackageResult{
-		Status:        ptrStr("pending"),
+		Status:        ptrStr(status),
 		AlreadyActive: ptrBool(false),
 		Message: ptrStr("Queued for transcoding. " +
 			"Once the transcoder finishes (or skips, when the source is " +
-			"already HEVC) the packager picks it up automatically."),
+			"already HEVC) the packager picks it up automatically." + started),
 	}, nil
+}
+
+// startTranscodes tells the transcoder of the items whose transcode waits
+// for it: the event it consumes (analyzed) for each, and the dispatch noted,
+// so a start that never comes is reaped like a retry's. A step whose event
+// could not be sent is failed with a retry scheduled. It returns what the
+// result should add: nothing when every event went.
+func (s *Service) startTranscodes(ctx context.Context, itemIDs []string, typ string) string {
+	if len(itemIDs) == 0 {
+		return ""
+	}
+	if !s.events.Enabled() {
+		return " The service has no event bus (KAFKA_BROKERS), so nothing tells the transcoder."
+	}
+	msgs := make([]events.Message, len(itemIDs))
+	for i, id := range itemIDs {
+		ev := events.NewItemEvent(id)
+		ev.Type, ev.Step, ev.Status, ev.Source = typ, "transcode", "package", "package"
+		msgs[i] = events.Message{Topic: events.TopicAnalyzed, Event: ev}
+	}
+	var sent []string
+	var first error
+	failed := 0
+	for i, err := range s.events.Publish(ctx, msgs) {
+		if err == nil {
+			sent = append(sent, itemIDs[i])
+			continue
+		}
+		failed++
+		if first == nil {
+			first = err
+		}
+		msg := "packaging could not start: the transcoder's event could not be sent: " + err.Error()
+		if uerr := s.steps.Upsert(ctx, itemIDs[i], "transcode", processing.StatusFailed, &msg, nil); uerr != nil {
+			log.Printf("package: %s: the transcode whose event could not be sent could not be failed either: %v", itemIDs[i], uerr)
+		}
+	}
+	if len(sent) > 0 {
+		// Best-effort: the dispatch is what lets the reaper heal a start that
+		// never comes; the events went either way.
+		if _, err := s.st.Pool().Exec(ctx, `UPDATE com_nalet_katalog_itemprocessingsteps SET dispatchedat = now()
+			WHERE item_id = ANY($1) AND step = 'transcode' AND status = 'pending'`, sent); err != nil {
+			log.Printf("package: the dispatch of %d transcodes could not be noted: %v", len(sent), err)
+		}
+	}
+	if failed == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" The transcoder's event of %d could not be sent (%v): failed, and retried later.", failed, first)
 }
 
 // activeChainStep returns "<step> <status>" when either chain step
