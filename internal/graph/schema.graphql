@@ -415,10 +415,11 @@ type Setting {
 # What setSecretSetting found when it checked a secret's value with the
 # service it is for, before storing it. The TMDB key (tmdb.api_key) is checked
 # with TMDB's authentication endpoint, for a few seconds at most: a token TMDB
-# refuses (401) is not stored, and setSecretSetting answers an error saying so
-# (code SECRET_REFUSED); one TMDB takes is valid; one TMDB could not be asked
-# about (no answer in time, or an answer that is neither yes nor no) is stored
-# all the same, unchecked.
+# refuses (401) is not stored, nor is one with a control character in it (a
+# line break), which no token holds, and setSecretSetting answers an error
+# saying so (code SECRET_REFUSED); one TMDB takes is valid; one TMDB could not
+# be asked about (no answer in time, or an answer that is neither yes nor no)
+# is stored all the same, unchecked.
 type SecretCheck {
   # valid or unchecked
   status: String!

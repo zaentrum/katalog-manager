@@ -102,6 +102,19 @@ func TestCheckSecretAsksTMDB(t *testing.T) {
 		t.Errorf("TMDB repeating the token: %+v", got)
 	}
 
+	// A token with a control character in it is refused without asking TMDB:
+	// it could not be sent, and no TMDB token holds one.
+	broken := newFakeTMDB(t)
+	for _, token := range []string{"eyJhbGciOiJIUzI1NiJ9\n.eyJzdWIiOiJ4In0", "test-\ttoken", "test-token\x00"} {
+		got := checker(broken, "", time.Second).CheckSecret(context.Background(), "tmdb.api_key", token)
+		if got.Status != graph.SecretRefused || got.Message != "the token holds a control character, a line break say, which no TMDB token does" {
+			t.Errorf("%q: %+v, want it refused", token, got)
+		}
+	}
+	if reqs := broken.calls("/"); len(reqs) != 0 {
+		t.Errorf("tokens no header can carry were sent to TMDB: %q", reqs)
+	}
+
 	// Another key is no TMDB token.
 	other := newFakeTMDB(t)
 	for _, key := range []string{"omdb.api_key", "fanart.api_key", "fanart.client_key", " tmdb.api_key"} {

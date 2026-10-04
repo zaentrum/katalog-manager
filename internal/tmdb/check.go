@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/zaentrum/katalog-manager/internal/graph"
 	"github.com/zaentrum/katalog-manager/internal/processing"
@@ -54,6 +55,13 @@ func (c *client) checkToken(ctx context.Context, token string) graph.SecretCheck
 	}
 	unchecked := func(why string) graph.SecretCheck {
 		return say(graph.SecretUnchecked, "could not check the token with TMDB ("+why+"): it is saved all the same")
+	}
+	// A token with a line break or another control character in it (a paste
+	// gone wrong) is no TMDB token, and one with a line break cannot even be
+	// sent as a bearer: it is refused without asking TMDB, not saved
+	// unchecked.
+	if strings.ContainsFunc(token, unicode.IsControl) {
+		return say(graph.SecretRefused, "the token holds a control character, a line break say, which no TMDB token does")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBase+"/authentication", nil)
 	if err != nil {

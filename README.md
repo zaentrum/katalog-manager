@@ -31,8 +31,9 @@ The surface is split deliberately:
   disk only when asked; a secret setting, such as an API key, is write-only:
   `setSecretSetting`/`clearSecretSetting`, and no field returns its value;
   `setSecretSetting` checks a TMDB token with TMDB's authentication endpoint
-  first, for 4 seconds at most: a token TMDB refuses (401) is not stored and
-  the answer is an error with the code `SECRET_REFUSED`, one TMDB takes is
+  first, for 4 seconds at most: a token TMDB refuses (401), or one with a
+  control character in it, is not stored and the answer is an error with the
+  code `SECRET_REFUSED`, one TMDB takes is
   stored `valid`, and one TMDB could not be asked about is stored all the
   same, `unchecked`, as the answer's `check` says).
   It is the catalog console's: every field is an administrator's (see
