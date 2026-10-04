@@ -25,6 +25,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/itemactions"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/rest"
+	"github.com/zaentrum/katalog-manager/internal/retry"
 	"github.com/zaentrum/katalog-manager/internal/scanner"
 	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/stream"
@@ -139,12 +140,17 @@ func run() error {
 	enricher := tmdb.New(st, cfg, steps, chapters, settingLookup)
 	scan := scanner.New(st, cfg, steps, eventProducer)
 	actions := itemactions.New(st, cfg, steps, eventProducer)
+	// The pipeline heals itself: a failed step is retried by sending its
+	// trigger event again, after a backoff, a bounded number of times, and a
+	// step whose worker went silent past its timeout is reaped into a failure.
+	retries := retry.New(st, cfg.RetryPolicy(), eventProducer, cfg.RetryInterval)
 
 	// Background workers (lifetime = server) share bgCtx, cancelled on shutdown.
 	// Keep the people and titles the catalog holds fresh from TMDB's change
 	// lists, without crawling TMDB: every TMDB_REFRESH_INTERVAL (default 24h),
 	// idle while there is no TMDB key.
 	go enricher.RunChangeSync(bgCtx, cfg.TMDBRefreshInterval)
+	go retries.Run(bgCtx)
 	// Event-driven enrichment: consume stube.catalog.item.discovered, enrich the
 	// item synchronously, then emit stube.catalog.item.enriched to trigger analyze.
 	// This replaces the old 60s enrichment poll ticker (pure-Kafka triggers).
@@ -182,6 +188,7 @@ func run() error {
 		Packager:  actions,
 		Validator: actions,
 		Remover:   actions,
+		Pipeline:  retries,
 	})
 	schema := graph.MustSchema(resolver)
 
