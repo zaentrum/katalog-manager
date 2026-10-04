@@ -176,11 +176,100 @@ func TestStepsWithoutTheRetriesMigration(t *testing.T) {
 		}
 	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemprocessingsteps WHERE item_id = 'm1'
-		AND status = 'failed' AND attempts = 3 AND error = 'token rejected: Bearer REDACTED'`); n != 1 {
-		t.Error("the step was not written as before 033")
+		AND status = 'failed' AND attempts = 1 AND error = 'token rejected: Bearer REDACTED'`); n != 1 {
+		t.Error("the step was not written as before 033, its one run counted")
 	}
 	if n, err := steps.ResetForItems(ctx, []string{"m1"}, []string{"transcode"}); err != nil || n != 1 {
 		t.Errorf("ResetForItems without 033: %d, %v", n, err)
+	}
+}
+
+// A step's attempts are its runs: one more each time it turns in progress
+// from any other status, one for a worker's first report of it, none for a
+// step only enqueued. A worker saying in progress again (the analyzer's
+// heartbeat), a run's end, a failure reported again, a promotion to pending,
+// a retry's claim and a reset count nothing. Both upserts count alike: with
+// migration 033 and without it.
+func TestAttemptsCountRuns(t *testing.T) {
+	for name, open := range map[string]func(testing.TB) *store.Store{"with 033": storetest.Open, "without 033": storetest.OpenBase} {
+		t.Run(name, func(t *testing.T) {
+			st := open(t)
+			steps := processing.New(st.Pool())
+			ctx := context.Background()
+			attempts := func(item, step string) int {
+				t.Helper()
+				var n *int
+				if err := st.Pool().QueryRow(ctx, `SELECT attempts FROM com_nalet_katalog_itemprocessingsteps
+					WHERE item_id = $1 AND step = $2`, item, step).Scan(&n); err != nil {
+					t.Fatalf("the attempts of %s %s: %v", item, step, err)
+				}
+				if n == nil {
+					return -1
+				}
+				return *n
+			}
+			report := func(item, step, status string, want int, why string) {
+				t.Helper()
+				upsert(t, steps, item, step, status, nil)
+				if got := attempts(item, step); got != want {
+					t.Errorf("%s: %s %s %s: %d attempts, want %d", why, item, step, status, got, want)
+				}
+			}
+
+			// a run that says in progress every ten minutes is one
+			report("m1", "subtitle", processing.StatusInProgress, 1, "a run starts")
+			for i := 0; i < 3; i++ {
+				report("m1", "subtitle", processing.StatusInProgress, 1, "its heartbeat")
+			}
+			report("m1", "subtitle", processing.StatusDone, 1, "its end")
+			report("m1", "subtitle", processing.StatusDone, 1, "its end reported again")
+			// a second run, failed and the failure reported again
+			report("m1", "subtitle", processing.StatusInProgress, 2, "a second run")
+			report("m1", "subtitle", processing.StatusFailed, 2, "its failure")
+			report("m1", "subtitle", processing.StatusFailed, 2, "its failure reported again")
+			// a retry: the claim waits for the worker again, its run is the third
+			storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemprocessingsteps SET status = 'pending' WHERE item_id = 'm1' AND step = 'subtitle'`)
+			report("m1", "subtitle", processing.StatusInProgress, 3, "a retry's run")
+			report("m1", "subtitle", processing.StatusInProgress, 3, "its heartbeat")
+			// a reset keeps the count, the run after it adds one
+			if _, err := steps.ResetForItems(ctx, []string{"m1"}, []string{"subtitle"}); err != nil {
+				t.Fatal(err)
+			}
+			if got := attempts("m1", "subtitle"); got != 3 {
+				t.Errorf("a reset: %d attempts, want them kept (3)", got)
+			}
+			report("m1", "subtitle", processing.StatusInProgress, 4, "the run after a reset")
+
+			// a step enqueued has run none; the promotion after a transcode
+			// counts nothing, the packager's runs do
+			report("m1", "package", processing.StatusPending, 0, "enqueued")
+			if err := steps.PromoteTranscodeToPackage(ctx, "m1", processing.StatusDone); err != nil {
+				t.Fatal(err)
+			}
+			if got := attempts("m1", "package"); got != 0 {
+				t.Errorf("promoted while pending: %d attempts, want 0", got)
+			}
+			report("m1", "package", processing.StatusInProgress, 1, "the packager starts")
+			report("m1", "package", processing.StatusDone, 1, "the packager ends")
+			if err := steps.PromoteTranscodeToPackage(ctx, "m1", processing.StatusNotApplicable); err != nil {
+				t.Fatal(err)
+			}
+			if got := attempts("m1", "package"); got != 1 {
+				t.Errorf("promoted again after a transcode: %d attempts, want 1", got)
+			}
+			report("m1", "package", processing.StatusInProgress, 2, "the packager's second run")
+
+			// a worker's first report is its run, whatever its status
+			report("m2", "tmdb", processing.StatusDone, 1, "a first report, done")
+			report("m2", "tmdb", processing.StatusDone, 1, "done again")
+			report("m2", "transcode", processing.StatusFailed, 1, "a first report, failed")
+			report("m2", "chapter", processing.StatusNotApplicable, 1, "a first report, not applicable")
+
+			// a step whose count is unknown counts from none
+			storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemprocessingsteps (id, item_id, step, status, attempts)
+				VALUES ('st-null', 'm3', 'package', 'pending', NULL)`)
+			report("m3", "package", processing.StatusInProgress, 1, "a run of a step without a count")
+		})
 	}
 }
 

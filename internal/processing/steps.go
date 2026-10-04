@@ -74,11 +74,18 @@ func ValidStep(s string) bool   { return validSteps[s] }
 func ValidStatus(s string) bool { return validStatuses[s] }
 
 // Upsert performs INSERT ... ON CONFLICT (item_id, step):
-//   - insert: attempts=1; startedat=now when status=in_progress; finishedat=now
-//     when terminal (done|failed|skipped).
-//   - conflict: attempts++, status overwritten; startedat sticky (set to now only
-//     on the first transition into in_progress while null); finishedat set on a
+//   - insert: startedat=now when status=in_progress; finishedat=now when
+//     terminal (done|failed|skipped).
+//   - conflict: status overwritten; startedat sticky (set to now only on the
+//     first transition into in_progress while null); finishedat set on a
 //     terminal status (NOT not_applicable).
+//
+// attempts counts the step's runs, not the reports of them: a run starts when
+// the step turns in_progress from any other status (+1), and a worker's first
+// report of a step is its first run (1 on insert), unless the step is only
+// enqueued (pending: 0, nothing has run). A worker saying in_progress again
+// (the analyzer's heartbeat), a run's end, a failure reported again and a
+// promotion to pending count nothing.
 //
 // The error is kept as CleanError makes it: credentials redacted, at most 500
 // characters. With migration 033 it also keeps the step's retries:
@@ -141,17 +148,27 @@ const legacyUpsertSQL = `INSERT INTO ` + tbl + `
 		VALUES (gen_random_uuid()::varchar, now(), now(), $1, $2, $3::text,
 			CASE WHEN $3::text = 'in_progress' THEN now() ELSE NULL END,
 			CASE WHEN $3::text IN ('done','failed','skipped') THEN now() ELSE NULL END,
-			1, $4, $5)
+			` + insertAttempts + `, $4, $5)
 		ON CONFLICT (item_id, step) DO UPDATE SET
 			modifiedat = now(),
 			status     = EXCLUDED.status,
-			attempts   = ` + tbl + `.attempts + 1,
+			attempts   = ` + runAttempts + `,
 			startedat  = CASE WHEN EXCLUDED.status = 'in_progress' AND ` + tbl + `.startedat IS NULL
 			                  THEN now() ELSE ` + tbl + `.startedat END,
 			finishedat = CASE WHEN EXCLUDED.status IN ('done','failed','skipped') THEN now()
 			                  ELSE ` + tbl + `.finishedat END,
 			error      = EXCLUDED.error,
 			details    = EXCLUDED.details`
+
+// insertAttempts is a step's attempts when a report inserts it: its worker's
+// first report is its first run, a step enqueued (pending) has run none.
+const insertAttempts = `CASE WHEN $3::text = 'pending' THEN 0 ELSE 1 END`
+
+// runAttempts is a step's attempts after a report: one more when the step
+// starts a run (it turns in_progress from any other status), as they were for
+// any other report. A row without a count (NULL) counts from 0.
+const runAttempts = `CASE WHEN EXCLUDED.status = 'in_progress' AND ` + tbl + `.status <> 'in_progress'
+				THEN COALESCE(` + tbl + `.attempts, 0) + 1 ELSE ` + tbl + `.attempts END`
 
 // upsertSQL is legacyUpsertSQL keeping the step's retries; $4 (the error) is
 // cast to text at both its uses for the reason $3 is. $6 are the
@@ -164,7 +181,7 @@ const upsertSQL = `INSERT INTO ` + tbl + `
 		VALUES (gen_random_uuid()::varchar, now(), now(), $1, $2, $3::text,
 			CASE WHEN $3::text = 'in_progress' THEN now() ELSE NULL END,
 			CASE WHEN $3::text IN ('done','failed','skipped') THEN now() ELSE NULL END,
-			1, $4::text, $5,
+			` + insertAttempts + `, $4::text, $5,
 			CASE WHEN $3::text = 'failed' THEN 1 ELSE 0 END,
 			CASE WHEN $3::text = 'failed' THEN $4::text ELSE NULL END,
 			CASE WHEN $3::text = 'failed' THEN now() + make_interval(secs => ($6::float8[])[1]) END,
@@ -172,7 +189,7 @@ const upsertSQL = `INSERT INTO ` + tbl + `
 		ON CONFLICT (item_id, step) DO UPDATE SET
 			modifiedat = now(),
 			status     = EXCLUDED.status,
-			attempts   = ` + tbl + `.attempts + 1,
+			attempts   = ` + runAttempts + `,
 			startedat  = CASE WHEN EXCLUDED.status = 'in_progress' AND ` + tbl + `.startedat IS NULL
 			                  THEN now() ELSE ` + tbl + `.startedat END,
 			finishedat = CASE WHEN EXCLUDED.status IN ('done','failed','skipped') THEN now()
@@ -227,7 +244,8 @@ func (s *Steps) ResetForItems(ctx context.Context, itemIDs, steps []string) (int
 // non-failed terminal state (done|not_applicable|skipped). Failed transcode does
 // NOT promote. Routed through Upsert so the ON CONFLICT DO UPDATE semantics match
 // the Java reference (a re-run transcode regresses an existing package row back to
-// pending, attempts++, details rewritten) — re-transcode implies re-package.
+// pending, details rewritten) — re-transcode implies re-package. The promotion
+// is no run: the package's attempts count the packager's runs.
 func (s *Steps) PromoteTranscodeToPackage(ctx context.Context, itemID, transcodeStatus string) error {
 	switch transcodeStatus {
 	case StatusDone, StatusNotApplicable, StatusSkipped:

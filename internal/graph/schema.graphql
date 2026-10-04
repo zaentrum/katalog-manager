@@ -151,7 +151,11 @@ type ItemProcessingStep {
   status: String!
   startedAt: Time
   finishedAt: Time
-  # how often the step was written: every report of its worker counts
+  # the runs the step has started: one more each time it turns in progress
+  # from any other status, and one for its worker's first report of it (none
+  # while it is only enqueued, pending); its worker saying it is in progress
+  # again (a heartbeat), a run's end and a failure reported again count
+  # nothing, and a retry or a reset keeps the count until the next run
   attempts: Int
   error: String
   details: String
@@ -410,6 +414,7 @@ type ActivityEvent {
   itemType: String!
   step: String!
   status: String!
+  # the runs the step has started (as ItemProcessingStep.attempts)
   attempts: Int
   error: String
   startedAt: Time
