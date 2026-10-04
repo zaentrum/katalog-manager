@@ -122,6 +122,15 @@ func TestFillAndFillEmpty(t *testing.T) {
 	if err := st.Pool().QueryRow(ctx, `SELECT codec FROM com_nalet_katalog_playbackassets WHERE id = 'pkg-m1'`).Scan(&pkg); err != nil || pkg != "hev1.1.6.L120.90" {
 		t.Errorf("the package was touched: %q %v", pkg, err)
 	}
+	// A probe that says the duration but no bit rate (a v1 source block with
+	// size and duration): the bit rate follows from them.
+	addSource(t, st, "m2", "")
+	if _, err := Fill(ctx, st.Pool(), "m2", Probe{DurationMs: n(320000)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := asset(t, st, "m2"); got != "- - 320000 2000 80000000" {
+		t.Errorf("a duration without a bit rate: %s, want the bit rate from the size", got)
+	}
 	if ok, err := Fill(ctx, st.Pool(), "nope", Probe{Codec: s("h264")}); err != nil || ok {
 		t.Errorf("Fill of an item without a source: %v %v", ok, err)
 	}
