@@ -23,6 +23,8 @@ func TestRedact(t *testing.T) {
 			"GET https://api.example/3/movie?api_key=REDACTED&language=en and ?apikey=REDACTED"},
 		{"a presigned URL", "PUT https://s3.example/b/o?X-Amz-Credential=AKIA%2F1&X-Amz-Signature=abc123&x=1",
 			"PUT https://s3.example/b/o?X-Amz-Credential=REDACTED&X-Amz-Signature=REDACTED&x=1"},
+		{"a value up to the space after it, a colon in it too (a password may hold one)",
+			"GET /x?password=a:b:c 403 and ?token=t0k3n: refused", "GET /x?password=REDACTED 403 and ?token=REDACTED refused"},
 		{"percent-encoded inside another parameter", "/x?next=%2Fplay%3Fstream%3Dabc", "/x?next=%2Fplay%3Fstream%3DREDACTED"},
 		{"a connection string", "connect host=db user=km password=hunter2 dbname=katalog", "connect host=db user=km password=REDACTED dbname=katalog"},
 		{"a secret written out", "config: client_secret: abc123, secret=xyz", "config: client_secret: REDACTED, secret=REDACTED"},
