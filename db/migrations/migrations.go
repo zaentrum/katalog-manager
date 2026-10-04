@@ -6,9 +6,10 @@
 // migrations it cannot work without and applies each one at startup when its
 // objects are missing (see store.EnsureDeletionLog, store.EnsurePeople,
 // store.EnsureItemLockedFields, store.EnsureCreditDetails,
-// store.EnsureStepRetries and store.EnsureScanJobRunner). It applies 035,
-// which drops what is left of a retired integration, at every start when any
-// of that is there (store.DropRetiredJobTables).
+// store.EnsureStepRetries, store.EnsureScanJobRunner and
+// store.EnsureItemRatings). It applies 035, which drops what is left of a
+// retired integration, at every start when any of that is there
+// (store.DropRetiredJobTables).
 package migrations
 
 import _ "embed"
@@ -54,3 +55,9 @@ var ScanJobRunner string
 //
 //go:embed 035_retired_job_tables.sql
 var RetiredJobTables string
+
+// ItemRatings is 036_item_ratings.sql: a title's certification, its country
+// and the minimum age it means, an admin's override, and when TMDB was read.
+//
+//go:embed 036_item_ratings.sql
+var ItemRatings string

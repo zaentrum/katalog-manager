@@ -62,6 +62,9 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	if err := st.EnsureScanJobRunner(ctx); err != nil {
 		t.Fatalf("apply the scan job runner migration: %v", err)
 	}
+	if err := st.EnsureItemRatings(ctx); err != nil {
+		t.Fatalf("apply the item ratings migration: %v", err)
+	}
 	return st
 }
 

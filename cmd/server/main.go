@@ -97,6 +97,12 @@ func run() error {
 	if err := st.EnsureScanJobRunner(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/034_scan_job_runner.sql is missing and could not be applied: %v; a scan a restart cuts short says running until it is", err)
 	}
+	// A title's age rating (migration 036): the certification TMDB gives it,
+	// its country, the minimum age it means and an admin's override. Without
+	// it no title is rated, and a viewer with a rating cap is served nothing.
+	if err := st.EnsureItemRatings(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/036_item_ratings.sql is missing and could not be applied: %v; no title is rated, and a capped viewer is served nothing, until it is", err)
+	}
 	dropRetiredJobTables(bgCtx, st)
 
 	steps := processing.New(st.Pool()).WithPolicy(cfg.RetryPolicy())
