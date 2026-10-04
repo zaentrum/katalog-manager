@@ -3,35 +3,15 @@ package graph
 import (
 	"context"
 	"fmt"
-	"regexp"
-	"slices"
 	"strings"
 
 	graphql "github.com/graph-gophers/graphql-go"
 	"github.com/zaentrum/katalog-manager/internal/model"
 )
 
-// secretSettingKeys are the settings the service reads as credentials: the
-// enrichment providers' API keys, which override the environment's.
-var secretSettingKeys = []string{"tmdb.api_key", "omdb.api_key", "fanart.api_key", "fanart.client_key"}
-
-var (
-	// secretWords name a credential anywhere in a key.
-	secretWords = regexp.MustCompile(`(?i)secret|token|passw(or)?d|credential|api[._-]?key`)
-	// secretKeySuffix names one at its end: "fanart.client_key", "x.key".
-	secretKeySuffix = regexp.MustCompile(`(?i)(^|[._-])key$`)
-)
-
-// isSecretSetting reports whether the setting key holds a credential: one of
-// secretSettingKeys, or a key that names one, spaces around it aside. Its
-// value is write-only: no field returns it, and only setSecretSetting and
-// clearSecretSetting change it. A key taken for a secret that is none is
-// merely write-only too; one taken for none that is a secret would be read
-// back, so the words are wide.
-func isSecretSetting(key string) bool {
-	key = strings.TrimSpace(key)
-	return slices.Contains(secretSettingKeys, key) || secretWords.MatchString(key) || secretKeySuffix.MatchString(key)
-}
+// isSecretSetting reports whether the setting key holds a credential
+// (model.IsSecretSetting): its value is write-only.
+func isSecretSetting(key string) bool { return model.IsSecretSetting(key) }
 
 // errSecretSetting refuses a write of a secret setting by the general
 // setting mutations.
