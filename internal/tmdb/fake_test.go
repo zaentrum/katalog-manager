@@ -34,6 +34,7 @@ type fakeTMDB struct {
 	creators map[string][]map[string]any         // "tv/20": a series' created_by
 	bare     map[int64]bool                      // GET /tv/{id} answers no appended credits
 	people   map[int64]*fakePerson               // GET /person/{id}
+	certs    map[string][]byte                   // "movie/10" or "tv/20": its release_dates or content_ratings, as TMDB answers
 	images   map[string][]byte                   // GET /t/p/{size}{path}, by path
 	changes  map[string]map[string][]int64       // kind → day (YYYY-MM-DD) → ids changed that day
 	fail     map[string]int                      // path → status to answer instead
@@ -68,6 +69,7 @@ func newFakeTMDB(t testing.TB) *fakeTMDB {
 		creators: map[string][]map[string]any{},
 		bare:     map[int64]bool{},
 		people:   map[int64]*fakePerson{},
+		certs:    map[string][]byte{},
 		images:   map[string][]byte{},
 		changes:  map[string]map[string][]int64{},
 		fail:     map[string]int{},
@@ -285,6 +287,15 @@ func (f *fakeTMDB) aggregateJSON(title string) (map[string]any, bool) {
 	return map[string]any{"cast": cast, "crew": crew}, true
 }
 
+// certify makes TMDB answer a title's certifications with body: a film's
+// ("movie/10") at GET /movie/10/release_dates, a series' ("tv/20") at GET
+// /tv/20/content_ratings. Without it TMDB answers 404 there.
+func (f *fakeTMDB) certify(title string, body []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.certs[title] = body
+}
+
 func (f *fakeTMDB) person(id int64, p *fakePerson) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -442,6 +453,10 @@ func (f *fakeTMDB) serve(w http.ResponseWriter, r *http.Request) {
 		answer(map[string]any{"id": id, "cast": every["cast"], "crew": every["crew"]})
 	case len(seg) == 3 && (seg[2] == "videos" || seg[2] == "external_ids"):
 		answer(map[string]any{"id": id, "results": []any{}})
+	case len(seg) == 3 && (seg[0] == "movie" && seg[2] == "release_dates" || seg[0] == "tv" && seg[2] == "content_ratings") &&
+		f.certs[seg[0]+"/"+seg[1]] != nil:
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(f.certs[seg[0]+"/"+seg[1]])
 	case len(seg) == 2 && seg[0] == "person" && f.people[id] != nil:
 		answer(f.personJSON(id, q))
 	default:
