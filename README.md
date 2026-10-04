@@ -26,7 +26,8 @@ The surface is split deliberately:
   their last errors, and how the service retries), and the operator actions
   (`triggerScan`, `enrichOne`/`enrichPending`, `refreshPeople`, `packageItem`,
   `validateItem`, `retryStep`/`retryFailed` (see
-  [The pipeline heals itself](#the-pipeline-heals-itself)),
+  [The pipeline heals itself](#the-pipeline-heals-itself)), `reencodeItem`
+  (see [Encoding a title again](#encoding-a-title-again)),
   `backfillSourceProbes`, `backfillRatings` and `setMinAgeOverride` (see
   [Ratings](#ratings); an item's `ageRating` says what it is rated), item +
   settings CRUD; a delete removes files from
@@ -250,10 +251,54 @@ worker passes the chain on, and its own guard skips work that is done.
   without attempts left) or a silent one now, its failures afresh;
   `retryFailed(step)` every failed step. The result says why a step was left
   alone.
+- **Runs.** A step counts the runs it started (`attempts`): one more each
+  time it turns in progress, and one for its worker's first report of it. A
+  worker saying in progress again (the analyzer's heartbeat), a run's end
+  and a failure reported again count nothing, and a step only enqueued
+  (pending) has run none.
 - An event that could not be sent puts its steps back, failed; the sweep
   sends it again a backoff later. Every `KATALOG_RETRY_INTERVAL` (30s) the
   sweep reaps and sends what is due; without an event bus or migration 033
   nothing is retried, and the overview says why.
+
+### Encoding a title again
+
+`reencodeItem(id)` encodes a title again with the pipeline's current
+settings: the transcoder's ladder and encoder (its `LADDER` and `ENCODER`,
+set per instance), then the packager's. A new ladder reaches only the titles
+encoded after it; this is how a title that finished gets it. It takes a
+movie or an episode with a file (a primary asset), or a series, whose
+episodes with a file (under it or under a season of it) it encodes again
+each as a title of its own.
+
+- **What it does.** The title's `transcode` and `package` wait for their
+  workers afresh, as a reset leaves a step (failures in a row and retries
+  cleared; attempts and the last error kept), and the transcoder is sent
+  `analyzed`, not marked as a retry: its guard finds the step waiting and
+  runs it, and the packager follows once the transcode is done. A step the
+  title lacks is added. The transcode is noted as sent, so the reaper heals
+  a start that never comes; the package's trigger is the transcoder's to
+  send, and the package waits for it, not reaped, however long the
+  transcode runs.
+- **Left alone.** A title whose transcode or package is running (its
+  worker heard within the step's timeout), or waiting for its worker within
+  it, is left alone: encoding it again would run the step twice. A package
+  waiting for a transcode that has not finished waits for that transcode,
+  which decides. Each title is reset under the lock of its steps, so two
+  re-encodes at once, or a re-encode and the sweep, send it once. The
+  answer counts the titles looked at, encoded again, left alone and not
+  sent, and says why one was left alone.
+- **Not sent.** An event that could not be sent puts the transcode back,
+  failed; the sweep sends it again a backoff later.
+- **Playback meanwhile.** The current package plays while the transcoder
+  encodes: its handoff goes beside the package, not into it. The packager
+  writes a package in place, though, clearing the old one as it starts: from
+  then until the new one is complete the title plays by on-demand
+  transcoding, and a viewer watching the old package loses it and has to
+  start again. A packaging that fails leaves the title without a package
+  until a retry packages it.
+
+Without an event bus or migration 033 a re-encode is refused, as a retry is.
 
 ### Lost scans
 
