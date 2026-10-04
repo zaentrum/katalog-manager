@@ -37,11 +37,10 @@ import (
 	kafka "github.com/segmentio/kafka-go"
 )
 
-// Catalog pipeline topics (naming mirrors the existing stube.download.client.*
-// convention: <prefix><domain>.<entity>.<event>). The prefix is CONFIGURABLE
-// (KAFKA_TOPIC_PREFIX, default "stube.") so multiple platform instances — e.g.
-// beta and prod — can share one Kafka cluster without topic collisions. Call
-// Configure once at boot, before any producer/consumer starts.
+// Catalog pipeline topics, named <prefix><domain>.<entity>.<event>. The prefix
+// is CONFIGURABLE (KAFKA_TOPIC_PREFIX, default "stube.") so multiple platform
+// instances — e.g. beta and prod — can share one Kafka cluster without topic
+// collisions. Call Configure once at boot, before any producer/consumer starts.
 var (
 	TopicDiscovered = "stube.catalog.item.discovered"
 	TopicEnriched   = "stube.catalog.item.enriched"

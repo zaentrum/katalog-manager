@@ -326,14 +326,6 @@ CREATE TABLE com_nalet_katalog_scanjobs (
   status VARCHAR(20) NOT NULL DEFAULT 'queued', startedat TIMESTAMP, finishedat TIMESTAMP,
   errormessage TEXT, filesseen INTEGER DEFAULT 0, itemsinserted INTEGER DEFAULT 0, itemsupdated INTEGER DEFAULT 0
 );
-CREATE TABLE com_nalet_katalog_downloadjobs (
-  id VARCHAR(36) NOT NULL PRIMARY KEY,
-  createdat TIMESTAMP, createdby VARCHAR(255), modifiedat TIMESTAMP, modifiedby VARCHAR(255),
-  adapter VARCHAR(40) NOT NULL, clientjobid VARCHAR(255) NOT NULL, title VARCHAR(500), wanteditemid VARCHAR(80),
-  state VARCHAR(20) NOT NULL DEFAULT 'queued', progresspct DECIMAL(5, 2) DEFAULT 0, downloadedbytes BIGINT DEFAULT 0,
-  sizebytes BIGINT, speedbps BIGINT, etasec INTEGER, files TEXT, errormessage TEXT,
-  startedat TIMESTAMP, completedat TIMESTAMP, lasteventat TIMESTAMP
-);
 CREATE TABLE com_nalet_katalog_enrichmentstatuscodes (
   code VARCHAR(20) NOT NULL PRIMARY KEY, name VARCHAR(40)
 );

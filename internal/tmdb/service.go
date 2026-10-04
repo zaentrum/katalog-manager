@@ -817,8 +817,8 @@ func (s *Service) upsertGenres(ctx context.Context, itemID string, genres []stri
 	}
 }
 
-// applyTrailerLinks idempotently replaces TMDB-sourced, not-yet-downloaded
-// trailer rows (manual + downloaded rows survive).
+// applyTrailerLinks idempotently replaces the TMDB-sourced trailer rows that
+// have no local copy (manual rows and rows with a local copy survive).
 func (s *Service) applyTrailerLinks(ctx context.Context, itemID string, videos []tmdbVideo) {
 	if len(videos) == 0 {
 		return

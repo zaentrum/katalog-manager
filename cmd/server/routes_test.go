@@ -96,22 +96,6 @@ func (f *fakes) RemoveItem(_ context.Context, id string, files, packages bool, _
 	f.called(fmt.Sprintf("remove %s, files %v, packages %v", id, files, packages))
 	return graph.RemoveResult{Deleted: true, ItemsRemoved: 1}, nil
 }
-func (f *fakes) FetchTrailers(_ context.Context, id string) (graph.FetchTrailersResult, error) {
-	f.called("trailers " + id)
-	return graph.FetchTrailersResult{ItemID: id}, nil
-}
-func (f *fakes) Add(_ context.Context, adapter, _, _, _ string) (string, string, error) {
-	f.called("download " + adapter)
-	return "job-1", "", nil
-}
-func (f *fakes) Cancel(_ context.Context, adapter, _ string) (string, error) {
-	f.called("cancel " + adapter)
-	return "", nil
-}
-func (f *fakes) Clients(context.Context) (string, error) {
-	f.called("download clients")
-	return "[]", nil
-}
 
 // The secrets the instance holds; no answer may carry one.
 const tmdbSecret, fanartSecret, omdbSecret = "tmdb-secret-token", "fanart-secret-key", "omdb-secret-key"
@@ -137,9 +121,6 @@ func newInstance(t *testing.T) *instance {
 		type, title, sorttitle, year, description, rating, durationms, parent_id, seasonnumber, episodenumber, tagline,
 		NULL::varchar AS posterurl, NULL::varchar AS backdropurl, NULL::bigint AS runtimemin, NULL::varchar AS yeartext
 		FROM com_nalet_katalog_items`)
-	storetest.Exec(t, st, `CREATE VIEW katalogservice_downloadjobs AS SELECT id, adapter, clientjobid, title, wanteditemid,
-		state, progresspct, downloadedbytes, sizebytes, speedbps, etasec, files, errormessage, startedat, completedat,
-		lasteventat, 0 AS statecriticality FROM com_nalet_katalog_downloadjobs`)
 	storetest.AddItem(t, st, "m1", "movie", "A Film", "")
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ('p1', 'Ada')`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES
@@ -162,7 +143,7 @@ func newInstance(t *testing.T) *instance {
 	}
 	f := &fakes{st: st}
 	schema := graph.MustSchema(graph.NewResolver(st, cfg, graph.Services{Scanner: f, Enricher: f, People: f,
-		Packager: f, Validator: f, Remover: f, Trailers: f, DLGateway: f}))
+		Packager: f, Validator: f, Remover: f}))
 	r := chi.NewRouter()
 	routes(r, auth.NewMiddleware(jwt, sv).Handler, cfg.Policy(), schema, stream.NewBroker().Handler,
 		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool())}))
@@ -253,8 +234,6 @@ var operations = []struct{ doc, calls string }{
 	{`{ scanJob(id: "none") { id } }`, ""},
 	{`{ scanJobs { id } }`, ""},
 	{`{ activity { id } }`, ""},
-	{`{ downloadJobs { id } }`, ""},
-	{`{ downloadClients }`, "download clients"},
 	{`{ settings { key valueText isSecret isSet updatedAt } }`, ""},
 	{`{ genres { name } }`, ""},
 	{`{ people { id } }`, ""},
@@ -273,9 +252,6 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { retryNotFound { reset } }`, "retry not found"},
 	{`mutation { packageItem(id: "m1") { status } }`, "package m1"},
 	{`mutation { validateItem(id: "m1") { code } }`, "validate m1"},
-	{`mutation { fetchTrailers(id: "m1") { enqueued } }`, "trailers m1"},
-	{`mutation { addDownload(adapter: "a", source: "s") { ok } }`, "download a"},
-	{`mutation { cancelDownload(adapter: "a", clientJobId: "j") { ok } }`, "cancel a"},
 	{`mutation { createItem(input: {type: "movie", title: "Made Here"}) { id } }`, ""},
 	{`mutation { updateItem(id: "m1", input: {tagline: "Edited"}) { id tagline } }`, ""},
 	{`mutation { deleteItem(id: "m1", deleteFiles: true, deletePackages: true) { deleted } }`, "remove m1, files true, packages true"},

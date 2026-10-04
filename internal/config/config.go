@@ -74,15 +74,10 @@ type Config struct {
 	ChaptersDBEnabled bool   // CHAPTERSDB_ENABLED (default false)
 	ChaptersDBBaseURL string // CHAPTERSDB_BASE_URL (default https://chaptersdb.com)
 
-	// download-gateway (command side)
-	DownloadGatewayURL string // DOWNLOAD_GATEWAY_URL (blank -> disabled)
-
-	// download events (Kafka read side)
-	DownloadEventsEnabled bool   // DOWNLOAD_GATEWAY_EVENTS_ENABLED (default false)
-	KafkaBrokers          string // KAFKA_BROKERS
-	KafkaTopicPrefix      string // KAFKA_TOPIC_PREFIX (default "stube." — per-tenant on a shared cluster)
-	KafkaGroupID          string // KAFKA_GROUP_ID / DOWNLOAD_GATEWAY_KAFKA_GROUP_ID
-	KafkaCertDir          string // dir holding user.crt/user.key/ca.crt (default /etc/kafka-cert)
+	// Kafka: the catalog pipeline's events
+	KafkaBrokers     string // KAFKA_BROKERS
+	KafkaTopicPrefix string // KAFKA_TOPIC_PREFIX (default "stube." — per-tenant on a shared cluster)
+	KafkaCertDir     string // dir holding user.crt/user.key/ca.crt (default /etc/kafka-cert)
 
 	// catalog pipeline events (Kafka producer + the discovered->enrich consumer).
 	// This is the event-driven trigger spine: scan emits stube.catalog.item.discovered,
@@ -90,13 +85,6 @@ type Config struct {
 	// stube.catalog.item.enriched, which the analyzer consumes, and so on down the
 	// chain. Defaults ON whenever KAFKA_BROKERS is set (env override to force off).
 	CatalogEventsEnabled bool // CATALOG_EVENTS_ENABLED (default = KAFKA_BROKERS != "")
-
-	// oDownloader
-	ODownloaderURL     string // ODOWNLOADER_URL / ODOWNLOADER_API_URL
-	ODownloaderToken   string // ODOWNLOADER_TOKEN / ODOWNLOADER_API_TOKEN (blank -> disabled)
-	ODownloaderPollSec int    // poll interval seconds (default 15)
-	ODownloaderInbox   string // inbox dir (default <PackagesRoot>/_inbox)
-	ODownloaderTimeout int    // per-job timeout minutes (default 60)
 }
 
 func env(keys ...string) string {
@@ -125,18 +113,6 @@ func envBool(def bool, keys ...string) bool {
 		return def
 	}
 	return b
-}
-
-func envInt(def int, keys ...string) int {
-	v := env(keys...)
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return def
-	}
-	return n
 }
 
 // envDuration reads a Go duration ("24h", "90m"); "0", "off", "false" and
@@ -297,20 +273,10 @@ func Load() (Config, error) {
 		ChaptersDBEnabled: envBool(false, "CHAPTERSDB_ENABLED"),
 		ChaptersDBBaseURL: envDefault("https://chaptersdb.com", "CHAPTERSDB_BASE_URL"),
 
-		DownloadGatewayURL: env("DOWNLOAD_GATEWAY_URL"),
-
-		DownloadEventsEnabled: envBool(false, "DOWNLOAD_GATEWAY_EVENTS_ENABLED"),
-		KafkaBrokers:          env("KAFKA_BROKERS"),
-		KafkaTopicPrefix:      envDefault("stube.", "KAFKA_TOPIC_PREFIX"),
-		KafkaGroupID:          envDefault("stube-katalog-manager", "KAFKA_GROUP_ID", "DOWNLOAD_GATEWAY_KAFKA_GROUP_ID"),
-		KafkaCertDir:          envDefault("/etc/kafka-cert", "KAFKA_CERT_DIR"),
-		CatalogEventsEnabled:  envBool(env("KAFKA_BROKERS") != "", "CATALOG_EVENTS_ENABLED"),
-
-		ODownloaderURL:     env("ODOWNLOADER_URL", "ODOWNLOADER_API_URL"),
-		ODownloaderToken:   env("ODOWNLOADER_TOKEN", "ODOWNLOADER_API_TOKEN"),
-		ODownloaderPollSec: envInt(15, "ODOWNLOADER_POLL_SEC"),
-		ODownloaderInbox:   envDefault(packages+"/_inbox", "ODOWNLOADER_INBOX"),
-		ODownloaderTimeout: envInt(60, "ODOWNLOADER_TIMEOUT_MIN"),
+		KafkaBrokers:         env("KAFKA_BROKERS"),
+		KafkaTopicPrefix:     envDefault("stube.", "KAFKA_TOPIC_PREFIX"),
+		KafkaCertDir:         envDefault("/etc/kafka-cert", "KAFKA_CERT_DIR"),
+		CatalogEventsEnabled: envBool(env("KAFKA_BROKERS") != "", "CATALOG_EVENTS_ENABLED"),
 	}
 	return c, nil
 }
@@ -338,9 +304,3 @@ var DefaultOMDBKey = ""
 // TMDBEnabled reports whether TMDB enrichment is configured (a bundled default or
 // an operator override).
 func (c Config) TMDBEnabled() bool { return c.TMDBAPIKey != "" }
-
-// DownloadGatewayEnabled reports whether the command side is configured.
-func (c Config) DownloadGatewayEnabled() bool { return c.DownloadGatewayURL != "" }
-
-// ODownloaderEnabled reports whether trailer ingestion is configured.
-func (c Config) ODownloaderEnabled() bool { return c.ODownloaderURL != "" && c.ODownloaderToken != "" }

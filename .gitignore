@@ -1,5 +1,6 @@
 /katalog-manager
 /server
+/_ifacecheck
 *.test
 /dist/
 .env

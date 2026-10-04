@@ -168,35 +168,3 @@ func (r *validateResultResolver) Findings() []*validateFindingResolver {
 	}
 	return out
 }
-
-type FetchTrailersResult struct {
-	ItemID    string
-	Title     *string
-	Enqueued  int32
-	PackageID *string
-	JobIDs    []string
-	Message   *string
-}
-
-type fetchTrailersResultResolver struct{ m FetchTrailersResult }
-
-func (r *fetchTrailersResultResolver) ItemID() graphql.ID { return gid(r.m.ItemID) }
-func (r *fetchTrailersResultResolver) Title() *string     { return r.m.Title }
-func (r *fetchTrailersResultResolver) Enqueued() int32    { return r.m.Enqueued }
-func (r *fetchTrailersResultResolver) PackageID() *string { return r.m.PackageID }
-func (r *fetchTrailersResultResolver) JobIds() []string   { return r.m.JobIDs }
-func (r *fetchTrailersResultResolver) Message() *string   { return r.m.Message }
-
-type DownloadCommandResult struct {
-	OK          bool
-	Adapter     *string
-	ClientJobID *string
-	Message     *string
-}
-
-type downloadCommandResultResolver struct{ m DownloadCommandResult }
-
-func (r *downloadCommandResultResolver) Ok() bool             { return r.m.OK }
-func (r *downloadCommandResultResolver) Adapter() *string     { return r.m.Adapter }
-func (r *downloadCommandResultResolver) ClientJobID() *string { return r.m.ClientJobID }
-func (r *downloadCommandResultResolver) Message() *string     { return r.m.Message }

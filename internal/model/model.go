@@ -325,28 +325,6 @@ type Setting struct {
 	Description *string
 }
 
-type DownloadJob struct {
-	ID               string
-	CreatedAt        *time.Time
-	ModifiedAt       *time.Time
-	Adapter          string
-	ClientJobID      string
-	Title            *string
-	WantedItemID     *string
-	State            string
-	ProgressPct      *float64
-	DownloadedBytes  *int64
-	SizeBytes        *int64
-	SpeedBps         *int64
-	EtaSec           *int32
-	Files            *string
-	ErrorMessage     *string
-	StartedAt        *time.Time
-	CompletedAt      *time.Time
-	LastEventAt      *time.Time
-	StateCriticality *int32 // view-computed
-}
-
 // DeletedItem mirrors db/migrations/029_deleted_items.sql: an item the catalog
 // deleted, or a person (Type "person") it deleted because no title credits them
 // any more, as of its latest deletion. If an item or person with the same ID
@@ -359,25 +337,4 @@ type DeletedItem struct {
 	DeletedAt time.Time // UTC
 	DeletedBy string    // a principal's subject, or the service that deleted
 	Reason    *string
-}
-
-// TrailerJob mirrors db/migrations/020_trailerjobs.sql (absent from the live
-// dump; recreated by db/migrations/028).
-type TrailerJob struct {
-	ID            string
-	CreatedAt     *time.Time
-	ModifiedAt    *time.Time
-	ItemID        string
-	TrailerLinkID *string
-	SourceURL     string
-	PackageID     *string
-	DownloadID    *string
-	State         string
-	Attempts      *int32
-	StartedAt     *time.Time
-	FinishedAt    *time.Time
-	BytesDone     *int64
-	BytesTotal    *int64
-	Message       *string
-	FinalPath     *string
 }

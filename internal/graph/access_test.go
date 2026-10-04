@@ -111,7 +111,7 @@ func TestEveryRootFieldHasARule(t *testing.T) {
 			t.Errorf("the access rule of %s names no field of the schema", f)
 		}
 	}
-	if len(fields) < 40 {
+	if len(fields) < 35 {
 		t.Errorf("introspection found %d root fields, fewer than the schema has", len(fields))
 	}
 }

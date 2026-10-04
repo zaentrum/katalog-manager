@@ -20,11 +20,9 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/chaptersdb"
 	"github.com/zaentrum/katalog-manager/internal/config"
-	"github.com/zaentrum/katalog-manager/internal/downloads"
 	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/graph"
 	"github.com/zaentrum/katalog-manager/internal/itemactions"
-	"github.com/zaentrum/katalog-manager/internal/odownloader"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/rest"
 	"github.com/zaentrum/katalog-manager/internal/scanner"
@@ -134,22 +132,9 @@ func run() error {
 	}
 	enricher := tmdb.New(st, cfg, steps, chapters, settingLookup)
 	scan := scanner.New(st, cfg, steps, eventProducer)
-	gateway := downloads.NewGateway(cfg)
 	actions := itemactions.New(st, cfg, steps, eventProducer)
-	trailers := odownloader.New(st, cfg, steps)
 
 	// Background workers (lifetime = server) share bgCtx, cancelled on shutdown.
-	if cfg.DownloadEventsEnabled {
-		consumer := downloads.NewConsumer(st, cfg)
-		go func() {
-			if err := consumer.Run(bgCtx); err != nil {
-				log.Printf("download-events consumer stopped: %v", err)
-			}
-		}()
-	}
-	if cfg.ODownloaderEnabled() {
-		go trailers.RunPoller(bgCtx)
-	}
 	// Keep the people and titles the catalog holds fresh from TMDB's change
 	// lists, without crawling TMDB: every TMDB_REFRESH_INTERVAL (default 24h),
 	// idle while there is no TMDB key.
@@ -191,8 +176,6 @@ func run() error {
 		Packager:  actions,
 		Validator: actions,
 		Remover:   actions,
-		Trailers:  trailers,
-		DLGateway: gateway,
 	})
 	schema := graph.MustSchema(resolver)
 

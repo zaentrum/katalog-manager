@@ -249,6 +249,8 @@ type ItemTrailerLink {
   title: String
   durationSec: Int
   publishedAt: Time
+  # a local copy of the trailer, if the catalog holds one: when it was
+  # stored and where; null for a trailer the catalog only links to
   downloadedAt: Time
   localPath: String
 }
@@ -289,26 +291,6 @@ type ActivityEvent {
   startedAt: Time
   finishedAt: Time
   updatedAt: Time
-}
-
-type DownloadJob {
-  id: ID!
-  adapter: String!
-  clientJobId: String!
-  title: String
-  wantedItemId: String
-  state: String!
-  progressPct: Float
-  downloadedBytes: Float
-  sizeBytes: Float
-  speedBps: Float
-  etaSec: Int
-  files: String
-  errorMessage: String
-  startedAt: Time
-  completedAt: Time
-  lastEventAt: Time
-  stateCriticality: Int
 }
 
 # A setting. A secret one (isSecret: a credential, such as an API key) is
@@ -481,22 +463,6 @@ type ValidateResult {
   findings: [ValidateFinding!]!
 }
 
-type FetchTrailersResult {
-  itemId: ID!
-  title: String
-  enqueued: Int!
-  packageId: String
-  jobIds: [String!]!
-  message: String
-}
-
-type DownloadCommandResult {
-  ok: Boolean!
-  adapter: String
-  clientJobId: String
-  message: String
-}
-
 # ---------------------------------------------------------------------------
 # Queries
 # ---------------------------------------------------------------------------
@@ -517,9 +483,6 @@ type Query {
   # Pipeline activity feed: processing-step transitions across all items,
   # newest first (drives the Activity monitor, technical + friendly views).
   activity(limit: Int): [ActivityEvent!]!
-
-  downloadJobs(limit: Int): [DownloadJob!]!
-  downloadClients: String!
 
   settings: [Setting!]!
   genres: [Genre!]!
@@ -580,11 +543,6 @@ type Mutation {
   retryNotFound(type: String): RetryResult!
   packageItem(id: ID!): PackageResult!
   validateItem(id: ID!): ValidateResult!
-  fetchTrailers(id: ID!): FetchTrailersResult!
-
-  # downloads (CQRS command side)
-  addDownload(adapter: String!, source: String!, title: String, wantedItemId: String): DownloadCommandResult!
-  cancelDownload(adapter: String!, clientJobId: String!): DownloadCommandResult!
 
   # item + facet CRUD (operator edits)
   createItem(input: ItemInput!): Item!

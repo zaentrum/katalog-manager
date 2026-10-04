@@ -2,8 +2,9 @@
 
 Catalog-management API for the **zaentrum** platform — a Go + GraphQL service.
 It owns the catalog write/admin surface (items, artwork, processing-step audit,
-downloads read-model, settings) and drives enrichment, scanning, packaging and
-trailer ingestion. A rewrite of the former SAP CAP/Java service onto Go.
+settings) and drives enrichment, scanning and packaging. A rewrite of the
+former SAP CAP/Java service onto Go. Files enter the catalog through the
+scanner and the neutral `POST /api/ingest`, and through nothing else.
 
 ## Architecture
 
@@ -13,15 +14,13 @@ The surface is split deliberately:
   reads (`items`, `movies`, `series`, `episodes`, `albums`, `item` with nested
   facets + computed fields; an item's `people` are its credits, each a person
   in a role with its job, character, order and episode count), `searchItems`,
-  `scanJobs`, `downloadJobs`,
-  `settings`, `deletedItems` (the deletion log, read-only), `people` and
+  `scanJobs`, `settings`, `deletedItems` (the deletion log, read-only), `people` and
   `person` (a person's TMDB details, locks and field origins, and their
   `credits`: every title that credits them, newest first, each with its role,
   job, character, order and episode count), `referenceSync`
   (the change-list refresh's cursors and last runs, read-only), and the operator
   actions (`triggerScan`, `enrichOne`/`enrichPending`, `refreshPeople`,
-  `packageItem`, `validateItem`, `fetchTrailers`, `addDownload`/`cancelDownload`,
-  item + settings CRUD; a secret setting, such as an API key, is write-only:
+  `packageItem`, `validateItem`, item + settings CRUD; a secret setting, such as an API key, is write-only:
   `setSecretSetting`/`clearSecretSetting`, and no field returns its value).
   It is the catalog console's: every field is an administrator's (see
   [Who may do what](#who-may-do-what)). Schema-first via
@@ -41,7 +40,6 @@ The surface is split deliberately:
     `POST /api/items/{id}/packaging-complete` — the analyzer/packager worker
     protocol.
   - `POST /api/ingest` — an addon hands a file on disk to the catalog.
-  - Kafka `stube.download.client.*` consumer — projects the downloads read model.
 
 ## Who may do what
 
@@ -55,7 +53,7 @@ account, whose token carries the addon role. Everyone else signed in is a
 
 | Operation | Who may |
 |---|---|
-| every GraphQL query and mutation (the catalog with its paths on disk, scan and download jobs, activity, settings, the deletion log, every change) | admin |
+| every GraphQL query and mutation (the catalog with its paths on disk, scan jobs, activity, settings, the deletion log, every change) | admin |
 | GraphQL `triggerScan` | admin, service account |
 | `GET /api/manage/stream` (the console's live stream) | admin |
 | `GET /api/artwork/...`, `/api/manage/artwork/...` (also a person's portrait) | any signed-in caller, or a stream token |
@@ -75,8 +73,9 @@ lowercase `com_nalet_katalog_*` tables and the computed `katalogservice_*` views
 No destructive migration. The files in `db/migrations/` apply on top of the base
 schema in the order of their numbers, and each is idempotent:
 
-- `028_go_rewrite.sql` fills two gaps (the `trailerjobs` table and a
-  `downloadjobs (adapter, clientjobid)` unique index).
+- `028_go_rewrite.sql` creates nothing any more: the two objects it added
+  served an integration the core no longer carries (see the file). A catalog
+  that applied it keeps them; nothing reads or writes them.
 - `029_deleted_items.sql` adds the deletion log, `com_nalet_katalog_deleteditems`:
   every item the catalog deletes, and every person it deletes because no title
   credits them any more (type `person`). A title's credits follow TMDB: read
@@ -108,8 +107,7 @@ schema in the order of their numbers, and each is idempotent:
 Env vars mirror the previous service so existing manifests keep working — see
 `internal/config/config.go`. Key ones: `SPRING_DATASOURCE_URL/USERNAME/PASSWORD`,
 `SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI`, `STREAM_SIGNING_KEY`,
-`TMDB_API_KEY`, `SCANNER_NFS_ROOT`, `DOWNLOAD_GATEWAY_URL`,
-`DOWNLOAD_GATEWAY_EVENTS_ENABLED`, `KAFKA_BROKERS`, `ODOWNLOADER_URL/TOKEN`.
+`TMDB_API_KEY`, `SCANNER_NFS_ROOT`, `KAFKA_BROKERS`.
 `AUTH_DISABLED=true` turns off auth for local dev: every caller may then do
 anything.
 

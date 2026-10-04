@@ -13,8 +13,8 @@ import (
 // writer, and viewers read the catalog through katalog-api and its images
 // through chino-api's artwork proxy, which reaches this service only on the
 // REST artwork routes. So every field is an administrator's: what the catalog
-// holds down to its paths on disk and the pipeline's errors, the scan and
-// download jobs, the settings, the deletion log, and every change. The one
+// holds down to its paths on disk and the pipeline's errors, the scan jobs,
+// the settings, the deletion log, and every change. The one
 // other caller is the scan Job a deployment runs after it starts, which calls
 // triggerScan with the platform's service account.
 //
@@ -31,8 +31,6 @@ var fieldAccess = map[string]auth.Access{
 	"Query.scanJob":               auth.Admin,
 	"Query.scanJobs":              auth.Admin,
 	"Query.activity":              auth.Admin,
-	"Query.downloadJobs":          auth.Admin,
-	"Query.downloadClients":       auth.Admin,
 	"Query.settings":              auth.Admin,
 	"Query.genres":                auth.Admin,
 	"Query.people":                auth.Admin,
@@ -51,9 +49,6 @@ var fieldAccess = map[string]auth.Access{
 	"Mutation.retryNotFound":            auth.Admin,
 	"Mutation.packageItem":              auth.Admin,
 	"Mutation.validateItem":             auth.Admin,
-	"Mutation.fetchTrailers":            auth.Admin,
-	"Mutation.addDownload":              auth.Admin,
-	"Mutation.cancelDownload":           auth.Admin,
 	"Mutation.createItem":               auth.Admin,
 	"Mutation.updateItem":               auth.Admin,
 	"Mutation.deleteItem":               auth.Admin,

@@ -307,28 +307,6 @@ func (r *activityEventResolver) StartedAt() *graphql.Time  { return gtime(r.m.St
 func (r *activityEventResolver) FinishedAt() *graphql.Time { return gtime(r.m.FinishedAt) }
 func (r *activityEventResolver) UpdatedAt() *graphql.Time  { return gtime(r.m.UpdatedAt) }
 
-// ---- DownloadJob ----
-
-type downloadJobResolver struct{ m *model.DownloadJob }
-
-func (r *downloadJobResolver) ID() graphql.ID             { return gid(r.m.ID) }
-func (r *downloadJobResolver) Adapter() string            { return r.m.Adapter }
-func (r *downloadJobResolver) ClientJobID() string        { return r.m.ClientJobID }
-func (r *downloadJobResolver) Title() *string             { return r.m.Title }
-func (r *downloadJobResolver) WantedItemID() *string      { return r.m.WantedItemID }
-func (r *downloadJobResolver) State() string              { return r.m.State }
-func (r *downloadJobResolver) ProgressPct() *float64      { return r.m.ProgressPct }
-func (r *downloadJobResolver) DownloadedBytes() *float64  { return i64ptrToFloat(r.m.DownloadedBytes) }
-func (r *downloadJobResolver) SizeBytes() *float64        { return i64ptrToFloat(r.m.SizeBytes) }
-func (r *downloadJobResolver) SpeedBps() *float64         { return i64ptrToFloat(r.m.SpeedBps) }
-func (r *downloadJobResolver) EtaSec() *int32             { return r.m.EtaSec }
-func (r *downloadJobResolver) Files() *string             { return r.m.Files }
-func (r *downloadJobResolver) ErrorMessage() *string      { return r.m.ErrorMessage }
-func (r *downloadJobResolver) StartedAt() *graphql.Time   { return gtime(r.m.StartedAt) }
-func (r *downloadJobResolver) CompletedAt() *graphql.Time { return gtime(r.m.CompletedAt) }
-func (r *downloadJobResolver) LastEventAt() *graphql.Time { return gtime(r.m.LastEventAt) }
-func (r *downloadJobResolver) StateCriticality() *int32   { return r.m.StateCriticality }
-
 // ---- DeletedItem ----
 
 type deletedItemResolver struct{ m *model.DeletedItem }

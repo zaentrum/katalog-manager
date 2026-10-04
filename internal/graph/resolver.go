@@ -12,7 +12,7 @@ import (
 )
 
 // errNotConfigured is returned by service-backed actions when the relevant
-// integration is not wired (e.g. download-gateway URL unset).
+// integration is not wired (e.g. no TMDB key).
 var errNotConfigured = errors.New("feature not configured")
 
 // Services bundles the integration services a resolver may call. Fields are
@@ -24,8 +24,6 @@ type Services struct {
 	Packager  Packager
 	Validator Validator
 	Remover   Remover
-	Trailers  TrailerFetcher
-	DLGateway DownloadGateway
 }
 
 // PeopleRefresher backfills people from TMDB (implemented by tmdb).
@@ -88,14 +86,6 @@ type RemoveResult struct {
 
 type Validator interface {
 	ValidateItem(ctx context.Context, id string) (ValidateResult, error)
-}
-type TrailerFetcher interface {
-	FetchTrailers(ctx context.Context, id string) (FetchTrailersResult, error)
-}
-type DownloadGateway interface {
-	Add(ctx context.Context, adapter, source, title, wantedItemID string) (clientJobID, message string, err error)
-	Cancel(ctx context.Context, adapter, clientJobID string) (message string, err error)
-	Clients(ctx context.Context) (string, error)
 }
 
 // Resolver is the GraphQL root (Query + Mutation). Every root field asks
@@ -317,31 +307,6 @@ func (r *Resolver) Activity(ctx context.Context, args struct{ Limit *int32 }) ([
 		out = append(out, &activityEventResolver{m: x})
 	}
 	return out, nil
-}
-
-func (r *Resolver) DownloadJobs(ctx context.Context, args struct{ Limit *int32 }) ([]*downloadJobResolver, error) {
-	if err := r.allow(ctx, "Query.downloadJobs"); err != nil {
-		return nil, err
-	}
-	js, err := r.store.ListDownloadJobs(ctx, deref32(args.Limit))
-	if err != nil {
-		return nil, err
-	}
-	out := make([]*downloadJobResolver, 0, len(js))
-	for _, j := range js {
-		out = append(out, &downloadJobResolver{m: j})
-	}
-	return out, nil
-}
-
-func (r *Resolver) DownloadClients(ctx context.Context) (string, error) {
-	if err := r.allow(ctx, "Query.downloadClients"); err != nil {
-		return "", err
-	}
-	if r.svc.DLGateway == nil {
-		return "[]", nil
-	}
-	return r.svc.DLGateway.Clients(ctx)
 }
 
 func (r *Resolver) Settings(ctx context.Context) ([]*settingResolver, error) {
@@ -626,69 +591,6 @@ func (r *Resolver) ValidateItem(ctx context.Context, args struct{ ID graphql.ID 
 		return nil, err
 	}
 	return &validateResultResolver{m: res}, nil
-}
-
-func (r *Resolver) FetchTrailers(ctx context.Context, args struct{ ID graphql.ID }) (*fetchTrailersResultResolver, error) {
-	if err := r.allow(ctx, "Mutation.fetchTrailers"); err != nil {
-		return nil, err
-	}
-	if r.svc.Trailers == nil {
-		return nil, errNotConfigured
-	}
-	res, err := r.svc.Trailers.FetchTrailers(ctx, string(args.ID))
-	if err != nil {
-		return nil, err
-	}
-	return &fetchTrailersResultResolver{m: res}, nil
-}
-
-func (r *Resolver) AddDownload(ctx context.Context, args struct {
-	Adapter      string
-	Source       string
-	Title        *string
-	WantedItemID *string
-}) (*downloadCommandResultResolver, error) {
-	if err := r.allow(ctx, "Mutation.addDownload"); err != nil {
-		return nil, err
-	}
-	if r.svc.DLGateway == nil {
-		return nil, errNotConfigured
-	}
-	clientJobID, msg, err := r.svc.DLGateway.Add(ctx, args.Adapter, args.Source, strDeref(args.Title), strDeref(args.WantedItemID))
-	res := DownloadCommandResult{OK: err == nil, Adapter: &args.Adapter}
-	if clientJobID != "" {
-		res.ClientJobID = &clientJobID
-	}
-	if msg != "" {
-		res.Message = &msg
-	}
-	if err != nil {
-		m := err.Error()
-		res.Message = &m
-	}
-	return &downloadCommandResultResolver{m: res}, nil
-}
-
-func (r *Resolver) CancelDownload(ctx context.Context, args struct {
-	Adapter     string
-	ClientJobID string
-}) (*downloadCommandResultResolver, error) {
-	if err := r.allow(ctx, "Mutation.cancelDownload"); err != nil {
-		return nil, err
-	}
-	if r.svc.DLGateway == nil {
-		return nil, errNotConfigured
-	}
-	msg, err := r.svc.DLGateway.Cancel(ctx, args.Adapter, args.ClientJobID)
-	res := DownloadCommandResult{OK: err == nil, Adapter: &args.Adapter, ClientJobID: &args.ClientJobID}
-	if msg != "" {
-		res.Message = &msg
-	}
-	if err != nil {
-		m := err.Error()
-		res.Message = &m
-	}
-	return &downloadCommandResultResolver{m: res}, nil
 }
 
 type itemInput struct {
