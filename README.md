@@ -18,9 +18,14 @@ The surface is split deliberately:
   `person` (a person's TMDB details, locks and field origins, and their
   `credits`: every title that credits them, newest first, each with its role,
   job, character, order and episode count), `referenceSync`
-  (the change-list refresh's cursors and last runs, read-only), and the operator
-  actions (`triggerScan`, `enrichOne`/`enrichPending`, `refreshPeople`,
-  `packageItem`, `validateItem`, item + settings CRUD; a secret setting, such as an API key, is write-only:
+  (the change-list refresh's cursors and last runs, read-only),
+  `processingOverview` (every step's items by state, the failed steps with
+  their last errors, and how the service retries), and the operator actions
+  (`triggerScan`, `enrichOne`/`enrichPending`, `refreshPeople`, `packageItem`,
+  `validateItem`, `retryStep`/`retryFailed` (see
+  [The pipeline heals itself](#the-pipeline-heals-itself)),
+  `backfillSourceProbes`, item + settings CRUD; a delete removes files from
+  disk only when asked; a secret setting, such as an API key, is write-only:
   `setSecretSetting`/`clearSecretSetting`, and no field returns its value).
   It is the catalog console's: every field is an administrator's (see
   [Who may do what](#who-may-do-what)). Schema-first via
@@ -113,6 +118,56 @@ schema in the order of their numbers, and each is idempotent:
   role (`ordinal`) and a series' episodes (`episodecount`), all unknown for a
   credit older than it. A credit is still the title, the person and the role;
   these change in place. Applied at startup like 030.
+- `033_step_retries.sql` gives a processing step what the service keeps to
+  retry it: its failures in a row (`failures`), the error of its last failed
+  run (`lasterror`), when it is retried by itself (`nextretryat`) and when its
+  trigger was last sent again (`dispatchedat`). A step older than it has no
+  retry scheduled: the service retries what fails after it, an admin what
+  failed before. Applied at startup like 030; without it the pipeline runs
+  as before, and nothing retries a step.
+
+## The pipeline heals itself
+
+A step that fails is retried: the event that triggers its worker is sent
+again — `discovered` for `tmdb` (the enricher) and the `scan` step (the item's
+pipeline from its start), `enriched` for the analyzer's passes, `analyzed` for
+`transcode`, `transcoded` for `package` — one event per item and worker. Each
+worker passes the chain on, and its own guard skips work that is done.
+
+- **Backoff and attempts.** A failure is retried after `KATALOG_RETRY_BACKOFF`
+  (1m), doubled with every failure in a row, at most
+  `KATALOG_RETRY_BACKOFF_MAX` (1h), until the step has run
+  `KATALOG_RETRY_MAX_ATTEMPTS` (3) times in a row; then it stays failed for an
+  admin. A step records its failures in a row, its last error (at most 500
+  characters, credentials redacted: a URL's user and password, tokens and
+  keys in a query, bearers, JWTs, passwords written out) and its next retry.
+- **The reaper.** A step in progress whose worker has been silent for longer
+  than the step's timeout, or one sent again that no worker started within
+  it, is taken for a failed run and retried the same way. A step is timed
+  from its worker's last word (a worker that reports in progress again keeps
+  it alive); the timeouts are 15m for `scan` and `tmdb`, 2h for the
+  analyzer's passes and `package`, 6h for `transcode`
+  (`KATALOG_STEP_TIMEOUTS`).
+- **No step runs twice.** A retry claims its step in the database before it
+  sends anything, in one statement whose rows only one caller gets, so two
+  instances, or an admin and the sweep, never send a step's retry twice, and
+  a retry asked while one waits is refused. A step in progress or waiting for
+  its worker within its timeout is left alone. `done`, `not_applicable` and
+  `skipped` are terminal: nothing retries them.
+- **By hand.** `retryStep(itemId, step)` retries a failed step (with or
+  without attempts left) or a silent one now, its failures afresh;
+  `retryFailed(step)` every failed step. The result says why a step was left
+  alone.
+- An event that could not be sent puts its steps back, failed; the sweep
+  sends it again a backoff later. Every `KATALOG_RETRY_INTERVAL` (30s) the
+  sweep reaps and sends what is due; without an event bus or migration 033
+  nothing is retried, and the overview says why.
+
+A title's source asset keeps what the workers probed it as: the codec and
+resolution the transcoder reports in its step's details, the duration the
+packager gives in its manifest, the bit rate from size and duration.
+`backfillSourceProbes` fills what the sources probed before lack, from the
+catalog's records.
 
 ## Configuration
 
@@ -148,6 +203,15 @@ the roles a title's credits follow TMDB in: TMDB's credits in them are read,
 and a refresh drops a title's credits in any other role, as it drops those
 TMDB no longer lists (a person no title credits after that is deleted, in the
 deletion log). Anything in it that is not one of these roles stops the
+service at startup with an error that says so.
+
+The retries (see [The pipeline heals itself](#the-pipeline-heals-itself)):
+`KATALOG_RETRY_MAX_ATTEMPTS` (default 3; 1 retries nothing by itself),
+`KATALOG_RETRY_BACKOFF` (default `1m`), `KATALOG_RETRY_BACKOFF_MAX` (default
+`1h`), `KATALOG_RETRY_INTERVAL` (default `30s`; `0` or `off` turns the
+automatic retries and the reaper off) and `KATALOG_STEP_TIMEOUTS`
+(`transcode=12h,package=3h`, over the defaults). A value that is no number or
+duration, or a timeout of a step the pipeline does not have, stops the
 service at startup with an error that says so.
 
 ## Develop
