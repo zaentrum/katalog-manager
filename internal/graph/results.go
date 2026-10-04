@@ -1,6 +1,10 @@
 package graph
 
-import graphql "github.com/graph-gophers/graphql-go"
+import (
+	graphql "github.com/graph-gophers/graphql-go"
+
+	"github.com/zaentrum/katalog-manager/internal/sourceprobe"
+)
 
 // Plain value-backed resolvers for action results. Fields are exported on the
 // backing structs and exposed through methods to match the SDL exactly.
@@ -97,6 +101,16 @@ type backfillResultResolver struct{ artworkData, artwork int32 }
 
 func (r *backfillResultResolver) ArtworkData() int32 { return r.artworkData }
 func (r *backfillResultResolver) Artwork() int32     { return r.artwork }
+
+type sourceProbeBackfillResultResolver struct{ m sourceprobe.BackfillResult }
+
+func (r *sourceProbeBackfillResultResolver) Assets() int32      { return r.m.Assets }
+func (r *sourceProbeBackfillResultResolver) Filled() int32      { return r.m.Filled }
+func (r *sourceProbeBackfillResultResolver) Codecs() int32      { return r.m.Codecs }
+func (r *sourceProbeBackfillResultResolver) Resolutions() int32 { return r.m.Resolutions }
+func (r *sourceProbeBackfillResultResolver) Durations() int32   { return r.m.Durations }
+func (r *sourceProbeBackfillResultResolver) Bitrates() int32    { return r.m.Bitrates }
+func (r *sourceProbeBackfillResultResolver) Unknown() int32     { return r.m.Unknown }
 
 type RetryResult struct {
 	Reset int32

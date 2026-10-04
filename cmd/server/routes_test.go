@@ -276,6 +276,7 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { enrichPending(limit: 1) { queued } }`, "enrich pending"},
 	{`mutation { refreshPeople(all: false) { titlesRead } }`, "refresh people"},
 	{`mutation { backfillEpisodeBackdrops { artwork } }`, "backfill backdrops"},
+	{`mutation { backfillSourceProbes { assets filled unknown } }`, ""},
 	{`mutation { retryNotFound { reset } }`, "retry not found"},
 	{`mutation { retryStep(itemId: "m1", step: "transcode") { retried message } }`, "retry m1 transcode"},
 	{`mutation { retryFailed(step: "package") { retried message } }`, "retry the failed package"},

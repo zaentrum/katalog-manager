@@ -47,6 +47,7 @@ var fieldAccess = map[string]auth.Access{
 	"Mutation.enrichPending":            auth.Admin,
 	"Mutation.refreshPeople":            auth.Admin,
 	"Mutation.backfillEpisodeBackdrops": auth.Admin,
+	"Mutation.backfillSourceProbes":     auth.Admin,
 	"Mutation.retryNotFound":            auth.Admin,
 	"Mutation.retryStep":                auth.Admin,
 	"Mutation.retryFailed":              auth.Admin,

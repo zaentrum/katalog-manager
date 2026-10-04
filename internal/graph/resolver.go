@@ -8,6 +8,7 @@ import (
 	graphql "github.com/graph-gophers/graphql-go"
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/sourceprobe"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
@@ -545,6 +546,19 @@ func (r *Resolver) BackfillEpisodeBackdrops(ctx context.Context) (*backfillResul
 		return nil, err
 	}
 	return &backfillResultResolver{artworkData: ad, artwork: aw}, nil
+}
+
+// BackfillSourceProbes fills what the source assets lack of their probes from
+// what the catalog has recorded (sourceprobe.Backfill).
+func (r *Resolver) BackfillSourceProbes(ctx context.Context) (*sourceProbeBackfillResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.backfillSourceProbes"); err != nil {
+		return nil, err
+	}
+	res, err := sourceprobe.Backfill(ctx, r.store.Pool())
+	if err != nil {
+		return nil, err
+	}
+	return &sourceProbeBackfillResultResolver{m: res}, nil
 }
 
 func (r *Resolver) RetryNotFound(ctx context.Context, args struct{ Type *string }) (*retryResultResolver, error) {

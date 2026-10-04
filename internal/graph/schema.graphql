@@ -483,6 +483,19 @@ type BackfillResult {
   artwork: Int!
 }
 
+# What a backfillSourceProbes run did: the source assets it looked at (those
+# missing any of the four probe values), those it filled anything of, by
+# value, and those nothing in the catalog says more of yet.
+type SourceProbeBackfillResult {
+  assets: Int!
+  filled: Int!
+  codecs: Int!
+  resolutions: Int!
+  durations: Int!
+  bitrates: Int!
+  unknown: Int!
+}
+
 # What a refreshPeople run did.
 type PeopleRefreshResult {
   # titles whose TMDB credits were read again, those whose credits could not
@@ -656,6 +669,13 @@ type Mutation {
   # logged); one runs at a time.
   refreshPeople(all: Boolean): PeopleRefreshResult!
   backfillEpisodeBackdrops: BackfillResult!
+  # Fills what a title's source asset lacks of its probe (its video codec,
+  # resolution, duration and bit rate) from what the catalog has recorded:
+  # the item's diagnostics, its transcode step's details (the transcoder's
+  # probe of the source), its packaged asset's duration; a bit rate is the
+  # size over the duration. A value a source has stays; running it again
+  # changes nothing.
+  backfillSourceProbes: SourceProbeBackfillResult!
   retryNotFound(type: String): RetryResult!
   # Retries a step of an item now: sends the event that triggers its worker
   # again. It retries a failed step (with or without attempts left), and one
