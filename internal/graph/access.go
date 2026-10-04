@@ -55,6 +55,7 @@ var fieldAccess = map[string]auth.Access{
 	"Mutation.retryNotFound":            auth.Admin,
 	"Mutation.retryStep":                auth.Admin,
 	"Mutation.retryFailed":              auth.Admin,
+	"Mutation.reencodeItem":             auth.Admin,
 	"Mutation.packageItem":              auth.Admin,
 	"Mutation.validateItem":             auth.Admin,
 	"Mutation.createItem":               auth.Admin,

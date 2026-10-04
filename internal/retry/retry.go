@@ -24,6 +24,11 @@
 // transcode and transcoded for the package. Each worker passes the chain on,
 // and its own idempotency guard skips the work that is done.
 //
+// An admin also encodes a title again whose transcode and package are done
+// (reencode.go): both wait for their workers afresh, claimed as a retry is,
+// and the transcoder's trigger goes, not marked as a retry, so its guard runs
+// the step.
+//
 // The reaper takes a scan job silent for longer than the scan's timeout (the
 // scan step's) for lost too: its scanner, which gives it a word every so
 // often while it walks, is stuck or gone. The job is failed, saying so; a scan
@@ -173,7 +178,7 @@ func (s *Service) Sweep(ctx context.Context) (reaped, sent int, err error) {
 		if err != nil {
 			return reaped, sent, err
 		}
-		n, _, notSent, _ := s.dispatch(ctx, rows, true)
+		n, _, notSent, _ := s.dispatch(ctx, rows, true, asRetry)
 		sent += n
 		if len(rows) < batch || len(notSent) > 0 || ctx.Err() != nil {
 			return reaped, sent, ctx.Err()
@@ -285,12 +290,24 @@ func (s *Service) claim(ctx context.Context, sql string, args ...any) ([]claimed
 	return out, rows.Err()
 }
 
+// send is how dispatch marks the events it sends, and what a step whose event
+// could not be sent says of it. A retry's event is marked as one (status and
+// source "retry"): a worker whose step has finished since it was sent does
+// nothing. A re-encode's is not, so a worker's guard finds its step waiting
+// and runs it.
+type send struct{ mark, what string }
+
+var (
+	asRetry    = send{mark: "retry", what: "the retry"}
+	asReencode = send{mark: "reencode", what: "the re-encode"}
+)
+
 // dispatch sends the trigger event of each claimed step, one per item and
-// topic, and puts back the steps whose event could not be sent: failed, and
-// retried a backoff later when the sweep sent it (automatic), left for the
-// admin otherwise. It returns the steps sent, the items their events went to,
-// the steps not sent and the first error.
-func (s *Service) dispatch(ctx context.Context, rows []claimed, automatic bool) (sent, items int, notSent []claimed, first error) {
+// topic, marked as how says, and puts back the steps whose event could not be
+// sent: failed, and retried a backoff later when automatic (the sweep sends
+// it), left for the admin otherwise. It returns the steps sent, the items
+// their events went to, the steps not sent and the first error.
+func (s *Service) dispatch(ctx context.Context, rows []claimed, automatic bool, how send) (sent, items int, notSent []claimed, first error) {
 	if len(rows) == 0 {
 		return 0, 0, nil, nil
 	}
@@ -304,7 +321,7 @@ func (s *Service) dispatch(ctx context.Context, rows []claimed, automatic bool) 
 		i, ok := at[k]
 		if !ok {
 			ev := events.NewItemEvent(c.itemID)
-			ev.Type, ev.Step, ev.Status, ev.Source = c.itemType, next, "retry", "retry"
+			ev.Type, ev.Step, ev.Status, ev.Source = c.itemType, next, how.mark, how.mark
 			i = len(msgs)
 			at[k] = i
 			msgs = append(msgs, events.Message{Topic: topic, Event: ev})
@@ -344,8 +361,8 @@ func (s *Service) dispatch(ctx context.Context, rows []claimed, automatic bool) 
 				nextretryat = CASE WHEN $3::float8 > 0 THEN now() + make_interval(secs => $3::float8) END,
 				dispatchedat = NULL
 			WHERE id = ANY($1) AND dispatchedat IS NOT NULL`,
-			back, *processing.CleanError("the retry could not be sent: " + first.Error()), again); err != nil {
-			log.Printf("retry: %d steps whose retry could not be sent could not be put back either: %v", len(back), err)
+			back, *processing.CleanError(how.what + " could not be sent: " + first.Error()), again); err != nil {
+			log.Printf("retry: %d steps could not be put back either after %s could not be sent: %v", len(back), how.what, err)
 		}
 	}
 	return sent, items, notSent, first

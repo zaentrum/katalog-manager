@@ -645,6 +645,25 @@ type RetryFailedResult {
   message: String!
 }
 
+# What a reencodeItem call did: the titles it looked at (the movie or the
+# episode, or the episodes of the series that have a file), those it encodes
+# again, those it left alone, and what happened. message says it, and why a
+# title was left alone.
+type ReencodeResult {
+  itemId: ID!
+  titles: Int!
+  # of the titles, those encoded again: their transcode and package wait for
+  # their workers, and the transcoder's event went
+  reencoded: Int!
+  # those left alone: a transcode or package of them is running, or waiting
+  # for its worker, within the step's timeout
+  busy: Int!
+  # those whose event could not be sent: their transcode is put back, failed,
+  # and sent again a backoff later when the service retries by itself
+  notSent: Int!
+  message: String!
+}
+
 type DeleteItemResult {
   deleted: Boolean!
   itemsRemoved: Int!
@@ -793,6 +812,20 @@ type Mutation {
   # Retries every failed step (of one step when given) as retryStep does.
   # The run finishes even when the caller stops waiting; one runs at a time.
   retryFailed(step: String): RetryFailedResult!
+  # Encodes a title again with the pipeline's current settings (the
+  # transcoder's ladder and encoder, then the packager's): a movie or an
+  # episode with a file, or every episode of a series that has one. The
+  # title's transcode and package wait for their workers afresh (their
+  # failures in a row and retries cleared, their attempts kept), and the
+  # transcoder is sent the event it consumes, not as a retry; the packager
+  # follows. A title whose transcode or package is running, or waiting for
+  # its worker, within the step's timeout is left alone (encoding it again
+  # would run it twice). The current package plays while the title is
+  # encoded; the packager then replaces it in place, and until the new one
+  # is complete the title plays by on-demand transcoding. Refused without
+  # an event bus or migration 033; the run finishes even when the caller
+  # stops waiting.
+  reencodeItem(id: ID!): ReencodeResult!
   packageItem(id: ID!): PackageResult!
   validateItem(id: ID!): ValidateResult!
 

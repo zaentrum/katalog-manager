@@ -7,13 +7,24 @@ import (
 	graphql "github.com/graph-gophers/graphql-go"
 )
 
-// Pipeline retries the processing steps and says what the pipeline holds
-// (implemented by retry).
+// Pipeline retries the processing steps, encodes a title again, and says
+// what the pipeline holds (implemented by retry).
 type Pipeline interface {
 	RetryStep(ctx context.Context, itemID, step string) (RetryStepResult, error)
 	RetryFailed(ctx context.Context, step string) (RetryFailedResult, error)
+	ReencodeItem(ctx context.Context, id string) (ReencodeResult, error)
 	Overview(ctx context.Context, step string, limit, offset int32) (ProcessingOverview, error)
 	Policy(ctx context.Context) (RetryPolicyInfo, error)
+}
+
+// ReencodeResult says what a reencodeItem call did.
+type ReencodeResult struct {
+	ItemID    string
+	Titles    int32 // the titles looked at: the movie or episode, or a series' episodes with a file
+	Reencoded int32 // of them, those reset whose transcoder event went
+	Busy      int32 // those left alone: their transcode or package running or waiting within its timeout
+	NotSent   int32 // those reset whose event could not be sent: their transcode put back, failed
+	Message   string
 }
 
 // RetryStepResult says what a retryStep call did.
@@ -136,6 +147,22 @@ func (r *Resolver) RetryFailed(ctx context.Context, args struct{ Step *string })
 	return &retryFailedResultResolver{m: res}, nil
 }
 
+// ReencodeItem encodes a title again, a series' episodes, with the
+// pipeline's current settings.
+func (r *Resolver) ReencodeItem(ctx context.Context, args struct{ ID graphql.ID }) (*reencodeResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.reencodeItem"); err != nil {
+		return nil, err
+	}
+	if r.svc.Pipeline == nil {
+		return nil, errNotConfigured
+	}
+	res, err := r.svc.Pipeline.ReencodeItem(ctx, string(args.ID))
+	if err != nil {
+		return nil, err
+	}
+	return &reencodeResultResolver{m: res}, nil
+}
+
 type processingOverviewResolver struct{ m ProcessingOverview }
 
 func (r *processingOverviewResolver) Steps() []*stepCountsResolver {
@@ -210,3 +237,12 @@ func (r *retryFailedResultResolver) Items() int32    { return r.m.Items }
 func (r *retryFailedResultResolver) NotSent() int32  { return r.m.NotSent }
 func (r *retryFailedResultResolver) Step() *string   { return r.m.Step }
 func (r *retryFailedResultResolver) Message() string { return r.m.Message }
+
+type reencodeResultResolver struct{ m ReencodeResult }
+
+func (r *reencodeResultResolver) ItemID() graphql.ID { return gid(r.m.ItemID) }
+func (r *reencodeResultResolver) Titles() int32      { return r.m.Titles }
+func (r *reencodeResultResolver) Reencoded() int32   { return r.m.Reencoded }
+func (r *reencodeResultResolver) Busy() int32        { return r.m.Busy }
+func (r *reencodeResultResolver) NotSent() int32     { return r.m.NotSent }
+func (r *reencodeResultResolver) Message() string    { return r.m.Message }

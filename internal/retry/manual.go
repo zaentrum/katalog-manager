@@ -45,7 +45,7 @@ func (s *Service) RetryStep(ctx context.Context, itemID, step string) (graph.Ret
 	if len(rows) == 0 {
 		return s.whyNot(ctx, res, timeout)
 	}
-	_, _, notSent, first := s.dispatch(ctx, rows, false)
+	_, _, notSent, first := s.dispatch(ctx, rows, false, asRetry)
 	if len(notSent) > 0 {
 		failed := processing.StatusFailed
 		res.Status = &failed
@@ -134,7 +134,7 @@ func (s *Service) RetryFailed(ctx context.Context, step string) (graph.RetryFail
 		if err != nil {
 			return res, err
 		}
-		sent, items, notSent, err := s.dispatch(ctx, rows, false)
+		sent, items, notSent, err := s.dispatch(ctx, rows, false, asRetry)
 		res.Retried += int32(sent)
 		res.Items += int32(items)
 		res.NotSent += int32(len(notSent))

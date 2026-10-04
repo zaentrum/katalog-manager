@@ -108,6 +108,10 @@ func (f *fakes) RetryFailed(_ context.Context, step string) (graph.RetryFailedRe
 	f.called("retry the failed " + step)
 	return graph.RetryFailedResult{Message: "none"}, nil
 }
+func (f *fakes) ReencodeItem(_ context.Context, id string) (graph.ReencodeResult, error) {
+	f.called("reencode " + id)
+	return graph.ReencodeResult{ItemID: id, Titles: 1, Busy: 1, Message: "left alone"}, nil
+}
 func (f *fakes) Overview(context.Context, string, int32, int32) (graph.ProcessingOverview, error) {
 	f.called("processing overview")
 	return graph.ProcessingOverview{}, nil
@@ -311,6 +315,7 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { retryNotFound { reset } }`, "retry not found"},
 	{`mutation { retryStep(itemId: "m1", step: "transcode") { retried message } }`, "retry m1 transcode"},
 	{`mutation { retryFailed(step: "package") { retried message } }`, "retry the failed package"},
+	{`mutation { reencodeItem(id: "m1") { itemId titles reencoded busy notSent message } }`, "reencode m1"},
 	{`mutation { packageItem(id: "m1") { status } }`, "package m1"},
 	{`mutation { validateItem(id: "m1") { code } }`, "validate m1"},
 	{`mutation { createItem(input: {type: "movie", title: "Made Here"}) { id } }`, ""},
