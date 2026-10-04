@@ -83,6 +83,12 @@ func run() error {
 	if err := st.EnsureCreditDetails(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/032_credit_details.sql is missing and could not be applied: %v; credits keep only their roles until it is", err)
 	}
+	// What the service keeps to retry a processing step (migration 033): its
+	// failures in a row, last error and next retry. Without it the pipeline
+	// runs as before, and nothing retries a step.
+	if err := st.EnsureStepRetries(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/033_step_retries.sql is missing and could not be applied: %v; no step is retried until it is", err)
+	}
 
 	steps := processing.New(st.Pool())
 

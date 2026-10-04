@@ -56,6 +56,9 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	if err := st.EnsureCreditDetails(ctx); err != nil {
 		t.Fatalf("apply the credit details migration: %v", err)
 	}
+	if err := st.EnsureStepRetries(ctx); err != nil {
+		t.Fatalf("apply the step retries migration: %v", err)
+	}
 	return st
 }
 

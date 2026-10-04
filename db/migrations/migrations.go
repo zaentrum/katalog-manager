@@ -5,7 +5,8 @@
 // Not every deployment runs this directory, so the service embeds the
 // migrations it cannot work without and applies each one at startup when its
 // objects are missing (see store.EnsureDeletionLog, store.EnsurePeople,
-// store.EnsureItemLockedFields and store.EnsureCreditDetails).
+// store.EnsureItemLockedFields, store.EnsureCreditDetails and
+// store.EnsureStepRetries).
 package migrations
 
 import _ "embed"
@@ -33,3 +34,9 @@ var ItemLockedFields string
 //
 //go:embed 032_credit_details.sql
 var CreditDetails string
+
+// StepRetries is 033_step_retries.sql: what the service keeps to retry a
+// processing step, its failures in a row, last error and next retry.
+//
+//go:embed 033_step_retries.sql
+var StepRetries string
