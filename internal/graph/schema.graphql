@@ -406,6 +406,24 @@ type Setting {
   isSet: Boolean!
   # when it was last written
   updatedAt: Time
+  # what setSecretSetting found when it checked the value it set with the
+  # service the secret is for; null in every other answer, and for a key
+  # nothing checks
+  check: SecretCheck
+}
+
+# What setSecretSetting found when it checked a secret's value with the
+# service it is for, before storing it. The TMDB key (tmdb.api_key) is checked
+# with TMDB's authentication endpoint, for a few seconds at most: a token TMDB
+# refuses (401) is not stored, and setSecretSetting answers an error saying so
+# (code SECRET_REFUSED); one TMDB takes is valid; one TMDB could not be asked
+# about (no answer in time, or an answer that is neither yes nor no) is stored
+# all the same, unchecked.
+type SecretCheck {
+  # valid or unchecked
+  status: String!
+  # what the check found, to show the admin; it never holds the value
+  message: String!
 }
 
 type EnrichmentStatusCode {
@@ -735,7 +753,9 @@ type Mutation {
   updateSetting(id: ID!, valueText: String, valueType: String, description: String): Setting!
   deleteSetting(id: ID!): Boolean!
   # Sets a secret setting to value (not blank), creating it when there is
-  # none. Write-only: the result says it is set, never what it is.
+  # none. Write-only: the result says it is set, never what it is. The TMDB
+  # key is checked with TMDB first, and one TMDB refuses is not stored (see
+  # SecretCheck; the result's check says what the check found).
   setSecretSetting(key: String!, value: String!): Setting!
   # Clears a secret setting, so the service falls back to its environment
   # default; false when there was none.

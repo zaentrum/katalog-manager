@@ -402,7 +402,8 @@ func (f *fakeTMDB) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Header.Get("Authorization") != "Bearer test-token" {
-		http.Error(w, `{"status_code":7}`, http.StatusUnauthorized)
+		http.Error(w, `{"status_code":7,"status_message":"Invalid API key: You must be granted a valid key.","success":false}`,
+			http.StatusUnauthorized)
 		return
 	}
 	seg := strings.Split(strings.Trim(strings.TrimPrefix(path, "/3"), "/"), "/")
@@ -416,6 +417,8 @@ func (f *fakeTMDB) serve(w http.ResponseWriter, r *http.Request) {
 		id, _ = strconv.ParseInt(seg[1], 10, 64)
 	}
 	switch {
+	case len(seg) == 1 && seg[0] == "authentication":
+		answer(map[string]any{"success": true, "status_code": 1, "status_message": "Success."})
 	case len(seg) == 2 && seg[1] == "changes":
 		f.serveChanges(w, seg[0], q)
 	case seg[0] == "search":

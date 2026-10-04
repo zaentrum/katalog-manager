@@ -19,9 +19,52 @@ func errSecretSetting(key string) error {
 	return fmt.Errorf("%s is a secret setting: set it with setSecretSetting, clear it with clearSecretSetting", key)
 }
 
+// SecretChecker checks the value of a secret setting with the service it is
+// for, before setSecretSetting stores it (implemented by tmdb, for the TMDB
+// key). It answers the zero SecretCheck for a key it does not check. It never
+// writes the value anywhere, and no message it gives holds it.
+type SecretChecker interface {
+	CheckSecret(ctx context.Context, key, value string) SecretCheck
+}
+
+// What a check of a secret's value found (SecretCheck.Status).
+const (
+	// SecretValid: the service took the value.
+	SecretValid = "valid"
+	// SecretUnchecked: the service could not be asked (no answer in time, or
+	// an answer that is neither yes nor no); the value is stored all the same.
+	SecretUnchecked = "unchecked"
+	// SecretRefused: the service refused the value, a definite no; it is not
+	// stored.
+	SecretRefused = "refused"
+)
+
+// SecretCheck is what a check of a secret's value found: Status (empty when
+// nothing checks the key) and what to tell the admin.
+type SecretCheck struct {
+	Status  string
+	Message string
+}
+
+// secretRefused refuses a secret the service it is for refused: nothing is
+// stored. As a GraphQL error it carries the code SECRET_REFUSED and the key.
+type secretRefused struct{ key, message string }
+
+func (e *secretRefused) Error() string { return e.key + ": " + e.message + "; nothing was saved" }
+
+// Extensions are the GraphQL error's extensions.
+func (e *secretRefused) Extensions() map[string]any {
+	return map[string]any{"code": "SECRET_REFUSED", "key": e.key}
+}
+
 // ---- Setting ----
 
-type settingResolver struct{ m *model.Setting }
+// settingResolver is a setting; check is what setSecretSetting found when it
+// checked the value it set, nil anywhere else.
+type settingResolver struct {
+	m     *model.Setting
+	check *SecretCheck
+}
 
 func (r *settingResolver) ID() graphql.ID       { return gid(r.m.ID) }
 func (r *settingResolver) Key() string          { return r.m.Key }
@@ -47,7 +90,21 @@ func (r *settingResolver) UpdatedAt() *graphql.Time {
 	return gtime(r.m.CreatedAt)
 }
 
-// SetSecretSetting sets a secret setting, creating it when there is none.
+// Check is what setSecretSetting found when it checked the value it set.
+func (r *settingResolver) Check() *secretCheckResolver {
+	if r.check == nil {
+		return nil
+	}
+	return &secretCheckResolver{m: *r.check}
+}
+
+type secretCheckResolver struct{ m SecretCheck }
+
+func (r *secretCheckResolver) Status() string  { return r.m.Status }
+func (r *secretCheckResolver) Message() string { return r.m.Message }
+
+// SetSecretSetting sets a secret setting, creating it when there is none. A
+// value the service it is for refuses is not stored (SecretChecker).
 func (r *Resolver) SetSecretSetting(ctx context.Context, args struct {
 	Key   string
 	Value string
@@ -62,11 +119,20 @@ func (r *Resolver) SetSecretSetting(ctx context.Context, args struct {
 	if value == "" {
 		return nil, fmt.Errorf("%s: a secret setting is cleared with clearSecretSetting, not set blank", key)
 	}
+	var check *SecretCheck
+	if r.svc.Secrets != nil {
+		if c := r.svc.Secrets.CheckSecret(ctx, key, value); c.Status != "" {
+			check = &c
+		}
+	}
+	if check != nil && check.Status == SecretRefused {
+		return nil, &secretRefused{key: key, message: check.Message}
+	}
 	s, err := r.store.SetSettingByKey(ctx, key, value)
 	if err != nil {
 		return nil, err
 	}
-	return &settingResolver{m: s}, nil
+	return &settingResolver{m: s, check: check}, nil
 }
 
 // ClearSecretSetting deletes a secret setting, so the service falls back to

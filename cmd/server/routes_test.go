@@ -113,8 +113,27 @@ func (f *fakes) Policy(context.Context) (graph.RetryPolicyInfo, error) {
 	return graph.RetryPolicyInfo{MaxAttempts: 3}, nil
 }
 
+// CheckSecret checks the TMDB key as TMDB would: it refuses refusedToken,
+// cannot be asked about uncheckedToken and takes any other; it checks no
+// other key.
+func (f *fakes) CheckSecret(_ context.Context, key, value string) graph.SecretCheck {
+	f.called("check " + key)
+	switch {
+	case key != "tmdb.api_key":
+		return graph.SecretCheck{}
+	case value == refusedToken:
+		return graph.SecretCheck{Status: graph.SecretRefused, Message: "TMDB refused the token (HTTP 401)"}
+	case value == uncheckedToken:
+		return graph.SecretCheck{Status: graph.SecretUnchecked, Message: "could not check the token with TMDB (HTTP 503): it is saved all the same"}
+	}
+	return graph.SecretCheck{Status: graph.SecretValid, Message: "TMDB took the token"}
+}
+
 // The secrets the instance holds; no answer may carry one.
 const tmdbSecret, fanartSecret, omdbSecret = "tmdb-secret-token", "fanart-secret-key", "omdb-secret-key"
+
+// The TMDB tokens an admin sets; no answer may carry one either.
+const refusedToken, uncheckedToken, goodToken = "a-token-tmdb-refuses", "a-token-tmdb-cannot-check", "a-token-tmdb-takes"
 
 // instance is the service as main wires it, on a test database, with fakes
 // for its integrations and a test issuer whose tokens it takes.
@@ -172,7 +191,7 @@ func newInstanceWith(t *testing.T, pipeline func(*store.Store) graph.Pipeline) *
 		pipe = pipeline(st)
 	}
 	schema := graph.MustSchema(graph.NewResolver(st, cfg, graph.Services{Scanner: f, Enricher: f, People: f,
-		Packager: f, Validator: f, Remover: f, Pipeline: pipe}))
+		Packager: f, Validator: f, Remover: f, Pipeline: pipe, Secrets: f}))
 	r := chi.NewRouter()
 	routes(r, auth.NewMiddleware(jwt, sv).Handler, cfg.Policy(), schema, stream.NewBroker().Handler,
 		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool())}))
@@ -181,7 +200,7 @@ func newInstanceWith(t *testing.T, pipeline func(*store.Store) graph.Pipeline) *
 	in := &instance{url: srv.URL, iss: iss, st: st, f: f}
 	t.Cleanup(func() {
 		for _, a := range in.answers {
-			for _, s := range []string{tmdbSecret, fanartSecret, omdbSecret} {
+			for _, s := range []string{tmdbSecret, fanartSecret, omdbSecret, refusedToken, uncheckedToken, goodToken} {
 				if strings.Contains(a, s) {
 					t.Errorf("an answer carries a secret: %s", a)
 				}
@@ -296,7 +315,7 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { createSetting(key: "scanner.depth", valueText: "3") { id } }`, ""},
 	{`mutation { updateSetting(id: "set-langs", valueText: "en") { id valueText } }`, ""},
 	{`mutation { deleteSetting(id: "set-gone") }`, ""},
-	{`mutation { setSecretSetting(key: "omdb.api_key", value: "` + omdbSecret + `") { key valueText isSet } }`, ""},
+	{`mutation { setSecretSetting(key: "omdb.api_key", value: "` + omdbSecret + `") { key valueText isSet check { status } } }`, "check omdb.api_key"},
 	{`mutation { clearSecretSetting(key: "fanart.api_key") }`, ""},
 }
 

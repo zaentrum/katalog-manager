@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -132,6 +133,113 @@ func TestSetAndClearASecret(t *testing.T) {
 	}
 	if got := exec(t, st, `mutation { clearSecretSetting(key: "tmdb.api_key") }`, false); got != `{"clearSecretSetting":false}` {
 		t.Errorf("clear tmdb.api_key again: %s", got)
+	}
+}
+
+// fakeChecker checks the TMDB key as TMDB would by the value: one it refuses,
+// one it cannot be asked about, any other it takes. It records what it is
+// asked, keys and values, and checks no other key.
+type fakeChecker struct{ asked []string }
+
+func (f *fakeChecker) CheckSecret(_ context.Context, key, value string) SecretCheck {
+	f.asked = append(f.asked, key+"="+value)
+	switch {
+	case key != "tmdb.api_key":
+		return SecretCheck{}
+	case value == "refused-tmdb-token":
+		return SecretCheck{Status: SecretRefused, Message: "TMDB refused the token (HTTP 401)"}
+	case value == "unchecked-tmdb-token":
+		return SecretCheck{Status: SecretUnchecked, Message: "could not check the token with TMDB (HTTP 503): it is saved all the same"}
+	}
+	return SecretCheck{Status: SecretValid, Message: "TMDB took the token"}
+}
+
+// setSecretSetting has a TMDB token checked before it stores it: one TMDB
+// refuses is not stored, the answer an error that says so with the code
+// SECRET_REFUSED and the key, and the token held before stays; one TMDB takes,
+// and one TMDB could not be asked about, are stored, the answer's check
+// saying which. A key nothing checks is stored with no check, and without a
+// checker every secret is. No answer holds a value.
+func TestASecretIsCheckedBeforeItIsStored(t *testing.T) {
+	st := storetest.Open(t)
+	someSettings(t, st)
+	secrets := append(slices.Clone(secretValues), "refused-tmdb-token", "unchecked-tmdb-token", "a-good-tmdb-token", "another-omdb-key", "unchecked-twice")
+	ck := &fakeChecker{}
+	schema := MustSchema(NewResolver(st, testConfig, Services{Secrets: ck}))
+	run := func(q string) (string, []map[string]any) {
+		t.Helper()
+		resp := schema.Exec(as(admin), q, "", nil)
+		answer := string(resp.Data)
+		var exts []map[string]any
+		for _, e := range resp.Errors {
+			answer += " " + e.Message
+			exts = append(exts, e.Extensions)
+		}
+		for _, v := range secrets {
+			if strings.Contains(answer, v) {
+				t.Fatalf("%s: the answer holds the secret %q: %s", q, v, answer)
+			}
+		}
+		return answer, exts
+	}
+
+	got, exts := run(`mutation { setSecretSetting(key: "tmdb.api_key", value: " refused-tmdb-token ") { key isSet check { status message } } }`)
+	if want := "null tmdb.api_key: TMDB refused the token (HTTP 401); nothing was saved"; got != want ||
+		len(exts) != 1 || exts[0]["code"] != "SECRET_REFUSED" || exts[0]["key"] != "tmdb.api_key" {
+		t.Errorf("a token TMDB refuses: %s %v\n want %s", got, exts, want)
+	}
+	if v := storedValue(t, st, "tmdb.api_key"); len(v) != 1 || v[0] != "tmdb-v4-read-token" {
+		t.Errorf("tmdb.api_key holds %q after a token TMDB refused, want the one it held", v)
+	}
+	for value, check := range map[string]string{
+		"unchecked-tmdb-token": `{"status":"unchecked","message":"could not check the token with TMDB (HTTP 503): it is saved all the same"}`,
+		"a-good-tmdb-token":    `{"status":"valid","message":"TMDB took the token"}`,
+	} {
+		got, _ := run(`mutation { setSecretSetting(key: "tmdb.api_key", value: "` + value + `") { key isSet check { status message } } }`)
+		if want := `{"setSecretSetting":{"key":"tmdb.api_key","isSet":true,"check":` + check + `}}`; got != want {
+			t.Errorf("%s:\n got  %s\n want %s", value, got, want)
+		}
+		if v := storedValue(t, st, "tmdb.api_key"); len(v) != 1 || v[0] != value {
+			t.Errorf("tmdb.api_key holds %q, want %s stored", v, value)
+		}
+	}
+	if got, _ := run(`mutation { setSecretSetting(key: "omdb.api_key", value: "another-omdb-key") { key check { status } } }`); got !=
+		`{"setSecretSetting":{"key":"omdb.api_key","check":null}}` {
+		t.Errorf("a key nothing checks: %s", got)
+	}
+	if v := storedValue(t, st, "omdb.api_key"); len(v) != 1 || v[0] != "another-omdb-key" {
+		t.Errorf("omdb.api_key holds %q", v)
+	}
+	if got, _ := run(`{ settings { key check { status } } }`); strings.Contains(got, `"check":{`) {
+		t.Errorf("the settings query carries a check: %s", got)
+	}
+	want := []string{"tmdb.api_key=refused-tmdb-token", "tmdb.api_key=unchecked-tmdb-token", "tmdb.api_key=a-good-tmdb-token", "omdb.api_key=another-omdb-key"}
+	if len(ck.asked) != len(want) {
+		t.Fatalf("the checker was asked %q, want %q", ck.asked, want)
+	}
+	for _, w := range want {
+		if !slices.Contains(ck.asked, w) {
+			t.Errorf("the checker was asked %q, want %q among it (trimmed)", ck.asked, w)
+		}
+	}
+
+	// A blank value, or a setting that is no secret, is refused before
+	// anything is checked.
+	ck.asked = nil
+	run(`mutation { setSecretSetting(key: "tmdb.api_key", value: "  ") { key } }`)
+	run(`mutation { setSecretSetting(key: "packager.languages", value: "fr") { key } }`)
+	if len(ck.asked) != 0 {
+		t.Errorf("the checker was asked %q for values refused before", ck.asked)
+	}
+
+	// Without a checker the token is stored, unchecked by anyone.
+	plain := MustSchema(NewResolver(st, testConfig, Services{}))
+	if resp := plain.Exec(as(admin), `mutation { setSecretSetting(key: "tmdb.api_key", value: "unchecked-twice") { check { status } } }`, "", nil); len(resp.Errors) > 0 ||
+		string(resp.Data) != `{"setSecretSetting":{"check":null}}` {
+		t.Errorf("without a checker: %s %v", resp.Data, resp.Errors)
+	}
+	if v := storedValue(t, st, "tmdb.api_key"); len(v) != 1 || v[0] != "unchecked-twice" {
+		t.Errorf("tmdb.api_key holds %q without a checker", v)
 	}
 }
 

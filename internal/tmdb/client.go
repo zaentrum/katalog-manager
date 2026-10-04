@@ -32,6 +32,7 @@ type client struct {
 	// them at a fake.
 	apiBase, imageBase string
 	retryUnit          time.Duration // 0: one second
+	checkWait          time.Duration // how long checkToken waits; 0: TokenCheckTimeout
 }
 
 func newClient(key func() string, language string) *client {

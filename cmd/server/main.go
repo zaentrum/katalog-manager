@@ -203,6 +203,8 @@ func run() error {
 		Validator: actions,
 		Remover:   actions,
 		Pipeline:  retries,
+		// setSecretSetting checks a TMDB token with TMDB before it stores it.
+		Secrets: enricher,
 	})
 	schema := graph.MustSchema(resolver)
 

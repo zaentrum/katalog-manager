@@ -26,6 +26,7 @@ type Services struct {
 	Validator Validator
 	Remover   Remover
 	Pipeline  Pipeline
+	Secrets   SecretChecker
 }
 
 // PeopleRefresher backfills people from TMDB (implemented by tmdb).
