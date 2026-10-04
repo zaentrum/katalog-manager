@@ -45,19 +45,15 @@ func New(pool *pgxpool.Pool) *Steps { return &Steps{pool: pool} }
 func ValidStep(s string) bool   { return validSteps[s] }
 func ValidStatus(s string) bool { return validStatuses[s] }
 
-func truncate(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
-	}
-	return s
-}
-
 // Upsert performs INSERT ... ON CONFLICT (item_id, step):
 //   - insert: attempts=1; startedat=now when status=in_progress; finishedat=now
 //     when terminal (done|failed|skipped).
 //   - conflict: attempts++, status overwritten; startedat sticky (set to now only
 //     on the first transition into in_progress while null); finishedat set on a
-//     terminal status (NOT not_applicable); error truncated to 500.
+//     terminal status (NOT not_applicable).
+//
+// The error is kept as CleanError makes it: credentials redacted, at most 500
+// characters.
 func (s *Steps) Upsert(ctx context.Context, itemID, step, status string, errMsg, details *string) error {
 	if !validSteps[step] {
 		return ErrBadStep
@@ -65,11 +61,7 @@ func (s *Steps) Upsert(ctx context.Context, itemID, step, status string, errMsg,
 	if !validStatuses[status] {
 		return ErrBadStatus
 	}
-	var em *string
-	if errMsg != nil {
-		t := truncate(*errMsg, 500)
-		em = &t
-	}
+	em := cleanError(errMsg)
 	const tbl = "com_nalet_katalog_itemprocessingsteps"
 	// $3 (status) is cast to text at every use. Under pgx's extended protocol
 	// Postgres deduces one type for a parameter at parse time; using bare $3 both
