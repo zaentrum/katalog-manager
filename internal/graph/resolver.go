@@ -654,11 +654,10 @@ func (r *Resolver) DeleteItem(ctx context.Context, args struct {
 	if r.svc.Remover == nil {
 		return nil, errNotConfigured
 	}
-	deleteFiles := args.DeleteFiles != nil && *args.DeleteFiles
-	// Packaged artifacts are regenerable dead weight once the item is gone —
-	// remove them unless explicitly kept.
-	deletePackages := args.DeletePackages == nil || *args.DeletePackages
-	res, err := r.svc.Remover.RemoveItem(ctx, string(args.ID), deleteFiles, deletePackages, strDeref(args.Reason))
+	// Nothing leaves the disk unless the caller asks for it: a delete that
+	// says nothing of the files keeps the source media and the packages.
+	res, err := r.svc.Remover.RemoveItem(ctx, string(args.ID), derefBool(args.DeleteFiles),
+		derefBool(args.DeletePackages), strDeref(args.Reason))
 	if err != nil {
 		return nil, err
 	}

@@ -55,8 +55,47 @@ func TestDeleteItemPassesTheReason(t *testing.T) {
 		if len(resp.Errors) > 0 {
 			t.Fatalf("%s: %v", tc.query, resp.Errors)
 		}
-		if rm.id != "x" || rm.reason != tc.reason || rm.deleteFiles || !rm.deletePackages {
-			t.Errorf("%s: remover got %+v, want id x, reason %q, packages but not files", tc.query, *rm, tc.reason)
+		if rm.id != "x" || rm.reason != tc.reason {
+			t.Errorf("%s: remover got %+v, want id x and reason %q", tc.query, *rm, tc.reason)
 		}
+	}
+}
+
+// Nothing leaves the disk unless the delete asks for it: a flag omitted is
+// false, for the source media and the packages alike, and each flag asked
+// for travels to the remover as it was given, as the console sends both.
+func TestADeleteKeepsTheFilesUnlessAsked(t *testing.T) {
+	for _, tc := range []struct {
+		args            string
+		files, packages bool
+	}{
+		{``, false, false},
+		{`, reason: "a duplicate"`, false, false},
+		{`, deleteFiles: false, deletePackages: false`, false, false},
+		{`, deletePackages: true`, false, true},
+		{`, deleteFiles: true`, true, false},
+		{`, deleteFiles: true, deletePackages: false`, true, false},
+		{`, deleteFiles: false, deletePackages: true`, false, true},
+		{`, deleteFiles: true, deletePackages: true`, true, true},
+		{`, deleteFiles: null, deletePackages: null`, false, false},
+	} {
+		rm := &fakeRemover{}
+		schema := MustSchema(NewResolver(nil, testConfig, Services{Remover: rm}))
+		q := `mutation { deleteItem(id: "x"` + tc.args + `) { deleted } }`
+		if resp := schema.Exec(as(admin), q, "", nil); len(resp.Errors) > 0 {
+			t.Fatalf("%s: %v", q, resp.Errors)
+		}
+		if rm.deleteFiles != tc.files || rm.deletePackages != tc.packages {
+			t.Errorf("%s: the remover was asked to delete files %v, packages %v; want %v, %v",
+				q, rm.deleteFiles, rm.deletePackages, tc.files, tc.packages)
+		}
+	}
+	// as the console asks, with variables
+	rm := &fakeRemover{}
+	schema := MustSchema(NewResolver(nil, testConfig, Services{Remover: rm}))
+	resp := schema.Exec(as(admin), `mutation($id:ID!,$f:Boolean,$p:Boolean){ deleteItem(id:$id, deleteFiles:$f, deletePackages:$p){ deleted } }`,
+		"", map[string]any{"id": "x", "f": false, "p": true})
+	if len(resp.Errors) > 0 || rm.deleteFiles || !rm.deletePackages {
+		t.Errorf("the console's delete of the packages only: %v, files %v, packages %v", resp.Errors, rm.deleteFiles, rm.deletePackages)
 	}
 }
