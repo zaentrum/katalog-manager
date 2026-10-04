@@ -102,7 +102,13 @@ func NewItemEvent(itemID string) ItemEvent {
 // Producer writes catalog events. A nil *Producer is a valid no-op (so callers
 // need no nil-checks); NewProducer returns nil when no brokers are configured.
 type Producer struct {
-	w *kafka.Writer
+	w messageWriter
+}
+
+// messageWriter is what a Producer writes through: a *kafka.Writer.
+type messageWriter interface {
+	WriteMessages(ctx context.Context, msgs ...kafka.Message) error
+	Close() error
 }
 
 // NewProducer builds a key-hashing writer over brokers. tlsCfg nil => PLAINTEXT.
@@ -136,10 +142,9 @@ func NewProducer(brokers []string, tlsCfg *tls.Config) *Producer {
 // or two. Without a retry that first event is silently lost (a stuck item);
 // retrying makes the pipeline self-heal across a broker restart / topic
 // auto-create race. Total worst-case wait ~5.5s (0.3+0.6+..+1.8).
-const (
-	emitAttempts = 6
-	emitBackoff  = 300 * time.Millisecond
-)
+const emitAttempts = 6
+
+var emitBackoff = 300 * time.Millisecond // a variable for the tests
 
 // Emit publishes payload to topic keyed by key (the item_id), retrying transient
 // produce errors (topic auto-create window, leader election) with a bounded
@@ -174,6 +179,93 @@ func (p *Producer) Emit(ctx context.Context, topic, key string, payload any) {
 // EmitItem is the common case: an ItemEvent to a stage topic.
 func (p *Producer) EmitItem(ctx context.Context, topic string, ev ItemEvent) {
 	p.Emit(ctx, topic, ev.ItemID, ev)
+}
+
+// ErrNoBus is what Publish says of every event when the service has no Kafka
+// brokers configured.
+var ErrNoBus = errors.New("no event bus: KAFKA_BROKERS is not set")
+
+// Enabled reports whether p writes events: brokers are configured.
+func (p *Producer) Enabled() bool { return p != nil && p.w != nil }
+
+// Message is an item event and the topic it goes to.
+type Message struct {
+	Topic string
+	Event ItemEvent
+}
+
+// Publish writes msgs, each to its topic keyed by its item, in one batch (a
+// write of one event waits out the writer's batch timeout; a batch waits it
+// once), and writes again the ones that fail, as Emit does. It returns one
+// error per message, nil for each one written. Without brokers every message
+// fails with ErrNoBus.
+func (p *Producer) Publish(ctx context.Context, msgs []Message) []error {
+	errs := make([]error, len(msgs))
+	if !p.Enabled() {
+		for i := range errs {
+			errs[i] = ErrNoBus
+		}
+		return errs
+	}
+	values := make([][]byte, len(msgs))
+	var pending []int
+	for i, m := range msgs {
+		b, err := json.Marshal(m.Event)
+		if err != nil {
+			errs[i] = fmt.Errorf("marshal the %s event of %s: %w", m.Topic, m.Event.ItemID, err)
+			continue
+		}
+		values[i] = b
+		pending = append(pending, i)
+	}
+	for attempt := 1; attempt <= emitAttempts && len(pending) > 0; attempt++ {
+		batch := make([]kafka.Message, len(pending))
+		for j, i := range pending {
+			batch[j] = kafka.Message{Topic: msgs[i].Topic, Key: []byte(msgs[i].Event.ItemID), Value: values[i]}
+		}
+		err := p.w.WriteMessages(ctx, batch...)
+		var werr kafka.WriteErrors
+		var failed []int
+		for j, i := range pending {
+			switch {
+			case err == nil:
+				errs[i] = nil
+			case errors.As(err, &werr) && len(werr) == len(pending):
+				if errs[i] = werr[j]; werr[j] != nil {
+					failed = append(failed, i)
+				}
+			default:
+				errs[i] = err
+				failed = append(failed, i)
+			}
+		}
+		pending = failed
+		if len(pending) == 0 || ctx.Err() != nil {
+			break
+		}
+		time.Sleep(time.Duration(attempt) * emitBackoff)
+	}
+	written := 0
+	for _, e := range errs {
+		if e == nil {
+			written++
+		}
+	}
+	if written < len(msgs) {
+		log.Printf("catalog events: published %d of %d events; the first failure: %v", written, len(msgs), firstErr(errs))
+	} else {
+		log.Printf("catalog events: published %d events", written)
+	}
+	return errs
+}
+
+func firstErr(errs []error) error {
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
 }
 
 // Close flushes and closes the underlying writer.
