@@ -27,7 +27,9 @@ The surface is split deliberately:
   (`triggerScan`, `enrichOne`/`enrichPending`, `refreshPeople`, `packageItem`,
   `validateItem`, `retryStep`/`retryFailed` (see
   [The pipeline heals itself](#the-pipeline-heals-itself)),
-  `backfillSourceProbes`, item + settings CRUD; a delete removes files from
+  `backfillSourceProbes`, `backfillRatings` and `setMinAgeOverride` (see
+  [Ratings](#ratings); an item's `ageRating` says what it is rated), item +
+  settings CRUD; a delete removes files from
   disk only when asked; a secret setting, such as an API key, is write-only:
   `setSecretSetting`/`clearSecretSetting`, and no field returns its value;
   `setSecretSetting` checks a TMDB token with TMDB's authentication endpoint
@@ -81,8 +83,8 @@ account, whose token carries the addon role. Everyone else signed in is a
 | every GraphQL query and mutation (the catalog with its paths on disk, scan jobs, activity, settings, the deletion log, every change) | admin |
 | GraphQL `triggerScan` | admin, service account |
 | `GET /api/manage/stream` (the console's live stream) | admin |
-| `GET /api/artwork/...`, `/api/manage/artwork/...` (also a person's portrait) | any signed-in caller, or a stream token |
-| `GET /api/play/...`, `GET /api/subtitles/...` | any signed-in caller |
+| `GET /api/artwork/...`, `/api/manage/artwork/...` (also a person's portrait) | any signed-in caller, or a stream token; a capped viewer is answered for a title above its cap as for a title there is not |
+| `GET /api/play/...`, `GET /api/subtitles/...` | any signed-in caller; a capped viewer as for the artwork |
 | `PUT /api/artwork/...`, `/api/analyze/*`, segments, chapters, `packaging-complete`, `GET /api/settings` | admin, service account |
 | `POST /api/ingest` | admin, service account, addon |
 | `POST /api/items/{id}/package` | admin |
@@ -91,6 +93,16 @@ A refused GraphQL field answers with an error whose `extensions.code` is
 `FORBIDDEN` and whose message names the role; a refused route answers 403
 with `{"error": "..."}`. Introspection and `__typename` answer any signed-in
 caller.
+
+A **capped viewer** is one whose access token carries `max_rating`, a whole
+number of years (a kid's account), or whose stream token carries the cap
+chino-api minted it with. On the artwork, playback and subtitle routes it is
+served a title rated at most its cap; one above it, and an unrated one unless
+`ratings.unrated_for_capped` says `show`, is answered as a title there is not
+(404, or an empty subtitle list), so the answer does not say it exists (see
+[Ratings](#ratings)). A claim that is no whole number of years holds its
+caller to the strictest cap, 0, and the service says so once in its log. A
+token without the claim is not capped.
 
 ## Data
 
@@ -150,6 +162,61 @@ the base schema in the order of their numbers, and each is idempotent:
   it. A table that holds rows is kept as it is, and the service says so once
   at startup. Applied at every start: a base schema that creates the read
   model again gets it dropped again.
+- `036_item_ratings.sql` gives a title its age rating: the certification TMDB
+  gives it (`certification`, "12", "PG-13"), its country
+  (`certification_country`, ISO 3166-1 alpha-2), the minimum age it means
+  (`min_age`, 0 to 21), an admin's rating that wins over it
+  (`min_age_override`) and when TMDB was last read
+  (`certification_fetched_at`), and `idx_items_rated_age`, the index of the
+  age a title without a parent is held to. An episode carries no
+  certification: it is rated as its series. Applied at startup like 030;
+  without it no title is rated, and a capped viewer is served nothing.
+
+## Ratings
+
+Kids' accounts are capped at an age, the `max_rating` claim of their access
+token: katalog-api leaves every title rated above the cap out of what it
+serves them, chino-api answers 404 for one asked for by id, and this service
+answers its artwork, playback and subtitle routes as for a title there is not
+(see [Who may do what](#who-may-do-what)).
+
+A title's rating comes from TMDB. Enriching a movie reads its release dates
+(`GET /movie/{id}/release_dates`): its certifications in a country are those
+of its theatrical (type 3) and digital (type 4) releases there. Enriching a
+series reads its content ratings (`GET /tv/{id}/content_ratings`). The
+countries asked are the setting `ratings.countries`, ISO 3166-1 alpha-2 codes
+separated by commas, in order (`CH,DE,US` when it names none): the first
+country with a certification the table rates wins, and of its certifications
+the strictest. The title keeps the certification as TMDB gives it, the
+country and the minimum age it means; none of them when no country of the
+list rates it. TMDB failing keeps the rating a title had. `metadataLocked`
+does not stop it; an admin rates a title by hand with `setMinAgeOverride`,
+whose age wins over TMDB's, and a series' over its episodes' (one with its
+own override keeps it). An episode is rated as its series. Identify, the
+change lists and `backfillRatings` (the titles TMDB was never read for, or
+with `all` every one) rate as enrichment does.
+
+The table (`internal/ratings`) says what each certification means in years,
+for the countries TMDB lists certifications of (AU, BR, CA, CH, DE, DK, ES,
+FI, FR, GB, IE, IT, JP, KR, LU, MX, NL, NO, NZ, PT, RU, SE, SG, US), films and
+series alike, and it is conservative: an age a certification names is that
+age; one that admits younger children only with an adult (12A, 15A, 14A,
+PG12) is the age it names; parental guidance without an age is the age the
+board names for it, else 10; restricted, refused and banned titles are 18.
+Not rated (NR) and exemptions are no rating, and the next country is asked.
+
+| Board | Certification → minimum age |
+|---|---|
+| FSK (DE) | 0 → 0, 6 → 6, 12 → 12, 16 → 16, 18 → 18 |
+| Switzerland (CH) | 0, 6, 8, 10, 12, 14, 16, 18 → the age |
+| MPA (US films) | G → 0, PG → 10, PG-13 → 13, R → 17, NC-17 → 18 |
+| TV Parental Guidelines (US series) | TV-Y → 0, TV-Y7 → 7, TV-G → 0, TV-PG → 10, TV-14 → 14, TV-MA → 17 |
+| BBFC (GB) | U → 0, PG → 8, 12 and 12A → 12, 15 → 15, 18 and R18 → 18 |
+
+The rest of the table is in `internal/ratings/ratings.go`, each row with its
+test. `ratings.unrated_for_capped` (`hide`, the default, or `show`) says
+whether a capped viewer is served the titles nothing rates; katalog-api and
+this service read it from the settings.
 
 ## The pipeline heals itself
 
