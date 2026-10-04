@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -296,7 +297,9 @@ func readPackagedBitrateKbps(packageRoot string) *int {
 }
 
 // sumPackageBytes walks the package root summing regular file sizes. nil when
-// the root is not a directory.
+// the root is not a directory. A package being staged (.next) and one replaced
+// moments ago and kept for a grace period (*.old-<stamp>) are not the package:
+// the packager builds the new one beside the live one and swaps it in.
 func sumPackageBytes(packageRoot string) *int64 {
 	info, err := os.Stat(packageRoot)
 	if err != nil || !info.IsDir() {
@@ -307,7 +310,10 @@ func sumPackageBytes(packageRoot string) *int64 {
 		if walkErr != nil {
 			return nil
 		}
-		if d.Type().IsRegular() {
+		if d.IsDir() && notThePackage(d.Name()) {
+			return filepath.SkipDir
+		}
+		if d.Type().IsRegular() && !notThePackage(d.Name()) {
 			if fi, ferr := d.Info(); ferr == nil {
 				total += fi.Size()
 			}
@@ -315,6 +321,12 @@ func sumPackageBytes(packageRoot string) *int64 {
 		return nil
 	})
 	return &total
+}
+
+// notThePackage names what the packager keeps beside a live package: the one
+// it stages (.next) and the ones it replaced, until their grace ends (X.old-<stamp>).
+func notThePackage(name string) bool {
+	return name == ".next" || strings.Contains(name, ".old-")
 }
 
 // asMap mirrors Java asMap: a JSON object passes through, anything else -> {}.

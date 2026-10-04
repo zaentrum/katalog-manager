@@ -291,12 +291,12 @@ each as a title of its own.
 - **Not sent.** An event that could not be sent puts the transcode back,
   failed; the sweep sends it again a backoff later.
 - **Playback meanwhile.** The current package plays while the transcoder
-  encodes: its handoff goes beside the package, not into it. The packager
-  writes a package in place, though, clearing the old one as it starts: from
-  then until the new one is complete the title plays by on-demand
-  transcoding, and a viewer watching the old package loses it and has to
-  start again. A packaging that fails leaves the title without a package
-  until a retry packages it.
+  encodes (its handoff goes beside the package, not into it) and while the
+  packager packages: it builds the new package in the item's `.next/` and
+  swaps it in only once it is complete and checked, keeping the old one for a
+  grace period. A packaging that fails leaves the old package as it was. A
+  viewer mid-film when the swap lands may need to start again where a rung
+  was encoded anew (its old init segment no longer matches).
 
 Without an event bus or migration 033 a re-encode is refused, as a retry is.
 
