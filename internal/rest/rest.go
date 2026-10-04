@@ -35,12 +35,13 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 //     reads them at /api/manage/artwork), playback and subtitles;
 //   - workers (an admin, or the platform's service account the analyzer,
 //     transcoder and packager mint tokens with): the worker protocol, which
-//     hands out paths on disk and writes the pipeline's results;
+//     hands out paths on disk and writes the pipeline's results, and the
+//     settings that are no secret;
 //   - ingest (a worker, or an addon's service account): POST /api/ingest.
 //
 // Bodies are implemented in the per-area files (artwork.go, play.go,
 // subtitles.go, analyzer.go, segments.go, chapters.go, packaging.go,
-// ingest.go).
+// settings.go, ingest.go).
 func (h *Handlers) Register(r chi.Router) {
 	pol := h.d.Cfg.Policy()
 
@@ -89,6 +90,10 @@ func (h *Handlers) Register(r chi.Router) {
 
 		// Packager machine sink
 		r.Post("/api/items/{id}/packaging-complete", h.packagingComplete)
+
+		// The settings the workers read (the packager's language whitelist),
+		// secrets left out.
+		r.Get("/api/settings", h.getSettings)
 	})
 
 	// External-file ingest: register a staged file (item + primary asset) and

@@ -39,6 +39,11 @@ The surface is split deliberately:
     `PUT/DELETE /api/segments|chapters/items/{id}`,
     `POST /api/items/{id}/packaging-complete` — the analyzer/packager worker
     protocol.
+  - `GET /api/settings` — the settings that are no secret, for the workers:
+    `{"<key>": {"valueText": "...", "valueType": "..."}}`. The packager reads
+    its language whitelist from it (`packager.language_whitelist`, comma
+    separated) and `packager.keep_original_if_single`. A secret setting is
+    left out, set or not.
   - `POST /api/ingest` — an addon hands a file on disk to the catalog.
 
 ## Who may do what
@@ -58,7 +63,7 @@ account, whose token carries the addon role. Everyone else signed in is a
 | `GET /api/manage/stream` (the console's live stream) | admin |
 | `GET /api/artwork/...`, `/api/manage/artwork/...` (also a person's portrait) | any signed-in caller, or a stream token |
 | `GET /api/play/...`, `GET /api/subtitles/...` | any signed-in caller |
-| `PUT /api/artwork/...`, `/api/analyze/*`, segments, chapters, `packaging-complete` | admin, service account |
+| `PUT /api/artwork/...`, `/api/analyze/*`, segments, chapters, `packaging-complete`, `GET /api/settings` | admin, service account |
 | `POST /api/ingest` | admin, service account, addon |
 
 A refused GraphQL field answers with an error whose `extensions.code` is
