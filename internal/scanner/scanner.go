@@ -374,6 +374,12 @@ func (s *Scanner) resolveSeriesParent(ctx context.Context, pool *pgxpool.Pool, r
 // scanSidecars finds subtitle files in the video's directory sharing the video
 // basename (optional language suffix) and upserts subtitleassets rows. Ports
 // NfsScanner.scanSidecars. Missing-table errors are swallowed.
+//
+// No subtitle file is the default: which one would be is the viewer's
+// language to decide, not the order of the directory (Film.de.srt before
+// Film.en.srt), and the packager packages each as a subtitle that is never
+// the default unless forced. A row an earlier scan marked default is so no
+// longer.
 func (s *Scanner) scanSidecars(ctx context.Context, pool *pgxpool.Pool, videoPath, itemID string) {
 	videoBase := stripExt(filepath.Base(videoPath))
 	dir := filepath.Dir(videoPath)
@@ -384,7 +390,6 @@ func (s *Scanner) scanSidecars(ctx context.Context, pool *pgxpool.Pool, videoPat
 	if err != nil {
 		return
 	}
-	defaultPicked := false
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -441,16 +446,15 @@ func (s *Scanner) scanSidecars(ctx context.Context, pool *pgxpool.Pool, videoPat
 		}
 		if exists != nil {
 			_, _ = pool.Exec(ctx,
-				`UPDATE com_nalet_katalog_subtitleassets SET item_id = $1, format = $2, lang = $3, label = $4 WHERE path = $5`,
+				`UPDATE com_nalet_katalog_subtitleassets SET item_id = $1, format = $2, lang = $3, label = $4, isdefault = false
+				 WHERE path = $5`,
 				itemID, format, langArg, labelArg, absPath)
 		} else {
-			if _, err := pool.Exec(ctx,
+			_, _ = pool.Exec(ctx,
 				`INSERT INTO com_nalet_katalog_subtitleassets
 				   (id, item_id, path, format, lang, label, isdefault)
-				 VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, $5, $6)`,
-				itemID, absPath, format, langArg, labelArg, !defaultPicked); err == nil {
-				defaultPicked = true
-			}
+				 VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, $5, false)`,
+				itemID, absPath, format, langArg, labelArg)
 		}
 	}
 }
