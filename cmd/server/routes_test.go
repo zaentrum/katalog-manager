@@ -202,12 +202,14 @@ func newInstanceWith(t *testing.T, pipeline func(*store.Store) graph.Pipeline) *
 }
 
 // wiring is what an instance is wired with instead of a fake: the
-// pipeline's retries, the extras and the event bus the REST routes announce
-// on, each made of the instance's store and configuration.
+// pipeline's retries, the extras, the event bus the REST routes announce
+// on and what gives a title another file (encoding it again through the
+// pipeline), each made of the instance's store and configuration.
 type wiring struct {
 	pipeline func(*store.Store) graph.Pipeline
 	extras   func(*store.Store, config.Config) *extras.Service
 	events   *events.Producer
+	sources  func(*store.Store, config.Config, graph.Pipeline) graph.SourceReplacer
 }
 
 func newInstanceWired(t *testing.T, w wiring) *instance {
@@ -254,8 +256,12 @@ func newInstanceWired(t *testing.T, w wiring) *instance {
 		svc := w.extras(st, cfg)
 		x, taker = svc, svc
 	}
+	var sources graph.SourceReplacer = f
+	if w.sources != nil {
+		sources = w.sources(st, cfg, pipe)
+	}
 	schema := graph.MustSchema(graph.NewResolver(st, cfg, graph.Services{Scanner: f, Enricher: f, People: f,
-		Ratings: f, Packager: f, Validator: f, Remover: f, Pipeline: pipe, Secrets: f, Extras: x, Sources: f}))
+		Ratings: f, Packager: f, Validator: f, Remover: f, Pipeline: pipe, Secrets: f, Extras: x, Sources: sources}))
 	r := chi.NewRouter()
 	routes(r, auth.NewMiddleware(jwt, sv).Handler, cfg.Policy(), schema, stream.NewBroker().Handler,
 		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool()), Events: w.events, Extras: taker}))
