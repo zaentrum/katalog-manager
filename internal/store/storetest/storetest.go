@@ -68,6 +68,9 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	if err := st.EnsureTrackLanguages(ctx); err != nil {
 		t.Fatalf("apply the track languages migration: %v", err)
 	}
+	if err := st.EnsureSubtitleForced(ctx); err != nil {
+		t.Fatalf("apply the subtitle forced migration: %v", err)
+	}
 	return st
 }
 

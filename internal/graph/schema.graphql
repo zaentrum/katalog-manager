@@ -152,6 +152,9 @@ type SubtitleAsset {
   lang: String
   label: String
   isDefault: Boolean
+  # whether the subtitle is forced, as its package says (migration 038); a
+  # subtitle file beside the source is not
+  isForced: Boolean!
 }
 
 type MediaSegment {

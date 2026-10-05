@@ -238,3 +238,24 @@ func TestBackfillSourceTracksMutation(t *testing.T) {
 		t.Errorf("without 037: %v", resp.Errors)
 	}
 }
+
+// A subtitle says whether it is forced, as its package says (migration 038);
+// on a catalog without 038 none is.
+func TestSubtitleIsForced(t *testing.T) {
+	st := storetest.Open(t)
+	withItemView(t, st)
+	storetest.AddItem(t, st, "m1", "movie", "A Film", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_subtitleassets (id, item_id, path, format, lang, label, isdefault, isforced)
+		VALUES ('s1', 'm1', '/p/subs/0.vtt', 'webvtt', 'eng', 'Signs', true, true),
+		       ('s2', 'm1', '/m/a.de.srt', 'srt', 'de', 'Deutsch', false, false)`)
+	const q = `{ item(id: "m1") { subtitles { id lang isDefault isForced } } }`
+	if got, want := query(t, st, q), `{"item":{"subtitles":[{"id":"s1","lang":"eng","isDefault":true,"isForced":true},`+
+		`{"id":"s2","lang":"de","isDefault":false,"isForced":false}]}}`; got != want {
+		t.Errorf("subtitles:\n got  %s\n want %s", got, want)
+	}
+	storetest.Exec(t, st, `ALTER TABLE com_nalet_katalog_subtitleassets DROP COLUMN isforced`)
+	if got, want := query(t, st, q), `{"item":{"subtitles":[{"id":"s1","lang":"eng","isDefault":true,"isForced":false},`+
+		`{"id":"s2","lang":"de","isDefault":false,"isForced":false}]}}`; got != want {
+		t.Errorf("without 038:\n got  %s\n want %s", got, want)
+	}
+}

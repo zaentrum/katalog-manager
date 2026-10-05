@@ -141,24 +141,6 @@ func (s *Store) AssetsByItem(ctx context.Context, id string) ([]*model.PlaybackA
 	return out, rows.Err()
 }
 
-func (s *Store) SubtitlesByItem(ctx context.Context, id string) ([]*model.SubtitleAsset, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, item_id, path, format, lang, label, isdefault
-		FROM com_nalet_katalog_subtitleassets WHERE item_id = $1 ORDER BY isdefault DESC NULLS LAST, lang`, id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*model.SubtitleAsset
-	for rows.Next() {
-		var x model.SubtitleAsset
-		if err := rows.Scan(&x.ID, &x.ItemID, &x.Path, &x.Format, &x.Lang, &x.Label, &x.IsDefault); err != nil {
-			return nil, err
-		}
-		out = append(out, &x)
-	}
-	return out, rows.Err()
-}
-
 func (s *Store) SegmentsByItem(ctx context.Context, id string) ([]*model.MediaSegment, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id, createdat, modifiedat, item_id, kind, startms, endms, source, confidence, label
 		FROM com_nalet_katalog_mediasegments WHERE item_id = $1 ORDER BY startms`, id)

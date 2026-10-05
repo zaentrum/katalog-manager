@@ -122,6 +122,7 @@ type SubtitleAsset struct {
 	Lang      *string
 	Label     *string
 	IsDefault *bool
+	IsForced  bool // db/migrations/038: the subtitle is forced
 }
 
 // The kinds of a source's tracks (db/migrations/037): its audio and its

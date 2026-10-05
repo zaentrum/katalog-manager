@@ -51,6 +51,7 @@ func (r *subtitleAssetResolver) Format() *string    { return r.m.Format }
 func (r *subtitleAssetResolver) Lang() *string      { return r.m.Lang }
 func (r *subtitleAssetResolver) Label() *string     { return r.m.Label }
 func (r *subtitleAssetResolver) IsDefault() *bool   { return r.m.IsDefault }
+func (r *subtitleAssetResolver) IsForced() bool     { return r.m.IsForced }
 
 // ---- MediaSegment ----
 

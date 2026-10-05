@@ -6,10 +6,10 @@
 // migrations it cannot work without and applies each one at startup when its
 // objects are missing (see store.EnsureDeletionLog, store.EnsurePeople,
 // store.EnsureItemLockedFields, store.EnsureCreditDetails,
-// store.EnsureStepRetries, store.EnsureScanJobRunner, store.EnsureItemRatings
-// and store.EnsureTrackLanguages). It applies 035, which drops what is left of a
-// retired integration, at every start when any of that is there
-// (store.DropRetiredJobTables).
+// store.EnsureStepRetries, store.EnsureScanJobRunner, store.EnsureItemRatings,
+// store.EnsureTrackLanguages and store.EnsureSubtitleForced). It applies 035,
+// which drops what is left of a retired integration, at every start when any
+// of that is there (store.DropRetiredJobTables).
 package migrations
 
 import _ "embed"
@@ -67,3 +67,8 @@ var ItemRatings string
 //
 //go:embed 037_track_languages.sql
 var TrackLanguages string
+
+// SubtitleForced is 038_subtitle_forced.sql: whether a subtitle is forced.
+//
+//go:embed 038_subtitle_forced.sql
+var SubtitleForced string

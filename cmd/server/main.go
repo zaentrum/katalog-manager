@@ -110,6 +110,11 @@ func run() error {
 	if err := st.EnsureTrackLanguages(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/037_track_languages.sql is missing and could not be applied: %v; no track's language can be set until it is", err)
 	}
+	// Whether a subtitle is forced (migration 038), as the packager says of
+	// each subtitle of a package. Without it no subtitle is kept as forced.
+	if err := st.EnsureSubtitleForced(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/038_subtitle_forced.sql is missing and could not be applied: %v; no subtitle is kept as forced until it is", err)
+	}
 	dropRetiredJobTables(bgCtx, st)
 
 	steps := processing.New(st.Pool()).WithPolicy(cfg.RetryPolicy())
