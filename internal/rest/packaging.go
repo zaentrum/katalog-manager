@@ -2,6 +2,7 @@ package rest
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"log"
 	"net/http"
@@ -12,9 +13,9 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/zaentrum/katalog-manager/internal/events"
-	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/sourceprobe"
 	"github.com/zaentrum/katalog-manager/internal/sourcetracks"
 )
@@ -25,8 +26,9 @@ import (
 // recorded). Returns
 // {itemId, sourceEnriched, packagedAssetWritten, subtitlesWritten, audioTracks}.
 //
-// A language the catalog derives from the package is the one the track plays
-// as: an admin's (migration 037) where one is set, else the manifest's.
+// The manifest's languages are the ones the tracks play as: the packager
+// labels each track with the language an admin set for it (the worker
+// record's trackLanguages), found by the track's ordinal in the source.
 func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 	itemID := chi.URLParam(r, "id")
 	ctx := reqCtx(r)
@@ -52,23 +54,6 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 	videoRends := asListOfMap(renditions["video"])
 	audioRends := asListOfMap(renditions["audio"])
 	subtitles := asListOfMap(manifest["subtitles"])
-
-	// The languages an admin set for the source's tracks.
-	set, err := h.d.Store.TrackLanguages(ctx, itemID)
-	if err != nil {
-		http.Error(w, "track languages lookup failed", http.StatusInternalServerError)
-		return
-	}
-	setLanguage := map[string]string{}
-	for _, l := range set {
-		setLanguage[l.Kind+"/"+strconv.Itoa(int(l.Ordinal))] = l.Language
-	}
-	playsAs := func(kind string, ordinal int32, reported *string) *string {
-		if l, ok := setLanguage[kind+"/"+strconv.Itoa(int(ordinal))]; ok {
-			return &l
-		}
-		return reported
-	}
 
 	// 1. Source PlaybackAsset enrichment: what a source block says of the
 	// source (a present value wins), then the packaged duration for a source
@@ -126,10 +111,9 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 
 		// primary audio = first default:true else audio[0].
 		var primaryAudio map[string]any
-		primaryAt := 0
-		for i, a := range audioRends {
+		for _, a := range audioRends {
 			if def, ok := a["default"].(bool); ok && def {
-				primaryAudio, primaryAt = a, i
+				primaryAudio = a
 				break
 			}
 		}
@@ -141,9 +125,6 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 		if primaryAudio != nil {
 			audioCodec = asString(primaryAudio["codec"])
 			audioLanguage = asString(primaryAudio["language"])
-			if ordinal, ok := sourcetracks.AudioOrdinal(primaryAudio, primaryAt); ok {
-				audioLanguage = playsAs(model.TrackAudio, ordinal, audioLanguage)
-			}
 			if ch, ok := asInt(primaryAudio["channels"]); ok {
 				audioChannels = &ch
 			}
@@ -176,20 +157,20 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 3. SubtitleAssets: the package's are replaced by the manifest's. The
-	// subtitle files beside the source, which the scanner keeps, stay: they
-	// are no package's (sidecarSubtitle), and the worker record hands them to
-	// the packager as subtitleFiles. A manifest subtitle that is no stream of
-	// the source (an id other than sub<N>: the packager's rendition of such a
-	// file) gets no row of its own, as the file's row stands for it.
+	// 3. SubtitleAssets: the package's are replaced by the manifest's, each
+	// with whether it is forced (migration 038). The subtitle files beside the
+	// source, which the scanner keeps, stay: they are no package's
+	// (sidecarSubtitle), and the worker record hands them to the packager as
+	// subtitleFiles. The packager's rendition of such a file (a manifest
+	// subtitle marked external) gets no row of its own, as the file's row
+	// stands for it: the title lists one subtitle once.
 	if err := h.deletePackageSubtitles(ctx, itemID, packageRoot); err != nil {
 		http.Error(w, "subtitle delete failed", http.StatusInternalServerError)
 		return
 	}
 	subsWritten := 0
 	for _, s := range subtitles {
-		ordinal, stream := sourcetracks.SubtitleOrdinal(s)
-		if !stream {
+		if external, _ := s["external"].(bool); external {
 			continue
 		}
 		relPath := asString(s["path"])
@@ -198,16 +179,10 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 			p := packageRoot + "/" + *relPath
 			fullPath = &p
 		}
-		isDefault := false
-		if def, ok := s["default"].(bool); ok {
-			isDefault = def
-		}
-		if _, err := pool.Exec(ctx, `
-			INSERT INTO com_nalet_katalog_subtitleassets
-			(id, item_id, path, format, lang, label, isdefault)
-			VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, $5, $6)`,
-			itemID, fullPath, asString(s["format"]), playsAs(model.TrackSubtitle, ordinal, asString(s["language"])),
-			asString(s["title"]), isDefault); err != nil {
+		isDefault, _ := s["default"].(bool)
+		isForced, _ := s["forced"].(bool)
+		if err := h.insertPackageSubtitle(ctx, itemID, fullPath, asString(s["format"]), asString(s["language"]),
+			asString(s["title"]), isDefault, isForced); err != nil {
 			http.Error(w, "subtitle insert failed", http.StatusInternalServerError)
 			return
 		}
@@ -245,6 +220,31 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 		"subtitlesWritten":     subsWritten,
 		"audioTracks":          len(audioRends),
 	})
+}
+
+// insertPackageSubtitle writes a subtitle of the item's package; on a catalog
+// without migration 038 it keeps no word of whether it is forced.
+func (h *Handlers) insertPackageSubtitle(ctx context.Context, itemID string, path, format, lang, label *string,
+	isDefault, isForced bool) error {
+	pool := h.d.Store.Pool()
+	_, err := pool.Exec(ctx, `INSERT INTO com_nalet_katalog_subtitleassets
+		(id, item_id, path, format, lang, label, isdefault, isforced)
+		VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, $5, $6, $7)`,
+		itemID, path, format, lang, label, isDefault, isForced)
+	if undefinedColumn(err) {
+		_, err = pool.Exec(ctx, `INSERT INTO com_nalet_katalog_subtitleassets
+			(id, item_id, path, format, lang, label, isdefault)
+			VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, $5, $6)`,
+			itemID, path, format, lang, label, isDefault)
+	}
+	return err
+}
+
+// undefinedColumn reports whether err is Postgres saying a column does not
+// exist (42703): a catalog older than the migration that adds it.
+func undefinedColumn(err error) bool {
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && pe.Code == "42703"
 }
 
 // deletePackageSubtitles removes the item's subtitles that are its package's,
