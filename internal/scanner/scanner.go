@@ -1,10 +1,12 @@
 // Package scanner ports the CAP NfsScanner + ScanController scan lifecycle
 // (SPEC §2 / 30-integrations). It walks the NFS media root, classifies files by
 // extension + path, and upserts com_nalet_katalog_items + a primary
-// playbackasset (plus subtitle sidecars and kind='trailer' extras), keyed on the
-// absolute playbackassets.path. Re-scans are idempotent: an existing item only
-// gets its modifiedat heartbeat bumped — title/sort/year are owned by TMDB
-// enrichment and must never be clobbered.
+// playbackasset (plus subtitle sidecars), keyed on the absolute
+// playbackassets.path. Re-scans are idempotent: an existing item only gets its
+// modifiedat heartbeat bumped — title/sort/year are owned by TMDB enrichment
+// and must never be clobbered. A title's trailers and other bonus material are
+// no items: behind the setting extras.scan the scanner takes them in as its
+// extras (extras.go), and without it skips them.
 //
 // The scan itself runs asynchronously: Trigger inserts a 'running' scanjobs row,
 // kicks off the walk in a goroutine, and returns the job id immediately. The
@@ -24,7 +26,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,6 +75,9 @@ type Scanner struct {
 	runner string
 	// beat is how often at most a walk gives its job a word (beatInterval).
 	beat time.Duration
+	// extras sends the triggers of the extras the scanner takes in; nil:
+	// they wait for the sweep.
+	extras ExtraSender
 }
 
 // New constructs a Scanner. Matches graph.ScanRunner structurally via Trigger.
@@ -174,6 +178,7 @@ func (s *Scanner) walk(ctx context.Context, beat func()) (scanResult, error) {
 		return res, nil
 	}
 
+	xs := newWalkState(s.extrasOn(ctx))
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		beat()
 		if err != nil {
@@ -189,15 +194,21 @@ func (s *Scanner) walk(ctx context.Context, beat func()) (scanResult, error) {
 		}
 		// Per-file processing is best-effort; a failure on one file must not
 		// abort the whole walk.
-		s.processFile(ctx, root, path, d, &res)
+		s.processFile(ctx, root, path, d, &res, xs)
 		return nil
 	})
+	// The extras once every title's file is in: a trailer is walked before
+	// the film it names ("Sintel-trailer.mkv" before "Sintel.mkv").
+	if walkErr == nil && xs.on {
+		s.takeExtras(ctx, root, xs.found)
+		s.reconcileExtras(ctx, root)
+	}
 	return res, walkErr
 }
 
 // processFile classifies one regular file and upserts the catalog rows for it.
 // Errors are swallowed (logged-equivalent) so the walk continues.
-func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEntry, res *scanResult) {
+func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEntry, res *scanResult, xs *walkState) {
 	name := d.Name()
 	// Skip hidden / transcoder-scratch dotfiles + extensionless files.
 	if strings.HasPrefix(name, ".") {
@@ -228,10 +239,15 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 
 	pool := s.st.Pool()
 
-	// Trailer / extras: attach to parent movie, do not create a new item.
-	if isVideo && isTrailerPath(absPath, name) {
-		s.attachTrailer(ctx, pool, path, absPath, res)
-		return
+	// A title's extra is no item of its own (extras.go).
+	if isVideo {
+		if x, ok := xs.extraFileOf(absPath, name); ok {
+			s.dropTrailerRow(ctx, absPath)
+			if xs.on {
+				xs.found = append(xs.found, x)
+			}
+			return
+		}
 	}
 
 	typ := classify(rel, isVideo, isAudio)
@@ -457,91 +473,6 @@ func (s *Scanner) scanSidecars(ctx context.Context, pool *pgxpool.Pool, videoPat
 				itemID, absPath, format, langArg, labelArg)
 		}
 	}
-}
-
-// attachTrailer attaches a trailer video to the parent movie's item as a
-// kind='trailer' playbackasset instead of creating a new item. Ports
-// NfsScanner.attachTrailer. If the parent movie is not yet ingested the trailer
-// is skipped (picked up on the next sweep).
-func (s *Scanner) attachTrailer(ctx context.Context, pool *pgxpool.Pool, path, absPath string, res *scanResult) {
-	movieDir := filepath.Dir(path)
-	if movieDir != "" && strings.EqualFold(filepath.Base(movieDir), "trailers") {
-		movieDir = filepath.Dir(movieDir)
-	}
-	if movieDir == "" {
-		return
-	}
-	absMovieDir, err := filepath.Abs(movieDir)
-	if err != nil {
-		absMovieDir = movieDir
-	}
-	parentPrefix := absMovieDir + "/" + "%"
-
-	var parentItemID *string
-	if err := pool.QueryRow(ctx,
-		`SELECT item_id FROM com_nalet_katalog_playbackassets
-		 WHERE isprimary = true AND path LIKE $1 LIMIT 1`,
-		parentPrefix).Scan(&parentItemID); err != nil && err != pgx.ErrNoRows {
-		return
-	}
-	if parentItemID == nil {
-		// Parent movie not yet ingested; catch up next scan.
-		return
-	}
-
-	var size int64
-	if info, err := os.Stat(path); err == nil {
-		size = info.Size()
-	}
-
-	var existingItemID *string
-	if err := pool.QueryRow(ctx,
-		`SELECT item_id FROM com_nalet_katalog_playbackassets WHERE path = $1 LIMIT 1`,
-		absPath).Scan(&existingItemID); err != nil && err != pgx.ErrNoRows {
-		return
-	}
-
-	if existingItemID == nil {
-		if _, err := pool.Exec(ctx,
-			`INSERT INTO com_nalet_katalog_playbackassets
-			   (id, item_id, path, sizebytes, isprimary, kind)
-			 VALUES (gen_random_uuid()::varchar, $1, $2, $3, false, 'trailer')`,
-			*parentItemID, absPath, size); err != nil {
-			return
-		}
-		res.itemsInserted++
-	} else {
-		if _, err := pool.Exec(ctx,
-			`UPDATE com_nalet_katalog_playbackassets
-			   SET item_id = $1, sizebytes = $2, kind = 'trailer', isprimary = false
-			 WHERE path = $3`,
-			*parentItemID, size, absPath); err != nil {
-			return
-		}
-		res.itemsUpdated++
-		// If the trailer previously had its own orphan item with no remaining
-		// assets, delete that orphan — through the store, so its facet rows go
-		// with it and the deletion log records it in the same transaction (a
-		// folder the orphan left on storage then reads as deleted, not lost).
-		if *parentItemID != *existingItemID {
-			var remaining int
-			if err := pool.QueryRow(ctx,
-				`SELECT COUNT(*) FROM com_nalet_katalog_playbackassets WHERE item_id = $1`,
-				*existingItemID).Scan(&remaining); err == nil && remaining == 0 {
-				if _, err := s.st.DeleteItem(ctx, *existingItemID, store.Deletion{
-					By:     deletedByScanner,
-					Reason: "its file is a trailer of item " + *parentItemID,
-				}); err != nil {
-					log.Printf("scanner: item %s has no files left after its trailer moved to item %s, but could not be removed: %v",
-						*existingItemID, *parentItemID, err)
-				}
-			}
-		}
-	}
-
-	// Bump the parent movie's modifiedat heartbeat.
-	_, _ = pool.Exec(ctx,
-		`UPDATE com_nalet_katalog_items SET modifiedat = now() WHERE id = $1`, *parentItemID)
 }
 
 // fileSize returns the file's byte size from the DirEntry, falling back to 0 if

@@ -664,8 +664,20 @@ type ExtraSource struct {
 // went missing is no longer hidden, and ready again when its package was made
 // of the same file (its size and quick hash unchanged), else it waits to be
 // packaged (pending); a file that changed is packaged again unless its
-// packaging runs. It answers the extra as it is after; nil when there is none.
+// packaging runs; a file found as it was changes nothing. It answers the
+// extra as it is after; nil when there is none, or it is removed.
 func (s *Store) UpdateExtraSource(ctx context.Context, id string, src ExtraSource, by string) (*model.Extra, error) {
+	x, err := s.updateExtraSource(ctx, id, src, by)
+	if err != nil || x != nil {
+		return x, err
+	}
+	if x, err = s.GetExtra(ctx, id); err != nil || x == nil || x.RemovedAt != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+func (s *Store) updateExtraSource(ctx context.Context, id string, src ExtraSource, by string) (*model.Extra, error) {
 	return extraRow(ctx, s.pool, `UPDATE `+extrasTable+` x SET
 			sourcepath = $2::text, sourcesize = $3::bigint, sourceqh1 = $4::text,
 			hidden = CASE WHEN x.state = 'missing' THEN false ELSE x.hidden END,
@@ -683,7 +695,9 @@ func (s *Store) UpdateExtraSource(ctx context.Context, id string, src ExtraSourc
 			modifiedat = now(), modifiedby = $5
 		FROM (SELECT x2.sourcesize IS NOT DISTINCT FROM $3::bigint AND x2.sourceqh1 IS NOT DISTINCT FROM $4::text AS file
 			FROM `+extrasTable+` x2 WHERE x2.id = $1) same
-		WHERE x.id = $1 AND x.removedat IS NULL RETURNING `+xCols,
+		WHERE x.id = $1 AND x.removedat IS NULL
+		  AND (x.state = 'missing' OR NOT same.file OR x.sourcepath IS DISTINCT FROM $2::text)
+		RETURNING `+xCols,
 		id, src.Path, src.Size, src.QH1, clip(strings.TrimSpace(by), 255))
 }
 

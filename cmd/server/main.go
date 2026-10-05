@@ -170,7 +170,12 @@ func run() error {
 		return row.ValueText, true
 	}
 	enricher := tmdb.New(st, cfg, steps, chapters, settingLookup)
-	scan := scanner.New(st, cfg, steps, eventProducer)
+	// A title's extras: taken in by an operator or the scanner, and packaged
+	// on a chain of their own (catalog.extra.*), retried by the same policy.
+	extrasSvc := extras.New(st, cfg, cfg.RetryPolicy(), eventProducer)
+	// The scanner takes a title's extras in by their names behind the
+	// setting extras.scan, and sends their triggers.
+	scan := scanner.New(st, cfg, steps, eventProducer).WithExtras(extrasSvc)
 	// A scan runs in the process that started it, so one a previous process
 	// left running never ends: it is failed now, saying so, before this
 	// process starts a scan of its own. A scan another host runs is left to
@@ -181,9 +186,6 @@ func run() error {
 		log.Printf("catalog: %d scans a previous process left running are failed (%s)", n, scanner.InterruptedReason)
 	}
 	actions := itemactions.New(st, cfg, steps, eventProducer)
-	// A title's extras: taken in by an operator or the scanner, and packaged
-	// on a chain of their own (catalog.extra.*), retried by the same policy.
-	extrasSvc := extras.New(st, cfg, cfg.RetryPolicy(), eventProducer)
 	// The pipeline heals itself: a failed step is retried by sending its
 	// trigger event again, after a backoff, a bounded number of times, and a
 	// step whose worker went silent past its timeout is reaped into a failure.

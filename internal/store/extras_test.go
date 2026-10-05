@@ -778,12 +778,19 @@ func TestTheScannerKeepsTrackOfAnExtrasFile(t *testing.T) {
 	if x := update(running, "/x/3.mkv", 3000, qh1Of("d")); x.State != "transcoding" || *x.SourceQH1 != qh1Of("d") {
 		t.Errorf("a changed file being encoded: %s", x.State)
 	}
-	if x := update(same, "/x/moved/1.mkv", 1000, qh1Of("a")); x.State != "ready" {
-		t.Errorf("an unchanged file: %s", x.State)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemextras SET modifiedby = 'before' WHERE id = $1`, same.ID)
+	if x := update(same, "/x/moved/1.mkv", 1000, qh1Of("a")); x.State != "ready" || *x.ModifiedBy != "before" {
+		t.Errorf("an unchanged file: %s, modified by %s", x.State, *x.ModifiedBy)
+	}
+	if _, err := st.RemoveExtra(ctx, same.ID, "admin-1", "", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if x, err := st.UpdateExtraSource(ctx, same.ID, store.ExtraSource{Path: "/x/1.mkv", Size: 1, QH1: qh1Of("e")}, "s"); err != nil || x != nil {
+		t.Errorf("a removed extra's file: %v, %v", x, err)
 	}
 	movable, err := st.MovableExtras(ctx, movieA, 1000, qh1Of("a"))
-	if err != nil || len(movable) != 2 {
-		t.Errorf("MovableExtras: %d, %v", len(movable), err)
+	if err != nil || len(movable) != 1 || movable[0].ID != unpackaged.ID {
+		t.Errorf("MovableExtras: %d, %v; want the one not removed", len(movable), err)
 	}
 	if xs, err := st.ExtrasOfItems(ctx, []string{movieA, movieB}); err != nil || len(xs) != 4 {
 		t.Errorf("ExtrasOfItems: %d, %v", len(xs), err)
