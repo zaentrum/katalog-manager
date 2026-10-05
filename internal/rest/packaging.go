@@ -3,6 +3,7 @@ package rest
 import (
 	"context"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,14 +14,19 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/zaentrum/katalog-manager/internal/events"
+	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/sourceprobe"
 	"github.com/zaentrum/katalog-manager/internal/sourcetracks"
 )
 
 // packagingComplete ports ItemActionsController#ingestPackagingManifest: the
-// packager machine sink. Idempotent; three writes (source-asset enrich, packaged
-// asset replace, the package's subtitles replaced). Returns
+// packager machine sink. Idempotent; four writes (source-asset enrich, packaged
+// asset replace, the package's subtitles replaced, the source's tracks
+// recorded). Returns
 // {itemId, sourceEnriched, packagedAssetWritten, subtitlesWritten, audioTracks}.
+//
+// A language the catalog derives from the package is the one the track plays
+// as: an admin's (migration 037) where one is set, else the manifest's.
 func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 	itemID := chi.URLParam(r, "id")
 	ctx := reqCtx(r)
@@ -46,6 +52,23 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 	videoRends := asListOfMap(renditions["video"])
 	audioRends := asListOfMap(renditions["audio"])
 	subtitles := asListOfMap(manifest["subtitles"])
+
+	// The languages an admin set for the source's tracks.
+	set, err := h.d.Store.TrackLanguages(ctx, itemID)
+	if err != nil {
+		http.Error(w, "track languages lookup failed", http.StatusInternalServerError)
+		return
+	}
+	setLanguage := map[string]string{}
+	for _, l := range set {
+		setLanguage[l.Kind+"/"+strconv.Itoa(int(l.Ordinal))] = l.Language
+	}
+	playsAs := func(kind string, ordinal int32, reported *string) *string {
+		if l, ok := setLanguage[kind+"/"+strconv.Itoa(int(ordinal))]; ok {
+			return &l
+		}
+		return reported
+	}
 
 	// 1. Source PlaybackAsset enrichment: what a source block says of the
 	// source (a present value wins), then the packaged duration for a source
@@ -103,9 +126,10 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 
 		// primary audio = first default:true else audio[0].
 		var primaryAudio map[string]any
-		for _, a := range audioRends {
+		primaryAt := 0
+		for i, a := range audioRends {
 			if def, ok := a["default"].(bool); ok && def {
-				primaryAudio = a
+				primaryAudio, primaryAt = a, i
 				break
 			}
 		}
@@ -117,6 +141,9 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 		if primaryAudio != nil {
 			audioCodec = asString(primaryAudio["codec"])
 			audioLanguage = asString(primaryAudio["language"])
+			if ordinal, ok := sourcetracks.AudioOrdinal(primaryAudio, primaryAt); ok {
+				audioLanguage = playsAs(model.TrackAudio, ordinal, audioLanguage)
+			}
 			if ch, ok := asInt(primaryAudio["channels"]); ok {
 				audioChannels = &ch
 			}
@@ -161,7 +188,8 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 	}
 	subsWritten := 0
 	for _, s := range subtitles {
-		if _, stream := sourcetracks.SubtitleOrdinal(s); !stream {
+		ordinal, stream := sourcetracks.SubtitleOrdinal(s)
+		if !stream {
 			continue
 		}
 		relPath := asString(s["path"])
@@ -178,12 +206,19 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 			INSERT INTO com_nalet_katalog_subtitleassets
 			(id, item_id, path, format, lang, label, isdefault)
 			VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, $5, $6)`,
-			itemID, fullPath, asString(s["format"]), asString(s["language"]),
+			itemID, fullPath, asString(s["format"]), playsAs(model.TrackSubtitle, ordinal, asString(s["language"])),
 			asString(s["title"]), isDefault); err != nil {
 			http.Error(w, "subtitle insert failed", http.StatusInternalServerError)
 			return
 		}
 		subsWritten++
+	}
+
+	// 4. The source's tracks, as the package reports them (best-effort, as
+	// the promotion: the package is in place whatever the catalog keeps of
+	// its source).
+	if _, err := h.d.Store.RecordSourceTracks(ctx, itemID, sourcetracks.FromManifest(manifest)); err != nil {
+		log.Printf("packagingComplete: the tracks of %s: %v", itemID, err)
 	}
 
 	// The pipeline's end: the packaged (playable) asset is now in the catalog —
