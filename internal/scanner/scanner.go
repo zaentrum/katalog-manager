@@ -411,40 +411,20 @@ func (s *Scanner) scanSidecars(ctx context.Context, pool *pgxpool.Pool, videoPat
 			continue
 		}
 		name := e.Name()
-		dot := strings.LastIndex(name, ".")
-		if dot < 0 {
+		lang, ok := sidecarName(videoBase, name)
+		if !ok {
 			continue
 		}
-		ext := strings.ToLower(name[dot:])
-		if !subExts[ext] {
-			continue
-		}
-		base := stripExt(name)
-
-		var lang, label string
-		baseNoLang := base
-		if m := langSuffix.FindStringSubmatchIndex(base); m != nil {
-			// m[0]==start of the matched ".lang" suffix; compare the prefix to
-			// the video basename, case-insensitively.
-			prefix := base[:m[0]]
-			if strings.EqualFold(prefix, videoBase) {
-				baseNoLang = prefix
-				lang = strings.ToLower(base[m[2]:m[3]])
-				label = languageLabel(lang)
-			}
-		}
-		if !strings.EqualFold(baseNoLang, videoBase) {
-			continue
-		}
-		if label == "" {
-			label = "Subtitles"
+		label := "Subtitles"
+		if lang != "" {
+			label = languageLabel(lang)
 		}
 
 		absPath, err := filepath.Abs(filepath.Join(dir, name))
 		if err != nil {
 			absPath = filepath.Join(dir, name)
 		}
-		format := ext[1:] // ext without leading dot
+		format := strings.ToLower(filepath.Ext(name))[1:] // ext without leading dot
 
 		var langArg, labelArg *string
 		if lang != "" {
@@ -473,6 +453,32 @@ func (s *Scanner) scanSidecars(ctx context.Context, pool *pgxpool.Pool, videoPat
 				itemID, absPath, format, langArg, labelArg)
 		}
 	}
+}
+
+// sidecarName says whether name, a file's name, is a subtitle file named as
+// the video whose name without its extension is videoBase: <videoBase>.<ext>
+// or <videoBase>.<lang>.<ext>, ext a subtitle's (subExts), letter case aside.
+// lang is the language its name gives, lowercase; "" when it gives none.
+func sidecarName(videoBase, name string) (lang string, ok bool) {
+	dot := strings.LastIndex(name, ".")
+	if dot < 0 || !subExts[strings.ToLower(name[dot:])] {
+		return "", false
+	}
+	base := stripExt(name)
+	baseNoLang := base
+	if m := langSuffix.FindStringSubmatchIndex(base); m != nil {
+		// m[0]==start of the matched ".lang" suffix; compare the prefix to
+		// the video basename, case-insensitively.
+		prefix := base[:m[0]]
+		if strings.EqualFold(prefix, videoBase) {
+			baseNoLang = prefix
+			lang = strings.ToLower(base[m[2]:m[3]])
+		}
+	}
+	if !strings.EqualFold(baseNoLang, videoBase) {
+		return "", false
+	}
+	return lang, true
 }
 
 // fileSize returns the file's byte size from the DirEntry, falling back to 0 if
