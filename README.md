@@ -29,8 +29,12 @@ The surface is split deliberately:
   [The pipeline heals itself](#the-pipeline-heals-itself)), `reencodeItem`
   (see [Encoding a title again](#encoding-a-title-again)),
   `backfillSourceProbes`, `backfillRatings` and `setMinAgeOverride` (see
-  [Ratings](#ratings); an item's `ageRating` says what it is rated), item +
-  settings CRUD; a delete removes files from
+  [Ratings](#ratings); an item's `ageRating` says what it is rated),
+  `setTrackLanguage` and `backfillSourceTracks` (see
+  [Track languages](#track-languages); an item's `tracks` are its source's
+  audio and subtitle tracks with the language each plays as), item +
+  settings CRUD; `identify` re-matches a title (see
+  [Identify](#identify)); a delete removes files from
   disk only when asked; a secret setting, such as an API key, is write-only:
   `setSecretSetting`/`clearSecretSetting`, and no field returns its value;
   `setSecretSetting` checks a TMDB token with TMDB's authentication endpoint
@@ -55,7 +59,12 @@ The surface is split deliberately:
   - `GET /api/analyze/items/{id}`, `PUT /api/analyze/items/{id}/steps/{step}`,
     `PUT/DELETE /api/segments|chapters/items/{id}`,
     `POST /api/items/{id}/packaging-complete` — the analyzer/packager worker
-    protocol.
+    protocol. The item record names the languages an admin set for the
+    source's tracks and the subtitle files beside the source (see
+    [Track languages](#track-languages)); packaging-complete replaces the
+    package's subtitles, each with whether it is forced, keeps those files
+    (the packager's rendition of one gets no row of its own), and records
+    the source's tracks the manifest lists.
   - `GET /api/settings` — the settings that are no secret, for the workers:
     `{"<key>": {"valueText": "...", "valueType": "..."}}`. The packager reads
     its language whitelist from it (`packager.language_whitelist`, comma
@@ -172,6 +181,97 @@ the base schema in the order of their numbers, and each is idempotent:
   age a title without a parent is held to. An episode carries no
   certification: it is rated as its series. Applied at startup like 030;
   without it no title is rated, and a capped viewer is served nothing.
+- `037_track_languages.sql` keeps a title's source tracks as the packager
+  read them (`com_nalet_katalog_itemtracks`: each audio and subtitle track's
+  language tag, title tag, a subtitle's format and whether it is forced) and
+  an admin's language of a track (`com_nalet_katalog_itemtracklanguages`, an
+  ISO 639-2 code), both keyed by the item, the kind and the ordinal (see
+  [Track languages](#track-languages)). Applied at startup like 030; without
+  it no track's language can be set, and the packager labels every track as
+  its source tags it.
+- `038_subtitle_forced.sql` gives a subtitle `isforced`: whether it is
+  forced, as its package says; false for a subtitle file beside a source,
+  and for a subtitle older than it until its title is packaged again.
+  Applied at startup like 030; without it no subtitle is kept as forced.
+
+## Track languages
+
+A source's audio and subtitle streams are tagged with a language or not, and
+not always rightly: a film without dialogue tagged `und`, English tagged
+`und`. An admin sets the language a track plays as.
+
+- **Codes.** A language is an ISO 639-2 code, three lowercase letters, in the
+  B (`ger`) or the T form (`deu`). `zxx` is no linguistic content, a film
+  without dialogue, shown as "No dialogue"; `und` is undetermined, shown as
+  "Unknown".
+- **A track** is its kind, `audio` or `subtitle`, and its ordinal: its place
+  among the original source's streams of that kind in ffprobe's order, 0
+  first (audio 0 is the first audio stream), counting a stream the
+  transcoder leaves out too (a `mov_text` subtitle). It plays as the
+  language an admin set, else the one its source tags it with, else `und`.
+- **Setting one.** `setTrackLanguage(itemId, kind, ordinal, language)` sets
+  it; `language: null` clears it. An item without a source file has no
+  tracks. Once a package has reported the source's audio tracks an audio
+  ordinal it did not report is refused, as a package carries every audio
+  stream of its source; a subtitle's ordinal is not checked. The packager
+  labels the track with it, found by its ordinal in the source, when it
+  next packages the title: `reencodeItem` packages a packaged title again,
+  and the packager reads the record then.
+- **The source's tracks** are what the packager's manifest lists:
+  `renditions.audio`, one entry per audio stream at its `idx`, and the
+  `subtitles` with an id `sub<N>`, the subtitle at N among those of the file
+  it packaged, except one marked `external` (the packager's rendition of a
+  subtitle file). An entry that names its `ordinal` among the source's
+  streams is at that ordinal. An encode leaves out the subtitle streams
+  Matroska cannot copy, and the subtitles after one count lower in its
+  package than in the source: for such a title the ordinals of the
+  subtitles listed are the package's. packaging-complete records them;
+  `backfillSourceTracks` reads them from the manifests of the packages on
+  disk, for those packaged before. An item's `tracks` lists each with its
+  `sourceLanguage`, `languageOverride` and `effectiveLanguage`; a language a
+  package reports that equals an admin's says nothing of the source's tag,
+  which the track keeps. The manifest's languages are the ones the tracks
+  play as, as the packager labels them, and so are the subtitles and the
+  packaged asset's audio language packaging-complete writes.
+- **The worker record** (`GET /api/analyze/items/{id}`) names the languages
+  set and the subtitle files the scanner found beside the source
+  (`<video>.<lang>.srt|vtt|ass|ssa`), each key left out when there is none,
+  so an older packager reads it as before. A file is named as the packager
+  takes it: at its absolute path on the library storage, in the source's
+  folder or below it, a `.srt`, `.vtt`, `.ass` or `.ssa` file there is, of
+  at most 50 MB, by path:
+
+  ```json
+  {"id": "…", "type": "movie", "title": "Sintel", "path": "/var/lib/katalog/media/Sintel/Sintel.mkv", "…": "…",
+   "hasOwnPoster": true, "hasOwnBackdrop": true,
+   "trackLanguages": [{"kind": "audio", "ordinal": 0, "language": "eng"},
+                      {"kind": "subtitle", "ordinal": 0, "language": "ger"}],
+   "subtitleFiles": [{"path": "/var/lib/katalog/media/Sintel/Sintel.en.srt", "language": "eng",
+                      "label": "English", "forced": false}]}
+  ```
+
+  A subtitle file's language is the code its name gives as an ISO 639-2 code
+  (`de` as `deu`), `und` when it gives none; `forced` is a JSON boolean,
+  false for every file the scanner records. The packager converts each file
+  to WebVTT and packages it after the source's own subtitles, marked
+  `external`, never the default unless forced; the scanner marks no subtitle
+  file the default.
+
+## Identify
+
+`identify(id, title, tmdbId)` matches a title by hand: a TMDB id pinned, or a
+search with a corrected title. It is a re-match whatever the match it lands
+on: the title's genres, trailers and artwork are the match's, and what an
+earlier match left goes. The match's genres replace the title's (none when
+it has none); TMDB's trailers without a local copy go, also when the match
+has none, while one with a local copy (`downloadedAt`, `localPath`) and one
+added by hand stay; every poster and backdrop row goes but the marker of a
+keyframe the analyzer extracted from the title's own file, and the image of
+a kind the match gives none of goes unless it is that keyframe. A series'
+episodes the new match knows are re-matched alike. An identify that finds no
+match changes none of them. A refresh (enrichment, the sweep, the change
+lists) adds genres, keeps the trailers when TMDB cannot be asked, and
+replaces TMDB's trailers with the list TMDB answers, an empty one too.
 
 ## Ratings
 
