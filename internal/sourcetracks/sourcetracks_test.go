@@ -53,8 +53,10 @@ func lines(report map[string][]model.SourceTrack) string {
 
 // A manifest's audio renditions are the source's audio streams, each at its
 // idx (its place in the list without one), the 5.1 companions none of them;
-// its subtitles with an id sub<N> are the source's subtitle streams at N,
-// any other is a subtitle file's rendition, no stream. A kind not listed is
+// its subtitles with an id sub<N> are the source's subtitle streams at N, but
+// one marked external, a subtitle file's rendition (its id counting on from
+// the streams'), and one with another id are none. An entry naming its
+// ordinal among the source's streams is at that ordinal. A kind not listed is
 // not reported, one listed empty reported without a track.
 func TestFromManifest(t *testing.T) {
 	m := decode(t, `{"version": 2,
@@ -64,19 +66,24 @@ func TestFromManifest(t *testing.T) {
 				{"id": "a1", "idx": 0, "language": "und", "title": ""},
 				{"id": "a2", "language": "ger"},
 				{"id": "a3", "idx": "x", "language": "fre"},
+				{"id": "a4", "idx": 3, "ordinal": 4, "language": "spa"},
 				"not a rendition"],
 			"audioSurround": [{"id": "a4", "idx": 0, "language": "und"}]},
 		"subtitles": [
 			{"id": "sub0", "language": "ger", "format": "pgs", "forced": false, "path": "subs/0.sup"},
 			{"id": "sub3", "language": "eng", "title": "Signs", "format": "webvtt", "forced": true},
+			{"id": "sub4", "language": "deu", "title": "Deutsch", "format": "webvtt", "external": true, "path": "subs/4.vtt"},
+			{"id": "sub5", "ordinal": 7, "language": "ita", "format": "dvb"},
 			{"id": "file0", "language": "deu", "format": "webvtt"},
 			{"id": "sub", "language": "fra"},
 			{"language": "spa"}]}`)
 	if got, want := lines(FromManifest(m)), `audio 1 eng Commentary - false
 audio 0 und  - false
 audio 2 ger - - false
+audio 4 spa - - false
 subtitle 0 ger - pgs false
-subtitle 3 eng Signs webvtt true`; got != want {
+subtitle 3 eng Signs webvtt true
+subtitle 7 ita - dvb false`; got != want {
 		t.Errorf("a v2 manifest:\n%s\nwant:\n%s", got, want)
 	}
 	if got, want := lines(FromManifest(decode(t, `{"renditions": {"video": [], "audio": []}, "subtitles": []}`))), "audio none\nsubtitle none"; got != want {
@@ -106,6 +113,8 @@ func TestOrdinals(t *testing.T) {
 		{map[string]any{"idx": json.Number("-1")}, 0, 0, false},
 		{map[string]any{"idx": 1.5}, 0, 0, false},
 		{map[string]any{"idx": "1"}, 0, 0, false},
+		{map[string]any{"idx": json.Number("1"), "ordinal": json.Number("3")}, 0, 3, true},
+		{map[string]any{"ordinal": json.Number("-2")}, 0, 0, false},
 	} {
 		if got, ok := AudioOrdinal(c.r, c.at); got != c.want || ok != c.ok {
 			t.Errorf("AudioOrdinal(%v, %d) = %d %v, want %d %v", c.r, c.at, got, ok, c.want, c.ok)
@@ -114,6 +123,19 @@ func TestOrdinals(t *testing.T) {
 	for id, want := range map[any]int32{"sub0": 0, "sub12": 12} {
 		if got, ok := SubtitleOrdinal(map[string]any{"id": id}); !ok || got != want {
 			t.Errorf("SubtitleOrdinal(%v) = %d %v, want %d", id, got, ok, want)
+		}
+	}
+	if got, ok := SubtitleOrdinal(map[string]any{"id": "sub1", "ordinal": json.Number("2")}); !ok || got != 2 {
+		t.Errorf("a subtitle naming its ordinal: %d %v, want 2", got, ok)
+	}
+	for _, s := range []map[string]any{
+		{"id": "sub4", "external": true},
+		{"id": "sub4", "external": true, "ordinal": json.Number("4")},
+		{"id": "sub1", "ordinal": json.Number("-1")},
+		{"id": "sub1", "ordinal": "2"},
+	} {
+		if _, ok := SubtitleOrdinal(s); ok {
+			t.Errorf("SubtitleOrdinal(%v) took it for a stream", s)
 		}
 	}
 	for _, id := range []any{"file0", "sub", "sub-1", "Sub1", "sub1a", "xsub1", 1, nil, "sub12345678"} {

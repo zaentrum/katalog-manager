@@ -5,12 +5,20 @@
 //
 //   - renditions.audio has one entry per audio stream of the source, in
 //     ffprobe's order: an entry's ordinal is its idx, the stream's place among
-//     the source's audio streams (its place in the list when it has none).
+//     the source's audio streams (its place in the list when it has none). The
+//     file the packager packages carries every audio stream of the source, so
+//     the two count alike.
 //   - subtitles has one entry per subtitle stream the packager extracted, id
-//     sub<N>, N the stream's place among the source's subtitle streams. An
-//     entry with another id is no stream of the source: the packager's
-//     rendition of a subtitle file beside the source (the worker record's
-//     subtitleFiles).
+//     sub<N>, N its place among the subtitle streams of the file it packaged.
+//     That is the source's ordinal when the file carries every subtitle stream
+//     of the source: the source itself, or an encode of one whose subtitles
+//     all stream-copy into Matroska (any Matroska source's). An encode leaves
+//     out a stream it cannot copy (mov_text), and the streams after it count
+//     one lower there than in the source. An entry that names its ordinal
+//     among the source's streams (ordinal) is at that ordinal, whatever its
+//     id. An entry marked external is no stream of the source: the
+//     packager's rendition of a subtitle file beside it (the worker record's
+//     subtitleFiles), whose id counts on from the streams'.
 //
 // A kind the manifest does not list at all is not reported: a manifest without
 // renditions.audio says nothing of the source's audio, one with an empty list
@@ -76,13 +84,20 @@ func FromManifest(manifest map[string]any) map[string][]model.SourceTrack {
 }
 
 // AudioOrdinal is the ordinal of an audio rendition of a manifest, the
-// position-th of its list: its idx, a whole number of 0 or more, else its
-// position. ok is false for an idx that is no such number.
+// position-th of its list: the ordinal it names, else its idx, each a whole
+// number of 0 or more, else its position. ok is false for an ordinal or an idx
+// that is no such number.
 func AudioOrdinal(rendition map[string]any, position int) (int32, bool) {
-	raw, present := rendition["idx"]
-	if !present || raw == nil {
-		return int32(position), position >= 0
+	for _, key := range []string{"ordinal", "idx"} {
+		if raw, present := rendition[key]; present && raw != nil {
+			return ordinalOf(raw)
+		}
 	}
+	return int32(position), position >= 0
+}
+
+// ordinalOf reads an ordinal: a whole number of 0 or more.
+func ordinalOf(raw any) (int32, bool) {
 	n, ok := whole(raw)
 	if !ok || n < 0 || n > 1<<20 {
 		return 0, false
@@ -93,9 +108,15 @@ func AudioOrdinal(rendition map[string]any, position int) (int32, bool) {
 var streamID = regexp.MustCompile(`^sub([0-9]{1,6})$`)
 
 // SubtitleOrdinal is the ordinal of a subtitle of a manifest that is one of
-// the source's streams, from its id sub<N>; ok is false for any other id, a
-// subtitle file's rendition.
+// the source's streams: the ordinal it names, else N of its id sub<N>. ok is
+// false for a subtitle file's rendition (external) and for any other id.
 func SubtitleOrdinal(subtitle map[string]any) (int32, bool) {
+	if external, _ := subtitle["external"].(bool); external {
+		return 0, false
+	}
+	if raw, present := subtitle["ordinal"]; present && raw != nil {
+		return ordinalOf(raw)
+	}
 	id, _ := subtitle["id"].(string)
 	m := streamID.FindStringSubmatch(id)
 	if m == nil {
