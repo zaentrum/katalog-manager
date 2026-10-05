@@ -50,6 +50,11 @@ type Config struct {
 	// Filesystem roots
 	NFSRoot      string // SCANNER_NFS_ROOT / NFS_ROOT (default /var/lib/katalog/media)
 	PackagesRoot string // PACKAGES_ROOT (default /var/lib/katalog/packages)
+	// The library's records, and the files an operator keeps for extras
+	// outside the media root (one the scanner never walks). An extra's file
+	// lives under the media root, LibraryRoot or ExtrasRoot.
+	LibraryRoot string // LIBRARY_ROOT (default /var/lib/katalog/library)
+	ExtrasRoot  string // EXTRAS_ROOT (default /var/lib/katalog/extras)
 
 	// TMDB
 	TMDBAPIKey   string // TMDB_API_KEY (blank -> enrichment disabled)
@@ -361,6 +366,8 @@ func Load() (Config, error) {
 
 		NFSRoot:      envDefault("/var/lib/katalog/media", "SCANNER_NFS_ROOT", "NFS_ROOT"),
 		PackagesRoot: packages,
+		LibraryRoot:  envDefault("/var/lib/katalog/library", "LIBRARY_ROOT"),
+		ExtrasRoot:   envDefault("/var/lib/katalog/extras", "EXTRAS_ROOT"),
 
 		TMDBAPIKey:          envDefault(DefaultTMDBToken, "TMDB_API_KEY"),
 		TMDBLanguage:        envDefault("en-US", "TMDB_LANGUAGE"),

@@ -180,3 +180,28 @@ func TestRetrySettingsThatAreNoneFailLoading(t *testing.T) {
 		}
 	}
 }
+
+// An extra's file lives under the media root, the library's records or the
+// extras' own root, each where its variable says, and by default under
+// /var/lib/katalog.
+func TestTheRootsOfAnExtrasFile(t *testing.T) {
+	for _, tc := range []struct {
+		env                   map[string]string
+		media, library, extra string
+	}{
+		{nil, "/var/lib/katalog/media", "/var/lib/katalog/library", "/var/lib/katalog/extras"},
+		{map[string]string{"SCANNER_NFS_ROOT": "/srv/media", "LIBRARY_ROOT": "/srv/library", "EXTRAS_ROOT": " /srv/extras "},
+			"/srv/media", "/srv/library", "/srv/extras"},
+	} {
+		for _, k := range []string{"SCANNER_NFS_ROOT", "NFS_ROOT", "LIBRARY_ROOT", "EXTRAS_ROOT"} {
+			t.Setenv(k, tc.env[k])
+		}
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.NFSRoot != tc.media || cfg.LibraryRoot != tc.library || cfg.ExtrasRoot != tc.extra {
+			t.Errorf("%v: media %s, library %s, extras %s", tc.env, cfg.NFSRoot, cfg.LibraryRoot, cfg.ExtrasRoot)
+		}
+	}
+}
