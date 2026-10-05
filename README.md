@@ -4,7 +4,9 @@ Catalog-management API for the **zaentrum** platform — a Go + GraphQL service.
 It owns the catalog write/admin surface (items, artwork, processing-step audit,
 settings) and drives enrichment, scanning and packaging. A rewrite of the
 former SAP CAP/Java service onto Go. Files enter the catalog through the
-scanner and the neutral `POST /api/ingest`, and through nothing else.
+scanner and the neutral `POST /api/ingest`, and through nothing else; a
+title's extras through `POST /api/extras` (GraphQL `addExtra`) and the
+scanner's extras convention (see [Extras](#extras)).
 
 ## Architecture
 
@@ -32,7 +34,9 @@ The surface is split deliberately:
   [Ratings](#ratings); an item's `ageRating` says what it is rated),
   `setTrackLanguage` and `backfillSourceTracks` (see
   [Track languages](#track-languages); an item's `tracks` are its source's
-  audio and subtitle tracks with the language each plays as), item +
+  audio and subtitle tracks with the language each plays as), `addExtra`,
+  `removeExtra`, `packageExtra` and `packageExtras` (see [Extras](#extras);
+  an item's `extras` are its trailers and other bonus material), item +
   settings CRUD; `identify` re-matches a title (see
   [Identify](#identify)); a delete removes files from
   disk only when asked; a secret setting, such as an API key, is write-only:
@@ -71,6 +75,10 @@ The surface is split deliberately:
     separated) and `packager.keep_original_if_single`. A secret setting is
     left out, set or not.
   - `POST /api/ingest` — an addon hands a file on disk to the catalog.
+  - `POST /api/extras` — a file taken in as a title's extra, and
+    `GET /api/analyze/extras/{id}`, `PUT /api/analyze/extras/{id}/steps/{step}`,
+    `POST /api/extras/{id}/packaging-complete` — an extra's worker protocol
+    (see [Extras](#extras)).
   - `POST /api/items/{id}/package` — an admin's packaging action, as
     chino-api's admin route forwards it with the admin's token: what
     GraphQL's `packageItem` does, answered as the CAP service did
@@ -95,8 +103,8 @@ account, whose token carries the addon role. Everyone else signed in is a
 | `GET /api/manage/stream` (the console's live stream) | admin |
 | `GET /api/artwork/...`, `/api/manage/artwork/...` (also a person's portrait) | any signed-in caller, or a stream token; a capped viewer is answered for a title above its cap as for a title there is not |
 | `GET /api/play/...`, `GET /api/subtitles/...` | any signed-in caller; a capped viewer as for the artwork |
-| `PUT /api/artwork/...`, `/api/analyze/*`, segments, chapters, `packaging-complete`, `GET /api/settings` | admin, service account |
-| `POST /api/ingest` | admin, service account, addon |
+| `PUT /api/artwork/...`, `/api/analyze/*` (an extra's record and steps too), segments, chapters, `packaging-complete` (an item's and an extra's), `GET /api/settings` | admin, service account |
+| `POST /api/ingest`, `POST /api/extras` | admin, service account, addon |
 | `POST /api/items/{id}/package` | admin |
 
 A refused GraphQL field answers with an error whose `extensions.code` is
@@ -193,6 +201,16 @@ the base schema in the order of their numbers, and each is idempotent:
   forced, as its package says; false for a subtitle file beside a source,
   and for a subtitle older than it until its title is packaged again.
   Applied at startup like 030; without it no subtitle is kept as forced.
+- `039_item_extras.sql` keeps a title's extras
+  (`com_nalet_katalog_itemextras`, one row per extra keyed by its extraId):
+  its kind, title, language and season, its file with its size and quick
+  hash, how it was taken in, what a viewer is shown (order, hidden, label),
+  where its packaging stands, its package and its removal, with the indexes
+  of an item's extras, of a live extra's file (one extra per file) and of
+  the extras the sweep sends and heals (see [Extras](#extras)). An item's
+  rows go with it. Applied at startup when its table or an index of it is
+  missing; without it no extra is taken in, and katalog-api lists none. A
+  read-only role (katalog-api's) needs a grant on the new table.
 
 ## Track languages
 
@@ -360,6 +378,9 @@ worker passes the chain on, and its own guard skips work that is done.
   sends it again a backoff later. Every `KATALOG_RETRY_INTERVAL` (30s) the
   sweep reaps and sends what is due; without an event bus or migration 033
   nothing is retried, and the overview says why.
+- **Extras.** The sweep heals a title's extras by the same policy, each a
+  chain of its own (see [Extras](#extras)); migration 033 is the steps', so
+  it does whatever the steps' retries can.
 
 ### Encoding a title again
 
@@ -427,12 +448,213 @@ packager gives in its manifest, the bit rate from size and duration.
 `backfillSourceProbes` fills what the sources probed before lack, from the
 catalog's records.
 
+## Extras
+
+An extra is bonus material of a movie or a series: a trailer or a teaser
+that is a file of its own, a featurette, a making-of, a deleted scene, an
+interview, a gag reel, a short, anything else (`other`). An episode has
+none; its series has, and a series' extra may name a season. An extra is
+no item and no playback asset of one: it is packaged on a chain of its own,
+from its own file, into `packages/extras/<aa>/<extraId>/` of the package
+store, never into its title's package, and a viewer is served it beside its
+title (katalog-api lists the extras that play under `include=extras`).
+
+### Taking an extra in
+
+`POST /api/extras` (an admin, the service account, an addon) and GraphQL
+`addExtra` (an admin) take a file in as an extra:
+
+```json
+{"itemPath": "/var/lib/katalog/media/BigBuckBunny_320x180.mp4",
+ "path": "/var/lib/katalog/extras/big-buck-bunny/trailer.mov",
+ "kind": "trailer", "title": "Trailer", "language": "en"}
+```
+
+- **The title** is named one way: `itemId`, `itemPath` (the path of its
+  file, its primary asset, which a demo's reset keeps where it changes ids)
+  or `tmdbId` with `itemType` (`movie` or `series`). It is a movie or a
+  series.
+- **`seasonNumber`** is only a series', and only of a season it has
+  episodes of.
+- **`path`** is an absolute path of an existing video file under the media
+  root, `LIBRARY_ROOT` or `EXTRAS_ROOT`, never under the package store,
+  never a link that leads out of those roots, and no title's own file.
+- **`kind`** is one of `featurette`, `behind-the-scenes`, `making-of`,
+  `deleted-scene`, `interview`, `trailer`, `teaser`, `gag-reel`, `short`,
+  `other`; `title` is the kind's name when omitted ("Trailer"); `language`
+  is BCP 47 or an ISO 639-2 code.
+- **The file's size and quick hash** are stored with it: `sha256:` and the
+  SHA-256 of its first 64 KiB, its last 64 KiB and its size as a big-endian
+  uint64, the library's `qh1`, which tells the file after a move.
+- **Idempotent on the file:** the same file again for the same title is its
+  extra (`created: false`); for another title it is refused. A removed
+  extra's file may be taken in again, as a new extra.
+
+The answer is 201 for an extra taken in, 200 for the one the file was
+already:
+
+```json
+{"extraId": "1b5c2a8e-…", "itemId": "ea886f9b-…", "created": true, "kind": "trailer",
+ "title": "Trailer", "state": "queued"}
+```
+
+A refusal says why, with its status: 400 `EXTRA_REFUSED`, 404 `NOT_FOUND`
+for a title there is not (a Job may wait for the scan that makes it), 409
+`EXTRA_CONFLICT` with the extra in the way, 503 on a catalog without
+migration 039:
+
+```json
+{"error": "/var/lib/katalog/extras/…/trailer.mov is extra 1b5c2a8e-… of item ea886f9b-… already",
+ "code": "EXTRA_CONFLICT", "extraId": "1b5c2a8e-…", "itemId": "ea886f9b-…"}
+```
+
+GraphQL's `addExtra` takes the same arguments and answers
+`{created, extra}`; a refusal is an error whose `extensions.code` is the
+code. An item's `extras` lists them as a viewer sees them (by `sortOrder`,
+none last, then as they were taken in; `removed: true` the removed ones
+too), each with its state, its package and whether it plays (`playable`).
+
+### Its packaging
+
+An extra waits to be sent (`pending`), and its trigger goes at once when
+the service has an event bus:
+
+```json
+{"eventId": "9f2b…", "extraId": "1b5c2a8e-…", "parentId": "ea886f9b-…", "type": "extra",
+ "kind": "trailer", "step": "transcode", "status": "queued", "occurredAt": "2026-10-06T08:00:00Z",
+ "source": "api"}
+```
+
+on `<KAFKA_TOPIC_PREFIX>catalog.extra.queued`, keyed by the extraId. It
+names no `itemId`: an item worker pointed at the topic by mistake skips it.
+A trigger after a failed run is a retry (`"status": "retry"`, `"source":
+"retry"`). The transcoder encodes the extra with its extras ladder and
+announces it on `catalog.extra.transcoded`; the packager packages it and
+reports its package. The workers' protocol:
+
+- `GET /api/analyze/extras/{id}` is the extra's record, 404 for one there
+  is not and for a removed one (a worker skips it):
+
+  ```json
+  {"id": "1b5c2a8e-…", "type": "extra", "parentId": "ea886f9b-…", "parentType": "movie",
+   "parentTitle": "Big Buck Bunny", "kind": "trailer", "title": "Trailer", "language": "en",
+   "seasonNumber": null, "path": "/var/lib/katalog/extras/big-buck-bunny/trailer.mov", "state": "queued"}
+  ```
+
+- `PUT /api/analyze/extras/{id}/steps/{transcode|package}` takes the body
+  an item's step takes, `{"status": "in_progress|done|not_applicable|failed",
+  "error": "…", "details": "…"}`, and answers `{extraId, step, status,
+  state}`: the transcode's start is `transcoding`, its end (`done`, or
+  `not_applicable`: the packager packages the source as it is) `transcoded`,
+  the package's start `packaging`; the package's end says nothing, as
+  packaging-complete makes the extra ready. A failed run (a package's too
+  that fails before it says it started) counts a failure: `pending`, sent
+  again a backoff later, while the retry policy has attempts left, else
+  `failed`. A report of a run the extra is past (a transcode's end after
+  its package began, a failure after `ready`) changes nothing. 404 for an
+  extra there is not or a removed one, 409 for one whose file is missing,
+  400 for a step or a status an extra does not have.
+- `POST /api/extras/{id}/packaging-complete` takes the package's manifest
+  (an item's with `"type": "extra"`, the extraId as `itemId`, `parentId` and
+  `extraKind`; no trickplay) and answers `{"extraId", "itemId", "packaged":
+  true, "durationMs"}`. The extra is `ready`, its failures over, and keeps
+  its package's folder (`packages/extras/<aa>/<extraId>`), how long it
+  plays, its top rendition's codec and size, the highest `BANDWIDTH` its
+  master playlist names (the top rendition's bit rate when the playlist
+  cannot be read) and its size. It is announced on `catalog.extra.packaged`
+  in the shape of an item event of its title, never on
+  `catalog.item.packaged`, which says the title itself became watchable:
+
+  ```json
+  {"eventId": "…", "itemId": "ea886f9b-…", "type": "movie", "step": "extra", "status": "done",
+   "occurredAt": "…", "source": "katalog-manager", "extraId": "1b5c2a8e-…", "kind": "trailer"}
+  ```
+
+  A manifest of another package, or one without video, is refused (400),
+  and the packager fails its step. A missing extra's package is recorded
+  and kept for when the file is back, not announced.
+
+An extra plays once it is packaged, until it is removed, unless it is
+hidden or its file is missing. A package made again plays the old one
+until the packager swaps the new one in.
+
+### The sweep, re-encoding, removal
+
+Every `KATALOG_RETRY_INTERVAL` the sweep, by the `KATALOG_RETRY_*` policy:
+
+- **reaps** an extra stuck in its packaging, counting a failed run: one
+  queued with no transcoder started within 24h, or transcoding with its
+  transcoder silent for 2h, or packaging with its packager silent for 2h,
+  goes back to `pending` before anything is sent again, so its chain runs
+  again from the transcode; one transcoded with no packager started within
+  24h stays transcoded, and the transcoder is sent a trigger that is no
+  retry, which has it announce the transcode again;
+- **sends** the triggers due, claiming each extra once (`FOR UPDATE SKIP
+  LOCKED`), so two instances never send one twice;
+- **deletes** what the package store holds of an extra removed a day ago:
+  its package, the ones it replaced and kept for their grace, and the
+  transcoder's handoff left in `_inbox/extra-<id>/`.
+
+Without an event bus extras wait, pending, and only the removed packages
+are deleted. `packageExtra(id)` and `packageExtras(itemId)` package an
+extra, or every extra of a title, again with the pipeline's current
+settings: it leaves `ready` for `pending`, its failures cleared, and its
+trigger goes; one in its packaging within its timeout is left alone, and so
+is one whose file is missing until the file is back. `reencodeItem` leaves
+a title's extras alone, and so does `identify`. `removeExtra(id, reason)`
+removes an extra: it stays, removed (who, when, why), plays no more, and
+its package is deleted a day later. Deleting a title deletes its extras;
+with `deleteFiles` their files under the media root or `EXTRAS_ROOT` go too
+(a library record's is written once and stays), with `deletePackages`
+their packages and handoffs.
+
+### The scanner's convention
+
+Behind the setting `extras.scan` (`true`, `on`, `yes` or `1`; off by
+default, so a library does not start packaging its bonus material by
+itself) the scanner takes a file in as an extra of a title when:
+
+- its name is the name of the title's file in the same folder, then a kind
+  and a label maybe: `<stem><sep><kind>[<sep><label>].<ext>`, the
+  separators `-`, `.`, `_` and space, the longest stem winning
+  (`Sintel-trailer.mkv`, `Sintel - Behind the Scenes - Music.mkv` beside
+  `Sintel.mkv`); the kinds `trailer`, `teaser`, `featurette`,
+  `behind the scenes`/`behindthescenes`, `making of`/`makingof`,
+  `deleted`/`deleted scene`, `interview`, `gag reel`/`bloopers`, `short`,
+  `other`/`extra`;
+- it lies in a folder of extras (`trailers/`, `teasers/`, `featurettes/`,
+  `behind the scenes/`, `making of/`, `deleted scenes/`, `interviews/`,
+  `bloopers/`, `extras/`) whose parent holds the one title's file;
+- its name is a kind alone (`trailer.mkv`, `teaser-2.mp4`; not a word that
+  may be a film's name, as `short` or `other`), or names a trailer as the
+  scanner always took one (`… - trailer.mkv`), beside the one title's file;
+- it lies in a show's folder of extras: `series/<Show>/trailers/` is the
+  series', `series/<Show>/Season 01/extras/` its first season's, of the one
+  series the episodes under `series/<Show>/` belong to.
+
+Anything ambiguous (a flat folder of many titles, two series) is skipped
+and said in the log; such a file is no item either. A file found at a new
+path with the size and quick hash of an extra of its title whose file is
+gone is that extra moved, and keeps its id and its package. After a walk
+that went through, an extra the scanner took in whose file is gone is
+`missing` and hidden, until it is back. A trailer once scanned as a title of
+its own becomes an extra of its film, and the title left without a file is
+removed, in the deletion log. With the setting off, a file the scanner
+always took for a trailer is skipped and no extra is taken in. Whatever the
+setting, the scanner writes no trailer asset rows (`kind = 'trailer'`) any
+more, and deletes the one a file it meets has.
+
 ## Configuration
 
 Env vars mirror the previous service so existing manifests keep working — see
 `internal/config/config.go`. Key ones: `SPRING_DATASOURCE_URL/USERNAME/PASSWORD`,
 `SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI`, `STREAM_SIGNING_KEY`,
-`TMDB_API_KEY`, `SCANNER_NFS_ROOT`, `KAFKA_BROKERS`.
+`TMDB_API_KEY`, `SCANNER_NFS_ROOT`, `KAFKA_BROKERS`. An extra's file lives
+under the media root, `LIBRARY_ROOT` (default `/var/lib/katalog/library`)
+or `EXTRAS_ROOT` (default `/var/lib/katalog/extras`, a root the scanner
+never walks). The extras' topics are `<KAFKA_TOPIC_PREFIX>catalog.extra.queued`,
+`.transcoded` and `.packaged`; where the broker creates no topic by itself
+they must be provisioned.
 `AUTH_DISABLED=true` turns off auth for local dev: every caller may then do
 anything.
 
