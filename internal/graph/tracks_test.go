@@ -2,6 +2,9 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -181,5 +184,57 @@ func TestSetTrackLanguageIsAnAdmins(t *testing.T) {
 	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE modifiedby IS NOT NULL`); n != 0 {
 		t.Error("a refused caller modified a title")
+	}
+}
+
+// backfillSourceTracks records the tracks of the packaged titles from their
+// packages' manifests on disk, says how many, and which it could not read;
+// the titles then list their tracks. Without migration 037 it is refused.
+func TestBackfillSourceTracksMutation(t *testing.T) {
+	st := storetest.Open(t)
+	withItemView(t, st)
+	dir := t.TempDir()
+	storetest.AddItem(t, st, "m1", "movie", "A Film", "")
+	storetest.AddItem(t, st, "m2", "movie", "Gone", "")
+	manifest := filepath.Join(dir, "m1", "manifest.json")
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte(`{"version": 2, "renditions": {"audio": [{"id": "a0", "idx": 0, "language": "und"}]},
+		"subtitles": [{"id": "sub0", "language": "ger", "format": "webvtt"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind) VALUES
+		('pkg-m1', 'm1', $1, false, 'packaged'), ('pkg-m2', 'm2', $2, false, 'packaged')`,
+		manifest, filepath.Join(dir, "m2", "manifest.json"))
+
+	resp := MustSchema(NewResolver(st, testConfig, Services{})).Exec(as(admin),
+		`mutation { backfillSourceTracks { titles recorded audioTracks subtitleTracks failed errors } }`, "", nil)
+	if len(resp.Errors) > 0 {
+		t.Fatal(resp.Errors)
+	}
+	var got struct {
+		B struct {
+			Titles, Recorded, AudioTracks, SubtitleTracks, Failed int
+			Errors                                                []string
+		} `json:"backfillSourceTracks"`
+	}
+	if err := json.Unmarshal(resp.Data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if b := got.B; b.Titles != 2 || b.Recorded != 1 || b.AudioTracks != 1 || b.SubtitleTracks != 1 || b.Failed != 1 ||
+		len(b.Errors) != 1 || !strings.HasPrefix(b.Errors[0], "m2: read its manifest: ") {
+		t.Errorf("backfillSourceTracks: %s", resp.Data)
+	}
+	if got := query(t, st, `{ item(id: "m1") { tracks { kind ordinal sourceLanguage effectiveLanguage } } }`); got !=
+		`{"item":{"tracks":[{"kind":"audio","ordinal":0,"sourceLanguage":"und","effectiveLanguage":"und"},`+
+			`{"kind":"subtitle","ordinal":0,"sourceLanguage":"ger","effectiveLanguage":"ger"}]}}` {
+		t.Errorf("the tracks after the backfill: %s", got)
+	}
+
+	base := storetest.OpenBase(t)
+	resp = MustSchema(NewResolver(base, testConfig, Services{})).Exec(as(admin), `mutation { backfillSourceTracks { titles } }`, "", nil)
+	if len(resp.Errors) != 1 || !strings.Contains(resp.Errors[0].Message, "037_track_languages.sql") {
+		t.Errorf("without 037: %v", resp.Errors)
 	}
 }

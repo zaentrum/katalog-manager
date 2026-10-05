@@ -18,11 +18,18 @@
 package sourcetracks
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/zaentrum/katalog-manager/internal/model"
+	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
 // FromManifest is what manifest (a manifest decoded with json.Number numbers,
@@ -127,4 +134,112 @@ func str(v any) *string {
 		return nil
 	}
 	return &s
+}
+
+// Result is what a Backfill run did: the packaged titles it read the
+// manifest of, those whose tracks it recorded and the tracks of each kind,
+// and those whose manifest it could not read or record (Errors says why, the
+// first maxErrors of them).
+type Result struct {
+	Titles         int32
+	Recorded       int32
+	AudioTracks    int32
+	SubtitleTracks int32
+	Failed         int32
+	Errors         []string
+}
+
+// maxErrors is how many failures a Result names.
+const maxErrors = 20
+
+// maxManifest bounds what Backfill reads of a manifest: a package's is a few
+// kilobytes.
+const maxManifest = 8 << 20
+
+// Backfill records the tracks of every packaged title from its package's
+// manifest on disk, the one its packaged asset names, as packaging-complete
+// records them from the manifest the packager sends: for the packages written
+// before the catalog kept their tracks. Running it again records what the
+// manifests say again. It refuses to run on a catalog without migration 037.
+func Backfill(ctx context.Context, st *store.Store) (Result, error) {
+	var res Result
+	if ready, err := st.TrackLanguagesReady(ctx); err != nil {
+		return res, err
+	} else if !ready {
+		return res, errors.New("the track languages migration (db/migrations/037_track_languages.sql) is not applied")
+	}
+	rows, err := st.Pool().Query(ctx, `SELECT DISTINCT ON (a.item_id) a.item_id, a.path
+		FROM com_nalet_katalog_playbackassets a JOIN com_nalet_katalog_items i ON i.id = a.item_id
+		WHERE a.kind = 'packaged' ORDER BY a.item_id, a.path`)
+	if err != nil {
+		return res, err
+	}
+	type pkg struct{ item, manifest string }
+	var pkgs []pkg
+	for rows.Next() {
+		var p pkg
+		if err := rows.Scan(&p.item, &p.manifest); err != nil {
+			rows.Close()
+			return res, err
+		}
+		pkgs = append(pkgs, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return res, err
+	}
+
+	fail := func(item string, err error) {
+		res.Failed++
+		if len(res.Errors) < maxErrors {
+			res.Errors = append(res.Errors, item+": "+err.Error())
+		}
+	}
+	for _, p := range pkgs {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
+		res.Titles++
+		manifest, err := readManifest(p.manifest)
+		if err != nil {
+			fail(p.item, err)
+			continue
+		}
+		tracks := FromManifest(manifest)
+		if len(tracks) == 0 {
+			fail(p.item, fmt.Errorf("its manifest %s lists no tracks", p.manifest))
+			continue
+		}
+		if _, err := st.RecordSourceTracks(ctx, p.item, tracks); err != nil {
+			fail(p.item, err)
+			continue
+		}
+		res.Recorded++
+		res.AudioTracks += int32(len(tracks[model.TrackAudio]))
+		res.SubtitleTracks += int32(len(tracks[model.TrackSubtitle]))
+	}
+	return res, nil
+}
+
+// readManifest reads a package's manifest as packaging-complete decodes the
+// one it is sent.
+func readManifest(path string) (map[string]any, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("its packaged asset names no manifest")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("read its manifest: %w", err)
+	}
+	defer f.Close()
+	dec := json.NewDecoder(io.LimitReader(f, maxManifest))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
+		return nil, fmt.Errorf("its manifest %s is no manifest: %w", path, err)
+	}
+	if m == nil {
+		return nil, fmt.Errorf("its manifest %s is no manifest: null", path)
+	}
+	return m, nil
 }

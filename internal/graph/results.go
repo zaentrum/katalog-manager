@@ -4,6 +4,7 @@ import (
 	graphql "github.com/graph-gophers/graphql-go"
 
 	"github.com/zaentrum/katalog-manager/internal/sourceprobe"
+	"github.com/zaentrum/katalog-manager/internal/sourcetracks"
 )
 
 // Plain value-backed resolvers for action results. Fields are exported on the
@@ -130,6 +131,20 @@ func (r *sourceProbeBackfillResultResolver) Resolutions() int32 { return r.m.Res
 func (r *sourceProbeBackfillResultResolver) Durations() int32   { return r.m.Durations }
 func (r *sourceProbeBackfillResultResolver) Bitrates() int32    { return r.m.Bitrates }
 func (r *sourceProbeBackfillResultResolver) Unknown() int32     { return r.m.Unknown }
+
+type sourceTrackBackfillResultResolver struct{ m sourcetracks.Result }
+
+func (r *sourceTrackBackfillResultResolver) Titles() int32         { return r.m.Titles }
+func (r *sourceTrackBackfillResultResolver) Recorded() int32       { return r.m.Recorded }
+func (r *sourceTrackBackfillResultResolver) AudioTracks() int32    { return r.m.AudioTracks }
+func (r *sourceTrackBackfillResultResolver) SubtitleTracks() int32 { return r.m.SubtitleTracks }
+func (r *sourceTrackBackfillResultResolver) Failed() int32         { return r.m.Failed }
+func (r *sourceTrackBackfillResultResolver) Errors() []string {
+	if r.m.Errors == nil {
+		return []string{}
+	}
+	return r.m.Errors
+}
 
 type RetryResult struct {
 	Reset int32

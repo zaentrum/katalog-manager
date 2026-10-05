@@ -1,12 +1,17 @@
 package sourcetracks
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/zaentrum/katalog-manager/internal/model"
+	"github.com/zaentrum/katalog-manager/internal/store"
+	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
 
 // decode reads a manifest as packaging-complete does: numbers as json.Number.
@@ -115,5 +120,66 @@ func TestOrdinals(t *testing.T) {
 		if _, ok := SubtitleOrdinal(map[string]any{"id": id}); ok {
 			t.Errorf("SubtitleOrdinal(%v) took it for a stream", id)
 		}
+	}
+}
+
+// packaged gives the catalog a title packaged with manifest (none: its
+// packaged asset names a file there is not).
+func packaged(t *testing.T, st *store.Store, dir, id, manifest string) {
+	t.Helper()
+	storetest.AddItem(t, st, id, "movie", "Film "+id, "")
+	path := filepath.Join(dir, id, "manifest.json")
+	if manifest != "" {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(manifest), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind)
+		VALUES ('pkg-' || $1::varchar, $1::varchar, $2, false, 'packaged')`, id, path)
+}
+
+// The backfill records the tracks of every packaged title from its package's
+// manifest on disk, as packaging-complete does, and counts them; a title
+// whose manifest is missing or no manifest fails, saying why, and the others
+// are recorded all the same. Running it again records the same.
+func TestBackfill(t *testing.T) {
+	st := storetest.Open(t)
+	dir := t.TempDir()
+	packaged(t, st, dir, "m1", `{"version": 2, "renditions": {"audio": [{"id": "a0", "idx": 0, "language": "und"}]},
+		"subtitles": [{"id": "sub0", "language": "ger", "format": "webvtt"}, {"id": "sub1", "language": "eng", "format": "webvtt"}]}`)
+	packaged(t, st, dir, "m2", `{"version": 2, "renditions": {"audio": [{"id": "a0", "idx": 0, "language": "eng"},
+		{"id": "a1", "idx": 1, "language": "fre"}]}, "subtitles": []}`)
+	packaged(t, st, dir, "m3", "")
+	packaged(t, st, dir, "m4", `not json`)
+	storetest.AddItem(t, st, "m5", "movie", "Not packaged", "")
+	ctx := context.Background()
+
+	for run := 1; run <= 2; run++ {
+		res, err := Backfill(ctx, st)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Titles != 4 || res.Recorded != 2 || res.AudioTracks != 3 || res.SubtitleTracks != 2 || res.Failed != 2 ||
+			len(res.Errors) != 2 || !strings.HasPrefix(res.Errors[0], "m3: read its manifest: ") ||
+			!strings.HasPrefix(res.Errors[1], "m4: its manifest "+dir+"/m4/manifest.json is no manifest: ") {
+			t.Errorf("run %d: %+v", run, res)
+		}
+	}
+	for item, want := range map[string]int{"m1": 3, "m2": 2, "m3": 0, "m4": 0, "m5": 0} {
+		tracks, err := st.Tracks(ctx, item)
+		if err != nil || len(tracks) != want {
+			t.Errorf("%s: %d tracks (%v), want %d", item, len(tracks), err, want)
+		}
+	}
+}
+
+// Without migration 037 the backfill does not run.
+func TestBackfillWithoutTheMigration(t *testing.T) {
+	if _, err := Backfill(context.Background(), storetest.OpenBase(t)); err == nil ||
+		!strings.Contains(err.Error(), "037_track_languages.sql") {
+		t.Errorf("Backfill without 037: %v", err)
 	}
 }

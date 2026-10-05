@@ -602,6 +602,19 @@ type SourceProbeBackfillResult {
   unknown: Int!
 }
 
+# What a backfillSourceTracks run did: the packaged titles whose package's
+# manifest it read, those whose tracks it recorded with the tracks of each
+# kind, and those it could not (a manifest missing, or none), each named in
+# errors with why (the first 20).
+type SourceTrackBackfillResult {
+  titles: Int!
+  recorded: Int!
+  audioTracks: Int!
+  subtitleTracks: Int!
+  failed: Int!
+  errors: [String!]!
+}
+
 # What a backfillRatings run did.
 type RatingsBackfillResult {
   # titles whose certifications were read from TMDB: those a country of the
@@ -846,6 +859,12 @@ type Mutation {
   # size over the duration. A value a source has stays; running it again
   # changes nothing.
   backfillSourceProbes: SourceProbeBackfillResult!
+  # Records the tracks of every packaged title's source (see Track) from its
+  # package's manifest on disk, as packaging-complete records them from the
+  # manifest it is sent: for the packages written before the catalog kept
+  # them. Running it again records what the manifests say again. Refused on
+  # a catalog without migration 037.
+  backfillSourceTracks: SourceTrackBackfillResult!
   retryNotFound(type: String): RetryResult!
   # Retries a step of an item now: sends the event that triggers its worker
   # again. It retries a failed step (with or without attempts left), and one

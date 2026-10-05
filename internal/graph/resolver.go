@@ -9,6 +9,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/sourceprobe"
+	"github.com/zaentrum/katalog-manager/internal/sourcetracks"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
@@ -642,6 +643,19 @@ func (r *Resolver) BackfillSourceProbes(ctx context.Context) (*sourceProbeBackfi
 		return nil, err
 	}
 	return &sourceProbeBackfillResultResolver{m: res}, nil
+}
+
+// BackfillSourceTracks records the tracks of the packaged titles' sources
+// from their packages' manifests on disk (sourcetracks.Backfill).
+func (r *Resolver) BackfillSourceTracks(ctx context.Context) (*sourceTrackBackfillResultResolver, error) {
+	if err := r.allow(ctx, "Mutation.backfillSourceTracks"); err != nil {
+		return nil, err
+	}
+	res, err := sourcetracks.Backfill(ctx, r.store)
+	if err != nil {
+		return nil, err
+	}
+	return &sourceTrackBackfillResultResolver{m: res}, nil
 }
 
 func (r *Resolver) RetryNotFound(ctx context.Context, args struct{ Type *string }) (*retryResultResolver, error) {

@@ -53,6 +53,7 @@ var fieldAccess = map[string]auth.Access{
 	"Mutation.setTrackLanguage":         auth.Admin,
 	"Mutation.backfillEpisodeBackdrops": auth.Admin,
 	"Mutation.backfillSourceProbes":     auth.Admin,
+	"Mutation.backfillSourceTracks":     auth.Admin,
 	"Mutation.retryNotFound":            auth.Admin,
 	"Mutation.retryStep":                auth.Admin,
 	"Mutation.retryFailed":              auth.Admin,

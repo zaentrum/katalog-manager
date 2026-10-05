@@ -316,6 +316,7 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { setTrackLanguage(itemId: "m1", kind: "audio", ordinal: 0, language: "zxx") { id tracks { effectiveLanguage } } }`, ""},
 	{`mutation { backfillEpisodeBackdrops { artwork } }`, "backfill backdrops"},
 	{`mutation { backfillSourceProbes { assets filled unknown } }`, ""},
+	{`mutation { backfillSourceTracks { titles recorded audioTracks subtitleTracks failed errors } }`, ""},
 	{`mutation { retryNotFound { reset } }`, "retry not found"},
 	{`mutation { retryStep(itemId: "m1", step: "transcode") { retried message } }`, "retry m1 transcode"},
 	{`mutation { retryFailed(step: "package") { retried message } }`, "retry the failed package"},
