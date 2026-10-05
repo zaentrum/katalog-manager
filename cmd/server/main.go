@@ -261,6 +261,7 @@ func run() error {
 	// Live catalog stream: a per-pod Kafka tail (latest offset) fans thin
 	// catalog.updated notifications out to the console over SSE, so it refreshes
 	// the moment the pipeline moves instead of polling. No brokers => inert.
+	// An extra's package recorded is a note of its title, phase extra.
 	broker := stream.NewBroker()
 	if cfg.CatalogEventsEnabled {
 		host, _ := os.Hostname()
@@ -269,9 +270,14 @@ func run() error {
 		}
 		go events.ConsumeLatest(bgCtx, events.SplitBrokers(cfg.KafkaBrokers), cfg.KafkaCertDir,
 			"katalog-stream-"+host,
-			[]string{events.TopicDiscovered, events.TopicEnriched, events.TopicAnalyzed, events.TopicTranscoded, events.TopicPackaged, events.TopicRemoved},
+			[]string{events.TopicDiscovered, events.TopicEnriched, events.TopicAnalyzed, events.TopicTranscoded, events.TopicPackaged,
+				events.TopicRemoved, events.TopicExtraPackaged},
 			func(_ context.Context, topic string, ev events.ItemEvent) error {
-				broker.Publish(stream.Note{ItemID: ev.ItemID, ItemType: ev.Type, Phase: stream.PhaseOf(topic)})
+				phase := stream.PhaseOf(topic)
+				if topic == events.TopicExtraPackaged {
+					phase = "extra"
+				}
+				broker.Publish(stream.Note{ItemID: ev.ItemID, ItemType: ev.Type, Phase: phase})
 				return nil
 			})
 	}
