@@ -29,6 +29,9 @@
 // and the transcoder's trigger goes, not marked as a retry, so its guard runs
 // the step.
 //
+// The sweep runs the extras' jobs too (extras.go): an extra of a title is
+// packaged on a chain of its own, and retried by the same policy.
+//
 // The reaper takes a scan job silent for longer than the scan's timeout (the
 // scan step's) for lost too: its scanner, which gives it a word every so
 // often while it walks, is stuck or gone. The job is failed, saying so; a scan
@@ -73,6 +76,8 @@ type Service struct {
 	migrated atomic.Bool
 	// retryingFailed is set while a retryFailed runs in this instance.
 	retryingFailed atomic.Bool
+	// extras are the sweep's jobs for the titles' extras (extras.go).
+	extras ExtraJobs
 }
 
 // New is the retries of st's steps by pol, sending events through pub (nil:
@@ -129,7 +134,8 @@ func (s *Service) automatic() bool { return s.interval > 0 && s.pol.MaxAttempts 
 // Run sweeps every interval until ctx ends; with no interval it returns.
 func (s *Service) Run(ctx context.Context) {
 	if s.interval <= 0 {
-		log.Printf("retry: no sweep (KATALOG_RETRY_INTERVAL off): failed steps are retried by an admin only, and no silent step or scan is reaped")
+		log.Printf("retry: no sweep (KATALOG_RETRY_INTERVAL off): failed steps are retried by an admin only, no silent step or scan is reaped, " +
+			"and an extra is sent only when it is taken in or packaged again")
 		return
 	}
 	log.Printf("retry: sweeping every %s (up to %d runs in a row, a backoff from %s to %s)",
@@ -143,6 +149,7 @@ func (s *Service) Run(ctx context.Context) {
 		} else if n > 0 {
 			log.Printf("retry: %d scans silent past the scan's timeout failed", n)
 		}
+		s.sweepExtras(ctx)
 		if why := s.unavailable(ctx); why != "" {
 			if why != said {
 				log.Printf("retry: the sweep idles: %s", why)

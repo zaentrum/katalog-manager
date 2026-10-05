@@ -187,7 +187,7 @@ func run() error {
 	// The pipeline heals itself: a failed step is retried by sending its
 	// trigger event again, after a backoff, a bounded number of times, and a
 	// step whose worker went silent past its timeout is reaped into a failure.
-	retries := retry.New(st, cfg.RetryPolicy(), eventProducer, cfg.RetryInterval)
+	retries := retry.New(st, cfg.RetryPolicy(), eventProducer, cfg.RetryInterval).WithExtras(extrasSvc)
 
 	// Background workers (lifetime = server) share bgCtx, cancelled on shutdown.
 	// Keep the people and titles the catalog holds fresh from TMDB's change
