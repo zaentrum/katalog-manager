@@ -7,6 +7,7 @@ package tmdb
 
 import (
 	"context"
+	"errors"
 	"log"
 	"regexp"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/zaentrum/katalog-manager/internal/chaptersdb"
@@ -165,6 +167,11 @@ func (s *Service) EnrichOne(ctx context.Context, id string) (string, string, err
 // the search); otherwise the existing tmdb link is dropped so the (override)
 // title re-resolves from scratch. On success it overwrites the metadata +
 // artwork (applyMovie/applyTv set the title from TMDB, so the name is corrected too).
+//
+// An identify is a re-match: the item's genres, trailers and artwork are the
+// ones of the match it lands on, and what its old match left goes (see
+// rematch), also when the match is the one it had. One that finds no match
+// changes none of them.
 func (s *Service) IdentifyOne(ctx context.Context, id, titleOverride string, tmdbID *int64) (string, string, error) {
 	typ, title, year, ok := s.loadItem(ctx, id)
 	if !ok {
@@ -178,9 +185,25 @@ func (s *Service) IdentifyOne(ctx context.Context, id, titleOverride string, tmd
 	} else {
 		s.clearExternalID(ctx, id, "tmdb")
 	}
-	status, msg := s.enrichRow(ctx, id, typ, title, year)
+	status, msg := s.enrich(ctx, id, typ, title, year, rematch)
 	return status, msg, nil
 }
+
+// How an enrichment treats what an earlier match left of the item: a refresh
+// (EnrichOne, the sweep, the change lists) keeps it and adds the match's, as a
+// title's match is the one it had; a re-match (IdentifyOne) replaces it with
+// the match's:
+//   - genres: the match's replace the item's, none when the match has none;
+//   - trailers: TMDB's, without a local copy, go even when the match has none
+//     or TMDB could not be asked (a refresh keeps them then); a trailer added
+//     by hand or with a local copy (downloadedat or localpath) stays;
+//   - artwork: every image row of a poster or backdrop goes but the marker of
+//     a keyframe the analyzer extracted from the item's own file, and the
+//     image of a kind the match gives none of goes unless it is that keyframe.
+const (
+	refresh = false
+	rematch = true
+)
 
 // EnrichPending queues up to limit items whose tmdb step is pending or absent
 // (ORDER BY createdat ASC) and runs the sweep asynchronously. It returns the
@@ -320,8 +343,14 @@ func (s *Service) loadItem(ctx context.Context, id string) (typ, title string, y
 }
 
 // enrichRow dispatches by type. Mirrors EnrichmentService.enrichRow including
-// the in-title year fallback and the disabled-client short-circuit.
+// the in-title year fallback and the disabled-client short-circuit. It
+// refreshes the item from its match.
 func (s *Service) enrichRow(ctx context.Context, id, typ, title string, year *int) (status, message string) {
+	return s.enrich(ctx, id, typ, title, year, refresh)
+}
+
+// enrich is enrichRow, a refresh or a re-match (replace).
+func (s *Service) enrich(ctx context.Context, id, typ, title string, year *int, replace bool) (status, message string) {
 	if year == nil && title != "" {
 		if m := titleYearRE.FindStringSubmatch(title); m != nil {
 			if y, err := strconv.Atoi(m[1]); err == nil {
@@ -334,11 +363,11 @@ func (s *Service) enrichRow(ctx context.Context, id, typ, title string, year *in
 	}
 	switch typ {
 	case "movie":
-		return s.enrichMovie(ctx, id, title, year)
+		return s.enrichMovie(ctx, id, title, year, replace)
 	case "series":
-		return s.enrichSeries(ctx, id, title, year)
+		return s.enrichSeries(ctx, id, title, year, replace)
 	case "episode":
-		return s.enrichEpisode(ctx, id)
+		return s.enrichEpisode(ctx, id, replace)
 	default:
 		return statusSkipped, "type '" + typ + "' not implemented yet"
 	}
@@ -351,7 +380,7 @@ func (s *Service) enrichRow(ctx context.Context, id, typ, title string, year *in
 // orphan with no parent/coords — it returns not_found (mapped to a 'skipped'
 // step) so the pipeline still ADVANCES to analyze; the parent's later match
 // backfills the metadata. Returns done once the episode metadata is applied.
-func (s *Service) enrichEpisode(ctx context.Context, id string) (string, string) {
+func (s *Service) enrichEpisode(ctx context.Context, id string, replace bool) (string, string) {
 	// Validate the episode's linkage before marking in_progress, so an orphan
 	// (no parent / coords) goes straight to not_found without a spurious
 	// in_progress churn on every redelivery.
@@ -383,11 +412,11 @@ func (s *Service) enrichEpisode(ctx context.Context, id string) (string, string)
 		s.markStatus(ctx, id, "not_found", nil)
 		return statusNotFound, ""
 	}
-	s.applyEpisode(ctx, id, epd) // metadata + still artwork + marks the tmdb step done
+	s.applyEpisode(ctx, id, epd, replace) // metadata + still artwork + marks the tmdb step done
 	return statusDone, ""
 }
 
-func (s *Service) enrichMovie(ctx context.Context, id, title string, year *int) (string, string) {
+func (s *Service) enrichMovie(ctx context.Context, id, title string, year *int, replace bool) (string, string) {
 	searchTitle := cleanTitle(title)
 	s.markStatus(ctx, id, "in_progress", nil)
 
@@ -397,7 +426,7 @@ func (s *Service) enrichMovie(ctx context.Context, id, title string, year *int) 
 	}
 	if !ok {
 		// TMDB missed the item entirely — try OMDb by title+year before giving up.
-		if st, msg := s.omdbFallbackMatch(ctx, id, searchTitle, year, "movie"); st != "" {
+		if st, msg := s.omdbFallbackMatch(ctx, id, searchTitle, year, "movie", replace); st != "" {
 			return st, msg
 		}
 		s.markStatus(ctx, id, "not_found", nil)
@@ -411,13 +440,14 @@ func (s *Service) enrichMovie(ctx context.Context, id, title string, year *int) 
 		s.markStatus(ctx, id, "failed", &msg)
 		return statusFailed, msg
 	}
-	s.applyMovie(ctx, id, m)
+	s.applyMovie(ctx, id, m, replace)
 	s.rateEnriched(ctx, id, "movie", tmdbID)
 
 	if c, ok := s.tmdb.getCredits(ctx, tmdbID); ok {
 		s.applyCredits(ctx, id, c)
 	}
-	s.applyTrailerLinks(ctx, id, s.tmdb.getMovieVideos(ctx, tmdbID))
+	videos, answered := s.tmdb.getMovieVideos(ctx, tmdbID)
+	s.applyTrailerLinks(ctx, id, videos, answered, replace)
 
 	var dur *int64
 	if m.Runtime > 0 {
@@ -438,12 +468,7 @@ func (s *Service) enrichMovie(ctx context.Context, id, title string, year *int) 
 			backdropURL = fb
 		}
 	}
-	if posterURL != "" {
-		s.persistArtwork(ctx, id, "poster", posterURL)
-	}
-	if backdropURL != "" {
-		s.persistArtwork(ctx, id, "backdrop", backdropURL)
-	}
+	s.applyArtwork(ctx, id, posterURL, backdropURL, replace)
 
 	// OMDb fills description/rating/poster TMDB left blank (keyed by imdb id).
 	s.omdbGapFill(ctx, id, m.ImdbID, m.Overview != "", m.VoteAverage > 0, posterURL != "")
@@ -452,7 +477,7 @@ func (s *Service) enrichMovie(ctx context.Context, id, title string, year *int) 
 	return statusDone, ""
 }
 
-func (s *Service) enrichSeries(ctx context.Context, id, title string, year *int) (string, string) {
+func (s *Service) enrichSeries(ctx context.Context, id, title string, year *int, replace bool) (string, string) {
 	searchTitle := cleanTitle(title)
 	s.markStatus(ctx, id, "in_progress", nil)
 
@@ -463,7 +488,7 @@ func (s *Service) enrichSeries(ctx context.Context, id, title string, year *int)
 	if !ok {
 		// TMDB missed the series entirely — try OMDb by title+year (episodes stay
 		// filename-based, as OMDb-only matches carry no TMDB id to enumerate them).
-		if st, msg := s.omdbFallbackMatch(ctx, id, searchTitle, year, "series"); st != "" {
+		if st, msg := s.omdbFallbackMatch(ctx, id, searchTitle, year, "series", replace); st != "" {
 			return st, msg
 		}
 		s.markStatus(ctx, id, "not_found", nil)
@@ -477,13 +502,14 @@ func (s *Service) enrichSeries(ctx context.Context, id, title string, year *int)
 		s.markStatus(ctx, id, "failed", &msg)
 		return statusFailed, msg
 	}
-	s.applyTv(ctx, id, t)
+	s.applyTv(ctx, id, t, replace)
 	s.rateEnriched(ctx, id, "series", tmdbID)
 
 	if credits != nil {
 		s.applyCredits(ctx, id, credits)
 	}
-	s.applyTrailerLinks(ctx, id, s.tmdb.getTvVideos(ctx, tmdbID))
+	videos, answered := s.tmdb.getTvVideos(ctx, tmdbID)
+	s.applyTrailerLinks(ctx, id, videos, answered, replace)
 
 	posterURL := s.tmdb.imageURL(t.PosterPath, "w780")
 	backdropURL := s.tmdb.imageURL(t.BackdropPath, "w1280")
@@ -505,23 +531,18 @@ func (s *Service) enrichSeries(ctx context.Context, id, title string, year *int)
 			backdropURL = fb
 		}
 	}
-	if posterURL != "" {
-		s.persistArtwork(ctx, id, "poster", posterURL)
-	}
-	if backdropURL != "" {
-		s.persistArtwork(ctx, id, "backdrop", backdropURL)
-	}
+	s.applyArtwork(ctx, id, posterURL, backdropURL, replace)
 
 	// OMDb fills description/rating/poster TMDB left blank (keyed by imdb id).
 	s.omdbGapFill(ctx, id, imdbID, t.Overview != "", t.VoteAverage > 0, posterURL != "")
 
-	s.enrichEpisodesOf(ctx, id, tmdbID)
+	s.enrichEpisodesOf(ctx, id, tmdbID, replace)
 
 	s.markStatus(ctx, id, "done", nil)
 	return statusDone, ""
 }
 
-func (s *Service) enrichEpisodesOf(ctx context.Context, seriesID string, tmdbTvID int64) {
+func (s *Service) enrichEpisodesOf(ctx context.Context, seriesID string, tmdbTvID int64, replace bool) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, seasonnumber, episodenumber FROM com_nalet_katalog_items
 		 WHERE parent_id = $1 AND type = 'episode'
@@ -551,7 +572,7 @@ func (s *Service) enrichEpisodesOf(ctx context.Context, seriesID string, tmdbTvI
 		if !ok || strings.TrimSpace(epd.Name) == "" {
 			continue
 		}
-		s.applyEpisode(ctx, e.id, epd)
+		s.applyEpisode(ctx, e.id, epd, replace)
 	}
 }
 
@@ -560,8 +581,10 @@ func (s *Service) enrichEpisodesOf(ctx context.Context, seriesID string, tmdbTvI
 // omdbFallbackMatch identifies an item TMDB missed entirely, via OMDb by
 // title+year. On a hit it writes the OMDb metadata + imdb external id + poster and
 // marks the item done. Returns ("", "") when OMDb is disabled or finds nothing, so
-// the caller falls through to not_found.
-func (s *Service) omdbFallbackMatch(ctx context.Context, id, title string, year *int, kind string) (status, message string) {
+// the caller falls through to not_found. A re-match (replace) to OMDb's match
+// replaces what the old match left: its genres, its TMDB trailers (OMDb lists
+// none) and its artwork (OMDb gives a poster at most).
+func (s *Service) omdbFallbackMatch(ctx context.Context, id, title string, year *int, kind string, replace bool) (status, message string) {
 	if !s.omdb.enabled() {
 		return "", ""
 	}
@@ -569,13 +592,14 @@ func (s *Service) omdbFallbackMatch(ctx context.Context, id, title string, year 
 	if !ok || res == nil {
 		return "", ""
 	}
-	s.applyOMDb(ctx, id, res, false)
+	s.applyOMDb(ctx, id, res, false, replace)
 	if res.ImdbID != "" {
 		s.upsertExternalID(ctx, id, "imdb", res.ImdbID)
 	}
-	if res.Poster != "" {
-		s.persistArtwork(ctx, id, "poster", res.Poster)
+	if replace {
+		s.applyTrailerLinks(ctx, id, nil, false, replace)
 	}
+	s.applyArtwork(ctx, id, res.Poster, "", replace)
 	s.markStatus(ctx, id, "done", nil)
 	return statusDone, "matched via OMDb"
 }
@@ -594,7 +618,7 @@ func (s *Service) omdbGapFill(ctx context.Context, id, imdbID string, haveDesc, 
 	if !ok || res == nil {
 		return
 	}
-	s.applyOMDb(ctx, id, res, true)
+	s.applyOMDb(ctx, id, res, true, refresh)
 	if !havePoster && res.Poster != "" {
 		s.persistArtwork(ctx, id, "poster", res.Poster)
 	}
@@ -604,8 +628,9 @@ func (s *Service) omdbGapFill(ctx context.Context, id, imdbID string, haveDesc, 
 // description/rating/year (fill-only via COALESCE + a blank-guard). With
 // fillOnly=false (OMDb is the sole source — TMDB missed) it also sets the
 // canonical title; with fillOnly=true (gap-fill after a TMDB match) the title is
-// left untouched.
-func (s *Service) applyOMDb(ctx context.Context, itemID string, res *omdbResult, fillOnly bool) {
+// left untouched. OMDb's genres add to the item's, and replace them when OMDb is
+// the match of a re-match (replace).
+func (s *Service) applyOMDb(ctx context.Context, itemID string, res *omdbResult, fillOnly, replace bool) {
 	var desc *string
 	if res.Plot != "" {
 		p := res.Plot
@@ -636,10 +661,10 @@ func (s *Service) applyOMDb(ctx context.Context, itemID string, res *omdbResult,
 		modifiedat = now()
 		WHERE id = $6 AND NOT metadatalocked`,
 		title, sort, desc, rating, year, itemID)
-	s.upsertGenres(ctx, itemID, res.Genres)
+	s.setGenres(ctx, itemID, res.Genres, replace && !fillOnly)
 }
 
-func (s *Service) applyMovie(ctx context.Context, itemID string, m *tmdbMovie) {
+func (s *Service) applyMovie(ctx context.Context, itemID string, m *tmdbMovie, replace bool) {
 	year := parseYear(m.ReleaseDate)
 	var dur *int64
 	if m.Runtime > 0 {
@@ -668,13 +693,13 @@ func (s *Service) applyMovie(ctx context.Context, itemID string, m *tmdbMovie) {
 		WHERE id = $8 AND NOT metadatalocked`,
 		title, sort, nullStr(m.Overview), rating, dur, year, nullStr(m.Tagline), itemID)
 
-	s.upsertGenres(ctx, itemID, m.Genres)
+	s.setGenres(ctx, itemID, m.Genres, replace)
 	if strings.TrimSpace(m.ImdbID) != "" {
 		s.upsertExternalID(ctx, itemID, "imdb", m.ImdbID)
 	}
 }
 
-func (s *Service) applyTv(ctx context.Context, itemID string, t *tmdbTv) {
+func (s *Service) applyTv(ctx context.Context, itemID string, t *tmdbTv, replace bool) {
 	year := parseYear(t.FirstAirDate)
 	var dur *int64
 	if t.EpisodeRunTime > 0 {
@@ -703,10 +728,10 @@ func (s *Service) applyTv(ctx context.Context, itemID string, t *tmdbTv) {
 		WHERE id = $8 AND NOT metadatalocked`,
 		title, sort, nullStr(t.Overview), rating, dur, year, nullStr(t.Tagline), itemID)
 
-	s.upsertGenres(ctx, itemID, t.Genres)
+	s.setGenres(ctx, itemID, t.Genres, replace)
 }
 
-func (s *Service) applyEpisode(ctx context.Context, itemID string, ep *tmdbEpisode) {
+func (s *Service) applyEpisode(ctx context.Context, itemID string, ep *tmdbEpisode, replace bool) {
 	year := parseYear(ep.AirDate)
 	var dur *int64
 	if ep.Runtime > 0 {
@@ -740,12 +765,11 @@ func (s *Service) applyEpisode(ctx context.Context, itemID string, ep *tmdbEpiso
 	if ep.ID > 0 {
 		s.upsertExternalID(ctx, itemID, "tmdb-episode", strconv.FormatInt(ep.ID, 10))
 	}
+	still := ""
 	if strings.TrimSpace(ep.StillPath) != "" {
-		if still := s.tmdb.imageURL(ep.StillPath, "w500"); still != "" {
-			s.persistArtwork(ctx, itemID, "poster", still)
-			s.persistArtwork(ctx, itemID, "backdrop", still)
-		}
+		still = s.tmdb.imageURL(ep.StillPath, "w500")
 	}
+	s.applyArtwork(ctx, itemID, still, still, replace)
 }
 
 // ===================== relation upserts =====================
@@ -789,67 +813,163 @@ func (s *Service) upsertExternalID(ctx context.Context, itemID, source, external
 		itemID, source, externalID)
 }
 
-func (s *Service) upsertGenres(ctx context.Context, itemID string, genres []string) {
-	if len(genres) == 0 {
+// setGenres gives the item the match's genres: they replace the item's on a
+// re-match (replace), so the item has none when the match has none, and add to
+// them otherwise.
+func (s *Service) setGenres(ctx context.Context, itemID string, genres []string, replace bool) {
+	if replace {
+		s.replaceGenres(ctx, itemID, genres)
 		return
 	}
+	s.upsertGenres(ctx, itemID, genres)
+}
+
+// upsertGenres adds the genres the item lacks of genres, each as well as it
+// can.
+func (s *Service) upsertGenres(ctx context.Context, itemID string, genres []string) {
+	for _, name := range uniqueGenres(genres) {
+		_ = addGenre(ctx, s.pool, itemID, name)
+	}
+}
+
+// replaceGenres makes genres the item's genres, in one transaction: the
+// genres it had go, all of them when genres is empty.
+func (s *Service) replaceGenres(ctx context.Context, itemID string, genres []string) {
+	err := func() error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, `DELETE FROM com_nalet_katalog_itemgenres WHERE item_id = $1`, itemID); err != nil {
+			return err
+		}
+		for _, name := range uniqueGenres(genres) {
+			if err := addGenre(ctx, tx, itemID, name); err != nil {
+				return err
+			}
+		}
+		return tx.Commit(ctx)
+	}()
+	if err != nil {
+		log.Printf("tmdb: the genres of %s could not be replaced with its match's: %v", itemID, err)
+	}
+}
+
+// uniqueGenres are the names of genres that are not blank, each once.
+func uniqueGenres(genres []string) []string {
 	seen := map[string]bool{}
+	var out []string
 	for _, name := range genres {
 		if strings.TrimSpace(name) == "" || seen[name] {
 			continue
 		}
 		seen[name] = true
-		var genreID string
-		err := s.pool.QueryRow(ctx,
-			`SELECT id FROM com_nalet_katalog_genres WHERE name = $1`, name).Scan(&genreID)
-		if err == pgx.ErrNoRows {
-			genreID = ""
-		} else if err != nil {
-			continue
+		out = append(out, name)
+	}
+	return out
+}
+
+// dbtx is what the genre writes need of a pool or a transaction.
+type dbtx interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// addGenre links the item to the genre named name, creating the genre when
+// the catalog has none of that name, unless the item has it.
+func addGenre(ctx context.Context, q dbtx, itemID, name string) error {
+	var genreID string
+	err := q.QueryRow(ctx, `SELECT id FROM com_nalet_katalog_genres WHERE name = $1`, name).Scan(&genreID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = q.QueryRow(ctx,
+			`INSERT INTO com_nalet_katalog_genres (id, name) VALUES (gen_random_uuid()::varchar, $1) RETURNING id`,
+			name).Scan(&genreID)
+	}
+	if err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `INSERT INTO com_nalet_katalog_itemgenres (id, item_id, genre_id)
+		SELECT gen_random_uuid()::varchar, $1::varchar, $2::varchar
+		WHERE NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemgenres WHERE item_id = $1::varchar AND genre_id = $2::varchar)`,
+		itemID, genreID)
+	return err
+}
+
+// applyTrailerLinks makes the item's TMDB trailers the videos TMDB lists for
+// its match, in one transaction: the TMDB rows without a local copy (no
+// downloadedat, no localpath) are replaced by videos, also when TMDB lists
+// none. A trailer added by hand and one with a local copy stay, and a video
+// that is one of them is not linked again. When TMDB could not be asked
+// (answered false) a refresh keeps the trailers the item has; a re-match
+// (replace) drops them all the same, as they are its old match's.
+func (s *Service) applyTrailerLinks(ctx context.Context, itemID string, videos []tmdbVideo, answered, replace bool) {
+	if !answered && !replace {
+		return
+	}
+	err := func() error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
 		}
-		if genreID == "" {
-			if err := s.pool.QueryRow(ctx,
-				`INSERT INTO com_nalet_katalog_genres (id, name) VALUES (gen_random_uuid()::varchar, $1) RETURNING id`,
-				name).Scan(&genreID); err != nil {
-				continue
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, `DELETE FROM com_nalet_katalog_itemtrailerlinks
+			WHERE item_id = $1 AND source = 'tmdb' AND downloadedat IS NULL AND localpath IS NULL`, itemID); err != nil {
+			return err
+		}
+		for _, v := range videos {
+			if _, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_itemtrailerlinks
+				(id, createdat, modifiedat, item_id, source, site, externalid, url, title, publishedat)
+				SELECT gen_random_uuid()::varchar, now(), now(), $1::varchar, 'tmdb', $2::varchar, $3::varchar, $4::varchar,
+				       $5::varchar, $6::timestamp
+				WHERE NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemtrailerlinks
+					WHERE item_id = $1::varchar AND source = 'tmdb' AND externalid = $3::varchar AND COALESCE(site, '') = $2::varchar)`,
+				itemID, v.Site, v.ExternalID, v.URL, v.Name, parseTmdbTs(v.PublishedAt)); err != nil {
+				return err
 			}
 		}
-		var linked int
-		if err := s.pool.QueryRow(ctx,
-			`SELECT count(*) FROM com_nalet_katalog_itemgenres WHERE item_id = $1 AND genre_id = $2`,
-			itemID, genreID).Scan(&linked); err != nil {
-			continue
-		}
-		if linked == 0 {
-			s.pool.Exec(ctx,
-				`INSERT INTO com_nalet_katalog_itemgenres (id, item_id, genre_id) VALUES (gen_random_uuid()::varchar, $1, $2)`,
-				itemID, genreID)
-		}
+		return tx.Commit(ctx)
+	}()
+	if err != nil {
+		log.Printf("tmdb: the trailers of %s could not be replaced with its match's: %v", itemID, err)
 	}
 }
 
-// applyTrailerLinks idempotently replaces the TMDB-sourced trailer rows that
-// have no local copy (manual rows and rows with a local copy survive).
-func (s *Service) applyTrailerLinks(ctx context.Context, itemID string, videos []tmdbVideo) {
-	if len(videos) == 0 {
-		return
-	}
-	s.pool.Exec(ctx,
-		`DELETE FROM com_nalet_katalog_itemtrailerlinks WHERE item_id = $1 AND source = 'tmdb' AND downloadedat IS NULL`,
-		itemID)
-	for _, v := range videos {
-		published := parseTmdbTs(v.PublishedAt)
-		s.pool.Exec(ctx,
-			`INSERT INTO com_nalet_katalog_itemtrailerlinks
-			 (id, createdat, modifiedat, item_id, source, site, externalid, url, title, publishedat)
-			 VALUES (gen_random_uuid()::varchar, now(), now(), $1, 'tmdb', $2, $3, $4, $5, $6)`,
-			itemID, v.Site, v.ExternalID, v.URL, v.Name, published)
+// keyframeMarker is the URL of the row the analyzer's keyframe upload leaves
+// (PUT /api/artwork/{itemId}/{kind}): the image of its kind is a frame of the
+// item's own file, no match's.
+const keyframeMarker = "extracted:keyframe"
+
+// applyArtwork stores the item's poster and backdrop from the match it was
+// enriched from, a URL each, "" for a kind the match has no image of. A
+// re-match (replace) first drops what the item's old match left of each kind:
+// every URL row but the keyframe's marker, and the image of a kind the new
+// match gives none of, or one that could not be fetched, unless the image is
+// that keyframe.
+func (s *Service) applyArtwork(ctx context.Context, itemID, posterURL, backdropURL string, replace bool) {
+	for _, a := range []struct{ kind, url string }{{"poster", posterURL}, {"backdrop", backdropURL}} {
+		if replace {
+			if _, err := s.pool.Exec(ctx, `DELETE FROM com_nalet_katalog_itemartwork
+				WHERE item_id = $1 AND kind = $2 AND url <> $3`, itemID, a.kind, keyframeMarker); err != nil {
+				log.Printf("tmdb: the %s rows of %s's old match could not be dropped: %v", a.kind, itemID, err)
+			}
+		}
+		fetched := a.url != "" && s.persistArtwork(ctx, itemID, a.kind, a.url)
+		if replace && !fetched {
+			if _, err := s.pool.Exec(ctx, `DELETE FROM com_nalet_katalog_itemartworkdata
+				WHERE item_id = $1 AND kind = $2 AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemartwork
+					WHERE item_id = $1 AND kind = $2 AND url = $3)`, itemID, a.kind, keyframeMarker); err != nil {
+				log.Printf("tmdb: the %s of %s's old match could not be dropped: %v", a.kind, itemID, err)
+			}
+		}
 	}
 }
 
 // persistArtwork stores the URL row + fetched bytes for an item/kind, keyed so a
-// re-run updates rather than duplicates.
-func (s *Service) persistArtwork(ctx context.Context, itemID, kind, url string) {
+// re-run updates rather than duplicates. It reports whether it stored the
+// image; one it stores is no keyframe of the item's file any more, so the
+// kind's keyframe marker goes.
+func (s *Service) persistArtwork(ctx context.Context, itemID, kind, url string) bool {
 	var linked int
 	if err := s.pool.QueryRow(ctx,
 		`SELECT count(*) FROM com_nalet_katalog_itemartwork WHERE item_id = $1 AND kind = $2 AND url = $3`,
@@ -861,7 +981,7 @@ func (s *Service) persistArtwork(ctx context.Context, itemID, kind, url string) 
 
 	bytes, ok := s.tmdb.fetchImage(ctx, url)
 	if !ok || len(bytes) == 0 {
-		return
+		return false
 	}
 	contentType := "image/jpeg"
 	if strings.HasSuffix(url, ".png") {
@@ -872,17 +992,24 @@ func (s *Service) persistArtwork(ctx context.Context, itemID, kind, url string) 
 	if err := s.pool.QueryRow(ctx,
 		`SELECT count(*) FROM com_nalet_katalog_itemartworkdata WHERE item_id = $1 AND kind = $2`,
 		itemID, kind).Scan(&existing); err != nil {
-		return
+		return false
 	}
+	var err error
 	if existing > 0 {
-		s.pool.Exec(ctx,
+		_, err = s.pool.Exec(ctx,
 			`UPDATE com_nalet_katalog_itemartworkdata SET contenttype = $1, bytes = $2, fetchedat = now() WHERE item_id = $3 AND kind = $4`,
 			contentType, bytes, itemID, kind)
-		return
+	} else {
+		_, err = s.pool.Exec(ctx,
+			`INSERT INTO com_nalet_katalog_itemartworkdata (id, item_id, kind, contenttype, bytes, fetchedat) VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, now())`,
+			itemID, kind, contentType, bytes)
 	}
-	s.pool.Exec(ctx,
-		`INSERT INTO com_nalet_katalog_itemartworkdata (id, item_id, kind, contenttype, bytes, fetchedat) VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, now())`,
-		itemID, kind, contentType, bytes)
+	if err != nil {
+		return false
+	}
+	s.pool.Exec(ctx, `DELETE FROM com_nalet_katalog_itemartwork WHERE item_id = $1 AND kind = $2 AND url = $3`,
+		itemID, kind, keyframeMarker)
+	return true
 }
 
 // ===================== chaptersdb sidecar (movies only, opt-in) =====================

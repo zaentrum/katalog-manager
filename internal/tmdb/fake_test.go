@@ -36,6 +36,8 @@ type fakeTMDB struct {
 	people   map[int64]*fakePerson               // GET /person/{id}
 	certs    map[string][]byte                   // "movie/10" or "tv/20": its release_dates or content_ratings, as TMDB answers
 	images   map[string][]byte                   // GET /t/p/{size}{path}, by path
+	videos   map[string][]map[string]any         // "movie/10" or "tv/20": GET .../videos results (none: an empty list)
+	episodes map[string]map[string]any           // "tv/20/1/2": GET /tv/20/season/1/episode/2
 	changes  map[string]map[string][]int64       // kind → day (YYYY-MM-DD) → ids changed that day
 	fail     map[string]int                      // path → status to answer instead
 	held     map[string]chan struct{}            // path → answered once the channel closes
@@ -71,6 +73,8 @@ func newFakeTMDB(t testing.TB) *fakeTMDB {
 		people:   map[int64]*fakePerson{},
 		certs:    map[string][]byte{},
 		images:   map[string][]byte{},
+		videos:   map[string][]map[string]any{},
+		episodes: map[string]map[string]any{},
 		changes:  map[string]map[string][]int64{},
 		fail:     map[string]int{},
 		held:     map[string]chan struct{}{},
@@ -122,6 +126,55 @@ func (f *fakeTMDB) tv(id int64, name string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.tvs[id] = map[string]any{"id": id, "name": name, "overview": "About " + name, "first_air_date": "2021-01-01"}
+}
+
+// details sets more of a title's details ("movie/10" or "tv/20"), as TMDB
+// names them: genres (names, as TMDB's {"name"} objects), poster_path,
+// backdrop_path.
+func (f *fakeTMDB) details(title string, fields map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	kind, id, _ := strings.Cut(title, "/")
+	n, _ := strconv.ParseInt(id, 10, 64)
+	target := f.movies[n]
+	if kind == "tv" {
+		target = f.tvs[n]
+	}
+	for k, v := range fields {
+		if k == "genres" {
+			var gs []any
+			for _, g := range v.([]string) {
+				gs = append(gs, map[string]any{"id": len(gs) + 1, "name": g})
+			}
+			v = gs
+		}
+		target[k] = v
+	}
+}
+
+// episode sets what TMDB says of a series' episode: its id, name and still
+// (a file path, "" for none).
+func (f *fakeTMDB) episode(tvID int64, season, number int, id int64, name, still string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	e := map[string]any{"id": id, "name": name, "overview": "About " + name, "air_date": "2021-02-01"}
+	if still != "" {
+		e["still_path"] = still
+	}
+	f.episodes[fmt.Sprintf("tv/%d/%d/%d", tvID, season, number)] = e
+}
+
+// trailers sets a title's videos ("movie/10"): each a YouTube trailer with
+// its key and name.
+func (f *fakeTMDB) trailers(title string, keyNames ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	vs := []map[string]any{}
+	for i := 0; i+1 < len(keyNames); i += 2 {
+		vs = append(vs, map[string]any{"type": "Trailer", "site": "YouTube", "key": keyNames[i], "name": keyNames[i+1],
+			"published_at": "2020-01-0" + strconv.Itoa(1+i/2) + "T10:00:00.000Z"})
+	}
+	f.videos[title] = vs
 }
 
 // cast sets a title's credits ("movie/10"): each entry is a TMDB id and a name,
@@ -438,6 +491,9 @@ func (f *fakeTMDB) serve(w http.ResponseWriter, r *http.Request) {
 		answer(f.movies[id])
 	case len(seg) == 2 && seg[0] == "tv" && f.tvs[id] != nil:
 		answer(f.tvJSON(id, q))
+	case len(seg) == 6 && seg[0] == "tv" && seg[2] == "season" && seg[4] == "episode" &&
+		f.episodes["tv/"+seg[1]+"/"+seg[3]+"/"+seg[5]] != nil:
+		answer(f.episodes["tv/"+seg[1]+"/"+seg[3]+"/"+seg[5]])
 	case len(seg) == 3 && seg[2] == "credits" && f.credits[seg[0]+"/"+seg[1]] != nil:
 		var cast, crew []map[string]any
 		for _, e := range f.credits[seg[0]+"/"+seg[1]] {
@@ -451,6 +507,8 @@ func (f *fakeTMDB) serve(w http.ResponseWriter, r *http.Request) {
 	case len(seg) == 3 && seg[2] == "aggregate_credits" && f.hasAggregate(seg[0]+"/"+seg[1]):
 		every, _ := f.aggregateJSON(seg[0] + "/" + seg[1])
 		answer(map[string]any{"id": id, "cast": every["cast"], "crew": every["crew"]})
+	case len(seg) == 3 && seg[2] == "videos" && f.videos[seg[0]+"/"+seg[1]] != nil:
+		answer(map[string]any{"id": id, "results": f.videos[seg[0]+"/"+seg[1]]})
 	case len(seg) == 3 && (seg[2] == "videos" || seg[2] == "external_ids"):
 		answer(map[string]any{"id": id, "results": []any{}})
 	case len(seg) == 3 && (seg[0] == "movie" && seg[2] == "release_dates" || seg[0] == "tv" && seg[2] == "content_ratings") &&

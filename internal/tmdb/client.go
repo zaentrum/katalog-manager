@@ -615,21 +615,24 @@ func (c *client) lang() string {
 
 // --- videos / trailers ---
 
-func (c *client) getMovieVideos(ctx context.Context, id int64) []tmdbVideo {
+// getMovieVideos reads a film's trailers and teasers; ok is false when TMDB
+// could not be asked or did not answer, as opposed to answering none.
+func (c *client) getMovieVideos(ctx context.Context, id int64) (videos []tmdbVideo, ok bool) {
 	return c.getVideos(ctx, "/movie/"+strconv.FormatInt(id, 10)+"/videos")
 }
 
-func (c *client) getTvVideos(ctx context.Context, id int64) []tmdbVideo {
+// getTvVideos is getMovieVideos for a series.
+func (c *client) getTvVideos(ctx context.Context, id int64) (videos []tmdbVideo, ok bool) {
 	return c.getVideos(ctx, "/tv/"+strconv.FormatInt(id, 10)+"/videos")
 }
 
-func (c *client) getVideos(ctx context.Context, pathSuffix string) []tmdbVideo {
+func (c *client) getVideos(ctx context.Context, pathSuffix string) ([]tmdbVideo, bool) {
 	if !c.enabled() {
-		return nil
+		return nil, false
 	}
 	body, ok := c.getJSON(ctx, c.apiBase+pathSuffix+"?language="+url.QueryEscape(c.language))
 	if !ok {
-		return nil
+		return nil, false
 	}
 	var n struct {
 		Results []struct {
@@ -641,9 +644,9 @@ func (c *client) getVideos(ctx context.Context, pathSuffix string) []tmdbVideo {
 		} `json:"results"`
 	}
 	if err := json.Unmarshal(body, &n); err != nil {
-		return nil
+		return nil, false
 	}
-	var out []tmdbVideo
+	out := []tmdbVideo{}
 	for _, v := range n.Results {
 		if !strings.EqualFold(v.Type, "Trailer") && !strings.EqualFold(v.Type, "Teaser") {
 			continue
@@ -668,7 +671,7 @@ func (c *client) getVideos(ctx context.Context, pathSuffix string) []tmdbVideo {
 			PublishedAt: v.PublishedAt,
 		})
 	}
-	return out
+	return out, true
 }
 
 // --- images ---
