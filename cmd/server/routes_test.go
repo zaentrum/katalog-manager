@@ -115,6 +115,12 @@ func (f *fakes) ReencodeItem(_ context.Context, id string) (graph.ReencodeResult
 	f.called("reencode " + id)
 	return graph.ReencodeResult{ItemID: id, Titles: 1, Busy: 1, Message: "left alone"}, nil
 }
+func (f *fakes) ReplaceSource(_ context.Context, in graph.ReplaceSourceRequest) (graph.ReplaceSourceResult, error) {
+	f.called(fmt.Sprintf("replace the file of %s%s with %s, delete %v, reencode %v", in.ItemID, in.ItemPath, in.Path,
+		in.DeleteOldFile, in.Reencode))
+	return graph.ReplaceSourceResult{ItemID: in.ItemID, OldPath: "/media/a-film.mkv", Path: in.Path, Replaced: true,
+		Reencode: &graph.ReencodeResult{ItemID: in.ItemID, Titles: 1, Reencoded: 1, Message: "encoding it again"}, Message: "replaced"}, nil
+}
 func (f *fakes) Overview(context.Context, string, int32, int32) (graph.ProcessingOverview, error) {
 	f.called("processing overview")
 	return graph.ProcessingOverview{}, nil
@@ -249,7 +255,7 @@ func newInstanceWired(t *testing.T, w wiring) *instance {
 		x, taker = svc, svc
 	}
 	schema := graph.MustSchema(graph.NewResolver(st, cfg, graph.Services{Scanner: f, Enricher: f, People: f,
-		Ratings: f, Packager: f, Validator: f, Remover: f, Pipeline: pipe, Secrets: f, Extras: x}))
+		Ratings: f, Packager: f, Validator: f, Remover: f, Pipeline: pipe, Secrets: f, Extras: x, Sources: f}))
 	r := chi.NewRouter()
 	routes(r, auth.NewMiddleware(jwt, sv).Handler, cfg.Policy(), schema, stream.NewBroker().Handler,
 		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool()), Events: w.events, Extras: taker}))
@@ -370,6 +376,9 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { retryStep(itemId: "m1", step: "transcode") { retried message } }`, "retry m1 transcode"},
 	{`mutation { retryFailed(step: "package") { retried message } }`, "retry the failed package"},
 	{`mutation { reencodeItem(id: "m1") { itemId titles reencoded busy notSent message } }`, "reencode m1"},
+	{`mutation { replaceSource(itemId: "m1", path: "/media/a-film-1080p.mkv", deleteOldFile: true) { itemId oldPath path
+		replaced oldFileDeleted oldSidecars reencode { reencoded busy notSent message } message } }`,
+		"replace the file of m1 with /media/a-film-1080p.mkv, delete true, reencode true"},
 	{`mutation { packageItem(id: "m1") { status } }`, "package m1"},
 	{`mutation { validateItem(id: "m1") { code } }`, "validate m1"},
 	{`mutation { createItem(input: {type: "movie", title: "Made Here"}) { id } }`, ""},

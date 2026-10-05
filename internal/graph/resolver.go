@@ -30,6 +30,7 @@ type Services struct {
 	Pipeline  Pipeline
 	Secrets   SecretChecker
 	Extras    Extras
+	Sources   SourceReplacer
 }
 
 // RatingsBackfiller rates titles from TMDB's certifications (implemented by

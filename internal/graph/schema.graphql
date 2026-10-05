@@ -799,6 +799,37 @@ type ReencodeResult {
   message: String!
 }
 
+# What a replaceSource call did: the title whose file it replaced, the file
+# it had and the one it has now, whether the old file was deleted, the
+# subtitle files named after the old one, and what encoding the title again
+# did. message says it all, and why an old file asked to go was kept.
+type ReplaceSourceResult {
+  itemId: ID!
+  # the file the title had, and the one it has now; the same when path was
+  # its file already
+  oldPath: String!
+  path: String!
+  # false: path was the title's file already, and nothing changed (nothing
+  # deleted, nothing sent)
+  replaced: Boolean!
+  # whether the old file was deleted (deleteOldFile): only one under the media
+  # root that no title's file or extra is any more, and that the new file does
+  # not lead to
+  oldFileDeleted: Boolean!
+  # the subtitle files beside the old file named after it (Film.srt,
+  # Film.en.srt beside Film.mp4), which stay the title's subtitles as they
+  # are. Beside a new file of the same name (Film.mkv) they pair with it as
+  # they did; otherwise the next scan pairs those named after the new one,
+  # and the packager takes them only from the new file's folder or below it.
+  # 0 when nothing changed.
+  oldSidecars: Int!
+  # what encoding the title again from its new file did, as reencodeItem
+  # answers; one that could not run (no event bus, no migration 033) says why
+  # in its message. null when reencode was false, or nothing changed.
+  reencode: ReencodeResult
+  message: String!
+}
+
 # What an addExtra call did: the extra the file is, and whether it was taken
 # in now (false: it was this item's extra already, which is the answer).
 type AddExtraResult {
@@ -1001,6 +1032,31 @@ type Mutation {
   # an event bus or migration 033; the run finishes even when the caller
   # stops waiting.
   reencodeItem(id: ID!): ReencodeResult!
+  # Gives a title another file, its source, and keeps the title: a movie or an
+  # episode with a file, named one way, by itemId or by itemPath (the path of
+  # the file replaced, which a demo's reset keeps where it changes ids). path
+  # is the new file: an absolute path of an existing video file under the
+  # media root, never under the package store, that a scan takes for a
+  # title's file (no hidden file, no extra by the scanner's convention), and
+  # no other title's file or extra already. The title keeps its id and what
+  # hangs off it: its metadata, artwork, credits, genres, tags, extras,
+  # segments and chapters, the languages an admin set for its tracks (each
+  # names a track by its kind and its place among the source's streams, and
+  # applies to the new file's track at that place), its package, which plays
+  # until the new one is in place, and everyone's progress and ratings, kept by
+  # its id. What described the old file goes: its size, hash and probe, the
+  # tracks a package reported of it, its diagnostics; the new file earns them
+  # again. A path that is the title's file already changes nothing.
+  # deleteOldFile: true deletes the old file once the title has the new one,
+  # when it is under the media root and no title's file or extra is it any
+  # more; one kept under the media root is taken in as a title of its own by
+  # the next scan, unless it is moved out or deleted. reencode (true when
+  # omitted) encodes the title again from the new file, as reencodeItem does:
+  # a title whose transcode or package is running is left alone (busy), and
+  # that run is the old file's. A refusal is an error whose extensions.code
+  # is NOT_FOUND (a title there is not), SOURCE_CONFLICT (the file is another
+  # title's or an extra's, named in itemId and extraId) or SOURCE_REFUSED.
+  replaceSource(itemId: ID, itemPath: String, path: String!, deleteOldFile: Boolean, reencode: Boolean): ReplaceSourceResult!
   packageItem(id: ID!): PackageResult!
   validateItem(id: ID!): ValidateResult!
 
