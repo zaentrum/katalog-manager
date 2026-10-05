@@ -64,6 +64,86 @@ type Item {
   # package of the title has reported them (backfillSourceTracks reads the
   # packages on disk), and on a catalog older than migration 037.
   tracks: [Track!]!
+  # its extras (see Extra), a movie's or a series' (an episode has none), as
+  # a viewer sees them listed: by sortOrder (none last), then as they were
+  # taken in. removed: the removed ones too. None on a catalog older than
+  # migration 039.
+  extras(removed: Boolean): [Extra!]!
+}
+
+# An extra of a movie or a series: bonus material, a trailer or a teaser
+# that is a file of its own, a featurette, a making-of, a deleted scene. It
+# is no item: it is packaged on its own, from its file, into
+# packages/extras/<aa>/<id>/ of the package store (transcode, then package,
+# with the transcoder's extras ladder; no analyzer, no trickplay), and a
+# viewer is served it beside its title. The id is the extraId.
+type Extra {
+  id: ID!
+  itemId: ID!
+  # featurette, behind-the-scenes, making-of, deleted-scene, interview,
+  # trailer, teaser, gag-reel, short or other
+  kind: String!
+  # as it was taken in; label is what a viewer is shown instead
+  title: String!
+  label: String
+  # the language spoken in it (BCP 47, or an ISO 639-2 code); null: unknown
+  language: String
+  # a series' extra may name the season it belongs to
+  seasonNumber: Int
+  # the file it is packaged from, its size and its quick hash (sha256 of its
+  # first and last 64 KiB and its size), which tell the file after a move
+  sourcePath: String
+  sourceSize: Float
+  sourceQh1: String
+  # its folder in the library, when it is recorded there
+  recordPath: String
+  # how it was taken in: api (addExtra, POST /api/extras), scanner (the
+  # scanner's convention, extras.scan) or library
+  registeredBy: String!
+  # its place in its title's list (null: after those with one), and whether
+  # a viewer is shown it
+  sortOrder: Int
+  hidden: Boolean!
+  # where its packaging stands: pending (waiting to be sent), queued (sent
+  # to the transcoder), transcoding, transcoded (waiting for the packager),
+  # packaging, ready, failed (no attempt left: packageExtra tries again) or
+  # missing (the scanner found its file gone)
+  state: String!
+  # the error of its last failed run, credentials redacted
+  error: String
+  # the runs of its packaging started, and its failed runs in a row
+  attempts: Int!
+  failures: Int!
+  # when it is sent again by itself; for a removed one, when its package is
+  # deleted
+  nextRetryAt: Time
+  # when its trigger was last sent, while no worker has reported since, and
+  # its worker's last word
+  dispatchedAt: Time
+  heartbeatAt: Time
+  # its package: its folder, when it was recorded, how long it plays, its
+  # top rendition's codec and size, the highest bandwidth its master
+  # playlist names, and its size
+  packagePath: String
+  packagedAt: Time
+  durationMs: Float
+  videoCodec: String
+  width: Int
+  height: Int
+  peakBandwidthBps: Float
+  packageSizeBytes: Float
+  # whether a viewer is served it: packaged, not removed, not hidden, and its
+  # file not missing; a package made again plays the old one meanwhile
+  playable: Boolean!
+  # its removal (removeExtra): when, by whom and why; a removed extra stays,
+  # and its package is deleted a day later
+  removedAt: Time
+  removedBy: String
+  removalReason: String
+  createdAt: Time!
+  createdBy: String
+  modifiedAt: Time!
+  modifiedBy: String
 }
 
 # A track of a title's source: one of its audio or subtitle streams, as the
@@ -719,6 +799,27 @@ type ReencodeResult {
   message: String!
 }
 
+# What an addExtra call did: the extra the file is, and whether it was taken
+# in now (false: it was this item's extra already, which is the answer).
+type AddExtraResult {
+  created: Boolean!
+  extra: Extra!
+}
+
+# What a packageExtra or packageExtras call did: the extras looked at, as
+# they are after it (those removed not among them); those packaged again,
+# waiting to be sent or sent; those left alone (in their packaging within
+# its timeout, or whose file is missing); those whose trigger could not be
+# sent, pending, sent again a backoff later; and what happened, why an extra
+# was left alone.
+type ExtraPackagingResult {
+  extras: [Extra!]!
+  queued: Int!
+  busy: Int!
+  notSent: Int!
+  message: String!
+}
+
 type DeleteItemResult {
   deleted: Boolean!
   itemsRemoved: Int!
@@ -930,4 +1031,39 @@ type Mutation {
   # Clears a secret setting, so the service falls back to its environment
   # default; false when there was none.
   clearSecretSetting(key: String!): Boolean!
+
+  # extras (see Extra)
+  # Takes a file in as an extra of a movie or a series (an episode has none,
+  # its series has), and has it packaged: it waits to be sent, and its
+  # trigger (catalog.extra.queued) goes now when the service has an event
+  # bus. A seasonNumber is a series' season it has episodes of. The file is
+  # stored with its size and quick hash. Idempotent on the file: the same
+  # file again for the same title answers its extra (created false); for
+  # another title it is refused, with the code EXTRA_CONFLICT and the extra
+  # in the way. A title there is not is refused with the code NOT_FOUND,
+  # anything else with EXTRA_REFUSED; on a catalog without migration 039
+  # nothing is taken in.
+  # The title is named one way: by itemId, by itemPath (the path of its
+  # file, its primary asset), or by tmdbId and itemType (movie or series).
+  # path is the extra's file: an absolute path of an existing video file
+  # under the media root, LIBRARY_ROOT or EXTRAS_ROOT, never under the
+  # package store. kind is one of Extra.kind's; title is the kind's name
+  # when omitted ("Trailer"); language is BCP 47 or an ISO 639-2 code.
+  addExtra(itemId: ID, itemPath: String, tmdbId: Int, itemType: String, path: String!, kind: String!,
+    title: String, language: String, seasonNumber: Int): AddExtraResult!
+  # Removes an extra: it stays, removed (with the caller and the reason),
+  # plays no more, its file may be taken in again, and its package is
+  # deleted a day later. Removing a removed extra changes nothing. null when
+  # there is no such extra.
+  removeExtra(id: ID!, reason: String): Extra
+  # Packages an extra again with the pipeline's current settings (the
+  # transcoder's extras ladder, then the packager's): it waits to be sent
+  # afresh, its failures in a row cleared, and its trigger goes when the
+  # service has an event bus; the package it has plays until the new one is
+  # in place. One in its packaging within its timeout (waiting for a worker,
+  # or one running) is left alone, and so is one whose file is missing until
+  # the file is back. reencodeItem leaves a title's extras alone.
+  packageExtra(id: ID!): ExtraPackagingResult!
+  # Packages every extra of a title again, as packageExtra does.
+  packageExtras(itemId: ID!): ExtraPackagingResult!
 }

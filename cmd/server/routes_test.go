@@ -22,6 +22,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/auth/authtest"
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/graph"
+	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/rest"
 	"github.com/zaentrum/katalog-manager/internal/store"
@@ -121,6 +122,28 @@ func (f *fakes) Policy(context.Context) (graph.RetryPolicyInfo, error) {
 	return graph.RetryPolicyInfo{MaxAttempts: 3}, nil
 }
 
+// fakeExtra is the extra the fakes answer with.
+func fakeExtra(id, itemID string) *model.Extra {
+	return &model.Extra{ID: id, ItemID: itemID, Kind: "trailer", Title: "Trailer", RegisteredBy: "api", State: "pending"}
+}
+
+func (f *fakes) AddExtra(_ context.Context, in graph.AddExtraRequest) (graph.AddExtraResult, error) {
+	f.called("add extra " + in.ItemID + " " + in.Path)
+	return graph.AddExtraResult{Extra: fakeExtra("x1", in.ItemID), Created: true}, nil
+}
+func (f *fakes) RemoveExtra(_ context.Context, id, _ string) (*model.Extra, error) {
+	f.called("remove extra " + id)
+	return fakeExtra(id, "m1"), nil
+}
+func (f *fakes) PackageExtra(_ context.Context, id string) (graph.ExtraPackagingResult, error) {
+	f.called("package extra " + id)
+	return graph.ExtraPackagingResult{Extras: []*model.Extra{fakeExtra(id, "m1")}, Queued: 1, Message: "packaging it again"}, nil
+}
+func (f *fakes) PackageExtras(_ context.Context, itemID string) (graph.ExtraPackagingResult, error) {
+	f.called("package extras " + itemID)
+	return graph.ExtraPackagingResult{Extras: []*model.Extra{}, Message: "the title has no extras"}, nil
+}
+
 // CheckSecret checks the TMDB key as TMDB would: it refuses refusedToken,
 // cannot be asked about uncheckedToken and takes any other; it checks no
 // other key.
@@ -201,7 +224,7 @@ func newInstanceWith(t *testing.T, pipeline func(*store.Store) graph.Pipeline) *
 		pipe = pipeline(st)
 	}
 	schema := graph.MustSchema(graph.NewResolver(st, cfg, graph.Services{Scanner: f, Enricher: f, People: f,
-		Ratings: f, Packager: f, Validator: f, Remover: f, Pipeline: pipe, Secrets: f}))
+		Ratings: f, Packager: f, Validator: f, Remover: f, Pipeline: pipe, Secrets: f, Extras: f}))
 	r := chi.NewRouter()
 	routes(r, auth.NewMiddleware(jwt, sv).Handler, cfg.Policy(), schema, stream.NewBroker().Handler,
 		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool())}))
@@ -269,7 +292,7 @@ func fingerprint(t *testing.T, st *store.Store) string {
 	var b strings.Builder
 	for _, table := range []string{"com_nalet_katalog_items", "com_nalet_katalog_itemgenres", "com_nalet_katalog_itemtags",
 		"com_nalet_katalog_genres", "com_nalet_katalog_settings", "com_nalet_katalog_scanjobs",
-		"com_nalet_katalog_itemprocessingsteps", "com_nalet_katalog_itemtracklanguages"} {
+		"com_nalet_katalog_itemprocessingsteps", "com_nalet_katalog_itemtracklanguages", "com_nalet_katalog_itemextras"} {
 		var rows string
 		if err := st.Pool().QueryRow(context.Background(),
 			`SELECT coalesce(string_agg(x::text, '|' ORDER BY x::text), '') FROM `+table+` x`).Scan(&rows); err != nil {
@@ -284,7 +307,8 @@ func fingerprint(t *testing.T, st *store.Store) string {
 // record for an admin (none for a field that calls no integration).
 var operations = []struct{ doc, calls string }{
 	{`{ item(id: "m1") { id title processingSteps { step status failures lastError nextRetryAt dispatchedAt updatedAt }
-		tracks { kind ordinal sourceLanguage languageOverride effectiveLanguage } } }`, ""},
+		tracks { kind ordinal sourceLanguage languageOverride effectiveLanguage }
+		extras(removed: true) { id kind title state playable sourcePath removedAt } } }`, ""},
 	{`{ items(limit: 5) { id } }`, ""},
 	{`{ movies { id } }`, ""},
 	{`{ series { id } }`, ""},
@@ -333,6 +357,11 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { deleteSetting(id: "set-gone") }`, ""},
 	{`mutation { setSecretSetting(key: "omdb.api_key", value: "` + omdbSecret + `") { key valueText isSet check { status } } }`, "check omdb.api_key"},
 	{`mutation { clearSecretSetting(key: "fanart.api_key") }`, ""},
+	{`mutation { addExtra(itemId: "m1", path: "/extras/a-film/trailer.mov", kind: "trailer") { created extra { id state } } }`,
+		"add extra m1 /extras/a-film/trailer.mov"},
+	{`mutation { removeExtra(id: "x1", reason: "a duplicate") { id removedAt } }`, "remove extra x1"},
+	{`mutation { packageExtra(id: "x1") { queued busy notSent message extras { id state } } }`, "package extra x1"},
+	{`mutation { packageExtras(itemId: "m1") { queued message extras { id } } }`, "package extras m1"},
 }
 
 var rootField = regexp.MustCompile(`^(?:mutation )?\{ (\w+)`)

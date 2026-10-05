@@ -29,6 +29,7 @@ type Services struct {
 	Remover   Remover
 	Pipeline  Pipeline
 	Secrets   SecretChecker
+	Extras    Extras
 }
 
 // RatingsBackfiller rates titles from TMDB's certifications (implemented by
