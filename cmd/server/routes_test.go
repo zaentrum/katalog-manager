@@ -172,6 +172,8 @@ func newInstanceWith(t *testing.T, pipeline func(*store.Store) graph.Pipeline) *
 		NULL::varchar AS posterurl, NULL::varchar AS backdropurl, NULL::bigint AS runtimemin, NULL::varchar AS yeartext
 		FROM com_nalet_katalog_items`)
 	storetest.AddItem(t, st, "m1", "movie", "A Film", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary)
+		VALUES ('src-m1', 'm1', '/media/a-film.mkv', true)`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemprocessingsteps (id, createdat, modifiedat, item_id, step, status,
 		attempts, error, failures, lasterror) VALUES ('st-m1', now(), now(), 'm1', 'transcode', 'failed', 3, 'ffmpeg exited 1', 1, 'ffmpeg exited 1')`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ('p1', 'Ada')`)
@@ -267,7 +269,7 @@ func fingerprint(t *testing.T, st *store.Store) string {
 	var b strings.Builder
 	for _, table := range []string{"com_nalet_katalog_items", "com_nalet_katalog_itemgenres", "com_nalet_katalog_itemtags",
 		"com_nalet_katalog_genres", "com_nalet_katalog_settings", "com_nalet_katalog_scanjobs",
-		"com_nalet_katalog_itemprocessingsteps"} {
+		"com_nalet_katalog_itemprocessingsteps", "com_nalet_katalog_itemtracklanguages"} {
 		var rows string
 		if err := st.Pool().QueryRow(context.Background(),
 			`SELECT coalesce(string_agg(x::text, '|' ORDER BY x::text), '') FROM `+table+` x`).Scan(&rows); err != nil {
@@ -281,7 +283,8 @@ func fingerprint(t *testing.T, st *store.Store) string {
 // operations calls every root field of the schema, each with what its fakes
 // record for an admin (none for a field that calls no integration).
 var operations = []struct{ doc, calls string }{
-	{`{ item(id: "m1") { id title processingSteps { step status failures lastError nextRetryAt dispatchedAt updatedAt } } }`, ""},
+	{`{ item(id: "m1") { id title processingSteps { step status failures lastError nextRetryAt dispatchedAt updatedAt }
+		tracks { kind ordinal sourceLanguage languageOverride effectiveLanguage } } }`, ""},
 	{`{ items(limit: 5) { id } }`, ""},
 	{`{ movies { id } }`, ""},
 	{`{ series { id } }`, ""},
@@ -310,6 +313,7 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { refreshPeople(all: false) { titlesRead } }`, "refresh people"},
 	{`mutation { backfillRatings(all: false) { titlesRead countries } }`, "backfill ratings"},
 	{`mutation { setMinAgeOverride(id: "m1", minAge: 12) { id ageRating { effectiveMinAge } } }`, ""},
+	{`mutation { setTrackLanguage(itemId: "m1", kind: "audio", ordinal: 0, language: "zxx") { id tracks { effectiveLanguage } } }`, ""},
 	{`mutation { backfillEpisodeBackdrops { artwork } }`, "backfill backdrops"},
 	{`mutation { backfillSourceProbes { assets filled unknown } }`, ""},
 	{`mutation { retryNotFound { reset } }`, "retry not found"},

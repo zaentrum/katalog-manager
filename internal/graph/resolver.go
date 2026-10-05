@@ -594,6 +594,29 @@ func (r *Resolver) SetMinAgeOverride(ctx context.Context, args struct {
 	return newItemResolver(it, r.store), nil
 }
 
+// SetTrackLanguage sets the language of a track of a title's source by hand;
+// a nil language clears it. nil when there is no such item.
+func (r *Resolver) SetTrackLanguage(ctx context.Context, args struct {
+	ItemID   graphql.ID
+	Kind     string
+	Ordinal  int32
+	Language *string
+}) (*itemResolver, error) {
+	if err := r.allow(ctx, "Mutation.setTrackLanguage"); err != nil {
+		return nil, err
+	}
+	found, err := r.store.SetTrackLanguage(ctx, string(args.ItemID), args.Kind, args.Ordinal, args.Language,
+		auth.Actor(ctx, "katalog-manager"))
+	if err != nil || !found {
+		return nil, err
+	}
+	it, err := r.store.GetItemBase(ctx, string(args.ItemID))
+	if err != nil || it == nil {
+		return nil, err
+	}
+	return newItemResolver(it, r.store), nil
+}
+
 func (r *Resolver) BackfillEpisodeBackdrops(ctx context.Context) (*backfillResultResolver, error) {
 	if err := r.allow(ctx, "Mutation.backfillEpisodeBackdrops"); err != nil {
 		return nil, err

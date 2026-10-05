@@ -59,6 +59,41 @@ type Item {
   tags: [String!]!
   # the title's age rating (see AgeRating); an episode is rated as its series
   ageRating: AgeRating
+  # the audio and subtitle tracks of its source, with the language each
+  # plays as (see Track): audio first, each kind by ordinal. None until a
+  # package of the title has reported them (backfillSourceTracks reads the
+  # packages on disk), and on a catalog older than migration 037.
+  tracks: [Track!]!
+}
+
+# A track of a title's source: one of its audio or subtitle streams, as the
+# packager last read the source, with the language an admin set for it. kind
+# and ordinal name it as the packager's worker record does: kind is audio or
+# subtitle, ordinal its place among the source's streams of its kind in
+# ffprobe's order, 0 first (audio 0 is the first audio stream). Languages are
+# ISO 639-2 codes, three lowercase letters, in the B ("ger") or the T form
+# ("deu"); zxx is no linguistic content (a film without dialogue, "No
+# dialogue"), und undetermined ("Unknown").
+type Track {
+  kind: String!
+  ordinal: Int!
+  # the language the source tags it with, as a package reported it; null when
+  # none did, or when the package that first reported the track labelled it
+  # with the admin's language, which hides the source's tag
+  sourceLanguage: String
+  # the language an admin set for it (setTrackLanguage); null: none
+  languageOverride: String
+  # the language it plays as: languageOverride, else sourceLanguage, else und
+  effectiveLanguage: String!
+  # its title tag ("Commentary")
+  title: String
+  # a subtitle's format as packaged (webvtt, pgs, vobsub, dvb), and whether
+  # the source marks it forced
+  format: String
+  forced: Boolean!
+  # whether a package reported it: false for a track only an admin's
+  # language names, one set before a package reported the source's tracks
+  reported: Boolean!
 }
 
 # A title's age rating. A kid's account is capped at an age (the max_rating
@@ -792,6 +827,17 @@ type Mutation {
   # TMDB's certification gives it, and a series' over its episodes' unless an
   # episode has its own; null clears it. null when there is no such item.
   setMinAgeOverride(id: ID!, minAge: Int): Item
+  # Sets the language of a track of a title's source (see Track): kind audio
+  # or subtitle, ordinal the track's place among the source's streams of its
+  # kind (0 first), language an ISO 639-2 code of three lowercase letters
+  # (zxx: no dialogue, und: unknown); null clears it, and the track plays as
+  # its source tags it again. It wins over the source's tag, and the
+  # packager labels the track with it when it next packages the title
+  # (reencodeItem packages a packaged title again). A title without a source
+  # file has no tracks; once a package has reported the source's tracks of
+  # the kind, an ordinal it did not report is refused. null when there is no
+  # such item.
+  setTrackLanguage(itemId: ID!, kind: String!, ordinal: Int!, language: String): Item
   backfillEpisodeBackdrops: BackfillResult!
   # Fills what a title's source asset lacks of its probe (its video codec,
   # resolution, duration and bit rate) from what the catalog has recorded:

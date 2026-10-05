@@ -4,6 +4,7 @@ import (
 	"context"
 
 	graphql "github.com/graph-gophers/graphql-go"
+	"github.com/zaentrum/katalog-manager/internal/languages"
 	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
@@ -286,6 +287,36 @@ func (r *itemResolver) AgeRating(ctx context.Context) (*ageRatingResolver, error
 	}
 	return &ageRatingResolver{m: m}, nil
 }
+
+// Tracks are the tracks of the title's source, with the language each plays
+// as.
+func (r *itemResolver) Tracks(ctx context.Context) ([]*trackResolver, error) {
+	ts, err := r.s.Tracks(ctx, r.m.ID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*trackResolver, 0, len(ts))
+	for _, t := range ts {
+		out = append(out, &trackResolver{m: t})
+	}
+	return out, nil
+}
+
+// ---- Track ----
+
+type trackResolver struct{ m *model.Track }
+
+func (r *trackResolver) Kind() string              { return r.m.Kind }
+func (r *trackResolver) Ordinal() int32            { return r.m.Ordinal }
+func (r *trackResolver) SourceLanguage() *string   { return r.m.Language }
+func (r *trackResolver) LanguageOverride() *string { return r.m.Override }
+func (r *trackResolver) EffectiveLanguage() string {
+	return languages.Effective(r.m.Override, r.m.Language)
+}
+func (r *trackResolver) Title() *string  { return r.m.Title }
+func (r *trackResolver) Format() *string { return r.m.Format }
+func (r *trackResolver) Forced() bool    { return r.m.Forced }
+func (r *trackResolver) Reported() bool  { return r.m.Reported }
 
 // ---- AgeRating ----
 
