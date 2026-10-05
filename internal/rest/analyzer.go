@@ -6,7 +6,9 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -59,10 +61,12 @@ type trackLanguage struct {
 }
 
 // subtitleFile is a subtitle file the scanner found beside the source
-// (<video>.<lang>.srt|vtt|ass|ssa): its path on the library storage, its
-// language as an ISO 639-2 code (und when its name gives none), its label,
-// and whether it is forced. The packager converts it to WebVTT and packages
-// it, never as the default unless forced.
+// (<video>.<lang>.srt|vtt|ass|ssa): its absolute path on the library
+// storage, as the workers see it too, its language as an ISO 639-2 code (und
+// when its name gives none), its label, and whether it is forced (a JSON
+// boolean; the scanner records no file forced). The packager converts it to
+// WebVTT and packages it after the source's own subtitles, never as the
+// default unless forced.
 type subtitleFile struct {
 	Path     string `json:"path"`
 	Language string `json:"language"`
@@ -166,7 +170,11 @@ func (h *Handlers) getAnalyzeItem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "item lookup failed", http.StatusInternalServerError)
 		return
 	}
-	if it.SubtitleFiles, err = h.subtitleFilesOf(reqCtx(r), it.ID); err != nil {
+	source := ""
+	if it.Path != nil {
+		source = *it.Path
+	}
+	if it.SubtitleFiles, err = h.subtitleFilesOf(reqCtx(r), it.ID, source); err != nil {
 		log.Printf("getAnalyzeItem: the subtitle files of %s: %v", it.ID, err)
 		http.Error(w, "item lookup failed", http.StatusInternalServerError)
 		return
@@ -197,41 +205,54 @@ func (h *Handlers) sidecarSubtitle(path, root string) bool {
 	return !underRoot(h.d.Cfg.PackagesRoot, path) && !underRoot(root, path)
 }
 
-// sidecarFormats are the subtitle files the scanner records beside a source.
-var sidecarFormats = map[string]bool{"srt": true, "vtt": true, "ass": true, "ssa": true}
+// subtitleFileSuffixes are the subtitle files the packager takes, by their
+// extension; maxSubtitleFileBytes is the most one may hold, as the packager
+// reads a file whole and takes a larger one for no subtitle file.
+var subtitleFileSuffixes = map[string]bool{".srt": true, ".vtt": true, ".ass": true, ".ssa": true}
 
-// subtitleFilesOf are the subtitle files the scanner found beside the item's
-// source, by path: its subtitles that are no package's (sidecarSubtitle).
-func (h *Handlers) subtitleFilesOf(ctx context.Context, itemID string) ([]subtitleFile, error) {
+const maxSubtitleFileBytes = 50 << 20
+
+// subtitleFilesOf are the subtitle files beside the item's source, at source,
+// by path, as the packager takes them: the item's subtitles that are no
+// package's (sidecarSubtitle), each at an absolute path in the source's
+// folder or below it, a .srt, .vtt, .ass or .ssa file of at most 50 MB. A
+// file that is gone, or larger, is left out.
+func (h *Handlers) subtitleFilesOf(ctx context.Context, itemID, source string) ([]subtitleFile, error) {
+	if strings.TrimSpace(source) == "" {
+		return nil, nil
+	}
+	folder := filepath.Dir(filepath.Clean(source))
 	root, err := h.packageRootFor(ctx, itemID)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := h.d.Store.Pool().Query(ctx, `SELECT path, COALESCE(format, ''), COALESCE(lang, ''), COALESCE(label, '')
-		FROM com_nalet_katalog_subtitleassets WHERE item_id = $1 ORDER BY path`, itemID)
+	rows, err := h.d.Store.Pool().Query(ctx, `SELECT path, COALESCE(lang, ''), COALESCE(label, '')
+		FROM com_nalet_katalog_subtitleassets WHERE item_id = $1`, itemID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []subtitleFile
 	for rows.Next() {
-		var path, format, lang, label string
-		if err := rows.Scan(&path, &format, &lang, &label); err != nil {
+		var path, lang, label string
+		if err := rows.Scan(&path, &lang, &label); err != nil {
 			return nil, err
 		}
-		if !h.sidecarSubtitle(path, root) {
+		path = filepath.Clean(path)
+		if !filepath.IsAbs(path) || !underRoot(folder, path) || !h.sidecarSubtitle(path, root) ||
+			!subtitleFileSuffixes[strings.ToLower(filepath.Ext(path))] {
 			continue
 		}
-		format = strings.ToLower(strings.TrimSpace(format))
-		if format == "" {
-			format = strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
-		}
-		if !sidecarFormats[format] {
+		if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() || fi.Size() > maxSubtitleFileBytes {
 			continue
 		}
 		out = append(out, subtitleFile{Path: path, Language: languages.ISO6392(lang), Label: strings.TrimSpace(label)})
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
 }
 
 // analyzeItemView is the lightweight sibling-episode shape returned by
