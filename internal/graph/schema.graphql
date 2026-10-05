@@ -1054,7 +1054,8 @@ type Mutation {
   # Removes an extra: it stays, removed (with the caller and the reason),
   # plays no more, its file may be taken in again, and its package is
   # deleted a day later. Removing a removed extra changes nothing. null when
-  # there is no such extra.
+  # there is no such extra. An extra recorded in the library is refused: it
+  # is removed by an extra-removed event of its record.
   removeExtra(id: ID!, reason: String): Extra
   # Packages an extra again with the pipeline's current settings (the
   # transcoder's extras ladder, then the packager's): it waits to be sent

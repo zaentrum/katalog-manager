@@ -603,7 +603,9 @@ trigger goes; one in its packaging within its timeout is left alone, and so
 is one whose file is missing until the file is back. `reencodeItem` leaves
 a title's extras alone, and so does `identify`. `removeExtra(id, reason)`
 removes an extra: it stays, removed (who, when, why), plays no more, and
-its package is deleted a day later. Deleting a title deletes its extras;
+its package is deleted a day later; one recorded in the library is
+refused, as its record, written before the database, is retired by an
+`extra-removed` event of its own. Deleting a title deletes its extras;
 with `deleteFiles` their files under the media root or `EXTRAS_ROOT` go too
 (a library record's is written once and stays), with `deletePackages`
 their packages and handoffs.

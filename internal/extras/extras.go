@@ -286,8 +286,19 @@ func titles(ctx context.Context, st *store.Store, sql string, args ...any) ([]ti
 
 // RemoveExtra removes the extra id, as the caller and reason say: it stays,
 // removed, and its package is deleted RemovedGrace later. nil when there is
-// no such extra.
+// no such extra. An extra recorded in the library is refused: its record is
+// written before the database, so it is removed by an extra-removed event
+// of its record, which this service does not write.
 func (s *Service) RemoveExtra(ctx context.Context, id, reason string) (*model.Extra, error) {
+	cur, err := s.st.GetExtra(ctx, id)
+	if err != nil || cur == nil {
+		return nil, err
+	}
+	if cur.RegisteredBy == model.ExtraByLibrary && cur.RemovedAt == nil {
+		return nil, graph.Refused(http.StatusConflict, codeRefused,
+			"extra %s is recorded in the library (%s): it is removed by an extra-removed event of its record, not here",
+			id, strOf(cur.RecordPath))
+	}
 	x, err := s.st.RemoveExtra(ctx, id, auth.Actor(ctx, "katalog-manager"), reason, RemovedGrace)
 	if errors.Is(err, store.ErrNoExtras) {
 		return nil, nil

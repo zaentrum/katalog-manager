@@ -612,4 +612,14 @@ func TestRemoveExtraSaysWho(t *testing.T) {
 	if gone, err := f.svc.RemoveExtra(asAdmin(), "unknown", ""); err != nil || gone != nil {
 		t.Errorf("an extra there is not: %v, %v", gone, err)
 	}
+	// An extra recorded in the library is removed by its record's event.
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemextras (id, item_id, kind, title, registeredby, recordpath)
+		VALUES ('x-recorded', $1, 'featurette', 'Featurette', 'library', 'library/movies/ea/`+film+`/extras/x-recorded/')`, film)
+	_, err = f.svc.RemoveExtra(asAdmin(), "x-recorded", "")
+	if r := refusal(t, err); r.Status != http.StatusConflict || !strings.Contains(r.Message, "is recorded in the library") {
+		t.Errorf("a recorded extra: %+v", r)
+	}
+	if x, _ := f.st.GetExtra(context.Background(), "x-recorded"); x.RemovedAt != nil {
+		t.Error("a recorded extra was removed")
+	}
 }
