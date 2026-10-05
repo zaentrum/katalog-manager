@@ -14,11 +14,12 @@ import (
 
 	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/sourceprobe"
+	"github.com/zaentrum/katalog-manager/internal/sourcetracks"
 )
 
 // packagingComplete ports ItemActionsController#ingestPackagingManifest: the
 // packager machine sink. Idempotent; three writes (source-asset enrich, packaged
-// asset replace, subtitle replace). Returns
+// asset replace, the package's subtitles replaced). Returns
 // {itemId, sourceEnriched, packagedAssetWritten, subtitlesWritten, audioTracks}.
 func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 	itemID := chi.URLParam(r, "id")
@@ -148,14 +149,21 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 3. SubtitleAssets — replace the whole set for this item.
-	if _, err := pool.Exec(ctx,
-		`DELETE FROM com_nalet_katalog_subtitleassets WHERE item_id = $1`, itemID); err != nil {
+	// 3. SubtitleAssets: the package's are replaced by the manifest's. The
+	// subtitle files beside the source, which the scanner keeps, stay: they
+	// are no package's (sidecarSubtitle), and the worker record hands them to
+	// the packager as subtitleFiles. A manifest subtitle that is no stream of
+	// the source (an id other than sub<N>: the packager's rendition of such a
+	// file) gets no row of its own, as the file's row stands for it.
+	if err := h.deletePackageSubtitles(ctx, itemID, packageRoot); err != nil {
 		http.Error(w, "subtitle delete failed", http.StatusInternalServerError)
 		return
 	}
 	subsWritten := 0
 	for _, s := range subtitles {
+		if _, stream := sourcetracks.SubtitleOrdinal(s); !stream {
+			continue
+		}
 		relPath := asString(s["path"])
 		var fullPath *string
 		if relPath != nil {
@@ -202,6 +210,33 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 		"subtitlesWritten":     subsWritten,
 		"audioTracks":          len(audioRends),
 	})
+}
+
+// deletePackageSubtitles removes the item's subtitles that are its package's,
+// and leaves the files beside its source (sidecarSubtitle).
+func (h *Handlers) deletePackageSubtitles(ctx context.Context, itemID, root string) error {
+	pool := h.d.Store.Pool()
+	rows, err := pool.Query(ctx, `SELECT id, path FROM com_nalet_katalog_subtitleassets WHERE item_id = $1`, itemID)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id, path string
+		if err := rows.Scan(&id, &path); err != nil {
+			rows.Close()
+			return err
+		}
+		if !h.sidecarSubtitle(path, root) {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || len(ids) == 0 {
+		return err
+	}
+	_, err = pool.Exec(ctx, `DELETE FROM com_nalet_katalog_subtitleassets WHERE id = ANY($1)`, ids)
+	return err
 }
 
 // sourceFromManifest reads a manifest's source block: the v1 manifest's names

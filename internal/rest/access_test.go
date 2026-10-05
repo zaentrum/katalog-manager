@@ -148,7 +148,7 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 
 	// Then those who may: each route does what it does for them (route by
 	// route, as a later route changes what an earlier one reads: the
-	// packager's manifest replaces the subtitles).
+	// packager's manifest replaces the package's subtitles).
 	for _, rt := range routes {
 		for _, c := range callers {
 			if !c.may[rt.who] {
