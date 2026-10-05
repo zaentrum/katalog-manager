@@ -308,7 +308,7 @@ func TestIdentifyASeriesReplacesItsAndItsEpisodesArtwork(t *testing.T) {
 	}
 }
 
-// toServer sends every request to the server at u, whatever host it names.
+// toServer sends every call to the server at u, whatever host it names.
 type toServer struct{ u *url.URL }
 
 func (s toServer) RoundTrip(r *http.Request) (*http.Response, error) {
