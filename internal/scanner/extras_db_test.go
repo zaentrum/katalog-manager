@@ -242,15 +242,14 @@ func TestAShowsExtrasAreItsSeries(t *testing.T) {
 	st := storetest.Open(t)
 	root := media(t, "series/Pioneer One/Season 01/Pioneer One S01E01.mkv", "series/Pioneer One/Season 01/Pioneer One S01E02.mkv",
 		"series/Pioneer One/Season 01/extras/Making of.mkv", "series/Pioneer One/trailers/Pioneer One - Trailer.mkv",
-		"series/Pioneer One/Season 05/extras/x.mkv")
+		"series/Pioneer One/Season 05/extras/x.mkv",
+		// shows called as a folder of extras: their episodes are episodes
+		"series/Extras/Extras S01E01.mkv", "Extras/Extras S02E01.mkv", "Teaser/Teaser S01E01.mkv")
 	s, _ := walker(t, st, root, true)
 	walk(t, s)
-	series := countOf(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE type = 'series'`)
-	if series != 1 {
-		t.Fatalf("%d series", series)
-	}
 	var id string
-	if err := st.Pool().QueryRow(context.Background(), `SELECT id FROM com_nalet_katalog_items WHERE type = 'series'`).Scan(&id); err != nil {
+	if err := st.Pool().QueryRow(context.Background(), `SELECT id FROM com_nalet_katalog_items WHERE type = 'series'
+		AND title = 'Pioneer One'`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	want := id + ` | making-of | Making Of | series/Pioneer One/Season 01/extras/Making of.mkv | pending | 1
@@ -258,8 +257,8 @@ func TestAShowsExtrasAreItsSeries(t *testing.T) {
 	if got := extrasOf(t, st, root); got != want {
 		t.Errorf("extras:\n%s\nwant:\n%s", got, want)
 	}
-	if n := countOf(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE type = 'episode'`); n != 2 {
-		t.Errorf("%d episodes, want the two", n)
+	if n := countOf(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE type = 'episode'`); n != 5 {
+		t.Errorf("%d episodes, want Pioneer One's two and the three of the shows called as extras", n)
 	}
 }
 

@@ -23,7 +23,9 @@ import (
 //     the Scenes - Music.mkv" beside "Sintel.mkv";
 //   - it lies in a folder of extras (trailers/, extras/, featurettes/, …)
 //     beside the title's file, and the folder that holds the extras' folder
-//     holds that one title's file and no other;
+//     holds that one title's file and no other (a file named as an episode,
+//     and a show's folder under series/, are no extras: a show may be called
+//     Extras);
 //   - its name is a kind alone ("trailer.mkv", "teaser-2.mp4"; not
 //     interview, short, other or extra, which may be titles' names), or names
 //     a trailer as the scanner always took one ("… - trailer.mkv"), and its
@@ -136,7 +138,10 @@ func (w *walkState) extraFileOf(absPath, name string) (extraFile, bool) {
 		}
 		return extraFile{}, false
 	}
-	if kind, ok := folderKind(filepath.Base(dir)); ok {
+	// A file named as an episode (S01E02) is one, also in a folder named as
+	// a folder of extras: a show may be called Extras.
+	episode := episodePattern.MatchString(name)
+	if kind, ok := folderKind(filepath.Base(dir)); ok && !episode && !seriesFolderNames[strings.ToLower(filepath.Base(filepath.Dir(dir)))] {
 		anchor := filepath.Dir(dir)
 		kind, title := folderExtra(stem, kind, w.stems(anchor))
 		return extraFile{path: absPath, by: byFolder, kind: kind, title: title, anchor: anchor}, true
@@ -144,7 +149,7 @@ func (w *walkState) extraFileOf(absPath, name string) (extraFile, bool) {
 	if main, kind, label, ok := nameOfAnExtra(stem, w.stems(dir)); ok {
 		return extraFile{path: absPath, by: byName, kind: kind, title: extraTitle(kind, label), mainStem: main, anchor: dir}, true
 	}
-	if kind, label, ok := parseKind(stem); ok && bareKinds[kind] {
+	if kind, label, ok := parseKind(stem); ok && bareKinds[kind] && !episode {
 		return extraFile{path: absPath, by: byKind, kind: kind, title: extraTitle(kind, label), anchor: dir}, true
 	}
 	if isTrailerPath(absPath, name) {
