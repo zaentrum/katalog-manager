@@ -6,8 +6,8 @@
 // migrations it cannot work without and applies each one at startup when its
 // objects are missing (see store.EnsureDeletionLog, store.EnsurePeople,
 // store.EnsureItemLockedFields, store.EnsureCreditDetails,
-// store.EnsureStepRetries, store.EnsureScanJobRunner and
-// store.EnsureItemRatings). It applies 035, which drops what is left of a
+// store.EnsureStepRetries, store.EnsureScanJobRunner, store.EnsureItemRatings
+// and store.EnsureTrackLanguages). It applies 035, which drops what is left of a
 // retired integration, at every start when any of that is there
 // (store.DropRetiredJobTables).
 package migrations
@@ -61,3 +61,9 @@ var RetiredJobTables string
 //
 //go:embed 036_item_ratings.sql
 var ItemRatings string
+
+// TrackLanguages is 037_track_languages.sql: a title's source tracks as the
+// packager read them, and an admin's language of a track.
+//
+//go:embed 037_track_languages.sql
+var TrackLanguages string

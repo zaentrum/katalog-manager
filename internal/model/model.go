@@ -124,6 +124,41 @@ type SubtitleAsset struct {
 	IsDefault *bool
 }
 
+// The kinds of a source's tracks (db/migrations/037): its audio and its
+// subtitle streams.
+const (
+	TrackAudio    = "audio"
+	TrackSubtitle = "subtitle"
+)
+
+// SourceTrack is a track of a title's source as the packager read it: its
+// kind and its ordinal, its place among the source's streams of the kind in
+// ffprobe's order, 0 first.
+type SourceTrack struct {
+	Kind     string
+	Ordinal  int32
+	Language *string // the language the source tags it with; nil: none known
+	Title    *string // its title tag
+	Format   *string // a subtitle's format as packaged (webvtt, pgs, vobsub, dvb)
+	Forced   bool    // the source marks the subtitle forced
+}
+
+// Track is a track of a title's source with the language an admin set for
+// it. Reported says whether a package reported the track; one that none has
+// carries the admin's language alone.
+type Track struct {
+	SourceTrack
+	Override *string
+	Reported bool
+}
+
+// TrackLanguage is an admin's language of a track: an ISO 639-2 code.
+type TrackLanguage struct {
+	Kind     string
+	Ordinal  int32
+	Language string
+}
+
 type MediaSegment struct {
 	ID         string
 	CreatedAt  *time.Time

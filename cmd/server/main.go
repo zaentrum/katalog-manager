@@ -103,6 +103,13 @@ func run() error {
 	if err := st.EnsureItemRatings(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/036_item_ratings.sql is missing and could not be applied: %v; no title is rated, and a capped viewer is served nothing, until it is", err)
 	}
+	// The languages of a title's tracks (migration 037): its source's audio
+	// and subtitle tracks as the packager read them, and an admin's language
+	// of a track, which the packager labels it with. Without it the packager
+	// labels every track as its source tags it, as before.
+	if err := st.EnsureTrackLanguages(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/037_track_languages.sql is missing and could not be applied: %v; no track's language can be set until it is", err)
+	}
 	dropRetiredJobTables(bgCtx, st)
 
 	steps := processing.New(st.Pool()).WithPolicy(cfg.RetryPolicy())
