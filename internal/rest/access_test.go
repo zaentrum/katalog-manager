@@ -35,6 +35,9 @@ type route struct {
 	who                string // viewer, worker or ingest
 }
 
+// extraX1 is the film's extra the worker routes are called for.
+const extraX1 = "1b5c2a8e-0000-4000-8000-000000000001"
+
 // routes is every route Register mounts.
 var routes = []route{
 	{http.MethodGet, "/api/artwork/m1/poster", "", "viewer"},
@@ -59,8 +62,13 @@ var routes = []route{
 	{http.MethodDelete, "/api/chapters/items/m1", "", "worker"},
 	{http.MethodPost, "/api/items/m1/packaging-complete", `{}`, "worker"},
 	{http.MethodGet, "/api/settings", "", "worker"},
+	{http.MethodGet, "/api/analyze/extras/" + extraX1, "", "worker"},
+	{http.MethodPut, "/api/analyze/extras/" + extraX1 + "/steps/transcode", `{"status": "in_progress"}`, "worker"},
+	{http.MethodPost, "/api/extras/" + extraX1 + "/packaging-complete",
+		`{"type": "extra", "renditions": {"video": [{"id": "v0", "codec": "avc1.64001f", "width": 1280, "height": 720}]}}`, "worker"},
 
 	{http.MethodPost, "/api/ingest", `{"path": "MEDIA/new.mkv", "type": "movie", "title": "New"}`, "ingest"},
+	{http.MethodPost, "/api/extras", `{"itemId": "m1", "path": "MEDIA/m1-trailer.mkv", "kind": "trailer"}`, "ingest"},
 
 	{http.MethodPost, "/api/items/m1/package", "", "admin"},
 }
@@ -80,7 +88,7 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 		}
 	}
 	media, sub := cfg.NFSRoot+"/m1.mkv", cfg.NFSRoot+"/m1.en.vtt"
-	for f, content := range map[string]string{media: "a film", sub: "WEBVTT\n"} {
+	for f, content := range map[string]string{media: "a film", sub: "WEBVTT\n", cfg.NFSRoot + "/m1-trailer.mkv": "a trailer"} {
 		if err := os.WriteFile(f, []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -94,6 +102,8 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ('p1', 'Ada')`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_personartwork (id, person_id, kind, contenttype, bytes, sha256, isprimary)
 		VALUES ('pa1', 'p1', 'profile', 'image/jpeg', '\xffd8', repeat('a', 64), true)`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemextras (id, item_id, kind, title, registeredby, sourcepath, state)
+		VALUES ($1, 'm1', 'teaser', 'Teaser', 'api', '/extras/m1/teaser.mov', 'queued')`, extraX1)
 	h, iss := server(t, st, cfg)
 
 	stream := streamToken("viewer-1", time.Now().Add(time.Hour))
@@ -140,6 +150,9 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 		"the uploaded backdrop": storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemartworkdata WHERE kind = 'backdrop'`),
 		"a step":                storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemprocessingsteps`),
 		"the ingested item":     storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE title = 'New'`),
+		"the extra taken in":    storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemextras WHERE kind = 'trailer'`),
+		"the extra's report": storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemextras
+			WHERE state <> 'queued' OR heartbeatat IS NOT NULL`),
 	} {
 		if n != 0 {
 			t.Errorf("a refused caller left %s behind (%d rows)", what, n)
@@ -165,6 +178,12 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemartworkdata WHERE kind = 'backdrop'`); n != 1 {
 		t.Errorf("the backdrop the workers uploaded: %d rows, want 1", n)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemextras WHERE kind = 'trailer' AND item_id = 'm1'`); n != 1 {
+		t.Errorf("the extras taken in by the addon, the service account and the admins: %d, want the one", n)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemextras WHERE id = $1 AND state = 'ready'`, extraX1); n != 1 {
+		t.Error("the workers' packaging-complete did not make the extra ready")
 	}
 }
 

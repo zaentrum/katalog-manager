@@ -19,6 +19,7 @@ type Deps struct {
 	Steps    *processing.Steps
 	Events   *events.Producer // nil-safe: packaged-event emit no-ops without a bus
 	Packager Packager         // nil: POST /api/items/{id}/package answers 503
+	Extras   ExtraTaker       // nil: POST /api/extras answers 503
 }
 
 // Handlers groups the REST handlers.
@@ -43,13 +44,16 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 //     transcoder and packager mint tokens with): the worker protocol, which
 //     hands out paths on disk and writes the pipeline's results, and the
 //     settings that are no secret;
-//   - ingest (a worker, or an addon's service account): POST /api/ingest;
+//   - ingest (a worker, or an addon's service account): POST /api/ingest, and
+//     POST /api/extras, which takes a file in as a title's extra;
 //   - admins: POST /api/items/{id}/package, the packaging action an admin's
 //     client forwards (chino-api's admin route).
 //
-// Bodies are implemented in the per-area files (artwork.go, play.go,
-// subtitles.go, analyzer.go, segments.go, chapters.go, packaging.go,
-// package.go, settings.go, ingest.go).
+// The workers' protocol of an extra (its record, its steps, its
+// packaging-complete) is in the worker group too. Bodies are implemented in
+// the per-area files (artwork.go, play.go, subtitles.go, analyzer.go,
+// segments.go, chapters.go, packaging.go, package.go, settings.go,
+// ingest.go, extras.go).
 func (h *Handlers) Register(r chi.Router) {
 	pol := h.d.Cfg.Policy()
 
@@ -99,6 +103,12 @@ func (h *Handlers) Register(r chi.Router) {
 		// Packager machine sink
 		r.Post("/api/items/{id}/packaging-complete", h.packagingComplete)
 
+		// An extra's worker protocol: its record, its steps' reports, and the
+		// packager's sink for its package.
+		r.Get("/api/analyze/extras/{id}", h.getAnalyzeExtra)
+		r.Put("/api/analyze/extras/{id}/steps/{step}", h.putExtraStep)
+		r.Post("/api/extras/{id}/packaging-complete", h.extraPackagingComplete)
+
 		// The settings the workers read (the packager's language whitelist),
 		// secrets left out.
 		r.Get("/api/settings", h.getSettings)
@@ -113,4 +123,8 @@ func (h *Handlers) Register(r chi.Router) {
 	// importers/addons; the scanner's create path exposed as an API. An addon
 	// calls it with its own service account, which carries the addon role.
 	r.With(pol.Require(auth.Ingest)).Post("/api/ingest", h.ingest)
+
+	// A file taken in as a title's extra (what GraphQL's addExtra does), for
+	// an operator's tool, a deployment's Job or an addon.
+	r.With(pol.Require(auth.Ingest)).Post("/api/extras", h.postExtra)
 }

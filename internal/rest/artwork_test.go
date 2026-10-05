@@ -18,6 +18,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/auth/authtest"
 	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/extras"
 	"github.com/zaentrum/katalog-manager/internal/itemactions"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store"
@@ -67,7 +68,8 @@ func server(t *testing.T, st *store.Store, cfg config.Config) (http.Handler, *au
 	r.Group(func(pr chi.Router) {
 		pr.Use(auth.NewMiddleware(jwt, stream).Handler)
 		steps := processing.New(st.Pool())
-		New(Deps{Store: st, Cfg: cfg, Steps: steps, Packager: itemactions.New(st, cfg, steps, nil)}).Register(pr)
+		New(Deps{Store: st, Cfg: cfg, Steps: steps, Packager: itemactions.New(st, cfg, steps, nil),
+			Extras: extras.New(st, cfg, steps.Policy(), nil)}).Register(pr)
 	})
 	return r, iss
 }
