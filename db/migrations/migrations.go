@@ -8,9 +8,9 @@
 // store.EnsureItemLockedFields, store.EnsureCreditDetails,
 // store.EnsureStepRetries, store.EnsureScanJobRunner, store.EnsureItemRatings,
 // store.EnsureTrackLanguages, store.EnsureSubtitleForced and
-// store.EnsureItemExtras). It applies 035,
-// which drops what is left of a retired integration, at every start when any
-// of that is there (store.DropRetiredJobTables).
+// store.EnsureItemExtras). It applies 035, which drops what is left of a
+// retired integration, at every start when any of that is there
+// (store.DropRetiredJobTables).
 package migrations
 
 import _ "embed"
