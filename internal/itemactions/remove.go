@@ -32,6 +32,10 @@ import (
 //  3. Remove media files (only with deleteFiles) and packaged dirs (only with
 //     deletePackages), every path validated to live UNDER its configured root —
 //     a corrupted path row must never turn into an rm outside the library.
+//     The items' extras go with them: their files under the media root or
+//     EXTRAS_ROOT (never a library record's, which is written once), their
+//     packages in packages/extras/ and the transcoder's handoffs left in the
+//     inbox.
 //  4. Emit stube.catalog.item.removed so live-refresh surfaces drop the item.
 func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, deletePackages bool, reason string) (graph.RemoveResult, error) {
 	var res graph.RemoveResult
@@ -71,7 +75,14 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 	}
 
 	// 1. Collect the on-disk footprint before the rows disappear.
+	extras, err := s.st.ExtrasOfItems(ctx, ids)
+	if err != nil {
+		return res, err
+	}
 	var mediaFiles []string
+	// stops are where the folders a removed file leaves empty stop being
+	// pruned: the root it lies in.
+	stops := map[string]string{}
 	if deleteFiles {
 		rows, err := s.st.Pool().Query(ctx, `
 			SELECT DISTINCT path FROM com_nalet_katalog_playbackassets
@@ -89,11 +100,23 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 			// the packages root and are covered by the package-dir removal.
 			if underRoot(s.cfg.NFSRoot, p) {
 				mediaFiles = append(mediaFiles, p)
+				stops[p] = s.cfg.NFSRoot
 			}
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
 			return res, err
+		}
+		for _, x := range extras {
+			if x.SourcePath == nil {
+				continue
+			}
+			for _, root := range []string{s.cfg.NFSRoot, s.cfg.ExtrasRoot} {
+				if p := *x.SourcePath; underRoot(root, p) && stops[p] == "" {
+					mediaFiles = append(mediaFiles, p)
+					stops[p] = root
+				}
+			}
 		}
 	}
 	var pkgRoots []string
@@ -132,6 +155,15 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 		for _, iid := range ids {
 			add(packageRoot(s.cfg.PackagesRoot, types[iid], iid))
 		}
+		// The extras' packages, wherever their rows say they are and where
+		// the packager puts them, and their handoffs in the inbox.
+		for _, x := range extras {
+			if x.PackagePath != nil {
+				add(filepath.Clean(*x.PackagePath))
+			}
+			add(extraPackageRoot(s.cfg.PackagesRoot, x.ID))
+			add(filepath.Join(s.cfg.PackagesRoot, "_inbox", "extra-"+x.ID))
+		}
 	}
 
 	// 2. Catalog rows go first, atomically, and are recorded as they go.
@@ -152,7 +184,7 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 			continue
 		}
 		res.FilesRemoved++
-		pruneEmptyDirs(filepath.Dir(f), s.cfg.NFSRoot)
+		pruneEmptyDirs(filepath.Dir(f), stops[f])
 	}
 	for _, root := range pkgRoots {
 		if _, err := os.Stat(root); err != nil {
@@ -227,6 +259,17 @@ func packageRoot(packagesRoot, typ, itemID string) string {
 		shard = itemID[:2]
 	}
 	return filepath.Join(packagesRoot, category, shard, itemID)
+}
+
+// extraPackageRoot is where the packager puts the package of the extra id:
+// packages/extras/<the id's first two characters>/<id>, whatever its title's
+// type.
+func extraPackageRoot(packagesRoot, id string) string {
+	shard := "00"
+	if len(id) >= 2 {
+		shard = id[:2]
+	}
+	return filepath.Join(packagesRoot, "extras", shard, id)
 }
 
 // isNoRows is defined in service.go for pgx.ErrNoRows; keep a local alias so
