@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -198,5 +200,50 @@ func TestReencodeThroughTheService(t *testing.T) {
 	if _, a := in.gql(t, "/api/manage/query", admin, `mutation { reencodeItem(id: "nope") { titles } }`); len(a.Errors) != 1 ||
 		a.Errors[0].Message != "unknown item: nope" {
 		t.Errorf("an unknown item: %v", a.Errors)
+	}
+}
+
+// A title encoded again is packaged with what the catalog knows of its
+// tracks: once reencodeItem has sent the transcoder's trigger, the record the
+// packager reads for the title (its worker record, read by the id on the
+// transcoder's event) names the languages an admin set and the subtitle file
+// beside its source.
+func TestATitleEncodedAgainIsPackagedWithItsLanguagesAndFiles(t *testing.T) {
+	b := &markingBus{}
+	in := newInstanceWith(t, func(st *store.Store) graph.Pipeline {
+		return retry.New(st, processing.DefaultPolicy(), b, time.Minute)
+	})
+	st := in.st
+	dir := t.TempDir()
+	source, sidecar := filepath.Join(dir, "A Film.mkv"), filepath.Join(dir, "A Film.en.srt")
+	for _, f := range []string{source, sidecar} {
+		if err := os.WriteFile(f, []byte("1\n00:00:01,000 --> 00:00:02,000\nHello\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	storetest.AddItem(t, st, "f9", "movie", "A Film", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, codec)
+		VALUES ('a-f9', 'f9', $1, true, 'primary', 'h264')`, source)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_subtitleassets (id, item_id, path, format, lang, label)
+		VALUES ('s-f9', 'f9', $1, 'srt', 'en', 'English')`, sidecar)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemprocessingsteps (id, createdat, modifiedat, item_id, step, status, attempts, failures) VALUES
+		('st-f9-t', now(), now(), 'f9', 'transcode', 'done', 1, 0), ('st-f9-p', now(), now(), 'f9', 'package', 'done', 1, 0)`)
+	admin, service := in.iss.Admin(t), in.iss.Service(t, "zaentrum-manager")
+	if _, a := in.gql(t, "/api/manage/query", admin,
+		`mutation { setTrackLanguage(itemId: "f9", kind: "audio", ordinal: 0, language: "zxx") { id } }`); len(a.Errors) > 0 {
+		t.Fatal(a.Errors)
+	}
+	if _, a := in.gql(t, "/api/manage/query", admin, `mutation { reencodeItem(id: "f9") { reencoded } }`); len(a.Errors) > 0 ||
+		string(a.Data) != `{"reencodeItem":{"reencoded":1}}` {
+		t.Fatalf("reencodeItem: %s %v", a.Data, a.Errors)
+	}
+	if sent := b.take(); sent != events.TopicAnalyzed+" f9 transcode reencode reencode movie" {
+		t.Errorf("the re-encode sent %q", sent)
+	}
+	code, body := in.get(t, "/api/analyze/items/f9", service)
+	if code != http.StatusOK ||
+		!strings.Contains(body, `"trackLanguages":[{"kind":"audio","ordinal":0,"language":"zxx"}]`) ||
+		!strings.Contains(body, `"subtitleFiles":[{"path":"`+sidecar+`","language":"eng","label":"English","forced":false}]`) {
+		t.Errorf("the record the packager reads: %d %s", code, body)
 	}
 }
