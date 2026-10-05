@@ -21,6 +21,8 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/auth/authtest"
 	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/events"
+	"github.com/zaentrum/katalog-manager/internal/extras"
 	"github.com/zaentrum/katalog-manager/internal/graph"
 	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/processing"
@@ -172,6 +174,7 @@ type instance struct {
 	url string
 	iss *authtest.Issuer
 	st  *store.Store
+	cfg config.Config
 	f   *fakes
 	// every answer's body, to be searched for a secret
 	mu      sync.Mutex
@@ -189,6 +192,21 @@ func newInstance(t *testing.T) *instance {
 // of the instance's store (nil: a fake).
 func newInstanceWith(t *testing.T, pipeline func(*store.Store) graph.Pipeline) *instance {
 	t.Helper()
+	return newInstanceWired(t, wiring{pipeline: pipeline})
+}
+
+// wiring is what an instance is wired with instead of a fake: the
+// pipeline's retries, the extras and the event bus the REST routes announce
+// on, each made of the instance's store and configuration.
+type wiring struct {
+	pipeline func(*store.Store) graph.Pipeline
+	extras   func(*store.Store, config.Config) *extras.Service
+	events   *events.Producer
+}
+
+func newInstanceWired(t *testing.T, w wiring) *instance {
+	t.Helper()
+	pipeline := w.pipeline
 	st := storetest.Open(t)
 	storetest.Exec(t, st, `CREATE VIEW katalogservice_items AS SELECT id, createdat, createdby, modifiedat, modifiedby,
 		type, title, sorttitle, year, description, rating, durationms, parent_id, seasonnumber, episodenumber, tagline,
@@ -207,7 +225,8 @@ func newInstanceWith(t *testing.T, pipeline func(*store.Store) graph.Pipeline) *
 	iss := authtest.NewIssuer(t)
 	dir := t.TempDir()
 	cfg := config.Config{AdminRole: "zaentrum-admin", AddonRole: "zaentrum-addon", RolesClaim: auth.DefaultRolesClaim,
-		ServiceClients: []string{"zaentrum-manager"}, NFSRoot: dir + "/media", PackagesRoot: dir + "/packages"}
+		ServiceClients: []string{"zaentrum-manager"}, NFSRoot: dir + "/media", PackagesRoot: dir + "/packages",
+		LibraryRoot: dir + "/library", ExtrasRoot: dir + "/extras"}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	jwt, err := auth.NewJWTVerifier(ctx, iss.URL, cfg.Audience, false, false)
@@ -223,14 +242,20 @@ func newInstanceWith(t *testing.T, pipeline func(*store.Store) graph.Pipeline) *
 	if pipeline != nil {
 		pipe = pipeline(st)
 	}
+	var x graph.Extras = f
+	var taker rest.ExtraTaker
+	if w.extras != nil {
+		svc := w.extras(st, cfg)
+		x, taker = svc, svc
+	}
 	schema := graph.MustSchema(graph.NewResolver(st, cfg, graph.Services{Scanner: f, Enricher: f, People: f,
-		Ratings: f, Packager: f, Validator: f, Remover: f, Pipeline: pipe, Secrets: f, Extras: f}))
+		Ratings: f, Packager: f, Validator: f, Remover: f, Pipeline: pipe, Secrets: f, Extras: x}))
 	r := chi.NewRouter()
 	routes(r, auth.NewMiddleware(jwt, sv).Handler, cfg.Policy(), schema, stream.NewBroker().Handler,
-		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool())}))
+		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool()), Events: w.events, Extras: taker}))
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
-	in := &instance{url: srv.URL, iss: iss, st: st, f: f}
+	in := &instance{url: srv.URL, iss: iss, st: st, cfg: cfg, f: f}
 	t.Cleanup(func() {
 		for _, a := range in.answers {
 			for _, s := range []string{tmdbSecret, fanartSecret, omdbSecret, refusedToken, uncheckedToken, goodToken} {
