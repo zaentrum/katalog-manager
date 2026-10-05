@@ -43,6 +43,9 @@ type Service struct {
 	cfg    config.Config
 	steps  *processing.Steps
 	events bus
+	// reencoder encodes a title again once ReplaceSource gave it another
+	// file (WithReencoder).
+	reencoder Reencoder
 }
 
 // bus is the event bus the service tells the pipeline through

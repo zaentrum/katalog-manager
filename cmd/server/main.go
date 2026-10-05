@@ -190,6 +190,9 @@ func run() error {
 	// trigger event again, after a backoff, a bounded number of times, and a
 	// step whose worker went silent past its timeout is reaped into a failure.
 	retries := retry.New(st, cfg.RetryPolicy(), eventProducer, cfg.RetryInterval).WithExtras(extrasSvc)
+	// A title given another file (replaceSource) is encoded again from it as
+	// reencodeItem encodes one.
+	actions.WithReencoder(retries)
 
 	// Background workers (lifetime = server) share bgCtx, cancelled on shutdown.
 	// Keep the people and titles the catalog holds fresh from TMDB's change
@@ -239,6 +242,7 @@ func run() error {
 		// setSecretSetting checks a TMDB token with TMDB before it stores it.
 		Secrets: enricher,
 		Extras:  extrasSvc,
+		Sources: actions,
 	})
 	schema := graph.MustSchema(resolver)
 
