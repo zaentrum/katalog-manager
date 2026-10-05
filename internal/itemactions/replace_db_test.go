@@ -479,6 +479,17 @@ func TestTheOldFileGoesOnlyWhenNothingHoldsIt(t *testing.T) {
 			t.Errorf("%s: the title's source asset: %s", c.name, got)
 		}
 	}
+
+	// A package store inside the media root: a file a title had there (one
+	// taken in through POST /api/ingest) stays.
+	nested := New(f.st, config.Config{NFSRoot: f.dir, PackagesRoot: f.dir + "/packages"}, processing.New(f.st.Pool()), nil)
+	staged := f.film(t, "990f0f0f-0000-4000-8000-000000000099", "a-staged", "packages/_staged/A Film.mkv")
+	res, err := nested.ReplaceSource(asOperator, graph.ReplaceSourceRequest{ItemPath: staged, Path: f.write(t, "media/A Film.mkv", 10),
+		DeleteOldFile: true})
+	if err != nil || !res.Replaced || res.OldFileDeleted || !strings.Contains(res.Message, "; the old file is kept: it is under the package store;") ||
+		gone(staged) {
+		t.Errorf("a file under the package store: %+v, %v; want it replaced and the file kept", res, err)
+	}
 }
 
 // The title is encoded again as reencodeItem answers: one left alone because

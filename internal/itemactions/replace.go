@@ -376,10 +376,11 @@ func forgetTheOldFile(ctx context.Context, tx pgx.Tx, itemID string) error {
 
 // dropOldFile deletes the title's old file once the title has its new one,
 // when asked: as RemoveItem deletes a title's files, only under the media
-// root (its root guard), and only one nothing of the catalog is any more (no
-// asset row, no live extra) and the new file does not lead to (a link to it);
-// the folders it leaves empty go, up to the root. It says what became of the
-// file, also when it was not asked to go.
+// root (its root guard) and never under the package store, and only one
+// nothing of the catalog is any more (no asset row, no live extra) and the
+// new file does not lead to (a link to it); the folders it leaves empty go,
+// up to the root. It says what became of the file, also when it was not
+// asked to go.
 func (s *Service) dropOldFile(ctx context.Context, old, cur string, asked bool) (bool, string) {
 	media := underRoot(s.cfg.NFSRoot, old)
 	switch {
@@ -389,6 +390,8 @@ func (s *Service) dropOldFile(ctx context.Context, old, cur string, asked bool) 
 		return false, "the old file stays"
 	case !media:
 		return false, "the old file is kept: it is not under the media root"
+	case underRoot(s.cfg.PackagesRoot, old):
+		return false, "the old file is kept: it is under the package store"
 	}
 	if why, err := s.stillHeld(ctx, old); err != nil {
 		return false, "the old file is kept: whether the catalog holds it still could not be read: " + err.Error()

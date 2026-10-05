@@ -345,19 +345,20 @@ mutation {
   scan pairs the files named after the new one, and the packager takes
   subtitle files only from the new file's folder or below it.
 - **`deleteOldFile`** (false when omitted) deletes the old file once the
-  title has the new one: only under the media root, only when no title's
-  file or extra is it any more and the new file does not lead to it; the
-  folders it leaves empty go. An old file kept under the media root is taken
-  in as a title of its own by the next scan: move it out of the media root,
-  or delete it.
+  title has the new one: only under the media root and never under the
+  package store, only when no title's file or extra is it any more and the
+  new file does not lead to it; the folders it leaves empty go. An old file
+  kept under the media root is taken in as a title of its own by the next
+  scan: move it out of the media root, or delete it.
 - **`reencode`** (true when omitted) encodes the title again from the new
   file, as `reencodeItem` does (see
   [Encoding a title again](#encoding-a-title-again)), and `reencode` is its
   answer. A title whose transcode or package is running is left alone
   (`busy`): that run is the old file's, and what it reports (the probe, the
   tracks) describes the old file until the title is encoded again, which an
-  admin asks once it is done. Without an event bus or migration 033 nothing
-  is encoded again, and `reencode.message` says why.
+  admin asks once it is done; a run whose old file was deleted under it may
+  fail instead, and its retry reads the new file. Without an event bus or
+  migration 033 nothing is encoded again, and `reencode.message` says why.
 - **A refusal** is an error whose `extensions.code` is `NOT_FOUND` (a title
   there is not), `SOURCE_CONFLICT` (the file is another title's or an
   extra's, named in `itemId` and `extraId`) or `SOURCE_REFUSED`, and nothing

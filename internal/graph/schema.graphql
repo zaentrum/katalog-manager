@@ -813,8 +813,8 @@ type ReplaceSourceResult {
   # deleted, nothing sent)
   replaced: Boolean!
   # whether the old file was deleted (deleteOldFile): only one under the media
-  # root that no title's file or extra is any more, and that the new file does
-  # not lead to
+  # root and outside the package store, that no title's file or extra is any
+  # more, and that the new file does not lead to
   oldFileDeleted: Boolean!
   # the subtitle files beside the old file named after it (Film.srt,
   # Film.en.srt beside Film.mp4), which stay the title's subtitles as they
@@ -1048,14 +1048,15 @@ type Mutation {
   # tracks a package reported of it, its diagnostics; the new file earns them
   # again. A path that is the title's file already changes nothing.
   # deleteOldFile: true deletes the old file once the title has the new one,
-  # when it is under the media root and no title's file or extra is it any
-  # more; one kept under the media root is taken in as a title of its own by
-  # the next scan, unless it is moved out or deleted. reencode (true when
-  # omitted) encodes the title again from the new file, as reencodeItem does:
-  # a title whose transcode or package is running is left alone (busy), and
-  # that run is the old file's. A refusal is an error whose extensions.code
-  # is NOT_FOUND (a title there is not), SOURCE_CONFLICT (the file is another
-  # title's or an extra's, named in itemId and extraId) or SOURCE_REFUSED.
+  # when it is under the media root, outside the package store, and no
+  # title's file or extra is it any more; one kept under the media root is
+  # taken in as a title of its own by the next scan, unless it is moved out or
+  # deleted. reencode (true when omitted) encodes the title again from the new
+  # file, as reencodeItem does: a title whose transcode or package is running
+  # is left alone (busy), and that run is the old file's. A refusal is an
+  # error whose extensions.code is NOT_FOUND (a title there is not),
+  # SOURCE_CONFLICT (the file is another title's or an extra's, named in
+  # itemId and extraId) or SOURCE_REFUSED.
   replaceSource(itemId: ID, itemPath: String, path: String!, deleteOldFile: Boolean, reencode: Boolean): ReplaceSourceResult!
   packageItem(id: ID!): PackageResult!
   validateItem(id: ID!): ValidateResult!
