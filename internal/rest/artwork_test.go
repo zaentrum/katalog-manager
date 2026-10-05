@@ -167,3 +167,28 @@ func TestPersonPortraitWithoutThePeopleMigration(t *testing.T) {
 		t.Errorf("a portrait without 030: %d, want 404", w.Code)
 	}
 }
+
+// A keyframe the analyzer uploads becomes the image of its kind and is marked
+// as one, also beside a URL row a match left whose image could not be
+// fetched; uploaded again, it is marked once.
+func TestAnUploadedKeyframeIsMarkedAsOne(t *testing.T) {
+	st := storetest.Open(t)
+	storetest.AddItem(t, st, "m1", "movie", "A Film", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemartwork (id, item_id, kind, url)
+		VALUES ('tmdb-backdrop', 'm1', 'backdrop', 'https://image.example.com/t/p/w1280/b.jpg')`)
+	h, iss := server(t, st, testConfig(t.TempDir()))
+	svc := iss.Service(t, "zaentrum-manager")
+	for run := 1; run <= 2; run++ {
+		if w := do(h, http.MethodPut, "/api/artwork/m1/backdrop", "a keyframe", svc); w.Code != http.StatusNoContent {
+			t.Fatalf("PUT the keyframe, %d. time: %d %s", run, w.Code, w.Body.String())
+		}
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemartwork
+		WHERE item_id = 'm1' AND kind = 'backdrop' AND url = 'extracted:keyframe'`); n != 1 {
+		t.Errorf("%d keyframe markers, want 1", n)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemartworkdata
+		WHERE item_id = 'm1' AND kind = 'backdrop' AND bytes = 'a keyframe'`); n != 1 {
+		t.Error("the keyframe is not the backdrop")
+	}
+}

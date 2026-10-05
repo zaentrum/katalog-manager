@@ -66,10 +66,13 @@ func (h *Handlers) putArtwork(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Marker url row for provenance / url-based "has artwork" checks (idempotent).
+	// Marker url row for provenance / url-based "has artwork" checks
+	// (idempotent): the image of the kind is a frame of the item's own file,
+	// whatever URL rows a match left beside it (one whose image could not be
+	// fetched), so a re-match keeps it (tmdb's applyArtwork).
 	var n int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM com_nalet_katalog_itemartwork WHERE item_id = $1 AND kind = $2`,
+		`SELECT count(*) FROM com_nalet_katalog_itemartwork WHERE item_id = $1 AND kind = $2 AND url = 'extracted:keyframe'`,
 		itemID, kind).Scan(&n); err == nil && n == 0 {
 		pool.Exec(ctx,
 			`INSERT INTO com_nalet_katalog_itemartwork (id, item_id, kind, url)
