@@ -23,6 +23,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/chaptersdb"
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/events"
+	"github.com/zaentrum/katalog-manager/internal/extras"
 	"github.com/zaentrum/katalog-manager/internal/graph"
 	"github.com/zaentrum/katalog-manager/internal/itemactions"
 	"github.com/zaentrum/katalog-manager/internal/processing"
@@ -180,6 +181,9 @@ func run() error {
 		log.Printf("catalog: %d scans a previous process left running are failed (%s)", n, scanner.InterruptedReason)
 	}
 	actions := itemactions.New(st, cfg, steps, eventProducer)
+	// A title's extras: taken in by an operator or the scanner, and packaged
+	// on a chain of their own (catalog.extra.*), retried by the same policy.
+	extrasSvc := extras.New(st, cfg, cfg.RetryPolicy(), eventProducer)
 	// The pipeline heals itself: a failed step is retried by sending its
 	// trigger event again, after a backoff, a bounded number of times, and a
 	// step whose worker went silent past its timeout is reaped into a failure.
@@ -232,6 +236,7 @@ func run() error {
 		Pipeline:  retries,
 		// setSecretSetting checks a TMDB token with TMDB before it stores it.
 		Secrets: enricher,
+		Extras:  extrasSvc,
 	})
 	schema := graph.MustSchema(resolver)
 
