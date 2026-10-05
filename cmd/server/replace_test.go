@@ -58,8 +58,8 @@ func jsonString(s string) string {
 // A film given its original through the service as main wires it, with the
 // real retries, the bearer tokens of a realm and a bus that takes every
 // event, as the demo's seed Job asks it: by the path of its small copy, the
-// small copy deleted. A viewer, an addon and the service account are refused
-// before anything changes. For an admin the film keeps its id, its trailer
+// small copy deleted. A viewer and an addon are refused, and so is the service
+// account, which may not delete the file, before anything changes. For an admin the film keeps its id, its trailer
 // and the language an admin set for a track; the transcoder's trigger goes,
 // not as a retry; the record the workers read names the new file and the
 // language; and a scan then finds the new file the film's, and takes nothing
@@ -96,11 +96,15 @@ func TestReplaceSourceThroughTheService(t *testing.T) {
 	doc := fmt.Sprintf(`mutation { replaceSource(itemPath: %s, path: %s, deleteOldFile: true) { itemId oldPath path replaced
 		oldFileDeleted oldSidecars reencode { reencoded busy notSent } message } }`, jsonString(old), jsonString(cur))
 	before := fingerprint(t, st)
-	for _, token := range []string{viewer, addon, service} {
+	for token, refusal := range map[string]string{
+		viewer: "forbidden: replaceSource requires the zaentrum-admin role or the platform's service account",
+		addon:  "forbidden: replaceSource requires the zaentrum-admin role or the platform's service account",
+		// The service account may give a title another file, not delete one.
+		service: "forbidden: replaceSource with deleteOldFile requires the zaentrum-admin role",
+	} {
 		_, a := in.gql(t, "/api/manage/query", token, doc)
-		if len(a.Errors) != 1 || a.Errors[0].Extensions["code"] != "FORBIDDEN" ||
-			a.Errors[0].Message != "forbidden: replaceSource requires the zaentrum-admin role" {
-			t.Errorf("%v, want it refused", a.Errors)
+		if len(a.Errors) != 1 || a.Errors[0].Extensions["code"] != "FORBIDDEN" || a.Errors[0].Message != refusal {
+			t.Errorf("%v, want it refused: %s", a.Errors, refusal)
 		}
 	}
 	if sent := b.take(); sent != "" {
@@ -188,5 +192,34 @@ func TestReplaceSourceWithoutAnEventBus(t *testing.T) {
 	}
 	if n := storetest.Count(t, in.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE id = 'a-s1' AND path = $1`, cur); n != 1 {
 		t.Error("the film does not have its new file")
+	}
+}
+
+// A seed Job hands a title a better file with the platform's service account,
+// as the demo's does: the title takes the new file and its encode is sent, and
+// the old file stays on disk, for the Job to delete — deleting one is an
+// admin's.
+func TestTheServiceAccountGivesATitleAnotherFileAndDeletesNone(t *testing.T) {
+	b := &markingBus{}
+	in := newInstanceWired(t, replacing(b))
+	st := in.st
+	old, cur := in.file(t, "Sintel.2010.720p.mkv", 1000), in.file(t, "Sintel (2010).mkv", 5000)
+	storetest.AddItem(t, st, "sintel", "movie", "Sintel", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, codec, sizebytes) VALUES
+		('a-sintel', 'sintel', $1, true, 'primary', 'h264', 1000)`, old)
+
+	_, a := in.gql(t, "/api/manage/query", in.iss.Service(t, "zaentrum-manager"), fmt.Sprintf(
+		`mutation { replaceSource(itemPath: %s, path: %s) { itemId replaced oldFileDeleted } }`, jsonString(old), jsonString(cur)))
+	if len(a.Errors) > 0 || string(a.Data) != `{"replaceSource":{"itemId":"sintel","replaced":true,"oldFileDeleted":false}}` {
+		t.Fatalf("the service account's replace: %s %v", a.Data, a.Errors)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE id = 'a-sintel' AND path = $1`, cur); n != 1 {
+		t.Errorf("the title's file is not the new one (%d rows)", n)
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Errorf("the old file went, which only an admin may have done: %v", err)
+	}
+	if sent := b.take(); sent != events.TopicAnalyzed+" sintel transcode reencode reencode movie" {
+		t.Errorf("the replace sent %q, want the transcoder's trigger", sent)
 	}
 }

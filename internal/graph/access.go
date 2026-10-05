@@ -14,9 +14,10 @@ import (
 // through chino-api's artwork proxy, which reaches this service only on the
 // REST artwork routes. So every field is an administrator's: what the catalog
 // holds down to its paths on disk and the pipeline's errors, how much it
-// holds, the scan jobs, the settings, the deletion log, and every change. The one
-// other caller is the scan Job a deployment runs after it starts, which calls
-// triggerScan with the platform's service account.
+// holds, the scan jobs, the settings, the deletion log, and every change. The
+// other callers are a deployment's Jobs, with the platform's service account:
+// the scan Job calls triggerScan, and a seed Job that brings a title a better
+// file hands it over with replaceSource (deleting a file stays an admin's).
 //
 // A root field missing here is refused to everyone (allow), and
 // TestEveryRootFieldHasARule keeps the table and the schema in step.
@@ -58,7 +59,7 @@ var fieldAccess = map[string]auth.Access{
 	"Mutation.retryStep":                auth.Admin,
 	"Mutation.retryFailed":              auth.Admin,
 	"Mutation.reencodeItem":             auth.Admin,
-	"Mutation.replaceSource":            auth.Admin,
+	"Mutation.replaceSource":            auth.Worker, // a seed Job's; deleteOldFile is an admin's (ReplaceSource)
 	"Mutation.packageItem":              auth.Admin,
 	"Mutation.validateItem":             auth.Admin,
 	"Mutation.createItem":               auth.Admin,

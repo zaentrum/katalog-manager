@@ -101,6 +101,7 @@ account, whose token carries the addon role. Everyone else signed in is a
 |---|---|
 | every GraphQL query and mutation (the catalog with its paths on disk, scan jobs, activity, settings, the deletion log, every change) | admin |
 | GraphQL `triggerScan` | admin, service account |
+| GraphQL `replaceSource` | admin, service account (`deleteOldFile: true` an admin's) |
 | `GET /api/manage/stream` (the console's live stream) | admin |
 | `GET /api/artwork/...`, `/api/manage/artwork/...` (also a person's portrait) | any signed-in caller, or a stream token; a capped viewer is answered for a title above its cap as for a title there is not |
 | `GET /api/play/...`, `GET /api/subtitles/...` | any signed-in caller; a capped viewer as for the artwork |
@@ -367,10 +368,12 @@ mutation {
   did. Every replace is logged, with whoever asked it.
 
 Replace a file before a scan meets it: a file a scan took in first is
-another title's, and refused. `replaceSource` is an administrator's, as
-every GraphQL field but `triggerScan` is (see
-[Who may do what](#who-may-do-what)): a deployment's Job asks it with an
-administrator's token, not with the service account's.
+another title's, and refused. `replaceSource` is an administrator's and the
+platform's service account's, the one field besides `triggerScan` a
+deployment's Job may ask (see [Who may do what](#who-may-do-what)): a seed
+Job gives a title its better file with the service account, then deletes the
+old file itself. `deleteOldFile: true` stays an administrator's: the service
+account may move a title onto a file, never have the catalog delete one.
 
 ## Ratings
 

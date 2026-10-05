@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	graphql "github.com/graph-gophers/graphql-go"
+
+	"github.com/zaentrum/katalog-manager/internal/auth"
 )
 
 // SourceReplacer gives a title another file, its source, and keeps the title
@@ -80,6 +82,13 @@ func (r *Resolver) ReplaceSource(ctx context.Context, args struct {
 }) (*replaceSourceResultResolver, error) {
 	if err := r.allow(ctx, "Mutation.replaceSource"); err != nil {
 		return nil, err
+	}
+	// The service account may give a title another file, never delete one:
+	// a seed Job deletes the old file itself, once the title has the new one.
+	if derefBool(args.DeleteOldFile) {
+		if err := r.access.Check(ctx, auth.Admin, "replaceSource with deleteOldFile"); err != nil {
+			return nil, err
+		}
 	}
 	if r.svc.Sources == nil {
 		return nil, errNotConfigured

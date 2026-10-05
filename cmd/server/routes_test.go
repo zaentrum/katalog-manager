@@ -437,7 +437,8 @@ func TestOperationsCallEveryRootField(t *testing.T) {
 // Every operation, through the service as main wires it and with the bearer
 // tokens of a realm: refused with FORBIDDEN to a viewer, another
 // confidential client, an addon and (on all but triggerScan) the service
-// account, before anything is read or changed; done for an admin, also one
+// account — replaceSource's here deletes the old file, an admin's alone —
+// before anything is read or changed; done for an admin, also one
 // signed in with the CLI, whose token names no audience; and no answer
 // carries a secret.
 func TestEveryOperationIsForWhomItIsFor(t *testing.T) {
@@ -463,7 +464,8 @@ func TestEveryOperationIsForWhomItIsFor(t *testing.T) {
 			// a nullable field is null, a non-null one nulls the data
 			nothing := string(a.Data) == "null" || string(a.Data) == `{"`+field+`":null}`
 			if code != http.StatusOK || len(a.Errors) != 1 || a.Errors[0].Extensions["code"] != "FORBIDDEN" ||
-				!strings.HasPrefix(a.Errors[0].Message, "forbidden: "+field+" requires the zaentrum-admin role") || !nothing {
+				!strings.HasPrefix(a.Errors[0].Message, "forbidden: "+field+" ") ||
+				!strings.Contains(a.Errors[0].Message, " requires the zaentrum-admin role") || !nothing {
 				t.Errorf("%s: %s: %d %s %v, want it refused with FORBIDDEN", c.name, op.doc, code, a.Data, a.Errors)
 			}
 		}
