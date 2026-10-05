@@ -115,6 +115,11 @@ func run() error {
 	if err := st.EnsureSubtitleForced(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/038_subtitle_forced.sql is missing and could not be applied: %v; no subtitle is kept as forced until it is", err)
 	}
+	// A title's extras (migration 039): its trailers and other bonus
+	// material, each packaged on its own. Without it no extra is taken in.
+	if err := st.EnsureItemExtras(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/039_item_extras.sql is missing and could not be applied: %v; no extra is taken in until it is", err)
+	}
 	dropRetiredJobTables(bgCtx, st)
 
 	steps := processing.New(st.Pool()).WithPolicy(cfg.RetryPolicy())

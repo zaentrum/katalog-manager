@@ -136,7 +136,8 @@ func (s *Store) UpdateItem(ctx context.Context, id string, w ItemWrite) (*model.
 
 // itemChildTables hold rows keyed by item_id that must be removed with the item
 // (the CAP compositions). Ordered children-first. The tables of a migration
-// that may not be applied go with them where they exist (trackTables).
+// that may not be applied go with them where they exist (trackTables, the
+// extras).
 var itemChildTables = []string{
 	"com_nalet_katalog_itemgenres",
 	"com_nalet_katalog_itempeople",
@@ -171,13 +172,14 @@ const deleteAndRecordItems = `
 		type = EXCLUDED.type, title = EXCLUDED.title, deletedat = EXCLUDED.deletedat,
 		deletedby = EXCLUDED.deletedby, reason = EXCLUDED.reason`
 
-// DeleteItems removes the given items and all their facet rows in ONE
-// transaction (the remover takes a series and its episodes together), and in
-// that same transaction records every item it removes in the deletion log,
-// attributed to d. A person the items credited whom no other title credits
-// goes with them, recorded in the log too (DeleteUncreditedPeople). If the log
-// cannot be written, nothing is deleted. Returns the number of items removed;
-// an id that does not exist is skipped and leaves no row.
+// DeleteItems removes the given items and all their facet rows (their extras
+// too) in ONE transaction (the remover takes a series and its episodes
+// together), and in that same transaction records every item it removes in
+// the deletion log, attributed to d. A person the items credited whom no
+// other title credits goes with them, recorded in the log too
+// (DeleteUncreditedPeople). If the log cannot be written, nothing is deleted.
+// Returns the number of items removed; an id that does not exist is skipped
+// and leaves no row.
 func (s *Store) DeleteItems(ctx context.Context, ids []string, d Deletion) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
@@ -202,6 +204,9 @@ func (s *Store) DeleteItems(ctx context.Context, ids []string, d Deletion) (int6
 		}
 	}
 	if err := deleteTracksOf(ctx, tx, ids); err != nil {
+		return 0, err
+	}
+	if err := deleteExtrasOf(ctx, tx, ids); err != nil {
 		return 0, err
 	}
 	ct, err := tx.Exec(ctx, deleteAndRecordItems, ids, by, reason)

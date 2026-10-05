@@ -7,7 +7,8 @@
 // objects are missing (see store.EnsureDeletionLog, store.EnsurePeople,
 // store.EnsureItemLockedFields, store.EnsureCreditDetails,
 // store.EnsureStepRetries, store.EnsureScanJobRunner, store.EnsureItemRatings,
-// store.EnsureTrackLanguages and store.EnsureSubtitleForced). It applies 035,
+// store.EnsureTrackLanguages, store.EnsureSubtitleForced and
+// store.EnsureItemExtras). It applies 035,
 // which drops what is left of a retired integration, at every start when any
 // of that is there (store.DropRetiredJobTables).
 package migrations
@@ -72,3 +73,9 @@ var TrackLanguages string
 //
 //go:embed 038_subtitle_forced.sql
 var SubtitleForced string
+
+// ItemExtras is 039_item_extras.sql: a title's extras, its trailers and other
+// bonus material, each packaged on its own.
+//
+//go:embed 039_item_extras.sql
+var ItemExtras string
