@@ -125,10 +125,13 @@ func (s *Store) TrackLanguages(ctx context.Context, itemID string) ([]model.Trac
 // source's streams of its kind (0 first), language an ISO 639-2 code of three
 // lowercase letters (languages.IsCode; zxx: no dialogue, und: undetermined),
 // which wins over the source's tag; nil clears it. It reports whether there
-// is such an item. An item without a source file has no tracks to set; once a
-// package has reported the source's tracks of the kind, an ordinal it did not
-// report is refused (clearing one never is). A change modifies the item, as
-// by. A catalog without migration 037 has nowhere to keep it: an error.
+// is such an item. An item without a source file has no tracks to set. Once a
+// package has reported the source's audio tracks, an audio ordinal it did not
+// report is refused, as a package carries every audio stream of its source; a
+// subtitle's is not, as an encode leaves out the subtitle streams it cannot
+// copy (mov_text) and its package then reports fewer than the source has.
+// Clearing one is never refused. A change modifies the item, as by. A catalog
+// without migration 037 has nowhere to keep it: an error.
 func (s *Store) SetTrackLanguage(ctx context.Context, itemID, kind string, ordinal int32, language *string, by string) (bool, error) {
 	if !ValidTrackKind(kind) {
 		return false, fmt.Errorf("a track is of kind audio or subtitle, not %q", kind)
@@ -182,9 +185,9 @@ func (s *Store) SetTrackLanguage(ctx context.Context, itemID, kind string, ordin
 		if err != nil {
 			return true, err
 		}
-		if reported > 0 && match == 0 {
-			return true, fmt.Errorf("the source of %s has no %s track %d: its package reported %d, ordinals 0 to %d",
-				itemID, kind, ordinal, reported, reported-1)
+		if kind == model.TrackAudio && reported > 0 && match == 0 {
+			return true, fmt.Errorf("the source of %s has no audio track %d: its package reported %d, ordinals 0 to %d",
+				itemID, ordinal, reported, reported-1)
 		}
 		tag, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_itemtracklanguages AS l
 			(item_id, kind, ordinal, language, modifiedat, modifiedby) VALUES ($1, $2, $3, $4, now(), $5)

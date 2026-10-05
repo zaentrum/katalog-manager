@@ -238,9 +238,11 @@ func TestSetTrackLanguage(t *testing.T) {
 	}
 }
 
-// Once a package has reported the source's tracks of a kind, a language is
-// set only for one of them; until then for any ordinal, and clearing one is
-// never refused.
+// Once a package has reported the source's audio tracks, a language is set
+// only for one of them, as a package carries every audio stream of its
+// source; until then for any ordinal. A subtitle's ordinal is not checked, as
+// an encode may leave out a subtitle stream the source has, and clearing one
+// is never refused.
 func TestSetTrackLanguageOfATrackTheSourceDoesNotHave(t *testing.T) {
 	st := storetest.Open(t)
 	ctx := context.Background()
@@ -249,7 +251,8 @@ func TestSetTrackLanguageOfATrackTheSourceDoesNotHave(t *testing.T) {
 		t.Fatalf("an ordinal before any package reported the tracks: %v", err)
 	}
 	if _, err := st.RecordSourceTracks(ctx, movieA, map[string][]model.SourceTrack{
-		"audio": {{Kind: "audio", Ordinal: 0, Language: str("und")}, {Kind: "audio", Ordinal: 1, Language: str("eng")}},
+		"audio":    {{Kind: "audio", Ordinal: 0, Language: str("und")}, {Kind: "audio", Ordinal: 1, Language: str("eng")}},
+		"subtitle": {{Kind: "subtitle", Ordinal: 0, Language: str("ger")}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -261,13 +264,14 @@ func TestSetTrackLanguageOfATrackTheSourceDoesNotHave(t *testing.T) {
 		t.Errorf("a track the package reported: %v", err)
 	}
 	if _, err := st.SetTrackLanguage(ctx, movieA, "subtitle", 4, str("eng"), "admin-1"); err != nil {
-		t.Errorf("a subtitle, of which no package reported any: %v", err)
+		t.Errorf("a subtitle its package did not report: %v", err)
 	}
 	if _, err := st.SetTrackLanguage(ctx, movieA, "audio", 3, nil, "admin-1"); err != nil {
 		t.Errorf("clearing the language of a track the package did not report: %v", err)
 	}
 	if got, want := trackLines(t, st, movieA), `audio 0 und - true - - false
 audio 1 eng ger true - - false
+subtitle 0 ger - true - - false
 subtitle 4 - eng false - - false`; got != want {
 		t.Errorf("tracks:\n%s\nwant:\n%s", got, want)
 	}

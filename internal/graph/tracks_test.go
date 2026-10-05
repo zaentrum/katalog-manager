@@ -73,9 +73,10 @@ func TestItemTracks(t *testing.T) {
 
 // An admin sets the language of a track, and clears it: the answer is the
 // title with its tracks as they now are. A kind, an ordinal or a code that is
-// none, a title without a source file and an ordinal its package did not
-// report are refused, saying why, and change nothing; a title there is not is
-// null.
+// none, a title without a source file and an audio ordinal its package did
+// not report are refused, saying why, and change nothing; a subtitle ordinal
+// its package did not report is taken (an encode may leave out a subtitle
+// stream the source has); a title there is not is null.
 func TestSetTrackLanguageMutation(t *testing.T) {
 	st := filmWithTracks(t)
 	schema := MustSchema(NewResolver(st, testConfig, Services{}))
@@ -140,7 +141,6 @@ func TestSetTrackLanguageMutation(t *testing.T) {
 		`mutation { setTrackLanguage(itemId: "m1", kind: "audio", ordinal: 0, language: "English") { id } }`: `not "English"`,
 		`mutation { setTrackLanguage(itemId: "m1", kind: "audio", ordinal: 0, language: "") { id } }`:        `not ""`,
 		`mutation { setTrackLanguage(itemId: "m1", kind: "audio", ordinal: 2, language: "eng") { id } }`:     "has no audio track 2: its package reported 2, ordinals 0 to 1",
-		`mutation { setTrackLanguage(itemId: "m1", kind: "subtitle", ordinal: 1, language: "eng") { id } }`:  "has no subtitle track 1: its package reported 1, ordinals 0 to 0",
 		`mutation { setTrackLanguage(itemId: "s1", kind: "audio", ordinal: 0, language: "eng") { id } }`:     "item s1 has no source file",
 	} {
 		if got, errs := exec(q); got != `{"setTrackLanguage":null}` || !strings.Contains(errs, want) {
@@ -152,6 +152,12 @@ func TestSetTrackLanguageMutation(t *testing.T) {
 	}
 	if got, want := languages(), "audio/1=zxx subtitle/0=eng"; got != want {
 		t.Errorf("after the refusals: %q, want %q", got, want)
+	}
+	if got, errs := exec(`mutation { setTrackLanguage(itemId: "m1", kind: "subtitle", ordinal: 4, language: "ita") { id } }`); got != `{"setTrackLanguage":{"id":"m1"}}` || errs != "" {
+		t.Errorf("a subtitle its package did not report: %s %s, want it taken", got, errs)
+	}
+	if got, want := languages(), "audio/1=zxx subtitle/0=eng subtitle/4=ita"; got != want {
+		t.Errorf("languages %q, want %q", got, want)
 	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemtracklanguages WHERE item_id <> 'm1'`); n != 0 {
 		t.Errorf("%d languages kept for titles refused or not there", n)
