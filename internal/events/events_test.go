@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,5 +97,86 @@ func TestPublishWithoutABus(t *testing.T) {
 	}
 	if NewProducer(nil, nil).Enabled() {
 		t.Error("a producer without brokers is enabled")
+	}
+}
+
+// The extras' topics are the tenant's, beside the items'.
+func TestConfigureNamesTheExtrasTopics(t *testing.T) {
+	t.Cleanup(func() { Configure("stube.") })
+	Configure("zaentrum-beta")
+	if TopicExtraQueued != "zaentrum-beta.catalog.extra.queued" || TopicExtraTranscoded != "zaentrum-beta.catalog.extra.transcoded" ||
+		TopicExtraPackaged != "zaentrum-beta.catalog.extra.packaged" || TopicPackaged != "zaentrum-beta.catalog.item.packaged" {
+		t.Errorf("topics: %s %s %s %s", TopicExtraQueued, TopicExtraTranscoded, TopicExtraPackaged, TopicPackaged)
+	}
+}
+
+// keys are the keys of a JSON object, sorted.
+func keys(t *testing.T, raw []byte) string {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return strings.Join(out, " ")
+}
+
+// An extra's trigger is keyed by its extraId and names the extra, its title,
+// its kind and the transcode, and no itemId, so that an item worker skips
+// it; a batch of them is written as one.
+func TestAnExtrasTriggerIsKeyedByItsExtraAndNamesNoItem(t *testing.T) {
+	w := &fakeWriter{}
+	ev := NewExtraEvent("1b5c2a8e-0000-4000-8000-000000000001", "ea886f9b-0d06-4f0f-babb-d2a1162f9b01", "trailer")
+	ev.Source = "api"
+	retry := NewExtraEvent("2b5c2a8e-0000-4000-8000-000000000002", "ea886f9b-0d06-4f0f-babb-d2a1162f9b01", "teaser")
+	retry.Status, retry.Source = "retry", "retry"
+	errs := ProducerOn(w).PublishExtras(context.Background(), []ExtraMessage{{Topic: "t.extra.queued", Event: ev},
+		{Topic: "t.extra.queued", Event: retry}})
+	if len(errs) != 2 || errs[0] != nil || errs[1] != nil || len(w.writes) != 1 || len(w.writes[0]) != 2 {
+		t.Fatalf("errs %v, writes %v", errs, w.writes)
+	}
+	m := w.writes[0][0]
+	if m.Topic != "t.extra.queued" || string(m.Key) != ev.ExtraID {
+		t.Errorf("the message: %s %s", m.Topic, m.Key)
+	}
+	if got := keys(t, m.Value); got != "eventId extraId kind occurredAt parentId source status step type" {
+		t.Errorf("the trigger's keys: %s", got)
+	}
+	var got ExtraEvent
+	if err := json.Unmarshal(m.Value, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != "extra" || got.Step != "transcode" || got.Status != "queued" || got.Source != "api" || got.Kind != "trailer" ||
+		got.ParentID != "ea886f9b-0d06-4f0f-babb-d2a1162f9b01" || got.EventID == "" || got.OccurredAt == "" {
+		t.Errorf("the trigger: %s", m.Value)
+	}
+	if !strings.Contains(string(w.writes[0][1].Value), `"status":"retry"`) || string(w.writes[0][1].Key) != retry.ExtraID {
+		t.Errorf("the retry: %s %s", w.writes[0][1].Key, w.writes[0][1].Value)
+	}
+	if errs := (*Producer)(nil).PublishExtras(context.Background(), []ExtraMessage{{Topic: "t", Event: ev}}); !errors.Is(errs[0], ErrNoBus) {
+		t.Errorf("without a bus: %v", errs)
+	}
+}
+
+// An extra's package recorded is announced as an item event of its title,
+// with the extra named beside it.
+func TestTheExtraPackagedEventIsAnEventOfItsTitle(t *testing.T) {
+	ev := ExtraPackagedEvent{ItemEvent: NewItemEvent("ea886f9b-0d06-4f0f-babb-d2a1162f9b01"), ExtraID: "1b5c", Kind: "trailer"}
+	ev.Type, ev.Step, ev.Status, ev.Source = "movie", "extra", "done", "katalog-manager"
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := keys(t, raw); got != "eventId extraId itemId kind occurredAt source status step type" {
+		t.Errorf("keys: %s", got)
+	}
+	var item ItemEvent
+	if err := json.Unmarshal(raw, &item); err != nil || item.ItemID != "ea886f9b-0d06-4f0f-babb-d2a1162f9b01" || item.Type != "movie" ||
+		item.Step != "extra" || item.Status != "done" {
+		t.Errorf("read as an item event: %+v, %v", item, err)
 	}
 }

@@ -8,7 +8,17 @@
 //	transcode    -> stube.catalog.item.transcoded  -> packager
 //
 // katalog-manager PRODUCES discovered + enriched and CONSUMES discovered (the
-// enricher). The Python workers consume/produce the rest. The DB processing-step
+// enricher). The Python workers consume/produce the rest.
+//
+// An extra of a title (a trailer, a featurette) has a chain of its own, keyed
+// by its extraId, on topics under the same prefix:
+//
+//	katalog-manager -> stube.catalog.extra.queued     -> transcoder
+//	transcoder      -> stube.catalog.extra.transcoded -> packager
+//	packaging-complete -> stube.catalog.extra.packaged (fan-out only)
+//
+// Its triggers carry the extraId and no itemId (ExtraEvent): an item worker
+// pointed at them by mistake skips them, as it requires an itemId. The DB processing-step
 // rows still record STATE (the Activity monitor reads them); events only drive
 // the HANDOFF. Delivery is at-least-once — consumers are idempotent via the
 // unique (item_id, step) index on com_nalet_katalog_itemprocessingsteps.
@@ -54,6 +64,16 @@ var (
 	// TopicRemoved announces a catalog deletion (fan-out only, like packaged):
 	// live-refresh surfaces drop the item without a reload.
 	TopicRemoved = "stube.catalog.item.removed"
+
+	// The extras' chain. TopicExtraQueued triggers the transcoder for an
+	// extra; it announces the extra encoded on TopicExtraTranscoded, which
+	// triggers the packager. TopicExtraPackaged marks the chain's end, the
+	// extra's package recorded (fan-out only), in the shape of an item event
+	// of its title (ExtraPackagedEvent): never TopicPackaged, which says the
+	// title itself became watchable.
+	TopicExtraQueued     = "stube.catalog.extra.queued"
+	TopicExtraTranscoded = "stube.catalog.extra.transcoded"
+	TopicExtraPackaged   = "stube.catalog.extra.packaged"
 )
 
 // Configure derives the topic names from a tenant prefix. Blank falls back to
@@ -73,6 +93,9 @@ func Configure(prefix string) {
 	TopicTranscoded = p + "catalog.item.transcoded"
 	TopicPackaged = p + "catalog.item.packaged"
 	TopicRemoved = p + "catalog.item.removed"
+	TopicExtraQueued = p + "catalog.extra.queued"
+	TopicExtraTranscoded = p + "catalog.extra.transcoded"
+	TopicExtraPackaged = p + "catalog.extra.packaged"
 }
 
 // ItemEvent is the minimal envelope carried on the catalog topics: identity +
@@ -97,19 +120,67 @@ func NewItemEvent(itemID string) ItemEvent {
 	}
 }
 
+// ExtraEvent is the envelope of an extra's trigger (TopicExtraQueued),
+// keyed by its extraId: the extra, the title it belongs to (parentId), its
+// kind, and the step it unblocks, the transcode. It carries no itemId, so
+// an item worker skips it. Status is "queued", or "retry" for a trigger the
+// service sends again after a failed run (Source "retry" then too): a
+// transcoder that finds the extra encoded since then only acknowledges it.
+type ExtraEvent struct {
+	EventID    string `json:"eventId"`
+	ExtraID    string `json:"extraId"`
+	ParentID   string `json:"parentId"`
+	Type       string `json:"type"` // always "extra"
+	Kind       string `json:"kind"`
+	Step       string `json:"step"`
+	Status     string `json:"status"`
+	OccurredAt string `json:"occurredAt"`
+	Source     string `json:"source,omitempty"`
+}
+
+// NewExtraEvent stamps a fresh trigger of the extra extraID of the title
+// parentID, of kind, for its transcode.
+func NewExtraEvent(extraID, parentID, kind string) ExtraEvent {
+	return ExtraEvent{
+		EventID:    newEventID(),
+		ExtraID:    extraID,
+		ParentID:   parentID,
+		Type:       "extra",
+		Kind:       kind,
+		Step:       "transcode",
+		Status:     "queued",
+		OccurredAt: time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+// ExtraPackagedEvent announces an extra's package recorded
+// (TopicExtraPackaged) in the shape of an item event of its title, so a
+// live-refresh bridge that reads item events refreshes the title: ItemID is
+// the title, Type its type, Step "extra", Status "done"; ExtraID and Kind
+// name the extra.
+type ExtraPackagedEvent struct {
+	ItemEvent
+	ExtraID string `json:"extraId"`
+	Kind    string `json:"kind"`
+}
+
 // ---------------------------------------------------------------- Producer
 
 // Producer writes catalog events. A nil *Producer is a valid no-op (so callers
 // need no nil-checks); NewProducer returns nil when no brokers are configured.
 type Producer struct {
-	w messageWriter
+	w Writer
 }
 
-// messageWriter is what a Producer writes through: a *kafka.Writer.
-type messageWriter interface {
+// Writer is what a Producer writes through: a *kafka.Writer.
+type Writer interface {
 	WriteMessages(ctx context.Context, msgs ...kafka.Message) error
 	Close() error
 }
+
+// ProducerOn is a producer that writes through w, a writer set up elsewhere
+// (or one that stands in for the bus).
+func ProducerOn(w Writer) *Producer { return &Producer{w: w} }
 
 // NewProducer builds a key-hashing writer over brokers. tlsCfg nil => PLAINTEXT.
 // Returns nil (no-op producer) when brokers is empty.
@@ -200,6 +271,35 @@ type Message struct {
 // error per message, nil for each one written. Without brokers every message
 // fails with ErrNoBus.
 func (p *Producer) Publish(ctx context.Context, msgs []Message) []error {
+	out := make([]outgoing, len(msgs))
+	for i, m := range msgs {
+		out[i] = outgoing{topic: m.Topic, key: m.Event.ItemID, event: m.Event}
+	}
+	return p.publish(ctx, out)
+}
+
+// ExtraMessage is an extra's trigger and the topic it goes to.
+type ExtraMessage struct {
+	Topic string
+	Event ExtraEvent
+}
+
+// PublishExtras writes msgs as Publish does, each keyed by its extra.
+func (p *Producer) PublishExtras(ctx context.Context, msgs []ExtraMessage) []error {
+	out := make([]outgoing, len(msgs))
+	for i, m := range msgs {
+		out[i] = outgoing{topic: m.Topic, key: m.Event.ExtraID, event: m.Event}
+	}
+	return p.publish(ctx, out)
+}
+
+// outgoing is an event, the topic it goes to and the key it goes by.
+type outgoing struct {
+	topic, key string
+	event      any
+}
+
+func (p *Producer) publish(ctx context.Context, msgs []outgoing) []error {
 	errs := make([]error, len(msgs))
 	if !p.Enabled() {
 		for i := range errs {
@@ -210,9 +310,9 @@ func (p *Producer) Publish(ctx context.Context, msgs []Message) []error {
 	values := make([][]byte, len(msgs))
 	var pending []int
 	for i, m := range msgs {
-		b, err := json.Marshal(m.Event)
+		b, err := json.Marshal(m.event)
 		if err != nil {
-			errs[i] = fmt.Errorf("marshal the %s event of %s: %w", m.Topic, m.Event.ItemID, err)
+			errs[i] = fmt.Errorf("marshal the %s event of %s: %w", m.topic, m.key, err)
 			continue
 		}
 		values[i] = b
@@ -221,7 +321,7 @@ func (p *Producer) Publish(ctx context.Context, msgs []Message) []error {
 	for attempt := 1; attempt <= emitAttempts && len(pending) > 0; attempt++ {
 		batch := make([]kafka.Message, len(pending))
 		for j, i := range pending {
-			batch[j] = kafka.Message{Topic: msgs[i].Topic, Key: []byte(msgs[i].Event.ItemID), Value: values[i]}
+			batch[j] = kafka.Message{Topic: msgs[i].topic, Key: []byte(msgs[i].key), Value: values[i]}
 		}
 		err := p.w.WriteMessages(ctx, batch...)
 		var werr kafka.WriteErrors
