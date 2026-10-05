@@ -29,7 +29,8 @@ The surface is split deliberately:
   (`triggerScan`, `enrichOne`/`enrichPending`, `refreshPeople`, `packageItem`,
   `validateItem`, `retryStep`/`retryFailed` (see
   [The pipeline heals itself](#the-pipeline-heals-itself)), `reencodeItem`
-  (see [Encoding a title again](#encoding-a-title-again)),
+  (see [Encoding a title again](#encoding-a-title-again)), `replaceSource`
+  (see [Replacing a title's file](#replacing-a-titles-file)),
   `backfillSourceProbes`, `backfillRatings` and `setMinAgeOverride` (see
   [Ratings](#ratings); an item's `ageRating` says what it is rated),
   `setTrackLanguage` and `backfillSourceTracks` (see
@@ -290,6 +291,85 @@ episodes the new match knows are re-matched alike. An identify that finds no
 match changes none of them. A refresh (enrichment, the sweep, the change
 lists) adds genres, keeps the trailers when TMDB cannot be asked, and
 replaces TMDB's trailers with the list TMDB answers, an empty one too.
+
+## Replacing a title's file
+
+`replaceSource` gives a movie or an episode another file, its source, and
+keeps the title: for a title upgraded to a better file of the same work (a
+demo's 320×180 copy to its 1080p original, a copy in another container,
+`Film.mp4` to `Film.mkv`). Without it the new file would be a new title at
+the next scan, which finds a file's title by its path, and the old title
+would be left without its file.
+
+```graphql
+mutation {
+  replaceSource(itemPath: "/var/lib/katalog/media/BigBuckBunny_320x180.mp4",
+                path: "/var/lib/katalog/media/Big Buck Bunny (2008).mov", deleteOldFile: true) {
+    itemId oldPath path replaced oldFileDeleted oldSidecars
+    reencode { reencoded busy notSent message }
+    message
+  }
+}
+```
+
+- **The title** is named one way: `itemId`, or `itemPath`, the path of the
+  file replaced, which a demo's reset keeps where it changes ids. It is a
+  movie or an episode with a file: a series has none (its episodes are
+  replaced each on its own), and a title with two files is named by the one
+  replaced.
+- **`path`** is the new file: an absolute path of an existing video file
+  under the media root, never under the package store, never a link that
+  leads out of the media root, that a scan takes for a title's file (not
+  hidden, a video by the scanner's extensions `.avi`, `.m4v`, `.mkv`, `.mov`,
+  `.mp4`, `.webm`, and no extra by the scanner's convention as it reads with
+  `extras.scan` on), and no file of the catalog yet: another title's file or
+  an extra's is refused, naming it. One replace onto a file runs at a time.
+  A path that is the title's file already changes nothing (`replaced:
+  false`).
+- **What stays**: the title's id and everything that hangs off it, its
+  metadata, external ids, artwork, credits, genres, tags, extras, segments,
+  chapters and steps; its package and its subtitles, which play until the
+  new package is in place; the languages an admin set for its tracks, which
+  name a track by its kind and its place among the source's streams, and so
+  apply to the new file's track at that place (one the new file does not
+  have is passed over); and everything kept elsewhere by the title's id, as
+  everyone's progress and ratings. The title is modified (`modifiedAt`,
+  `modifiedBy`).
+- **What goes** is what described the old file: the source asset's hash,
+  probe (codec, resolution, bit rate, duration), audio and track counts (its
+  size is the new file's), the tracks a package reported of the old file and
+  the title's diagnostics. The workers report them again of the new file.
+- **The subtitle files** beside the old file and named after it stay the
+  title's as they are, and the answer counts them (`oldSidecars`). Beside a
+  new file of the same name they pair with it as they did; otherwise the next
+  scan pairs the files named after the new one, and the packager takes
+  subtitle files only from the new file's folder or below it.
+- **`deleteOldFile`** (false when omitted) deletes the old file once the
+  title has the new one: only under the media root, only when no title's
+  file or extra is it any more and the new file does not lead to it; the
+  folders it leaves empty go. An old file kept under the media root is taken
+  in as a title of its own by the next scan: move it out of the media root,
+  or delete it.
+- **`reencode`** (true when omitted) encodes the title again from the new
+  file, as `reencodeItem` does (see
+  [Encoding a title again](#encoding-a-title-again)), and `reencode` is its
+  answer. A title whose transcode or package is running is left alone
+  (`busy`): that run is the old file's, and what it reports (the probe, the
+  tracks) describes the old file until the title is encoded again, which an
+  admin asks once it is done. Without an event bus or migration 033 nothing
+  is encoded again, and `reencode.message` says why.
+- **A refusal** is an error whose `extensions.code` is `NOT_FOUND` (a title
+  there is not), `SOURCE_CONFLICT` (the file is another title's or an
+  extra's, named in `itemId` and `extraId`) or `SOURCE_REFUSED`, and nothing
+  changes. The old file's deletion and the re-encode never fail the call:
+  the title has its new file whatever they do, and `message` says what they
+  did. Every replace is logged, with whoever asked it.
+
+Replace a file before a scan meets it: a file a scan took in first is
+another title's, and refused. `replaceSource` is an administrator's, as
+every GraphQL field but `triggerScan` is (see
+[Who may do what](#who-may-do-what)): a deployment's Job asks it with an
+administrator's token, not with the service account's.
 
 ## Ratings
 
