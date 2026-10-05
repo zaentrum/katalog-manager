@@ -1,14 +1,18 @@
 package rest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/zaentrum/katalog-manager/internal/languages"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/sourceprobe"
 )
@@ -37,6 +41,33 @@ type claimItem struct {
 	// fallback), so the analyzer only extracts a keyframe for genuine gaps.
 	HasOwnPoster   bool
 	HasOwnBackdrop bool
+	// The languages an admin set for the source's tracks, which the packager
+	// labels them with, and the subtitle files beside the source, which it
+	// packages as subtitles; each key left out when there is none, as a
+	// packager that reads neither expects.
+	TrackLanguages []trackLanguage
+	SubtitleFiles  []subtitleFile
+}
+
+// trackLanguage is an admin's language of a track of the item's source: kind
+// audio or subtitle, ordinal its place among the source's streams of the
+// kind in ffprobe's order (0 first), language an ISO 639-2 code.
+type trackLanguage struct {
+	Kind     string `json:"kind"`
+	Ordinal  int32  `json:"ordinal"`
+	Language string `json:"language"`
+}
+
+// subtitleFile is a subtitle file the scanner found beside the source
+// (<video>.<lang>.srt|vtt|ass|ssa): its path on the library storage, its
+// language as an ISO 639-2 code (und when its name gives none), its label,
+// and whether it is forced. The packager converts it to WebVTT and packages
+// it, never as the default unless forced.
+type subtitleFile struct {
+	Path     string `json:"path"`
+	Language string `json:"language"`
+	Label    string `json:"label"`
+	Forced   bool   `json:"forced"`
 }
 
 // MarshalJSON preserves key order and the conditional seriesTitle key.
@@ -74,6 +105,18 @@ func (c claimItem) MarshalJSON() ([]byte, error) {
 	_ = w("movieTmdbId", c.MovieTmdbID, true)
 	_ = w("hasOwnPoster", c.HasOwnPoster, true)
 	_ = w("hasOwnBackdrop", c.HasOwnBackdrop, false)
+	if len(c.TrackLanguages) > 0 {
+		b = append(b, ',')
+		if err := w("trackLanguages", c.TrackLanguages, false); err != nil {
+			return nil, err
+		}
+	}
+	if len(c.SubtitleFiles) > 0 {
+		b = append(b, ',')
+		if err := w("subtitleFiles", c.SubtitleFiles, false); err != nil {
+			return nil, err
+		}
+	}
 	b = append(b, '}')
 	return b, nil
 }
@@ -84,7 +127,9 @@ func (c claimItem) MarshalJSON() ([]byte, error) {
 // season/episode coords, parent series title, and the TMDB ids the tidb pass and
 // output naming need. Returns the same rich shape the old batch claim returned
 // (claimItem with seriesTitle), so workers get everything in one call. 404 when
-// there is no primary asset.
+// there is no primary asset. The record names the languages an admin set for
+// the source's tracks (trackLanguages) and the subtitle files beside it
+// (subtitleFiles), the packager's to label and package.
 func (h *Handlers) getAnalyzeItem(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	it := claimItem{includeSeries: true}
@@ -113,7 +158,80 @@ func (h *Handlers) getAnalyzeItem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "item lookup failed", http.StatusInternalServerError)
 		return
 	}
+	// A packager handed a record without them would label and package the
+	// title wrongly, so a failure to read them fails the lookup: the worker
+	// asks again.
+	if it.TrackLanguages, err = h.trackLanguagesOf(reqCtx(r), it.ID); err != nil {
+		log.Printf("getAnalyzeItem: the track languages of %s: %v", it.ID, err)
+		http.Error(w, "item lookup failed", http.StatusInternalServerError)
+		return
+	}
+	if it.SubtitleFiles, err = h.subtitleFilesOf(reqCtx(r), it.ID); err != nil {
+		log.Printf("getAnalyzeItem: the subtitle files of %s: %v", it.ID, err)
+		http.Error(w, "item lookup failed", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, it)
+}
+
+// trackLanguagesOf are the languages an admin set for the tracks of the
+// item's source, as the worker record names them; none on a catalog without
+// migration 037.
+func (h *Handlers) trackLanguagesOf(ctx context.Context, itemID string) ([]trackLanguage, error) {
+	ls, err := h.d.Store.TrackLanguages(ctx, itemID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]trackLanguage, 0, len(ls))
+	for _, l := range ls {
+		out = append(out, trackLanguage{Kind: l.Kind, Ordinal: l.Ordinal, Language: l.Language})
+	}
+	return out, nil
+}
+
+// sidecarSubtitle reports whether an item's subtitle at path is a file beside
+// its source, as the scanner records them, rather than one of its package's:
+// it is under neither the packages root nor root, the item's package, where
+// packaging-complete writes the package's subtitles.
+func (h *Handlers) sidecarSubtitle(path, root string) bool {
+	return !underRoot(h.d.Cfg.PackagesRoot, path) && !underRoot(root, path)
+}
+
+// sidecarFormats are the subtitle files the scanner records beside a source.
+var sidecarFormats = map[string]bool{"srt": true, "vtt": true, "ass": true, "ssa": true}
+
+// subtitleFilesOf are the subtitle files the scanner found beside the item's
+// source, by path: its subtitles that are no package's (sidecarSubtitle).
+func (h *Handlers) subtitleFilesOf(ctx context.Context, itemID string) ([]subtitleFile, error) {
+	root, err := h.packageRootFor(ctx, itemID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := h.d.Store.Pool().Query(ctx, `SELECT path, COALESCE(format, ''), COALESCE(lang, ''), COALESCE(label, '')
+		FROM com_nalet_katalog_subtitleassets WHERE item_id = $1 ORDER BY path`, itemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []subtitleFile
+	for rows.Next() {
+		var path, format, lang, label string
+		if err := rows.Scan(&path, &format, &lang, &label); err != nil {
+			return nil, err
+		}
+		if !h.sidecarSubtitle(path, root) {
+			continue
+		}
+		format = strings.ToLower(strings.TrimSpace(format))
+		if format == "" {
+			format = strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
+		}
+		if !sidecarFormats[format] {
+			continue
+		}
+		out = append(out, subtitleFile{Path: path, Language: languages.ISO6392(lang), Label: strings.TrimSpace(label)})
+	}
+	return out, rows.Err()
 }
 
 // analyzeItemView is the lightweight sibling-episode shape returned by
