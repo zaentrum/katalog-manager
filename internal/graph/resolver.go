@@ -8,6 +8,7 @@ import (
 	graphql "github.com/graph-gophers/graphql-go"
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/sourceprobe"
 	"github.com/zaentrum/katalog-manager/internal/sourcetracks"
 	"github.com/zaentrum/katalog-manager/internal/store"
@@ -824,6 +825,9 @@ func (r *Resolver) CreateSetting(ctx context.Context, args struct {
 	if isSecretSetting(args.Key) {
 		return nil, errSecretSetting(args.Key)
 	}
+	if err := r.checkLayout(ctx, args.Key, func([]*model.Setting) string { return args.ValueText }); err != nil {
+		return nil, err
+	}
 	valueType := "string"
 	if args.ValueType != nil && *args.ValueType != "" {
 		valueType = *args.ValueType
@@ -848,6 +852,10 @@ func (r *Resolver) UpdateSetting(ctx context.Context, args struct {
 		return nil, err
 	} else if cur != nil && isSecretSetting(cur.Key) {
 		return nil, errSecretSetting(cur.Key)
+	} else if cur != nil && args.ValueText != nil {
+		if err := r.checkLayout(ctx, cur.Key, layoutWith(cur.ID, args.ValueText)); err != nil {
+			return nil, err
+		}
 	}
 	s, err := r.store.UpdateSetting(ctx, string(args.ID), args.ValueText, args.ValueType, args.Description)
 	if err != nil || s == nil {
@@ -859,6 +867,13 @@ func (r *Resolver) UpdateSetting(ctx context.Context, args struct {
 func (r *Resolver) DeleteSetting(ctx context.Context, args struct{ ID graphql.ID }) (bool, error) {
 	if err := r.allow(ctx, "Mutation.deleteSetting"); err != nil {
 		return false, err
+	}
+	if cur, err := r.store.GetSetting(ctx, string(args.ID)); err != nil {
+		return false, err
+	} else if cur != nil {
+		if err := r.checkLayout(ctx, cur.Key, layoutWith(cur.ID, nil)); err != nil {
+			return false, err
+		}
 	}
 	return r.store.DeleteSetting(ctx, string(args.ID))
 }

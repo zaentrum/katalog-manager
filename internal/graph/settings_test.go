@@ -277,3 +277,48 @@ func TestTheGeneralSettingWritesRefuseSecrets(t *testing.T) {
 		t.Errorf("delete alerts.token: %s", got)
 	}
 }
+
+// The library's layout does not change while a title or an extra is between
+// its transcode and its package: the transcode's handoff lies in the inbox of
+// the layout it ran in. A write that changes it is refused, saying how many
+// wait (LAYOUT_BUSY); one that keeps it, and any once nothing waits, goes.
+func TestTheLayoutDoesNotChangeUnderAHandoff(t *testing.T) {
+	st := storetest.Open(t)
+	storetest.AddItem(t, st, "m1", "movie", "Sintel", "")
+	storetest.AddItem(t, st, "m2", "movie", "Tears of Steel", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemprocessingsteps (id, item_id, step, status) VALUES
+		('t1', 'm1', 'transcode', 'done'), ('p1', 'm1', 'package', 'pending'), ('t2', 'm2', 'transcode', 'in_progress')`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemextras (id, item_id, kind, title, registeredby, state) VALUES
+		('x1', 'm1', 'trailer', 'Trailer', 'api', 'transcoded'), ('x2', 'm1', 'teaser', 'Teaser', 'api', 'ready')`)
+	busy := "library.layout stays legacy: 2 titles and 1 extras are between their transcode and their package"
+	if got := exec(t, st, `mutation { createSetting(key: " library.layout", valueText: "v2") { id } }`, true); !strings.Contains(got, busy) {
+		t.Errorf("create v2: %s, want it refused saying %s", got, busy)
+	}
+	if got := exec(t, st, `mutation { createSetting(key: "library.layout", valueText: "legacy") { id } }`, false); !strings.Contains(got, "createSetting") {
+		t.Errorf("create legacy: %s", got)
+	}
+	var id string
+	if err := st.Pool().QueryRow(context.Background(), `SELECT id FROM com_nalet_katalog_settings WHERE key = 'library.layout'`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if got := exec(t, st, `mutation { updateSetting(id: "`+id+`", valueText: "V2") { id } }`, true); !strings.Contains(got, busy) {
+		t.Errorf("update to v2: %s", got)
+	}
+	// Once the packager is done, it goes; back again is refused while
+	// another waits, and the delete that would make it legacy too.
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemprocessingsteps SET status = 'done' WHERE id IN ('p1', 't2')`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemprocessingsteps (id, item_id, step, status) VALUES ('p2', 'm2', 'package', 'done')`)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemextras SET state = 'ready' WHERE id = 'x1'`)
+	if got := exec(t, st, `mutation { updateSetting(id: "`+id+`", valueText: "v2") { valueText } }`, false); got !=
+		`{"updateSetting":{"valueText":"v2"}}` {
+		t.Errorf("update to v2 once nothing waits: %s", got)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemprocessingsteps SET status = 'failed', nextretryat = now() WHERE id = 'p2'`)
+	if got := exec(t, st, `mutation { deleteSetting(id: "`+id+`") }`, true); !strings.Contains(got, "library.layout stays v2: 1 titles") {
+		t.Errorf("delete: %s", got)
+	}
+	if got := exec(t, st, `mutation { updateSetting(id: "`+id+`", description: "the layout") { valueText } }`, false); got !=
+		`{"updateSetting":{"valueText":"v2"}}` {
+		t.Errorf("a description: %s", got)
+	}
+}

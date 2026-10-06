@@ -7,6 +7,7 @@ import (
 
 	graphql "github.com/graph-gophers/graphql-go"
 	"github.com/zaentrum/katalog-manager/internal/model"
+	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
 // isSecretSetting reports whether the setting key holds a credential
@@ -55,6 +56,70 @@ func (e *secretRefused) Error() string { return e.key + ": " + e.message + "; no
 // Extensions are the GraphQL error's extensions.
 func (e *secretRefused) Extensions() map[string]any {
 	return map[string]any{"code": "SECRET_REFUSED", "key": e.key}
+}
+
+// layoutBusy refuses a change of the library's layout while titles or extras
+// are between their transcode and their package. As a GraphQL error it
+// carries the code LAYOUT_BUSY and how many of each.
+type layoutBusy struct {
+	from, to       string
+	titles, extras int
+}
+
+func (e *layoutBusy) Error() string {
+	return fmt.Sprintf("%s stays %s: %d titles and %d extras are between their transcode and their package, the "+
+		"transcode's handoff in the %s layout's inbox, which the packager does not read once the layout is %s; "+
+		"let the packager finish them (with the transcoder paused, nothing new starts) and set it again",
+		store.LayoutSetting, e.from, e.titles, e.extras, e.from, e.to)
+}
+
+// Extensions are the GraphQL error's extensions.
+func (e *layoutBusy) Extensions() map[string]any {
+	return map[string]any{"code": "LAYOUT_BUSY", "titles": e.titles, "extras": e.extras}
+}
+
+// checkLayout refuses a write of the setting key that changes the library's
+// layout while anything is between its transcode and its package
+// (store.LayoutWaits). next is the rows of library.layout as the write leaves
+// them, from those there are (by id); the layout is the first one's. A
+// setting created beside one there is counts as the layout it says.
+func (r *Resolver) checkLayout(ctx context.Context, key string, next func(rows []*model.Setting) string) error {
+	if strings.TrimSpace(key) != store.LayoutSetting {
+		return nil
+	}
+	rows, err := r.store.LayoutRows(ctx)
+	if err != nil {
+		return err
+	}
+	from := store.LayoutOf("")
+	if len(rows) > 0 {
+		from = store.LayoutOf(rows[0].ValueText)
+	}
+	to := store.LayoutOf(next(rows))
+	if to == from {
+		return nil
+	}
+	titles, extras, err := r.store.LayoutWaits(ctx)
+	if err != nil || titles+extras == 0 {
+		return err
+	}
+	return &layoutBusy{from: from, to: to, titles: titles, extras: extras}
+}
+
+// layoutWith is the layout's value once the row id holds value (nil: once it
+// is deleted).
+func layoutWith(id string, value *string) func([]*model.Setting) string {
+	return func(rows []*model.Setting) string {
+		for _, row := range rows {
+			if row.ID != id {
+				return row.ValueText
+			}
+			if value != nil {
+				return *value
+			}
+		}
+		return ""
+	}
 }
 
 // ---- Setting ----

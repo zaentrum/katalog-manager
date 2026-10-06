@@ -2,10 +2,12 @@ package store
 
 import (
 	"context"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/zaentrum/katalog-manager/db/migrations"
+	"github.com/zaentrum/katalog-manager/internal/model"
 )
 
 // The tables db/migrations/040_library_v2.sql creates: a title's originals
@@ -112,6 +114,59 @@ func (s *Store) EnsureLibrary(ctx context.Context) error {
 	}
 	_, err = s.pool.Exec(ctx, migrations.PlaybackItemIndex)
 	return err
+}
+
+// LayoutSetting is the setting of the library's layout: v2, or legacy (any
+// other value, and none).
+const LayoutSetting = "library.layout"
+
+// LayoutOf is the layout a value of LayoutSetting says.
+func LayoutOf(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), "v2") {
+		return "v2"
+	}
+	return "legacy"
+}
+
+// LayoutRows are the rows of LayoutSetting, by id: the first is the one the
+// library reads.
+func (s *Store) LayoutRows(ctx context.Context) ([]*model.Setting, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+settingCols+` FROM com_nalet_katalog_settings
+		WHERE btrim(key) = $1 ORDER BY id`, LayoutSetting)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*model.Setting
+	for rows.Next() {
+		var x model.Setting
+		if err := scanSetting(rows, &x); err != nil {
+			return nil, err
+		}
+		out = append(out, &x)
+	}
+	return out, rows.Err()
+}
+
+// LayoutWaits counts what is between its transcode and its package: the
+// titles whose transcode runs, or is finished while their package waits,
+// runs or is to be retried, and the extras transcoding, transcoded or
+// packaging. The transcode's handoff to the packager lies in the inbox of
+// the layout it ran in, so the layout does not change while any is.
+func (s *Store) LayoutWaits(ctx context.Context) (titles, extras int, err error) {
+	if err = s.pool.QueryRow(ctx, `SELECT count(DISTINCT t.item_id) FROM com_nalet_katalog_itemprocessingsteps t
+		WHERE t.step = 'transcode' AND (t.status = 'in_progress' OR (t.status IN ('done', 'not_applicable', 'skipped')
+		  AND EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps p WHERE p.item_id = t.item_id AND p.step = 'package'
+		              AND (p.status IN ('pending', 'in_progress') OR (p.status = 'failed' AND p.nextretryat IS NOT NULL)))))`).
+		Scan(&titles); err != nil {
+		return 0, 0, err
+	}
+	err = s.pool.QueryRow(ctx, `SELECT count(*) FROM `+extrasTable+`
+		WHERE removedat IS NULL AND state IN ('transcoding', 'transcoded', 'packaging')`).Scan(&extras)
+	if undefinedTable(err) {
+		return titles, 0, nil
+	}
+	return titles, extras, err
 }
 
 // deleteLibraryOf removes, in tx, the originals and the versions the catalog
