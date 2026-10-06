@@ -13,6 +13,7 @@ import (
 
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/graph"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/scanner"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
@@ -85,6 +86,14 @@ type source struct {
 // as reencodeItem does: a title whose transcode or package is running is left
 // alone (busy), and without an event bus nothing is encoded. Neither fails the
 // call: the answer says what they did.
+//
+// With the setting library.layout=v2 the new file lies under ARRIVALS_ROOT or
+// in .work/replace/, from where it is taken into the arrivals (refused when a
+// file of its name is there already). It is a source of the title of its own
+// (a new sourceId); the old original, while it is there, stays one, and is
+// retired after its version as any is. A title whose original was retired
+// (it has no file) may be given one: it gets its file anew. The re-encode is
+// then a new version of the title, which supersedes the one there is.
 func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceRequest) (graph.ReplaceSourceResult, error) {
 	var res graph.ReplaceSourceResult
 	path := strings.TrimSpace(in.Path)
@@ -104,29 +113,43 @@ func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	// waiting: no title is given its file without its old file's deletion and
 	// its re-encode.
 	ctx = context.WithoutCancel(ctx)
+	set, err := library.ReadSettings(ctx, s.st.Pool())
+	if err != nil {
+		return res, fmt.Errorf("the library's settings could not be read: %w", err)
+	}
+	v2 := set.V2()
+	// With the v2 layout a file handed over in .work/replace/ is taken into
+	// the arrivals first: the title's file is the one there.
+	arrival := path
+	if v2 && library.Within(library.PathsOf(s.cfg).ReplaceDir(), path) {
+		arrival = filepath.Join(s.cfg.ArrivalsRoot, filepath.Base(path))
+		if _, err := os.Lstat(arrival); err == nil {
+			return res, graph.RefuseSource(codeSourceConflict, "%s cannot be taken into the arrivals: %s is there already", path, arrival)
+		}
+	}
 
 	tx, err := s.st.Pool().Begin(ctx)
 	if err != nil {
 		return res, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('com_nalet_katalog_playbackassets:' || $1))`, path); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('com_nalet_katalog_playbackassets:' || $1))`, arrival); err != nil {
 		return res, err
 	}
-	src, err := sourceOf(ctx, tx, itemID, itemPath)
+	src, err := sourceOf(ctx, tx, itemID, itemPath, v2)
 	if err != nil {
 		return res, err
 	}
-	res.ItemID, res.OldPath, res.Path = src.itemID, src.path, path
-	if filepath.Clean(src.path) == path {
-		res.Message = path + " is the title's file already: nothing changed"
+	res.ItemID, res.OldPath, res.Path = src.itemID, src.path, arrival
+	if src.assetID != "" && filepath.Clean(src.path) == arrival {
+		res.Message = arrival + " is the title's file already: nothing changed"
 		return res, nil
 	}
-	size, refused := s.sourceFile(path)
+	size, refused := s.sourceFile(path, v2)
 	if refused != nil {
 		return res, refused
 	}
-	if err := takenAlready(ctx, tx, src, path); err != nil {
+	if err := takenAlready(ctx, tx, src, arrival); err != nil {
 		return res, err
 	}
 	sidecars, err := s.oldSidecars(ctx, tx, src)
@@ -134,9 +157,31 @@ func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceReque
 		return res, err
 	}
 	by := auth.Actor(ctx, "katalog-manager")
-	if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET `+newSource+` WHERE id = $1`,
-		src.assetID, path, size); err != nil {
-		return res, fmt.Errorf("give item %s the file %s: %w", src.itemID, path, err)
+	if src.assetID == "" {
+		// A title whose original was retired is given a file anew.
+		if err := tx.QueryRow(ctx, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, sizebytes, isprimary, kind)
+			VALUES (gen_random_uuid()::varchar, $1, $2, $3, true, 'primary') RETURNING id`, src.itemID, arrival, size).
+			Scan(&src.assetID); err != nil {
+			return res, fmt.Errorf("give item %s the file %s: %w", src.itemID, arrival, err)
+		}
+	} else if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET `+newSource+` WHERE id = $1`,
+		src.assetID, arrival, size); err != nil {
+		return res, fmt.Errorf("give item %s the file %s: %w", src.itemID, arrival, err)
+	}
+	if v2 {
+		// The new file is a source of the title of its own; the old one, if
+		// it is still there, stays one, and is retired after its version.
+		fsize, qh1, err := library.QH1(path)
+		if err != nil {
+			return res, graph.RefuseSource(codeSourceRefused, "%s cannot be read: %v", path, err)
+		}
+		ns, err := library.PathsOf(s.cfg).AddSource(ctx, tx, src.itemID, arrival, fsize, qh1)
+		if err != nil {
+			return res, fmt.Errorf("give item %s the file %s: %w", src.itemID, arrival, err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET sourceid = $2 WHERE id = $1`, src.assetID, ns.ID); err != nil {
+			return res, err
+		}
 	}
 	if err := forgetTheOldFile(ctx, tx, src.itemID); err != nil {
 		return res, err
@@ -145,13 +190,26 @@ func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceReque
 		src.itemID, by); err != nil {
 		return res, err
 	}
+	if arrival != path {
+		if err := library.MkdirAll(filepath.Dir(arrival)); err != nil {
+			return res, err
+		}
+		if err := os.Rename(path, arrival); err != nil {
+			return res, fmt.Errorf("take %s into the arrivals: %w", path, err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
+		if arrival != path {
+			if rerr := os.Rename(arrival, path); rerr != nil {
+				log.Printf("replace: %s could not be handed back to %s after the replace failed: %v", arrival, path, rerr)
+			}
+		}
 		return res, err
 	}
 	res.Replaced, res.OldSidecars = true, int32(len(sidecars))
 
 	var said string
-	res.OldFileDeleted, said = s.dropOldFile(ctx, src.path, path, in.DeleteOldFile)
+	res.OldFileDeleted, said = s.dropOldFile(ctx, src.path, arrival, in.DeleteOldFile, v2)
 	if in.Reencode {
 		res.Reencode = s.encodeAgain(ctx, src.itemID)
 	}
@@ -164,7 +222,7 @@ func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceReque
 // in place of, and locks its asset row: the item's source asset by the item's
 // id (one: a title with two names the one by itemPath), or the source asset
 // at itemPath. The title is a movie or an episode.
-func sourceOf(ctx context.Context, tx pgx.Tx, itemID, itemPath string) (source, error) {
+func sourceOf(ctx context.Context, tx pgx.Tx, itemID, itemPath string, v2 bool) (source, error) {
 	const sql = `SELECT p.id, p.path, i.id, i.type, i.title FROM com_nalet_katalog_playbackassets p
 		JOIN com_nalet_katalog_items i ON i.id = p.item_id
 		WHERE p.isprimary = true AND COALESCE(p.kind, 'primary') = 'primary' AND `
@@ -215,6 +273,9 @@ func sourceOf(ctx context.Context, tx pgx.Tx, itemID, itemPath string) (source, 
 	}
 	switch len(files) {
 	case 0:
+		if v2 {
+			return src, nil // its original was retired: it is given one anew
+		}
 		return src, graph.RefuseSource(codeSourceRefused, "item %s has no file to replace", src.itemID)
 	case 1:
 		src.assetID, src.path = files[0].assetID, files[0].path
@@ -250,16 +311,31 @@ func sources(rows pgx.Rows, err error) ([]source, error) {
 // media root and outside the package store, as written and with its links
 // followed (a link inside the media root that leads out of it is refused, as
 // for an extra's file), that a scan takes for a title's file.
-func (s *Service) sourceFile(path string) (int64, *graph.SourceRefused) {
+func (s *Service) sourceFile(path string, v2 bool) (int64, *graph.SourceRefused) {
+	roots, named := []string{s.cfg.NFSRoot}, "the media root"
+	if v2 {
+		roots, named = []string{s.cfg.ArrivalsRoot, library.PathsOf(s.cfg).ReplaceDir()}, "ARRIVALS_ROOT or .work/replace"
+	}
 	inside := func(p string, resolve bool) bool {
-		media, pkgs := s.cfg.NFSRoot, s.cfg.PackagesRoot
+		pkgs := s.cfg.PackagesRoot
 		if resolve {
-			media, pkgs = resolvedRoot(media), resolvedRoot(pkgs)
+			pkgs = resolvedRoot(pkgs)
 		}
-		return underRoot(media, p) && !underRoot(pkgs, p)
+		if underRoot(pkgs, p) {
+			return false
+		}
+		for _, r := range roots {
+			if resolve {
+				r = resolvedRoot(r)
+			}
+			if underRoot(r, p) {
+				return true
+			}
+		}
+		return false
 	}
 	if !inside(path, false) {
-		return 0, graph.RefuseSource(codeSourceRefused, "%s is not under the media root (or is under the package store)", path)
+		return 0, graph.RefuseSource(codeSourceRefused, "%s is not under %s (or is under the package store)", path, named)
 	}
 	target, err := filepath.EvalSymlinks(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -269,7 +345,7 @@ func (s *Service) sourceFile(path string) (int64, *graph.SourceRefused) {
 		return 0, graph.RefuseSource(codeSourceRefused, "%s cannot be read: %v", path, err)
 	}
 	if !inside(target, true) {
-		return 0, graph.RefuseSource(codeSourceRefused, "%s leads out of the media root", path)
+		return 0, graph.RefuseSource(codeSourceRefused, "%s leads out of %s", path, named)
 	}
 	fi, err := os.Stat(target)
 	if err != nil {
@@ -329,6 +405,9 @@ func takenAlready(ctx context.Context, tx pgx.Tx, src source, path string) error
 // named after it, as a scan pairs them (scanner.SidecarOf), its package's
 // aside. They stay the title's, as they are.
 func (s *Service) oldSidecars(ctx context.Context, tx pgx.Tx, src source) ([]string, error) {
+	if src.path == "" {
+		return nil, nil
+	}
 	rows, err := tx.Query(ctx, `SELECT path FROM com_nalet_katalog_subtitleassets WHERE item_id = $1 ORDER BY path`, src.itemID)
 	if err != nil {
 		return nil, err
@@ -381,9 +460,18 @@ func forgetTheOldFile(ctx context.Context, tx pgx.Tx, itemID string) error {
 // new file does not lead to (a link to it); the folders it leaves empty go,
 // up to the root. It says what became of the file, also when it was not
 // asked to go.
-func (s *Service) dropOldFile(ctx context.Context, old, cur string, asked bool) (bool, string) {
-	media := underRoot(s.cfg.NFSRoot, old)
+func (s *Service) dropOldFile(ctx context.Context, old, cur string, asked, v2 bool) (bool, string) {
+	root := s.cfg.NFSRoot
+	if v2 {
+		root = s.cfg.ArrivalsRoot
+	}
+	if old == "" {
+		return false, "the title had no file: its original was retired"
+	}
+	media := underRoot(root, old)
 	switch {
+	case !asked && media && v2:
+		return false, "the old file stays, a source of the title until it is retired after its version"
 	case !asked && media:
 		return false, "the old file stays, under the media root: the next scan takes it in as a title of its own unless it is moved out of it or deleted"
 	case !asked:
@@ -418,7 +506,14 @@ func (s *Service) dropOldFile(ctx context.Context, old, cur string, asked bool) 
 		}
 		return false, "the old file could not be deleted: " + err.Error()
 	}
-	pruneEmptyDirs(filepath.Dir(old), s.cfg.NFSRoot)
+	pruneEmptyDirs(filepath.Dir(old), root)
+	if v2 {
+		// Its source is no original of the title any more.
+		if _, err := s.st.Pool().Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET state = 'removed', arrivalpath = NULL,
+				modifiedat = now() WHERE arrivalpath = $1 AND state = 'present'`, old); err != nil {
+			log.Printf("replace: the source of the deleted file %s could not be noted removed: %v", old, err)
+		}
+	}
 	return true, "the old file is deleted"
 }
 

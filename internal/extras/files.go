@@ -1,11 +1,8 @@
 package extras
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
+	"context"
 	"errors"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,53 +10,12 @@ import (
 	"strings"
 
 	"github.com/zaentrum/katalog-manager/internal/graph"
+	"github.com/zaentrum/katalog-manager/internal/library"
 )
 
-// qh1Chunk is how much of each end of a file its quick hash reads.
-const qh1Chunk = 64 << 10
-
 // QH1 is the size of the file at path and its quick hash, as the library
-// records a file's fixity: "sha256:" and the hex SHA-256 of its first 64 KiB,
-// its last 64 KiB (the second read only for a file larger than 64 KiB) and
-// its size as a big-endian uint64. Two reads however large the file is; it
-// tells the file again after a move, and is no hash of its content.
-func QH1(path string) (int64, string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, "", err
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return 0, "", err
-	}
-	size := fi.Size()
-	h := sha256.New()
-	buf := make([]byte, qh1Chunk)
-	read := func() error {
-		n, err := io.ReadFull(f, buf)
-		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-			return err
-		}
-		h.Write(buf[:n])
-		return nil
-	}
-	if err := read(); err != nil {
-		return 0, "", err
-	}
-	if size > qh1Chunk {
-		if _, err := f.Seek(size-qh1Chunk, io.SeekStart); err != nil {
-			return 0, "", err
-		}
-		if err := read(); err != nil {
-			return 0, "", err
-		}
-	}
-	var n [8]byte
-	binary.BigEndian.PutUint64(n[:], uint64(size))
-	h.Write(n[:])
-	return size, "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
-}
+// records a file's fixity (library.QH1).
+func QH1(path string) (int64, string, error) { return library.QH1(path) }
 
 // videoExts are the files an extra may be, by their extension: the
 // containers the transcoder probes and encodes.
@@ -99,11 +55,10 @@ func resolved(root string) string {
 }
 
 // file checks that path names a file an extra may be, and answers it clean:
-// an absolute path of an existing regular video file, inside the media root,
-// the share's library or extras folder (the legacy layout's) or EXTRAS_ROOT
-// and outside the package store, as written and with its links followed (a
-// link inside a root that leads out of it is refused).
-func (s *Service) file(path string) (string, *graph.ExtraRefused) {
+// an absolute path of an existing regular video file, inside a root of the
+// layout (fileRoots) and outside the package store, as written and with its
+// links followed (a link inside a root that leads out of it is refused).
+func (s *Service) file(ctx context.Context, path string) (string, *graph.ExtraRefused) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return "", graph.Refused(http.StatusBadRequest, codeRefused, "an extra needs its file: path is required")
@@ -112,7 +67,10 @@ func (s *Service) file(path string) (string, *graph.ExtraRefused) {
 		return "", graph.Refused(http.StatusBadRequest, codeRefused, "%s is no absolute path", path)
 	}
 	path = filepath.Clean(path)
-	roots := []string{s.cfg.NFSRoot, s.cfg.LegacyLibraryRoot, s.cfg.LegacyExtrasRoot, s.cfg.ExtrasRoot}
+	v2, roots, named, err := s.fileRoots(ctx)
+	if err != nil {
+		return "", graph.Refused(http.StatusServiceUnavailable, codeNoTable, "the library's settings cannot be read: %v", err)
+	}
 	inside := func(p string, resolve bool) bool {
 		pkgs := s.cfg.PackagesRoot
 		if resolve {
@@ -132,8 +90,7 @@ func (s *Service) file(path string) (string, *graph.ExtraRefused) {
 		return false
 	}
 	if !inside(path, false) {
-		return "", graph.Refused(http.StatusBadRequest, codeRefused,
-			"%s is not under the media root, the library's or the extras' folder or EXTRAS_ROOT (or is under the package store)", path)
+		return "", graph.Refused(http.StatusBadRequest, codeRefused, "%s is not under %s (or is under the package store)", path, named)
 	}
 	real, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -143,8 +100,14 @@ func (s *Service) file(path string) (string, *graph.ExtraRefused) {
 		return "", graph.Refused(http.StatusBadRequest, codeRefused, "%s cannot be read: %v", path, err)
 	}
 	if !inside(real, true) {
-		return "", graph.Refused(http.StatusBadRequest, codeRefused,
-			"%s leads out of the media root, the library's and the extras' folder and EXTRAS_ROOT", path)
+		return "", graph.Refused(http.StatusBadRequest, codeRefused, "%s leads out of %s", path, named)
+	}
+	if v2 {
+		for _, d := range []string{library.MoviesDir, library.SeriesDir, library.PeopleDir} {
+			if r := filepath.Join(s.cfg.LibraryRoot, d); within(r, path) || within(resolved(r), real) {
+				return "", graph.Refused(http.StatusBadRequest, codeRefused, "%s is in the library's record, which holds no original", path)
+			}
+		}
 	}
 	fi, err := os.Stat(real)
 	if err != nil {
@@ -157,6 +120,32 @@ func (s *Service) file(path string) (string, *graph.ExtraRefused) {
 		return "", graph.Refused(http.StatusBadRequest, codeRefused, "%s is no video file (%s)", path, videoExtList())
 	}
 	return path, nil
+}
+
+// layout reads whether the environment runs the library's v2 layout.
+func (s *Service) layout(ctx context.Context) (bool, library.Settings, error) {
+	if s.st == nil {
+		return false, library.Defaults(), nil
+	}
+	set, err := library.ReadSettings(ctx, s.st.Pool())
+	return set.V2(), set, err
+}
+
+// fileRoots are whether the layout is v2, where an extra's file may lie, and
+// how a refusal names them:
+// with library.layout=v2, ARRIVALS_ROOT (beside its title, as the scanner's
+// convention finds it) and EXTRAS_ROOT; with the legacy layout the media
+// root, the share's library and extras folders and EXTRAS_ROOT, as before.
+func (s *Service) fileRoots(ctx context.Context) (bool, []string, string, error) {
+	v2, _, err := s.layout(ctx)
+	if err != nil {
+		return false, nil, "", err
+	}
+	if v2 {
+		return true, []string{s.cfg.ArrivalsRoot, s.cfg.ExtrasRoot}, "ARRIVALS_ROOT or EXTRAS_ROOT", nil
+	}
+	return false, []string{s.cfg.NFSRoot, s.cfg.LegacyLibraryRoot, s.cfg.LegacyExtrasRoot, s.cfg.ExtrasRoot},
+		"the media root, the library's or the extras' folder or EXTRAS_ROOT", nil
 }
 
 // packageDir is the folder of the extra id's package in the package store:

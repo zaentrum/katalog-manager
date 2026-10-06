@@ -105,8 +105,10 @@ var languageRE = regexp.MustCompile(`^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$`)
 //   - it is a movie or a series: an episode has no extras, its series has;
 //   - a season is named only for a series, and only one it has episodes of;
 //   - the file is an absolute path of an existing video file under the media
-//     root, the share's library or extras folder or EXTRAS_ROOT, never under
-//     the package store, and no title's own file;
+//     root, the share's library or extras folder or EXTRAS_ROOT (with
+//     library.layout=v2 under ARRIVALS_ROOT or EXTRAS_ROOT, never in the
+//     library's record), never under the package store, and no title's own
+//     file;
 //   - its size and quick hash are stored with it;
 //   - the same file again for the same title answers its extra, created
 //     false; for another title it is refused, EXTRA_CONFLICT (409).
@@ -137,7 +139,7 @@ func (s *Service) AddExtra(ctx context.Context, in graph.AddExtraRequest) (graph
 	if title == "" {
 		title = model.ExtraKindTitle(kind)
 	}
-	path, refused := s.file(in.Path)
+	path, refused := s.file(ctx, in.Path)
 	if refused != nil {
 		return res, refused
 	}
@@ -357,7 +359,7 @@ func (s *Service) packageAgain(ctx context.Context, ids []string, many bool) (gr
 	ctx = context.WithoutCancel(ctx)
 	now := time.Now()
 	_, whys, err := s.st.ResetExtras(ctx, ids, auth.Actor(ctx, "katalog-manager"), func(x *model.Extra) string {
-		return s.busy(x, now)
+		return s.busy(ctx, x, now)
 	})
 	if err != nil {
 		return res, err
@@ -401,7 +403,7 @@ func firstWhy(ids []string, whys map[string]string) string {
 // busy says why an extra is left alone by a re-encode, "" to take it: one in
 // its packaging within its timeout (waiting for a worker, or one running), or
 // one whose file is missing and still gone.
-func (s *Service) busy(x *model.Extra, now time.Time) string {
+func (s *Service) busy(ctx context.Context, x *model.Extra, now time.Time) string {
 	since := func(t ...*time.Time) time.Time {
 		for _, v := range t {
 			if v != nil {
@@ -414,7 +416,7 @@ func (s *Service) busy(x *model.Extra, now time.Time) string {
 	switch x.State {
 	case model.ExtraMissing:
 		if x.SourcePath != nil {
-			if _, refused := s.file(*x.SourcePath); refused == nil {
+			if _, refused := s.file(ctx, *x.SourcePath); refused == nil {
 				return ""
 			}
 		}
