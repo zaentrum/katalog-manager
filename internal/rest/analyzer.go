@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/zaentrum/katalog-manager/internal/languages"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/sourceprobe"
 )
@@ -370,6 +373,10 @@ func (h *Handlers) getSiblings(w http.ResponseWriter, r *http.Request) {
 	if limit > 12 {
 		limit = 12
 	}
+	if set, err := h.settings(reqCtx(r)); err == nil && set.V2() {
+		h.librarySiblings(w, r, id, limit)
+		return
+	}
 	rows, err := h.d.Store.Pool().Query(reqCtx(r), `
 		SELECT s.id, s.type, s.title, s.year, s.durationms, p.path
 		FROM com_nalet_katalog_items me
@@ -402,21 +409,83 @@ func (h *Handlers) getSiblings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"itemId": id, "items": items})
 }
 
+// librarySiblings answers getSiblings with the v2 layout: a sibling whose
+// original was deleted after packaging is one too, its path the playlist of
+// its current version's first audio rendition (the package's stereo AAC),
+// which the analyzer's chromaprint pass reads as it reads an original.
+func (h *Handlers) librarySiblings(w http.ResponseWriter, r *http.Request, id string, limit int) {
+	rows, err := h.d.Store.Pool().Query(reqCtx(r), `
+		SELECT s.id, s.type, s.title, s.year, s.durationms, p.path, v.dir
+		FROM com_nalet_katalog_items me
+		JOIN com_nalet_katalog_items s ON s.parent_id = me.parent_id
+		  AND s.id <> me.id
+		  AND s.seasonnumber = me.seasonnumber
+		  AND s.type = 'episode'
+		LEFT JOIN LATERAL (SELECT path FROM com_nalet_katalog_playbackassets
+			WHERE item_id = s.id AND isprimary = true ORDER BY id LIMIT 1) p ON true
+		LEFT JOIN com_nalet_katalog_itemversions v ON v.item_id = s.id AND v.state = 'complete'
+		WHERE me.id = $1 AND (p.path IS NOT NULL OR v.dir IS NOT NULL)
+		ORDER BY s.episodenumber NULLS LAST, s.id
+		LIMIT $2`, id, limit)
+	if err != nil {
+		http.Error(w, "siblings query failed", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	items := make([]analyzeItemView, 0)
+	for rows.Next() {
+		var it analyzeItemView
+		var dir *string
+		if err := rows.Scan(&it.ID, &it.Type, &it.Title, &it.Year, &it.DurationMs, &it.Path, &dir); err != nil {
+			http.Error(w, "siblings scan failed", http.StatusInternalServerError)
+			return
+		}
+		if it.Path == nil {
+			if it.Path = packageAudio(*dir); it.Path == nil {
+				continue
+			}
+		}
+		items = append(items, it)
+	}
+	if rows.Err() != nil {
+		http.Error(w, "siblings scan failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"itemId": id, "items": items})
+}
+
+// packageAudio is the playlist of the first audio rendition of the version
+// folder dir, as its package.json names it: nil when it names none.
+func packageAudio(dir string) *string {
+	b, err := os.ReadFile(filepath.Join(dir, library.PackageFile))
+	if err != nil {
+		return nil
+	}
+	var pkg struct {
+		Renditions struct {
+			Audio []struct {
+				Dir string `json:"dir"`
+			} `json:"audio"`
+		} `json:"renditions"`
+	}
+	if json.Unmarshal(b, &pkg) != nil || len(pkg.Renditions.Audio) == 0 || pkg.Renditions.Audio[0].Dir == "" ||
+		strings.Contains(pkg.Renditions.Audio[0].Dir, "..") {
+		return nil
+	}
+	path := filepath.Join(dir, filepath.FromSlash(pkg.Renditions.Audio[0].Dir), "playlist.m3u8")
+	return &path
+}
+
 // resetSeries ports AnalyzerController#resetSeries: bump episode createdat, reset
 // analyzer steps to pending (attempts preserved), purge chromaprint segments.
+// An episode whose original was deleted after packaging, or is being
+// deleted, is left as it is (the analyzer reads the original, and its marks
+// could not be found again): the answer counts those as originalsDeleted,
+// and says why.
 func (h *Handlers) resetSeries(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	ctx := reqCtx(r)
 	pool := h.d.Store.Pool()
-
-	tag, err := pool.Exec(ctx,
-		`UPDATE com_nalet_katalog_items SET createdat = now()
-		 WHERE parent_id = $1 AND type = 'episode'`, id)
-	if err != nil {
-		http.Error(w, "series reset (bump) failed", http.StatusInternalServerError)
-		return
-	}
-	episodes := tag.RowsAffected()
 
 	epRows, err := pool.Query(ctx,
 		`SELECT id FROM com_nalet_katalog_items WHERE parent_id = $1 AND type = 'episode'`, id)
@@ -439,6 +508,32 @@ func (h *Handlers) resetSeries(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "series reset (episode scan) failed", http.StatusInternalServerError)
 		return
 	}
+	originals, err := library.OriginalsOf(ctx, pool, episodeIDs)
+	if err != nil {
+		http.Error(w, "series reset (originals) failed", http.StatusInternalServerError)
+		return
+	}
+	var gone []string
+	var last library.Original
+	episodeIDs = slices.DeleteFunc(episodeIDs, func(e string) bool {
+		o := originals[e]
+		if o.Gone() {
+			gone = append(gone, e)
+			if last.At == nil || (o.At != nil && o.At.After(*last.At)) {
+				last = o
+			}
+		}
+		return o.Gone()
+	})
+
+	tag, err := pool.Exec(ctx,
+		`UPDATE com_nalet_katalog_items SET createdat = now()
+		 WHERE id = ANY($1)`, episodeIDs)
+	if err != nil {
+		http.Error(w, "series reset (bump) failed", http.StatusInternalServerError)
+		return
+	}
+	episodes := tag.RowsAffected()
 
 	stepsReset, err := h.d.Steps.ResetForItems(ctx, episodeIDs, analyzerSteps)
 	if err != nil {
@@ -448,23 +543,34 @@ func (h *Handlers) resetSeries(w http.ResponseWriter, r *http.Request) {
 
 	segTag, err := pool.Exec(ctx, `
 		DELETE FROM com_nalet_katalog_mediasegments
-		WHERE source = 'chromaprint' AND item_id IN (
-		  SELECT id FROM com_nalet_katalog_items WHERE parent_id = $1 AND type = 'episode')`, id)
+		WHERE source = 'chromaprint' AND item_id = ANY($1)`, episodeIDs)
 	if err != nil {
 		http.Error(w, "series reset (segments) failed", http.StatusInternalServerError)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"seriesId":       id,
 		"episodes":       episodes,
 		"stepsReset":     stepsReset,
 		"segmentsPurged": segTag.RowsAffected(),
-	})
+	}
+	switch {
+	case len(gone) == 1:
+		body["originalsDeleted"] = 1
+		body["message"] = "1 episode is left as it is: " + last.Why() + ", and the analyzer reads the original"
+	case len(gone) > 1:
+		at := "an unknown time"
+		if last.At != nil {
+			at = library.Timestamp(*last.At)
+		}
+		body["originalsDeleted"] = len(gone)
+		body["message"] = fmt.Sprintf("%d episodes are left as they are: their originals were deleted after packaging "+
+			"(the last: event %s, %s), and the analyzer reads the original", len(gone), last.EventID, at)
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
-// failItem ports AnalyzerController#fail: attribute the failure to the synthetic
-// scan step, then skip remaining pending/in_progress analyzer steps.
 func (h *Handlers) failItem(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	ctx := reqCtx(r)
