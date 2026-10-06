@@ -128,6 +128,38 @@ func (s *Steps) Upsert(ctx context.Context, itemID, step, status string, errMsg,
 	return s.exec(ctx, legacyUpsertSQL, itemID, step, status, em, details)
 }
 
+// Execer runs a statement: a pool, a connection or a transaction.
+type Execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// UpsertIn is Upsert run in the transaction q, whose commit the report is
+// part of: katalog-manager's own step (retire) reports what the transaction
+// does. A transaction cannot try the table without migration 033 and then
+// with it (the failed statement ends it), so it writes the table as Upsert
+// last found it.
+func (s *Steps) UpsertIn(ctx context.Context, q Execer, itemID, step, status string, errMsg, details *string) error {
+	if !validSteps[step] {
+		return ErrBadStep
+	}
+	if !validStatuses[status] {
+		return ErrBadStatus
+	}
+	em := cleanError(errMsg)
+	sql, args := upsertSQL, []any{itemID, step, status, em, details, s.policy.delays()}
+	if s.legacy.Load() {
+		sql, args = legacyUpsertSQL, args[:5]
+	}
+	tag, err := q.Exec(ctx, sql, args...)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errors.New("processing step upsert affected 0 rows")
+	}
+	return nil
+}
+
 func (s *Steps) exec(ctx context.Context, sql string, args ...any) error {
 	tag, err := s.pool.Exec(ctx, sql, args...)
 	if err != nil {
