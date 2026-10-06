@@ -27,6 +27,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -38,6 +40,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/graph"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store"
@@ -287,15 +290,29 @@ func titles(ctx context.Context, st *store.Store, sql string, args ...any) ([]ti
 
 // RemoveExtra removes the extra id, as the caller and reason say: it stays,
 // removed, and its package is deleted RemovedGrace later. nil when there is
-// no such extra. An extra recorded in the library is refused: its record is
-// written before the database, so it is removed by an extra-removed event
+// no such extra. With the library's v2 layout an extra whose folder is
+// recorded is removed by the extra-removed event this records in its
+// title's folder first, which the folder's deletion after the grace follows.
+// An extra of the library before (registered by it) is refused: its record
+// is written before the database, so it is removed by an extra-removed event
 // of its record, which this service does not write.
 func (s *Service) RemoveExtra(ctx context.Context, id, reason string) (*model.Extra, error) {
 	cur, err := s.st.GetExtra(ctx, id)
 	if err != nil || cur == nil {
 		return nil, err
 	}
-	if cur.RegisteredBy == model.ExtraByLibrary && cur.RemovedAt == nil {
+	recorded := false
+	if cur.RemovedAt == nil {
+		if recorded, err = s.recorded(ctx, id); err != nil {
+			return nil, err
+		}
+	}
+	switch {
+	case recorded:
+		if err := s.recordRemoval(ctx, cur, reason); err != nil {
+			return nil, err
+		}
+	case cur.RegisteredBy == model.ExtraByLibrary && cur.RemovedAt == nil:
 		return nil, graph.Refused(http.StatusConflict, codeRefused,
 			"extra %s is recorded in the library (%s): it is removed by an extra-removed event of its record, not here",
 			id, strOf(cur.RecordPath))
@@ -307,7 +324,59 @@ func (s *Service) RemoveExtra(ctx context.Context, id, reason string) (*model.Ex
 	return x, err
 }
 
-// PackageExtra packages the extra id again (packageAgain).
+// recorded reports whether the extra id's folder is recorded in the library
+// of the v2 layout (recordedat): written once, removed by an event.
+func (s *Service) recorded(ctx context.Context, id string) (bool, error) {
+	if v2, _, err := s.layout(ctx); err != nil || !v2 {
+		return false, err
+	}
+	var at *time.Time
+	err := s.st.Pool().QueryRow(ctx, `SELECT recordedat FROM com_nalet_katalog_itemextras WHERE id = $1`, id).Scan(&at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return at != nil, err
+}
+
+// recordRemoval records the removal of the recorded extra x in its title's
+// folder: the extra-removed event, its id the one the extra's removal always
+// has, so a removal done again finds it, and writes the one begun again.
+func (s *Service) recordRemoval(ctx context.Context, x *model.Extra, reason string) error {
+	pl, err := library.PlaceOf(ctx, s.st.Pool(), x.ItemID)
+	if err != nil {
+		return fmt.Errorf("the title of extra %s has no folder in the library: %w", x.ID, err)
+	}
+	itemDir := library.PathsOf(s.cfg).ItemDir(pl)
+	ev := library.Event{ID: library.IDOf("extra-removed:" + x.ID), At: time.Now().UTC().Truncate(time.Second),
+		By: auth.Actor(ctx, "katalog-manager"), Kind: library.EventExtraRemoved, ExtraID: x.ID}
+	if r := strings.TrimSpace(reason); r != "" {
+		ev.Reason = &r
+	}
+	dir, err := library.FindEvent(itemDir, ev.ID, ev.Kind)
+	if err != nil {
+		return err
+	}
+	if dir != "" {
+		if _, err := os.Stat(filepath.Join(dir, library.SumsFile)); err == nil {
+			return nil // recorded by a removal before
+		}
+		if b, err := os.ReadFile(filepath.Join(dir, library.EventFile)); err == nil {
+			if d, err := library.DecodeDoc(b); err == nil {
+				if v, _ := d.Get("at"); v != nil {
+					if at, err := time.Parse(time.RFC3339, fmt.Sprint(v)); err == nil {
+						ev.At = at
+					}
+				}
+			}
+		}
+	}
+	_, err = library.WriteEvent(itemDir, ev)
+	return err
+}
+
+// PackageExtra packages the extra id again (packageAgain). An extra whose
+// folder is recorded in the library is refused: written once, its package is
+// replaced by a new extra.
 func (s *Service) PackageExtra(ctx context.Context, id string) (graph.ExtraPackagingResult, error) {
 	x, err := s.st.GetExtra(ctx, id)
 	if err != nil {
@@ -315,6 +384,12 @@ func (s *Service) PackageExtra(ctx context.Context, id string) (graph.ExtraPacka
 	}
 	if x == nil || x.RemovedAt != nil {
 		return graph.ExtraPackagingResult{}, graph.Refused(http.StatusNotFound, codeNotFound, "unknown extra: %s", id)
+	}
+	if recorded, err := s.recorded(ctx, id); err != nil {
+		return graph.ExtraPackagingResult{}, err
+	} else if recorded {
+		return graph.ExtraPackagingResult{}, graph.Refused(http.StatusConflict, codeRefused,
+			"extra %s is recorded in the library (%s): written once; add the file again as a new extra", id, strOf(x.PackagePath))
 	}
 	return s.packageAgain(ctx, []string{id}, false)
 }
@@ -335,10 +410,32 @@ func (s *Service) PackageExtras(ctx context.Context, itemID string) (graph.Extra
 		return graph.ExtraPackagingResult{}, err
 	}
 	ids := make([]string, 0, len(xs))
+	recorded := 0
 	for _, x := range xs {
+		if rec, err := s.recorded(ctx, x.ID); err != nil {
+			return graph.ExtraPackagingResult{}, err
+		} else if rec {
+			recorded++
+			continue
+		}
 		ids = append(ids, x.ID)
 	}
-	return s.packageAgain(ctx, ids, true)
+	if recorded == 0 {
+		return s.packageAgain(ctx, ids, true)
+	}
+	if len(ids) == 0 {
+		msg := fmt.Sprintf("its %d extras are recorded in the library, written once: add a file again as a new extra", recorded)
+		if recorded == 1 {
+			msg = "its extra is recorded in the library, written once: add the file again as a new extra"
+		}
+		return graph.ExtraPackagingResult{Extras: []*model.Extra{}, Message: msg}, nil
+	}
+	res, err := s.packageAgain(ctx, ids, true)
+	if err == nil {
+		res.Message += fmt.Sprintf("; %d recorded in the library left as they are (written once: add a file again as a new extra)",
+			recorded)
+	}
+	return res, err
 }
 
 // packageAgain packages the extras of ids again with the pipeline's current

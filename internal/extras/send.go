@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/events"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
@@ -153,10 +154,17 @@ func (s *Service) Reap(ctx context.Context) (int, error) {
 // DeleteRemovedPackages deletes what the package store holds of the extras
 // removed RemovedGrace ago or longer: the package, the packages it replaced
 // and kept for their grace (<id>.old-<stamp>), and the transcoder's handoff
-// left in the inbox (_inbox/extra-<id>/). Each is deleted once; one that
-// could not be is tried again an hour later. It needs no event bus, and
-// returns how many extras' leftovers it deleted.
+// left in the inbox (_inbox/extra-<id>/). With the library's v2 layout it
+// deletes the extra's folder in its title's folder too, which its
+// extra-removed event retired, and its entries in the work folder (the
+// inbox's, the staging's). Each is deleted once; one that could not be is
+// tried again an hour later. It needs no event bus, and returns how many
+// extras' leftovers it deleted.
 func (s *Service) DeleteRemovedPackages(ctx context.Context) (int, error) {
+	v2, _, err := s.layout(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("the library's settings: %w", err)
+	}
 	deleted := 0
 	for {
 		due, err := s.st.ClaimRemovedPackages(ctx, batch)
@@ -169,7 +177,7 @@ func (s *Service) DeleteRemovedPackages(ctx context.Context) (int, error) {
 		var done, back []string
 		var why string
 		for _, p := range due {
-			if err := s.deleteLeftovers(p); err != nil {
+			if err := s.deleteLeftovers(p, v2); err != nil {
 				back = append(back, p.ID)
 				if why == "" {
 					why = err.Error()
@@ -195,8 +203,9 @@ func (s *Service) DeleteRemovedPackages(ctx context.Context) (int, error) {
 
 // deleteLeftovers deletes the package of the removed extra p, the ones it
 // replaced and kept for their grace, and its handoff in the inbox, each only
-// inside the package store.
-func (s *Service) deleteLeftovers(p store.RemovedPackage) error {
+// inside the package store; with the v2 layout (v2) its folder in the
+// library's record and its entries in the work folder too.
+func (s *Service) deleteLeftovers(p store.RemovedPackage, v2 bool) error {
 	root := s.cfg.PackagesRoot
 	dir := packageDir(root, p.ID)
 	targets := []string{dir, inboxDir(root, p.ID)}
@@ -206,12 +215,21 @@ func (s *Service) deleteLeftovers(p store.RemovedPackage) error {
 	if olds, err := filepath.Glob(dir + ".old-*"); err == nil {
 		targets = append(targets, olds...)
 	}
+	lib := library.PathsOf(s.cfg)
+	if v2 {
+		targets = append(targets, lib.ExtraInboxDir(p.ID), lib.ExtraStagingDir(p.ID))
+	}
 	for _, t := range targets {
-		if !within(filepath.Join(root, "extras"), t) && !within(filepath.Join(root, "_inbox"), t) {
-			continue // never anything outside the extras' part of the store
+		record := v2 && s.recordedFolder(lib, p.ID, t)
+		work := v2 && library.Within(lib.Work, t) && filepath.Base(t) == "extra-"+p.ID
+		if !within(filepath.Join(root, "extras"), t) && !within(filepath.Join(root, "_inbox"), t) && !record && !work {
+			continue // never anything outside the extras' part of the store, nor of the library
 		}
 		if err := os.RemoveAll(t); err != nil {
 			return err
+		}
+		if record {
+			_ = os.Remove(filepath.Dir(t)) // extras/, when it was the last
 		}
 	}
 	// The shard folder goes when it is empty.
@@ -219,4 +237,15 @@ func (s *Service) deleteLeftovers(p store.RemovedPackage) error {
 		_ = os.Remove(shard)
 	}
 	return nil
+}
+
+// recordedFolder reports whether path is the folder of the extra id in the
+// library's record: <movie or series>/extras/<id>.
+func (s *Service) recordedFolder(lib library.Paths, id, path string) bool {
+	path = filepath.Clean(path)
+	if filepath.Base(path) != id || filepath.Base(filepath.Dir(path)) != "extras" {
+		return false
+	}
+	return library.Within(filepath.Join(lib.Root, library.MoviesDir), path) ||
+		library.Within(filepath.Join(lib.Root, library.SeriesDir), path)
 }
