@@ -117,6 +117,9 @@ func (h *Handlers) Register(r chi.Router) {
 		// reversal.
 		r.Post("/api/library/migrations/{run}/adopt", h.adoptRun)
 		r.Post("/api/library/migrations/{run}/revert", h.revertRun)
+		// The items' projections written now, as the migration's verify
+		// needs them.
+		r.Post("/api/library/projections", h.refreshProjections)
 	})
 
 	// An admin's packaging action, as chino-api's admin route forwards it with

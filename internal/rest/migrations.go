@@ -69,3 +69,39 @@ func (h *Handlers) migrate(w http.ResponseWriter, r *http.Request, adopt bool) {
 		writeJSON(w, http.StatusOK, rep)
 	}
 }
+
+// refreshProjections serves POST /api/library/projections: the items' library
+// projections (metadata.json and its images) written now from the catalog,
+// in either layout, where they do not reflect it (library.Projector.Refresh)
+// — as the migration's verify needs them before the layout is v2, which the
+// projector waits for. The body names the items, {"items": ["<itemId>", …]};
+// {} (or none) looks at every recorded item. It answers {"projected",
+// "unchanged", "failed", "items": [{"itemId", "state", "reason"}]}: each item
+// named, or, with none named, each projected or failed; 409 while another
+// projection holds the projector's lock. For the workers' service account
+// and admins.
+func (h *Handlers) refreshProjections(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Items []string `json:"items"`
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "the body cannot be read: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(string(raw)) != "" {
+		if err := json.Unmarshal(raw, &body); err != nil {
+			writeError(w, http.StatusBadRequest, "the body is no {\"items\": [...]}: "+err.Error())
+			return
+		}
+	}
+	rep, err := library.NewProjector(h.d.Store.Pool(), h.d.Cfg).Refresh(reqCtx(r), body.Items)
+	switch {
+	case errors.Is(err, library.ErrProjectorBusy):
+		writeError(w, http.StatusConflict, "the projections: "+err.Error()+"; try again")
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "the projections: "+err.Error())
+	default:
+		writeJSON(w, http.StatusOK, rep)
+	}
+}

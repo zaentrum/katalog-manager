@@ -106,7 +106,7 @@ account, whose token carries the addon role. Everyone else signed in is a
 | `GET /api/artwork/...`, `/api/manage/artwork/...` (also a person's portrait) | any signed-in caller, or a stream token; a capped viewer is answered for a title above its cap as for a title there is not |
 | `GET /api/play/...`, `GET /api/subtitles/...` | any signed-in caller; a capped viewer as for the artwork |
 | `PUT /api/artwork/...`, `/api/analyze/*` (an extra's record and steps too), segments, chapters, `packaging-complete` (an item's and an extra's), `GET /api/settings` | admin, service account |
-| `POST /api/library/migrations/{run}/adopt`, `…/revert` (the library's migration) | admin, service account |
+| `POST /api/library/migrations/{run}/adopt`, `…/revert` (the library's migration), `POST /api/library/projections` | admin, service account |
 | `POST /api/ingest`, `POST /api/extras` | admin, service account, addon |
 | `POST /api/items/{id}/package` | admin |
 
@@ -825,7 +825,18 @@ packaging-complete leaves it, each action journaled in the run's
 `journal.jsonl`; a failure puts the unit's renames back, and adopting again
 skips what is adopted. `POST …/revert` replays the journal backwards while
 the originals are not purged from the trash. Both take
-`{"items": ["<itemId>", …]}` to work on some units only.
+`{"items": ["<itemId>", …]}` to work on some units only. An item the
+adoption itself marks changed (an extra it records) is projected again
+within its unit; revert puts the staged projection back.
+
+`POST /api/library/projections` writes the items' projections now, in
+either layout (the migration's verify runs before the layout is v2, which
+the projector waits for): those named, `{"items": ["<itemId>", …]}`, or with
+`{}` every recorded item whose `metadata.json` does not reflect it (another
+`databaseUpdatedAt` than its `modifiedat`) or that the catalog marks behind.
+It answers `{"projected", "unchanged", "failed", "items": [{"itemId",
+"state", "reason"}]}`, each named item or, with none named, each projected
+or failed; an item not recorded fails. 409 while another projection runs.
 
 ## Configuration
 
