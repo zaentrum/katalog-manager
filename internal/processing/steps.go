@@ -23,8 +23,19 @@ const (
 	StatusNotApplicable = "not_applicable"
 )
 
-// StepOrder is every step, in the order the pipeline runs them.
-var StepOrder = []string{"scan", "tmdb", "tidb", "chapter", "chromaprint", "blackframe", "silence", "subtitle", "transcode", "package"}
+// StepOrder is every step, in the order the pipeline runs them. The last,
+// retire, is katalog-manager's own: with library.originals set to
+// delete-after-package it deletes a title's original once its package is
+// recorded and verified. No worker runs it and no event triggers it.
+var StepOrder = []string{"scan", "tmdb", "tidb", "chapter", "chromaprint", "blackframe", "silence", "subtitle", "transcode", "package", "retire"}
+
+// StepRetire is the step that deletes a title's original after packaging.
+const StepRetire = "retire"
+
+// OriginalSteps are the steps whose workers read a title's original: none of
+// them may wait or run when the original is deleted, and none is retried
+// once it is.
+var OriginalSteps = []string{"chapter", "chromaprint", "blackframe", "silence", "subtitle", "transcode", "package"}
 
 var validSteps = func() map[string]bool {
 	m := map[string]bool{}

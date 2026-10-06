@@ -542,7 +542,7 @@ func TestTheOverview(t *testing.T) {
 	want := []string{"scan 0/0/0/0/0/0 r0 s0 7200", "tmdb 0/0/1/0/0/0 r0 s0 7200", "tidb 0/0/0/0/0/0 r0 s0 7200",
 		"chapter 0/0/0/0/0/1 r0 s0 7200", "chromaprint 0/0/0/0/0/0 r0 s0 7200", "blackframe 0/0/0/0/0/0 r0 s0 7200",
 		"silence 0/0/0/0/0/0 r0 s0 7200", "subtitle 0/0/0/0/1/0 r0 s0 7200", "transcode 0/1/0/2/0/0 r1 s1 3600",
-		"package 2/0/0/0/0/0 r0 s1 7200", "rescan 0/0/0/1/0/0 r0 s0 7200"}
+		"package 2/0/0/0/0/0 r0 s1 7200", "retire 0/0/0/0/0/0 r0 s0 7200", "rescan 0/0/0/1/0/0 r0 s0 7200"}
 	if strings.Join(steps, "\n") != strings.Join(want, "\n") {
 		t.Errorf("the counts:\n%s\nwant:\n%s", strings.Join(steps, "\n"), strings.Join(want, "\n"))
 	}
@@ -663,5 +663,35 @@ func TestLabel(t *testing.T) {
 		if got := Label(d); got != want {
 			t.Errorf("Label(%v) = %q, want %q", d, got, want)
 		}
+	}
+}
+
+// The retire step is katalog-manager's own, which no event triggers: neither
+// the sweep nor an admin's retry of every failed step sends anything for it,
+// and a retry of it alone is refused.
+func TestNoRetrySendsTheRetireStep(t *testing.T) {
+	st := catalog(t)
+	b := &bus{}
+	s := newService(t, st, b)
+	put(t, st, "m1", "retire", "failed", due)
+	put(t, st, "m2", "transcode", "failed", due)
+	if _, sent, err := s.Sweep(context.Background()); err != nil || sent != 1 {
+		t.Fatalf("Sweep: sent %d, %v; want the transcode alone", sent, err)
+	}
+	if got := b.take(); len(got) != 1 || !strings.Contains(got[0], " m2 transcode ") {
+		t.Errorf("the sweep sent %v", got)
+	}
+	if got := state(t, st, "m1", "retire"); !strings.HasPrefix(got, "failed 1 ") || !strings.Contains(got, "retry=true") {
+		t.Errorf("the retire step after the sweep: %s", got)
+	}
+	if res, err := s.RetryFailed(context.Background(), ""); err != nil || res.Retried != 0 {
+		t.Errorf("RetryFailed: %+v, %v; want nothing retried", res, err)
+	}
+	if _, err := s.RetryStep(context.Background(), "m1", "retire"); err == nil ||
+		!strings.Contains(err.Error(), "retire is katalog-manager's own step") {
+		t.Errorf("RetryStep of retire: %v", err)
+	}
+	if got := b.take(); len(got) != 0 {
+		t.Errorf("sent for the retire step: %v", got)
 	}
 }

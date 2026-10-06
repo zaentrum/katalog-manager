@@ -22,6 +22,9 @@ func (s *Service) RetryStep(ctx context.Context, itemID, step string) (graph.Ret
 	if !processing.ValidStep(step) {
 		return res, errUnknownStep(step)
 	}
+	if _, _, ok := Trigger(step); !ok {
+		return res, fmt.Errorf("%s is katalog-manager's own step, which no event triggers: its job runs it", step)
+	}
 	if why := s.unavailable(ctx); why != "" {
 		return res, errors.New("cannot retry: " + why)
 	}
@@ -122,7 +125,7 @@ func (s *Service) RetryFailed(ctx context.Context, step string) (graph.RetryFail
 	for {
 		rows, err := s.claim(ctx, `WITH failed AS (
 				SELECT s.id, s.status FROM `+tbl+` s
-				WHERE s.status = 'failed' AND ($1::text = '' OR s.step = $1::text)
+				WHERE s.status = 'failed' AND ($1::text = '' OR s.step = $1::text) AND s.step = ANY($3::text[])
 				  AND EXISTS (SELECT 1 FROM com_nalet_katalog_items i WHERE i.id = s.item_id)
 				ORDER BY s.id
 				LIMIT $2
@@ -130,7 +133,7 @@ func (s *Service) RetryFailed(ctx context.Context, step string) (graph.RetryFail
 			UPDATE `+tbl+` s SET `+claimSet(true)+`
 			FROM failed WHERE s.id = failed.id
 			RETURNING s.id, s.item_id, s.step, failed.status,
-				COALESCE((SELECT i.type FROM com_nalet_katalog_items i WHERE i.id = s.item_id), '')`, step, batch)
+				COALESCE((SELECT i.type FROM com_nalet_katalog_items i WHERE i.id = s.item_id), '')`, step, batch, triggered)
 		if err != nil {
 			return res, err
 		}

@@ -109,6 +109,18 @@ func Trigger(step string) (topic, next string, ok bool) {
 	return "", "", false
 }
 
+// triggered are the steps an event starts (Trigger), the only ones a retry
+// sends again: retire is katalog-manager's own, run by its retire job.
+var triggered = func() []string {
+	var out []string
+	for _, s := range processing.StepOrder {
+		if _, _, ok := Trigger(s); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}()
+
 // unavailable says why no step can be retried, "" when one can: the step
 // table lacks migration 033, or the service has no event bus.
 func (s *Service) unavailable(ctx context.Context) string {
@@ -265,11 +277,12 @@ func claimSet(manual bool) string {
 }
 
 // claimDue claims the failed steps whose retry is due, oldest first, at most
-// a batch of them; a step whose item is gone is left alone.
+// a batch of them; a step whose item is gone is left alone, and so is one no
+// event triggers (retire).
 func (s *Service) claimDue(ctx context.Context) ([]claimed, error) {
 	return s.claim(ctx, `WITH due AS (
 			SELECT s.id, s.status FROM `+tbl+` s
-			WHERE s.status = 'failed' AND s.nextretryat <= now()
+			WHERE s.status = 'failed' AND s.nextretryat <= now() AND s.step = ANY($2::text[])
 			  AND EXISTS (SELECT 1 FROM com_nalet_katalog_items i WHERE i.id = s.item_id)
 			ORDER BY s.nextretryat, s.id
 			LIMIT $1
@@ -277,7 +290,7 @@ func (s *Service) claimDue(ctx context.Context) ([]claimed, error) {
 		UPDATE `+tbl+` s SET `+claimSet(false)+`
 		FROM due WHERE s.id = due.id
 		RETURNING s.id, s.item_id, s.step, due.status,
-			COALESCE((SELECT i.type FROM com_nalet_katalog_items i WHERE i.id = s.item_id), '')`, batch)
+			COALESCE((SELECT i.type FROM com_nalet_katalog_items i WHERE i.id = s.item_id), '')`, batch, triggered)
 }
 
 func (s *Service) claim(ctx context.Context, sql string, args ...any) ([]claimed, error) {

@@ -42,6 +42,7 @@ var DefaultTimeouts = map[string]time.Duration{
 	"subtitle":    2 * time.Hour,
 	"transcode":   6 * time.Hour,
 	"package":     2 * time.Hour,
+	"retire":      2 * time.Hour,
 }
 
 // DefaultPolicy retries a failed step twice, a minute and then two after its

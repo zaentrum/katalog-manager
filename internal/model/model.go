@@ -23,8 +23,8 @@ func ValidRole(s string) bool { return roleRE.MatchString(s) }
 
 // Vocabularies ported verbatim from the CAP service (SPEC §3).
 var (
-	// Steps in the processing audit trail.
-	Steps = []string{"scan", "tmdb", "tidb", "chapter", "chromaprint", "blackframe", "silence", "subtitle", "transcode", "package"}
+	// Steps in the processing audit trail; retire is katalog-manager's own.
+	Steps = []string{"scan", "tmdb", "tidb", "chapter", "chromaprint", "blackframe", "silence", "subtitle", "transcode", "package", "retire"}
 	// AnalyzerSteps are the per-file analyzer passes (subset of Steps).
 	AnalyzerSteps = []string{"chapter", "chromaprint", "blackframe", "silence", "subtitle", "tidb"}
 	// Statuses a step can be in.
