@@ -255,3 +255,80 @@ func TestTheProjectorWritesTheToolsProjections(t *testing.T) {
 		t.Errorf("the legacy layout: %d items, %d people, %v", items, people, err)
 	}
 }
+
+// A refresh projects now, with the legacy layout too, what does not reflect
+// the catalog: an item marked behind, and one whose metadata.json says
+// another moment than its modifiedat though the catalog marks it current
+// (the mark set after a change of the item, its projection not written); it
+// leaves one that reflects it, and an item not recorded fails. Named items
+// are each in the report; with none named, every recorded item is looked at,
+// and the report lists those it projected or failed.
+func TestARefreshProjectsWhatIsBehind(t *testing.T) {
+	st := storetest.Open(t)
+	fillProjection(t, st)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('l', 'library.layout', 'v2')`)
+	root := t.TempDir()
+	cfg := config.Config{LibraryRoot: root, WorkRoot: root + "/.work"}
+	paths := PathsOf(cfg)
+	ctx := context.Background()
+	for _, id := range []string{fxFilm, fxPlain} {
+		if _, err := paths.EnsureItemRecord(ctx, st.Pool(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := NewProjector(st.Pool(), cfg)
+	if _, _, err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_settings SET valuetext = 'legacy'`)
+	// The film changed, its mark set as if projected; the plain film marked
+	// behind.
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET modifiedat = modifiedat + interval '1 hour' WHERE id = $1`, fxFilm)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET libraryprojectedat = modifiedat WHERE id = $1`, fxFilm)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET libraryprojectedat = modifiedat - interval '1 minute' WHERE id = $1`, fxPlain)
+
+	rep, err := p.Refresh(ctx, []string{fxFilm, fxPlain, fxSeries, "nobody"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, r := range rep.Items {
+		got[r.ItemID] = r.State + " " + r.Reason
+	}
+	want := map[string]string{fxFilm: "projected ", fxPlain: "unchanged ",
+		fxSeries: "failed not recorded: its item.json is not written", "nobody": "failed unknown item"}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("%s: %q, want %q", id, got[id], w)
+		}
+	}
+	if rep.Projected != 1 || rep.Unchanged != 1 || rep.Failed != 2 {
+		t.Errorf("the report: %+v", rep)
+	}
+	var at string
+	if err := st.Pool().QueryRow(ctx, `SELECT to_char(modifiedat, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') FROM com_nalet_katalog_items
+		WHERE id = $1`, fxFilm).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(paths.MovieDir(fxFilm), "metadata.json"))
+	if d, _ := DecodeDoc(b); d == nil {
+		t.Fatal("no metadata.json")
+	} else if v, _ := d.Get("databaseUpdatedAt"); v != at {
+		t.Errorf("the film's projection reflects %v, and the film is of %s", v, at)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE id = $1 AND libraryprojectedat = modifiedat`,
+		fxPlain); n != 1 {
+		t.Error("the plain film's mark is still behind")
+	}
+
+	all, err := p.Refresh(ctx, nil)
+	if err != nil || all.Projected+all.Failed != 0 || all.Unchanged != 2 || len(all.Items) != 0 {
+		t.Errorf("a refresh of everything, all current: %+v, %v", all, err)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET modifiedat = modifiedat + interval '1 hour', libraryprojectedat = NULL
+		WHERE id = $1`, fxPlain)
+	if all, err = p.Refresh(ctx, nil); err != nil || all.Projected != 1 || all.Unchanged != 1 || len(all.Items) != 1 ||
+		all.Items[0].ItemID != fxPlain {
+		t.Errorf("a refresh of everything: %+v, %v", all, err)
+	}
+}

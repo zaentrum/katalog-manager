@@ -561,3 +561,162 @@ func (p *Projector) deleted(ctx context.Context) error {
 	}
 	return nil
 }
+
+// ErrProjectorBusy says another projection held the projector's lock for as
+// long as a refresh waits for it.
+var ErrProjectorBusy = errors.New("another projection runs")
+
+// refreshWait is how long a refresh waits for the projector's lock.
+const refreshWait = 30 * time.Second
+
+// RefreshResult is what a refresh did to an item's projection: projected,
+// unchanged (it reflects the item already) or failed, and why.
+type RefreshResult struct {
+	ItemID string `json:"itemId"`
+	State  string `json:"state"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// RefreshReport is what a refresh did.
+type RefreshReport struct {
+	Projected int             `json:"projected"`
+	Unchanged int             `json:"unchanged"`
+	Failed    int             `json:"failed"`
+	Items     []RefreshResult `json:"items"`
+}
+
+// Refresh projects now, whatever the layout, the items ids, or with none
+// named every recorded item, whose projection on storage does not reflect
+// the catalog: its metadata.json is not there or says another
+// databaseUpdatedAt than the item's modifiedat, or the catalog marks it
+// behind (libraryprojectedat). One whose projection reflects it is left
+// unchanged, its mark set when it was behind; one not recorded fails. With
+// items named the report lists each of them, with none the ones projected
+// or failed. It waits for the projector's lock (ErrProjectorBusy).
+func (p *Projector) Refresh(ctx context.Context, ids []string) (RefreshReport, error) {
+	rep := RefreshReport{Items: []RefreshResult{}}
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return rep, err
+	}
+	defer conn.Release()
+	deadline := time.Now().Add(refreshWait)
+	for {
+		var locked bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtext('library-projector'))`).Scan(&locked); err != nil {
+			return rep, err
+		}
+		if locked {
+			break
+		}
+		if time.Now().After(deadline) {
+			return rep, ErrProjectorBusy
+		}
+		select {
+		case <-ctx.Done():
+			return rep, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(hashtext('library-projector'))`)
+	}()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	all := len(ids) == 0
+	if all {
+		rows, err := p.pool.Query(ctx, `SELECT id FROM com_nalet_katalog_items WHERE recordedat IS NOT NULL ORDER BY id`)
+		if err != nil {
+			return rep, err
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return rep, err
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return rep, err
+		}
+	}
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return rep, ctx.Err()
+		}
+		res := p.refresh(ctx, id)
+		switch res.State {
+		case "projected":
+			rep.Projected++
+		case "unchanged":
+			rep.Unchanged++
+		default:
+			rep.Failed++
+		}
+		if !all || res.State != "unchanged" {
+			rep.Items = append(rep.Items, res)
+		}
+	}
+	return rep, nil
+}
+
+// refresh projects the item id when its projection on storage does not
+// reflect it.
+func (p *Projector) refresh(ctx context.Context, id string) RefreshResult {
+	res := RefreshResult{ItemID: id}
+	fail := func(why string) RefreshResult {
+		res.State, res.Reason = "failed", why
+		return res
+	}
+	var recorded, projectedAt, modified *time.Time
+	var updated *string
+	err := p.pool.QueryRow(ctx, `SELECT recordedat, libraryprojectedat, modifiedat,
+			to_char(modifiedat, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+		FROM com_nalet_katalog_items WHERE id = $1`, id).Scan(&recorded, &projectedAt, &modified, &updated)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return fail("unknown item")
+	case err != nil:
+		return fail(err.Error())
+	case recorded == nil:
+		return fail("not recorded: its item.json is not written")
+	}
+	pl, err := PlaceOf(ctx, p.pool, id)
+	if err != nil {
+		return fail("not recorded: " + err.Error())
+	}
+	dir := PathsOf(p.cfg).ItemDir(pl)
+	if !statOK(filepath.Join(dir, ItemFile)) {
+		return fail("not recorded: " + dir + " holds no item.json")
+	}
+	fresh := false
+	if b, err := os.ReadFile(filepath.Join(dir, "metadata.json")); err == nil {
+		if d, err := DecodeDoc(b); err == nil {
+			v, has := d.Get("databaseUpdatedAt")
+			at, _ := v.(string)
+			fresh = (has && updated != nil && at == *updated) || (!has && updated == nil)
+		}
+	}
+	marked := projectedAt != nil && (modified == nil || !modified.After(*projectedAt))
+	if fresh {
+		if !marked {
+			if _, err := p.pool.Exec(ctx, `UPDATE com_nalet_katalog_items SET libraryprojectedat = COALESCE($2::timestamp, '-infinity')
+				WHERE id = $1`, id, modified); err != nil {
+				return fail(err.Error())
+			}
+		}
+		res.State = "unchanged"
+		return res
+	}
+	ok, err := p.ProjectItem(ctx, id)
+	switch {
+	case err != nil:
+		return fail(err.Error())
+	case !ok:
+		return fail("not recorded: " + dir + " holds no item.json")
+	}
+	res.State = "projected"
+	return res
+}
