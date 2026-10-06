@@ -105,8 +105,36 @@ func (s *Store) IngestExternalFile(ctx context.Context, w ItemWrite, absPath str
 	return itemID, true, nil
 }
 
-// UpdateItem updates the provided (non-nil) fields and bumps modifiedat.
+// ErrRecordedIdentity refuses a change of a recorded item's type or parent
+// (platform-library/1, 2.1): its item.json, written once, holds them, and
+// its folder in the library is placed by them. An episode is renumbered in
+// its metadata instead (library.numbering of metadata.json).
+var ErrRecordedIdentity = errors.New("a recorded item keeps its identity")
+
+// UpdateItem updates the provided (non-nil) fields and bumps modifiedat. A
+// recorded item (its item.json written) keeps its type and its parent:
+// ErrRecordedIdentity.
 func (s *Store) UpdateItem(ctx context.Context, id string, w ItemWrite) (*model.Item, error) {
+	if w.Type != nil || w.ParentID != nil {
+		var typ string
+		var parent, recorded *string
+		// The column of migration 040 read by name, so that a catalog
+		// without it reads none.
+		err := s.pool.QueryRow(ctx, `SELECT type, parent_id, to_jsonb(i)->>'recordedat' FROM com_nalet_katalog_items i
+			WHERE id = $1`, id).Scan(&typ, &parent, &recorded)
+		if err != nil && err != pgx.ErrNoRows {
+			return nil, err
+		}
+		if recorded != nil {
+			switch {
+			case w.Type != nil && *w.Type != typ:
+				return nil, fmt.Errorf("%w: item %s was recorded with the type %s, which its item.json says", ErrRecordedIdentity, id, typ)
+			case w.ParentID != nil && (parent == nil || *w.ParentID != *parent):
+				return nil, fmt.Errorf("%w: item %s was recorded under %s, which its item.json says; renumber it in its metadata",
+					ErrRecordedIdentity, id, derefOr(parent, "no parent"))
+			}
+		}
+	}
 	var i model.Item
 	err := scanItemBase(s.pool.QueryRow(ctx, `UPDATE com_nalet_katalog_items SET
 		type          = COALESCE($2, type),
@@ -304,4 +332,11 @@ func (s *Store) SetItemTags(ctx context.Context, id string, tags []string) error
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+func derefOr(s *string, none string) string {
+	if s == nil {
+		return none
+	}
+	return *s
 }

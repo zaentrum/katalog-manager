@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 
 	graphql "github.com/graph-gophers/graphql-go"
@@ -751,6 +752,9 @@ func (r *Resolver) UpdateItem(ctx context.Context, args struct {
 		return nil, err
 	}
 	it, err := r.store.UpdateItem(ctx, string(args.ID), args.Input.toWrite())
+	if errors.Is(err, store.ErrRecordedIdentity) {
+		return nil, Refused(http.StatusConflict, "IDENTITY_KEPT", "%s", err.Error())
+	}
 	if err != nil || it == nil {
 		return nil, err
 	}
