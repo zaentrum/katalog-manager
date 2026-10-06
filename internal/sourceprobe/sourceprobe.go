@@ -29,7 +29,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Probe is what is known of a source; nil is unknown.
@@ -122,7 +122,7 @@ func FromFFprobe(out string) Probe {
 // value wins); a bit rate it does not say is the size over the duration,
 // when the source has neither yet. It reports whether the item has a source
 // asset.
-func Fill(ctx context.Context, pool *pgxpool.Pool, itemID string, p Probe) (bool, error) {
+func Fill(ctx context.Context, pool Execer, itemID string, p Probe) (bool, error) {
 	if p.Empty() {
 		return false, nil
 	}
@@ -144,7 +144,7 @@ func Fill(ctx context.Context, pool *pgxpool.Pool, itemID string, p Probe) (bool
 
 // FillEmpty is Fill for what item's source does not hold yet: a value it has
 // stays (an estimate never replaces what a probe said).
-func FillEmpty(ctx context.Context, pool *pgxpool.Pool, itemID string, p Probe) error {
+func FillEmpty(ctx context.Context, pool Execer, itemID string, p Probe) error {
 	if p.Empty() {
 		return nil
 	}
@@ -162,6 +162,11 @@ func FillEmpty(ctx context.Context, pool *pgxpool.Pool, itemID string, p Probe) 
 		return fmt.Errorf("fill the source of %s: %w", itemID, err)
 	}
 	return nil
+}
+
+// Execer runs a statement: a pool, or a transaction.
+type Execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
 // source picks an item's source asset: its primary playback asset that is

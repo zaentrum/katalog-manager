@@ -224,16 +224,27 @@ func (s *Store) RecordSourceTracks(ctx context.Context, itemID string, tracks ma
 	if len(tracks) == 0 {
 		return 0, nil
 	}
-	ready, err := s.TrackLanguagesReady(ctx)
-	if err != nil || !ready {
-		return 0, err
-	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
+	n, err := s.RecordSourceTracksIn(ctx, tx, itemID, tracks)
+	if err != nil {
+		return 0, err
+	}
+	return n, tx.Commit(ctx)
+}
 
+// RecordSourceTracksIn is RecordSourceTracks in tx, which the caller commits.
+func (s *Store) RecordSourceTracksIn(ctx context.Context, tx pgx.Tx, itemID string, tracks map[string][]model.SourceTrack) (int, error) {
+	if len(tracks) == 0 {
+		return 0, nil
+	}
+	ready, err := s.TrackLanguagesReady(ctx)
+	if err != nil || !ready {
+		return 0, err
+	}
 	set, err := tx.Query(ctx, `SELECT kind, ordinal, language FROM com_nalet_katalog_itemtracklanguages
 		WHERE item_id = $1`, itemID)
 	if err != nil {
@@ -287,7 +298,7 @@ func (s *Store) RecordSourceTracks(ctx context.Context, itemID string, tracks ma
 			return 0, err
 		}
 	}
-	return recorded, tx.Commit(ctx)
+	return recorded, nil
 }
 
 // recordTrack writes a reported track over what the catalog held of it;
