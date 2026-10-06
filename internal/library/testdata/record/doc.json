@@ -1,0 +1,36 @@
+{
+  "schema": "zaentrum.library.metadata/2",
+  "itemId": "f001aeff-9c18-4183-b51b-51403af2515e",
+  "empty": {},
+  "list": [],
+  "nested": {
+    "a": [
+      1,
+      2.5,
+      null,
+      true,
+      false,
+      "é ü — 日本語\n\t\"\\\u0001\u001f \b\f\r"
+    ],
+    "b": {
+      "c": [],
+      "d": [
+        {
+          "x": 1
+        }
+      ]
+    }
+  },
+  "float": 8.0,
+  "small": 1e-05,
+  "big": 1e+16,
+  "neg": -0.0,
+  "int": 12345678901234567890,
+  "zero": 0,
+  "ratio": 7.5,
+  "keys in their order": {
+    "z": 1,
+    "a": 2,
+    "m": 3
+  }
+}
