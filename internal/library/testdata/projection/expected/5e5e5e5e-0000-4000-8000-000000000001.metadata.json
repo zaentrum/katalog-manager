@@ -1,0 +1,120 @@
+{
+  "schema": "zaentrum.library.metadata/2",
+  "itemId": "5e5e5e5e-0000-4000-8000-000000000001",
+  "type": "series",
+  "asOf": "2026-10-06T12:00:00Z",
+  "projectedBy": "library-v2-from-catalog",
+  "databaseUpdatedAt": "2026-10-03T16:00:01Z",
+  "externalIds": {
+    "tmdbTv": "39272"
+  },
+  "titles": {
+    "primary": "Pioneer One",
+    "original": null,
+    "sort": "pioneer one",
+    "qualifier": null,
+    "localized": {
+      "und": {
+        "title": "Pioneer One",
+        "sortTitle": "pioneer one",
+        "tagline": "Not alone.",
+        "overview": "A probe falls."
+      }
+    }
+  },
+  "releaseDate": "2010",
+  "genres": [
+    "Science Fiction"
+  ],
+  "tags": [],
+  "rating": 8.0,
+  "contentRating": null,
+  "credits": [
+    {
+      "personId": "b2b2b2b2-0000-4000-8000-000000000002",
+      "name": "Ben Example",
+      "role": "actor",
+      "job": null,
+      "character": "Lead",
+      "order": 2,
+      "episodeCount": 6,
+      "tmdbPerson": null
+    },
+    {
+      "personId": "a1a1a1a1-0000-4000-8000-000000000001",
+      "name": "Ada Example",
+      "role": "creator",
+      "job": "Creator",
+      "character": null,
+      "order": 0,
+      "episodeCount": 6,
+      "tmdbPerson": null
+    }
+  ],
+  "series": {
+    "seasons": [
+      {
+        "number": 1,
+        "tmdbSeason": null,
+        "name": null,
+        "overview": null,
+        "airDate": null,
+        "episodeCountReference": null
+      },
+      {
+        "number": 2,
+        "tmdbSeason": null,
+        "name": null,
+        "overview": null,
+        "airDate": null,
+        "episodeCountReference": null
+      }
+    ]
+  },
+  "library": {
+    "match": {
+      "status": "matched",
+      "decidedBy": "legacy-catalog",
+      "decidedAt": "2026-10-06T12:00:00Z"
+    },
+    "reference": {
+      "runtimeMs": 2400000,
+      "runtimeSource": "legacy-catalog"
+    },
+    "defaultOrdering": "aired"
+  },
+  "images": [
+    {
+      "kind": "poster",
+      "file": "b809a9567a6365f6be8e6cc371bd1a830901d2b7d507fd8546da6e61c80d88cb.png",
+      "sha256": "sha256:b809a9567a6365f6be8e6cc371bd1a830901d2b7d507fd8546da6e61c80d88cb",
+      "contentType": "image/png",
+      "sizeBytes": 47,
+      "width": 680,
+      "height": 1000,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": "2026-09-03T10:00:00Z",
+      "origin": {
+        "source": "legacy-catalog",
+        "fetchedAt": "2026-09-03T10:00:00Z"
+      },
+      "season": null
+    }
+  ],
+  "videos": [],
+  "curation": {
+    "metadataLocked": false,
+    "lockedFields": [],
+    "notes": null
+  },
+  "fieldOrigins": {
+    "titles.primary": "legacy-catalog",
+    "titles.sort": "legacy-catalog",
+    "releaseDate": "legacy-catalog",
+    "genres": "legacy-catalog",
+    "rating": "legacy-catalog",
+    "credits": "legacy-catalog",
+    "images": "legacy-catalog"
+  }
+}

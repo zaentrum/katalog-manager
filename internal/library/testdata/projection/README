@@ -1,0 +1,14 @@
+The projector's golden fixture.
+
+export.json is the catalog's export (db/export/library-export.sql) of the fixture
+fillProjection writes (projection_fixture_test.go), and expected/ what
+library-v2-from-catalog.py --projections-only --as-of 2026-10-06T12:00:00Z makes of
+it in a tree that holds the records: each item's metadata.json, each person's
+person.json, and in images.txt the images they wrote. To write them again:
+
+  KATALOG_PROJECTION_FIXTURE=<dir> KATALOG_TEST_DATABASE_URL=... go test -run TestWriteTheProjectionFixture ./internal/library/
+  cd <dir> && python3 <schemas>/tools/library-v2-from-catalog.py --export export.json --out tree \
+      --projections-only --as-of 2026-10-06T12:00:00Z
+
+then copy export.json, every metadata.json as <itemId>.metadata.json, every
+person.json as <personId>.person.json, and the images' paths into images.txt.

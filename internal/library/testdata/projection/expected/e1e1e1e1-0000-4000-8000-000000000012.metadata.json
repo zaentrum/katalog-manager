@@ -1,0 +1,50 @@
+{
+  "schema": "zaentrum.library.metadata/2",
+  "itemId": "e1e1e1e1-0000-4000-8000-000000000012",
+  "type": "episode",
+  "asOf": "2026-10-06T12:00:00Z",
+  "projectedBy": "library-v2-from-catalog",
+  "databaseUpdatedAt": "2026-10-03T16:00:03Z",
+  "externalIds": {},
+  "titles": {
+    "primary": "The Man From Mars",
+    "original": null,
+    "sort": null,
+    "qualifier": null,
+    "localized": {
+      "und": {
+        "title": "The Man From Mars"
+      }
+    }
+  },
+  "releaseDate": null,
+  "genres": [],
+  "tags": [],
+  "rating": null,
+  "contentRating": null,
+  "credits": [],
+  "library": {
+    "match": {
+      "status": "unmatched",
+      "decidedBy": "legacy-catalog",
+      "decidedAt": "2026-10-06T12:00:00Z"
+    },
+    "numbering": {
+      "aired": {
+        "season": 1,
+        "episode": 2,
+        "episodeEnd": null
+      }
+    }
+  },
+  "images": [],
+  "videos": [],
+  "curation": {
+    "metadataLocked": false,
+    "lockedFields": [],
+    "notes": null
+  },
+  "fieldOrigins": {
+    "titles.primary": "legacy-catalog"
+  }
+}

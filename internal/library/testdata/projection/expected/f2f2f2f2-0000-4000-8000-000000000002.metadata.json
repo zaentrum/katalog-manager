@@ -1,0 +1,44 @@
+{
+  "schema": "zaentrum.library.metadata/2",
+  "itemId": "f2f2f2f2-0000-4000-8000-000000000002",
+  "type": "movie",
+  "asOf": "2026-10-06T12:00:00Z",
+  "projectedBy": "library-v2-from-catalog",
+  "databaseUpdatedAt": "2026-10-02T16:00:01Z",
+  "externalIds": {},
+  "titles": {
+    "primary": "Plain",
+    "original": null,
+    "sort": null,
+    "qualifier": null,
+    "localized": {
+      "und": {
+        "title": "Plain"
+      }
+    }
+  },
+  "releaseDate": null,
+  "genres": [],
+  "tags": [],
+  "rating": 0.0,
+  "contentRating": null,
+  "credits": [],
+  "collection": null,
+  "library": {
+    "match": {
+      "status": "unmatched",
+      "decidedBy": "legacy-catalog",
+      "decidedAt": "2026-10-06T12:00:00Z"
+    }
+  },
+  "images": [],
+  "videos": [],
+  "curation": {
+    "metadataLocked": true,
+    "lockedFields": [],
+    "notes": null
+  },
+  "fieldOrigins": {
+    "titles.primary": "legacy-catalog"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "schema": "zaentrum.library.person/2",
+  "personId": "c3c3c3c3-0000-4000-8000-000000000003",
+  "asOf": "2026-10-06T12:00:00Z",
+  "projectedBy": "library-v2-from-catalog",
+  "databaseUpdatedAt": "2026-10-01T06:00:01Z",
+  "name": "Cy Example",
+  "sortName": null,
+  "alsoKnownAs": [],
+  "birthDate": "1990-05-17",
+  "deathDate": null,
+  "birthPlace": null,
+  "knownForDepartment": null,
+  "biography": {},
+  "externalIds": {},
+  "images": [],
+  "curation": {
+    "metadataLocked": false,
+    "lockedFields": [],
+    "notes": null
+  },
+  "fieldOrigins": {}
+}

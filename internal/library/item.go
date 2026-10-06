@@ -166,7 +166,7 @@ func ReadItemRecord(ctx context.Context, q Querier, id string) (ItemRecord, erro
 	}
 	r.CreatedBy = deref(createdBy)
 	rows, err := q.Query(ctx, `SELECT source, externalid FROM com_nalet_katalog_itemexternalids WHERE item_id = $1
-		ORDER BY source, externalid, id`, id)
+		ORDER BY id`, id)
 	if err != nil {
 		return r, err
 	}

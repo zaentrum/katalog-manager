@@ -14,7 +14,8 @@ import (
 
 // An item is recorded once: its folder gets item.json, its identity as the
 // catalog holds it (the moment it was created among it, its reference ids
-// as a record names them), and the checksums that list exactly it; the
+// as a record names them, in the order the catalog took them), and the
+// checksums that list exactly it; the
 // catalog notes it. A series is recorded before its first episode, which
 // names it and its numbers. Recording again writes nothing.
 func TestAnItemIsRecordedOnce(t *testing.T) {
@@ -71,8 +72,8 @@ func TestAnItemIsRecordedOnce(t *testing.T) {
 	}
 	series := read(filepath.Join(p.SeriesDir(seriesID), ItemFile))
 	if !strings.Contains(series, `"externalIds": {
-    "imdb": "tt1748166",
     "tmdbTv": "39272",
+    "imdb": "tt1748166",
     "tvdb": "182701"
   },
   "createdAt": "2026-09-01T10:00:00Z",

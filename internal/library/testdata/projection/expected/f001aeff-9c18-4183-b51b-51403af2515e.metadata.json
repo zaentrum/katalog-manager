@@ -1,0 +1,170 @@
+{
+  "schema": "zaentrum.library.metadata/2",
+  "itemId": "f001aeff-9c18-4183-b51b-51403af2515e",
+  "type": "movie",
+  "asOf": "2026-10-06T12:00:00Z",
+  "projectedBy": "library-v2-from-catalog",
+  "databaseUpdatedAt": "2026-10-01T16:00:01Z",
+  "externalIds": {
+    "tmdbMovie": "45745",
+    "imdb": "tt1727587"
+  },
+  "titles": {
+    "primary": "Sintel",
+    "original": null,
+    "sort": "sintel",
+    "qualifier": null,
+    "localized": {
+      "und": {
+        "title": "Sintel",
+        "sortTitle": "sintel",
+        "tagline": "",
+        "overview": "A girl searches\nfor her dragon."
+      }
+    }
+  },
+  "releaseDate": "2010",
+  "genres": [
+    "Animation",
+    "Fantasy"
+  ],
+  "tags": [
+    "blender",
+    "open-movie"
+  ],
+  "rating": 7.5,
+  "contentRating": null,
+  "credits": [
+    {
+      "personId": "a1a1a1a1-0000-4000-8000-000000000001",
+      "name": "Ada Example",
+      "role": "actor",
+      "job": null,
+      "character": "Sintel",
+      "order": 1,
+      "episodeCount": null,
+      "tmdbPerson": null
+    },
+    {
+      "personId": "c3c3c3c3-0000-4000-8000-000000000003",
+      "name": "Cy Example",
+      "role": "actor",
+      "job": null,
+      "character": null,
+      "order": null,
+      "episodeCount": null,
+      "tmdbPerson": null
+    },
+    {
+      "personId": "b2b2b2b2-0000-4000-8000-000000000002",
+      "name": "Ben Example",
+      "role": "director",
+      "job": "Director",
+      "character": null,
+      "order": 0,
+      "episodeCount": null,
+      "tmdbPerson": null
+    }
+  ],
+  "collection": null,
+  "library": {
+    "match": {
+      "status": "matched",
+      "decidedBy": "legacy-catalog",
+      "decidedAt": "2026-10-06T12:00:00Z"
+    },
+    "reference": {
+      "runtimeMs": 888000,
+      "runtimeSource": "legacy-catalog"
+    }
+  },
+  "images": [
+    {
+      "kind": "backdrop",
+      "file": "b562066e4f3ac86b0ca14519b0b93b834df2d12688a8437814f21a762ae3c5fa.jpg",
+      "sha256": "sha256:b562066e4f3ac86b0ca14519b0b93b834df2d12688a8437814f21a762ae3c5fa",
+      "contentType": "image/jpeg",
+      "sizeBytes": 45,
+      "width": 1920,
+      "height": 1080,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": "2026-09-01T10:00:00Z",
+      "origin": {
+        "source": "legacy-catalog",
+        "fetchedAt": "2026-09-01T10:00:00Z"
+      }
+    },
+    {
+      "kind": "poster",
+      "file": "a1aa888d1f684905516f1e65e5fac54dad384443b5339adfcbf2584769ebede9.png",
+      "sha256": "sha256:a1aa888d1f684905516f1e65e5fac54dad384443b5339adfcbf2584769ebede9",
+      "contentType": "image/png",
+      "sizeBytes": 39,
+      "width": 1000,
+      "height": 1500,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": "2026-09-01T10:00:01Z",
+      "origin": {
+        "source": "legacy-catalog",
+        "fetchedAt": "2026-09-01T10:00:01Z"
+      }
+    },
+    {
+      "kind": "still",
+      "file": "19984c42de444f58ff8dac2a799cb9853d8c67ab986deb569cb2f78c76da75ee.webp",
+      "sha256": "sha256:19984c42de444f58ff8dac2a799cb9853d8c67ab986deb569cb2f78c76da75ee",
+      "contentType": "image/webp",
+      "sizeBytes": 34,
+      "width": 640,
+      "height": 360,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": null,
+      "origin": {
+        "source": "legacy-catalog"
+      }
+    }
+  ],
+  "videos": [
+    {
+      "site": "YouTube",
+      "key": "eRsGyueVLvQ",
+      "url": "https://www.youtube.com/watch?v=eRsGyueVLvQ",
+      "name": "Trailer",
+      "kind": "trailer",
+      "language": null,
+      "durationMs": 52000,
+      "publishedAt": null,
+      "origin": "tmdb"
+    },
+    {
+      "site": "manual",
+      "key": "sintel-teaser",
+      "url": "https://example.org/trailers/sintel-teaser",
+      "name": "Teaser",
+      "kind": "trailer",
+      "language": null,
+      "durationMs": null,
+      "publishedAt": null,
+      "origin": "manual"
+    }
+  ],
+  "curation": {
+    "metadataLocked": false,
+    "lockedFields": [],
+    "notes": null
+  },
+  "fieldOrigins": {
+    "titles.primary": "legacy-catalog",
+    "titles.sort": "legacy-catalog",
+    "releaseDate": "legacy-catalog",
+    "genres": "legacy-catalog",
+    "tags": "legacy-catalog",
+    "rating": "legacy-catalog",
+    "credits": "legacy-catalog",
+    "images": "legacy-catalog",
+    "videos": "legacy-catalog"
+  }
+}

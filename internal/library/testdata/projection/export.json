@@ -1,0 +1,460 @@
+{
+  "exportedAt": "2026-10-06T12:00:00Z",
+  "items": [
+    {
+      "id": "5e5e5e5e-0000-4000-8000-000000000001",
+      "type": "series",
+      "title": "Pioneer One",
+      "sortTitle": "pioneer one",
+      "year": 2010,
+      "description": "A probe falls.",
+      "tagline": "Not alone.",
+      "rating": 8.0,
+      "durationMs": 2400000,
+      "parentId": null,
+      "seasonNumber": null,
+      "episodeNumber": null,
+      "metadataLocked": false,
+      "createdAt": "2026-09-03T10:00:00Z",
+      "createdBy": null,
+      "modifiedAt": "2026-10-03T16:00:01Z",
+      "externalIds": [
+        {
+          "source": "tmdb",
+          "externalId": "39272"
+        }
+      ],
+      "genres": [
+        "Science Fiction"
+      ],
+      "tags": [],
+      "people": [
+        {
+          "personId": "b2b2b2b2-0000-4000-8000-000000000002",
+          "name": "Ben Example",
+          "role": "actor",
+          "job": null,
+          "character": "Lead",
+          "order": 2,
+          "episodeCount": 6
+        },
+        {
+          "personId": "a1a1a1a1-0000-4000-8000-000000000001",
+          "name": "Ada Example",
+          "role": "creator",
+          "job": "Creator",
+          "character": null,
+          "order": 0,
+          "episodeCount": 6
+        }
+      ],
+      "chapters": [],
+      "segments": [],
+      "playbackAssets": [],
+      "subtitleAssets": [],
+      "trailers": [],
+      "artwork": [
+        {
+          "kind": "poster",
+          "contentType": "image/png",
+          "fetchedAt": "2026-09-03T10:00:00Z",
+          "base64": "iVBORw0KGgoAAAANSUhEUgAAAqgAAAPoCAIAAAB0aGUgc2VyaWVzJyBwb3N0ZXI="
+        }
+      ]
+    },
+    {
+      "id": "e1e1e1e1-0000-4000-8000-000000000011",
+      "type": "episode",
+      "title": "Earthfall",
+      "sortTitle": null,
+      "year": 2010,
+      "description": "The pilot.",
+      "tagline": null,
+      "rating": 7.1,
+      "durationMs": 2100000,
+      "parentId": "5e5e5e5e-0000-4000-8000-000000000001",
+      "seasonNumber": 1,
+      "episodeNumber": 1,
+      "metadataLocked": false,
+      "createdAt": "2026-09-03T10:00:01Z",
+      "createdBy": null,
+      "modifiedAt": "2026-10-03T16:00:02Z",
+      "externalIds": [
+        {
+          "source": "tmdb-episode",
+          "externalId": "937631"
+        }
+      ],
+      "genres": [],
+      "tags": [],
+      "people": [
+        {
+          "personId": "b2b2b2b2-0000-4000-8000-000000000002",
+          "name": "Ben Example",
+          "role": "actor",
+          "job": null,
+          "character": "Lead",
+          "order": 0,
+          "episodeCount": null
+        }
+      ],
+      "chapters": [],
+      "segments": [],
+      "playbackAssets": [],
+      "subtitleAssets": [],
+      "trailers": [],
+      "artwork": []
+    },
+    {
+      "id": "e1e1e1e1-0000-4000-8000-000000000012",
+      "type": "episode",
+      "title": "The Man From Mars",
+      "sortTitle": null,
+      "year": null,
+      "description": null,
+      "tagline": null,
+      "rating": null,
+      "durationMs": null,
+      "parentId": "5e5e5e5e-0000-4000-8000-000000000001",
+      "seasonNumber": 1,
+      "episodeNumber": 2,
+      "metadataLocked": false,
+      "createdAt": "2026-09-03T10:00:02Z",
+      "createdBy": null,
+      "modifiedAt": "2026-10-03T16:00:03Z",
+      "externalIds": [],
+      "genres": [],
+      "tags": [],
+      "people": [],
+      "chapters": [],
+      "segments": [],
+      "playbackAssets": [],
+      "subtitleAssets": [],
+      "trailers": [],
+      "artwork": []
+    },
+    {
+      "id": "e1e1e1e1-0000-4000-8000-000000000021",
+      "type": "episode",
+      "title": "Sea Change",
+      "sortTitle": null,
+      "year": null,
+      "description": null,
+      "tagline": null,
+      "rating": null,
+      "durationMs": null,
+      "parentId": "5e5e5e5e-0000-4000-8000-000000000001",
+      "seasonNumber": 2,
+      "episodeNumber": 1,
+      "metadataLocked": false,
+      "createdAt": "2026-09-03T10:00:03Z",
+      "createdBy": null,
+      "modifiedAt": "2026-10-03T16:00:04Z",
+      "externalIds": [],
+      "genres": [],
+      "tags": [],
+      "people": [],
+      "chapters": [],
+      "segments": [],
+      "playbackAssets": [],
+      "subtitleAssets": [],
+      "trailers": [],
+      "artwork": []
+    },
+    {
+      "id": "f001aeff-9c18-4183-b51b-51403af2515e",
+      "type": "movie",
+      "title": "Sintel",
+      "sortTitle": "sintel",
+      "year": 2010,
+      "description": "  A girl searches\nfor her dragon.  ",
+      "tagline": "   ",
+      "rating": 7.5,
+      "durationMs": 888000,
+      "parentId": null,
+      "seasonNumber": null,
+      "episodeNumber": null,
+      "metadataLocked": false,
+      "createdAt": "2026-09-01T10:00:00Z",
+      "createdBy": "katalog-manager/ingest",
+      "modifiedAt": "2026-10-01T16:00:01Z",
+      "externalIds": [
+        {
+          "source": "tmdb",
+          "externalId": "45745"
+        },
+        {
+          "source": "imdb",
+          "externalId": "tt1727587"
+        },
+        {
+          "source": "omdb",
+          "externalId": "z"
+        }
+      ],
+      "genres": [
+        "Animation",
+        "Fantasy"
+      ],
+      "tags": [
+        "blender",
+        "blender",
+        "open-movie"
+      ],
+      "people": [
+        {
+          "personId": "a1a1a1a1-0000-4000-8000-000000000001",
+          "name": "Ada Example",
+          "role": "actor",
+          "job": null,
+          "character": "Sintel",
+          "order": 1,
+          "episodeCount": null
+        },
+        {
+          "personId": "c3c3c3c3-0000-4000-8000-000000000003",
+          "name": "Cy Example",
+          "role": "actor",
+          "job": null,
+          "character": null,
+          "order": null,
+          "episodeCount": null
+        },
+        {
+          "personId": "b2b2b2b2-0000-4000-8000-000000000002",
+          "name": "Ben Example",
+          "role": "director",
+          "job": "Director",
+          "character": null,
+          "order": 0,
+          "episodeCount": null
+        },
+        {
+          "personId": "c3c3c3c3-0000-4000-8000-000000000003",
+          "name": "Cy Example",
+          "role": "Production Designer",
+          "job": null,
+          "character": null,
+          "order": null,
+          "episodeCount": null
+        }
+      ],
+      "chapters": [],
+      "segments": [],
+      "playbackAssets": [],
+      "subtitleAssets": [],
+      "trailers": [
+        {
+          "source": "tmdb",
+          "site": "YouTube",
+          "externalId": "eRsGyueVLvQ",
+          "url": "https://www.youtube.com/watch?v=eRsGyueVLvQ",
+          "title": "Trailer",
+          "durationSec": 52,
+          "localPath": null
+        },
+        {
+          "source": "manual",
+          "site": null,
+          "externalId": null,
+          "url": "https://example.org/trailers/sintel-teaser",
+          "title": " Teaser\n ",
+          "durationSec": null,
+          "localPath": null
+        },
+        {
+          "source": "legacy",
+          "site": null,
+          "externalId": null,
+          "url": "https://example.org/",
+          "title": null,
+          "durationSec": 0,
+          "localPath": null
+        }
+      ],
+      "artwork": [
+        {
+          "kind": "backdrop",
+          "contentType": "image/jpeg",
+          "fetchedAt": "2026-09-01T10:00:00Z",
+          "base64": "/9j/4AAQSkZJRgABAQAAAQABAAD/wAARCAQ4B4ADASIAdGhlIGJhY2tkcm9w"
+        },
+        {
+          "kind": "fanart",
+          "contentType": "image/png",
+          "fetchedAt": null,
+          "base64": "iVBORw0KGgoAAAANSUhEUgAAA+gAAAXcCAIAAAB0aGUgcG9zdGVy"
+        },
+        {
+          "kind": "logo",
+          "contentType": "image/png",
+          "fetchedAt": null,
+          "base64": "bm8gaW1hZ2UgYXQgYWxs"
+        },
+        {
+          "kind": "poster",
+          "contentType": "image/png",
+          "fetchedAt": "2026-09-01T10:00:01Z",
+          "base64": "iVBORw0KGgoAAAANSUhEUgAAA+gAAAXcCAIAAAB0aGUgcG9zdGVy"
+        },
+        {
+          "kind": "still",
+          "contentType": "image/webp",
+          "fetchedAt": null,
+          "base64": "UklGRjAAAABXRUJQVlA4WAoAAAAAAAAAfwIAZwEALi4uLg=="
+        },
+        {
+          "kind": "thumb",
+          "contentType": "image/png",
+          "fetchedAt": null,
+          "base64": "iVBORw0KGgoAAAANSUhEUgAAA+gAAAXcCAIAAAB0aGUgcG9zdGVy"
+        }
+      ]
+    },
+    {
+      "id": "f2f2f2f2-0000-4000-8000-000000000002",
+      "type": "movie",
+      "title": "Plain",
+      "sortTitle": null,
+      "year": null,
+      "description": null,
+      "tagline": null,
+      "rating": 0.0,
+      "durationMs": null,
+      "parentId": null,
+      "seasonNumber": null,
+      "episodeNumber": null,
+      "metadataLocked": true,
+      "createdAt": "2026-09-02T10:00:00Z",
+      "createdBy": null,
+      "modifiedAt": "2026-10-02T16:00:01Z",
+      "externalIds": [
+        {
+          "source": "tmdb",
+          "externalId": "not-a-number"
+        }
+      ],
+      "genres": [],
+      "tags": [],
+      "people": [],
+      "chapters": [],
+      "segments": [],
+      "playbackAssets": [],
+      "subtitleAssets": [],
+      "trailers": [],
+      "artwork": []
+    }
+  ],
+  "deletedItems": [],
+  "people": [
+    {
+      "id": "a1a1a1a1-0000-4000-8000-000000000001",
+      "name": "Ada Example",
+      "sortName": "Example, Ada",
+      "alsoKnownAs": [
+        "Ada Example",
+        "A. Example",
+        "Ада Пример"
+      ],
+      "birthDate": "1815-12-10",
+      "deathDate": "1852-11-27",
+      "birthPlace": "London, England",
+      "biography": {
+        "de": "Deutsch.",
+        "en": "  English.\nA second paragraph.  ",
+        "x y": "no language",
+        "zh-Hans": ""
+      },
+      "externalIds": {
+        "tmdbPerson": "101",
+        "imdb": "nm0000001"
+      },
+      "knownForDepartment": "Writing",
+      "metadataLocked": false,
+      "lockedFields": [
+        "biography",
+        "biography",
+        "name"
+      ],
+      "fieldOrigins": {
+        "name": "tmdb",
+        "bogus": "somewhere",
+        "images": "tmdb",
+        "biography": "manual"
+      },
+      "tmdbFetchedAt": "2026-10-01T06:00:00Z",
+      "tmdbChangedAt": "2026-09-30",
+      "modifiedAt": "2026-10-01T06:00:01Z",
+      "artwork": [
+        {
+          "kind": "profile",
+          "contentType": "image/jpeg",
+          "base64": "/9j/4AAQSkZJRgABAQAAAQABAAD/wAARCAJ4AaUDASIAdGhlIHBvcnRyYWl0",
+          "sha256": "sha256:a3026fb0dd55af2cbf1a9727846917090e9147e5d254df49f5fa2c29801839db",
+          "width": 421,
+          "height": 999,
+          "isPrimary": true,
+          "sourcePath": "/ada.jpg",
+          "fetchedAt": "2026-10-01T06:00:00Z"
+        },
+        {
+          "kind": "profile",
+          "contentType": "image/png",
+          "base64": "iVBORw0KGgoAAAANSUhEUgAAALkAAAEWCAIAAABhbiBvbGRlciBwb3J0cmFpdA==",
+          "sha256": "sha256:7a8456e8db7ba36c7b69327cef4d154d8a52ae173173586297060c2dc4dcbb31",
+          "width": null,
+          "height": null,
+          "isPrimary": false,
+          "sourcePath": null,
+          "fetchedAt": "2026-09-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "b2b2b2b2-0000-4000-8000-000000000002",
+      "name": "Ben Example",
+      "sortName": null,
+      "alsoKnownAs": [],
+      "birthDate": null,
+      "deathDate": null,
+      "birthPlace": null,
+      "biography": {},
+      "externalIds": {
+        "tmdbPerson": "102",
+        "imdb": null
+      },
+      "knownForDepartment": null,
+      "metadataLocked": true,
+      "lockedFields": [],
+      "fieldOrigins": {
+        "name": "manual"
+      },
+      "tmdbFetchedAt": null,
+      "tmdbChangedAt": null,
+      "modifiedAt": "2026-10-01T06:00:01Z",
+      "artwork": []
+    },
+    {
+      "id": "c3c3c3c3-0000-4000-8000-000000000003",
+      "name": "Cy Example",
+      "sortName": null,
+      "alsoKnownAs": [],
+      "birthDate": "1990-05-17",
+      "deathDate": null,
+      "birthPlace": null,
+      "biography": {},
+      "externalIds": {
+        "tmdbPerson": null,
+        "imdb": null
+      },
+      "knownForDepartment": null,
+      "metadataLocked": false,
+      "lockedFields": [],
+      "fieldOrigins": {},
+      "tmdbFetchedAt": null,
+      "tmdbChangedAt": null,
+      "modifiedAt": "2026-10-01T06:00:01Z",
+      "artwork": []
+    }
+  ]
+}

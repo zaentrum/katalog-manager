@@ -1,0 +1,71 @@
+{
+  "schema": "zaentrum.library.metadata/2",
+  "itemId": "e1e1e1e1-0000-4000-8000-000000000011",
+  "type": "episode",
+  "asOf": "2026-10-06T12:00:00Z",
+  "projectedBy": "library-v2-from-catalog",
+  "databaseUpdatedAt": "2026-10-03T16:00:02Z",
+  "externalIds": {
+    "tmdbEpisode": "937631"
+  },
+  "titles": {
+    "primary": "Earthfall",
+    "original": null,
+    "sort": null,
+    "qualifier": null,
+    "localized": {
+      "und": {
+        "title": "Earthfall",
+        "overview": "The pilot."
+      }
+    }
+  },
+  "releaseDate": "2010",
+  "genres": [],
+  "tags": [],
+  "rating": 7.1,
+  "contentRating": null,
+  "credits": [
+    {
+      "personId": "b2b2b2b2-0000-4000-8000-000000000002",
+      "name": "Ben Example",
+      "role": "actor",
+      "job": null,
+      "character": "Lead",
+      "order": 0,
+      "episodeCount": null,
+      "tmdbPerson": null
+    }
+  ],
+  "library": {
+    "match": {
+      "status": "matched",
+      "decidedBy": "legacy-catalog",
+      "decidedAt": "2026-10-06T12:00:00Z"
+    },
+    "reference": {
+      "runtimeMs": 2100000,
+      "runtimeSource": "legacy-catalog"
+    },
+    "numbering": {
+      "aired": {
+        "season": 1,
+        "episode": 1,
+        "episodeEnd": null
+      }
+    }
+  },
+  "images": [],
+  "videos": [],
+  "curation": {
+    "metadataLocked": false,
+    "lockedFields": [],
+    "notes": null
+  },
+  "fieldOrigins": {
+    "titles.primary": "legacy-catalog",
+    "releaseDate": "legacy-catalog",
+    "rating": "legacy-catalog",
+    "credits": "legacy-catalog"
+  }
+}

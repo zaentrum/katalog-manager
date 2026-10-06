@@ -1,0 +1,80 @@
+{
+  "schema": "zaentrum.library.person/2",
+  "personId": "a1a1a1a1-0000-4000-8000-000000000001",
+  "asOf": "2026-10-06T12:00:00Z",
+  "projectedBy": "library-v2-from-catalog",
+  "databaseUpdatedAt": "2026-10-01T06:00:01Z",
+  "sources": {
+    "tmdb": {
+      "fetchedAt": "2026-10-01T06:00:00Z",
+      "changedAt": "2026-09-30"
+    }
+  },
+  "name": "Ada Example",
+  "sortName": "Example, Ada",
+  "alsoKnownAs": [
+    "A. Example",
+    "Ада Пример"
+  ],
+  "birthDate": "1815-12-10",
+  "deathDate": "1852-11-27",
+  "birthPlace": "London, England",
+  "knownForDepartment": "Writing",
+  "biography": {
+    "de": "Deutsch.",
+    "en": "English.\nA second paragraph."
+  },
+  "externalIds": {
+    "tmdbPerson": "101",
+    "imdb": "nm0000001"
+  },
+  "images": [
+    {
+      "kind": "profile",
+      "primary": true,
+      "file": "a3026fb0dd55af2cbf1a9727846917090e9147e5d254df49f5fa2c29801839db.jpg",
+      "sha256": "sha256:a3026fb0dd55af2cbf1a9727846917090e9147e5d254df49f5fa2c29801839db",
+      "contentType": "image/jpeg",
+      "sizeBytes": 45,
+      "width": 421,
+      "height": 632,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": "2026-10-01T06:00:00Z",
+      "origin": {
+        "source": "tmdb",
+        "ref": "/ada.jpg",
+        "fetchedAt": "2026-10-01T06:00:00Z"
+      }
+    },
+    {
+      "kind": "profile",
+      "file": "7a8456e8db7ba36c7b69327cef4d154d8a52ae173173586297060c2dc4dcbb31.png",
+      "sha256": "sha256:7a8456e8db7ba36c7b69327cef4d154d8a52ae173173586297060c2dc4dcbb31",
+      "contentType": "image/png",
+      "sizeBytes": 46,
+      "width": 185,
+      "height": 278,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": "2026-09-01T00:00:00Z",
+      "origin": {
+        "source": "legacy-catalog",
+        "fetchedAt": "2026-09-01T00:00:00Z"
+      }
+    }
+  ],
+  "curation": {
+    "metadataLocked": false,
+    "lockedFields": [
+      "biography",
+      "name"
+    ],
+    "notes": null
+  },
+  "fieldOrigins": {
+    "name": "tmdb",
+    "images": "tmdb",
+    "biography": "manual"
+  }
+}
