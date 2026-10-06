@@ -86,6 +86,22 @@
   "images": [
     {
       "kind": "poster",
+      "file": "6190b3e6d0bd244751ab6f0756262b3d9329b9605f2abc9b6e4da8f7f8834693.png",
+      "sha256": "sha256:6190b3e6d0bd244751ab6f0756262b3d9329b9605f2abc9b6e4da8f7f8834693",
+      "contentType": "image/png",
+      "sizeBytes": 45,
+      "width": 680,
+      "height": 1000,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": null,
+      "origin": {
+        "source": "legacy-catalog"
+      },
+      "season": null
+    },
+    {
+      "kind": "poster",
       "file": "b809a9567a6365f6be8e6cc371bd1a830901d2b7d507fd8546da6e61c80d88cb.png",
       "sha256": "sha256:b809a9567a6365f6be8e6cc371bd1a830901d2b7d507fd8546da6e61c80d88cb",
       "contentType": "image/png",

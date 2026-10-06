@@ -1,5 +1,6 @@
 {
   "exportedAt": "2026-10-06T12:00:00Z",
+  "shard": null,
   "items": [
     {
       "id": "5e5e5e5e-0000-4000-8000-000000000001",
@@ -59,6 +60,12 @@
           "contentType": "image/png",
           "fetchedAt": "2026-09-03T10:00:00Z",
           "base64": "iVBORw0KGgoAAAANSUhEUgAAAqgAAAPoCAIAAAB0aGUgc2VyaWVzJyBwb3N0ZXI="
+        },
+        {
+          "kind": "poster",
+          "contentType": "image/png",
+          "fetchedAt": null,
+          "base64": "iVBORw0KGgoAAAANSUhEUgAAAqgAAAPoCAIAAABhbm90aGVyIHBvc3RlciAw"
         }
       ]
     },
@@ -456,5 +463,8 @@
       "modifiedAt": "2026-10-01T06:00:01Z",
       "artwork": []
     }
-  ]
+  ],
+  "extras": [],
+  "versions": [],
+  "sources": []
 }

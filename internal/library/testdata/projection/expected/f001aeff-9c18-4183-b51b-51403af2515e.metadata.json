@@ -125,6 +125,21 @@
       "origin": {
         "source": "legacy-catalog"
       }
+    },
+    {
+      "kind": "thumb",
+      "file": "a1aa888d1f684905516f1e65e5fac54dad384443b5339adfcbf2584769ebede9.png",
+      "sha256": "sha256:a1aa888d1f684905516f1e65e5fac54dad384443b5339adfcbf2584769ebede9",
+      "contentType": "image/png",
+      "sizeBytes": 39,
+      "width": 1000,
+      "height": 1500,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": null,
+      "origin": {
+        "source": "legacy-catalog"
+      }
     }
   ],
   "videos": [

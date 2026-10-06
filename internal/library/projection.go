@@ -238,12 +238,16 @@ type ImageFile struct {
 // images is the tool's artwork(): the entries a projection lists of the
 // images ins of kinds, and the files they name. An image is named by the
 // hash of its bytes, which decide its type and size; one of a kind no
-// record holds, without bytes, or that is no JPEG, PNG or WebP is left out;
-// byte-identical ones are one, primary when either is of its kind; at most
-// one of a kind is primary, the first. A series' images name no season.
+// record holds, without bytes, or that is no JPEG, PNG or WebP is left out.
+// Every row is an image of its kind: byte-identical rows of two kinds (a
+// backdrop that is the poster) are two entries sharing one file, written
+// once; byte-identical rows of one kind are one entry, primary when either
+// is. At most one of a kind is primary, the first. A series' images name no
+// season.
 func images(ins []ImageIn, kinds map[string]bool, series bool) ([]any, []ImageFile, error) {
 	var out []Doc
-	byName := map[string]Doc{}
+	byEntry := map[string]int{} // its file and kind: where it is in out
+	written := map[string]bool{}
 	var files []ImageFile
 	for _, in := range ins {
 		kind := strings.ToLower(in.Kind)
@@ -263,14 +267,9 @@ func images(ins []ImageIn, kinds map[string]bool, series bool) ([]any, []ImageFi
 			continue
 		}
 		name := in.SHA256 + "." + ext
-		if prev, seen := byName[name]; seen {
-			if in.Primary && str(prev, "kind") == kind {
-				byName[name] = prev.With("primary", true)
-				for i, e := range out {
-					if str(e, "file") == name {
-						out[i] = byName[name]
-					}
-				}
+		if i, seen := byEntry[name+"\x00"+kind]; seen {
+			if in.Primary {
+				out[i] = out[i].With("primary", true)
 			}
 			continue
 		}
@@ -297,8 +296,11 @@ func images(ins []ImageIn, kinds map[string]bool, series bool) ([]any, []ImageFi
 			entry = append(entry, Field{"season", nil})
 		}
 		out = append(out, entry)
-		byName[name] = entry
-		files = append(files, ImageFile{Name: name, Bytes: in.Bytes})
+		byEntry[name+"\x00"+kind] = len(out) - 1
+		if !written[name] {
+			written[name] = true
+			files = append(files, ImageFile{Name: name, Bytes: in.Bytes})
+		}
 	}
 	first := map[string]bool{}
 	list := make([]any, len(out))
@@ -313,6 +315,31 @@ func images(ins []ImageIn, kinds map[string]bool, series bool) ([]any, []ImageFi
 		list[i] = e
 	}
 	return list, files, nil
+}
+
+// sortImages orders an item's images as the tool's image_order(): by kind,
+// then by season (the series' own images first), then by file, the hash of
+// its bytes: the export lists an item's artwork in no particular order.
+func sortImages(list []any) {
+	key := func(e any) (string, bool, int64, string) {
+		d, _ := e.(Doc)
+		season, _ := d.Get("season")
+		n, ok := toFloat(season)
+		return str(d, "kind"), season != nil, map[bool]int64{true: int64(n)}[ok], str(d, "file")
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		ki, si, ni, fi := key(list[i])
+		kj, sj, nj, fj := key(list[j])
+		switch {
+		case ki != kj:
+			return ki < kj
+		case si != sj:
+			return !si
+		case ni != nj:
+			return ni < nj
+		}
+		return fi < fj
+	})
 }
 
 func ptrInt(p *int64) any {
@@ -619,6 +646,7 @@ func MetadataDoc(row Doc, p ItemProjection) (Doc, []ImageFile, error) {
 		lib = append(lib, Field{"extras", p.Extras})
 	}
 	imgs, files, err := images(p.Images, imageKinds, typ == "series")
+	sortImages(imgs)
 	if err != nil {
 		return nil, nil, err
 	}

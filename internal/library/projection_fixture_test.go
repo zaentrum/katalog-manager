@@ -14,7 +14,9 @@ import (
 )
 
 // The projection's fixture: two films, a series with three episodes, and
-// three people, with what the tool's port has to get right.
+// three people, with what the tool's port has to get right (among it a
+// thumb that is the poster's bytes, and a series' second poster whose hash
+// sorts before the first's).
 const (
 	fxFilm    = "f001aeff-9c18-4183-b51b-51403af2515e"
 	fxPlain   = "f2f2f2f2-0000-4000-8000-000000000002"
@@ -108,8 +110,9 @@ for her dragon.  ', '   ', 7.5, 888000, NULL, NULL, NULL, false, '2026-09-01 10:
 		('a4', $1, 'poster', 'image/png', $4, '2026-09-01 10:00:01'),
 		('a5', $1, 'still', 'image/webp', $5, NULL),
 		('a6', $1, 'thumb', 'image/png', $4, NULL),
-		('a7', $2, 'poster', 'image/png', $6, '2026-09-03 10:00:00')`, fxFilm, fxSeries, backdrop, poster, still,
-		pngOf(680, 1000, "the series' poster"))
+		('a7', $2, 'poster', 'image/png', $6, '2026-09-03 10:00:00'),
+		('a8', $2, 'poster', 'image/png', $7, NULL)`, fxFilm, fxSeries, backdrop, poster, still,
+		pngOf(680, 1000, "the series' poster"), pngOf(680, 1000, "another poster 0"))
 	ex(`INSERT INTO com_nalet_katalog_personartwork (id, person_id, kind, contenttype, bytes, sha256, width, height,
 		isprimary, sourcepath, fetchedat) VALUES
 		('pa1', $1, 'profile', 'image/png', $2, encode(sha256($2), 'hex'), NULL, NULL, false, NULL, '2026-09-01 02:00:00+02'),
@@ -147,7 +150,8 @@ func TestWriteTheProjectionFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := conn.Conn().PgConn().Exec(ctx, strings.Join(sql, "\n")).ReadAll()
+	// psql's variable shard, empty: the whole catalog
+	results, err := conn.Conn().PgConn().Exec(ctx, strings.ReplaceAll(strings.Join(sql, "\n"), ":'shard'", "''")).ReadAll()
 	conn.Conn().Close(ctx)
 	conn.Release()
 	if err != nil {
