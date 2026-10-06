@@ -406,6 +406,27 @@ func (s *Store) CompleteExtraPackage(ctx context.Context, id string, p ExtraPack
 	return x, nil
 }
 
+// RecordExtraPackage records, with the library's v2 layout, the extra id's
+// folder in the record as its package, as CompleteExtraPackage records one
+// in the package store: its record's folder too (recordpath), recorded now,
+// its packageId. An extra there is not, or a removed one, is ErrExtraGone.
+func (s *Store) RecordExtraPackage(ctx context.Context, id string, p ExtraPackage, packageID string) (*model.Extra, error) {
+	x, err := extraRow(ctx, s.pool, `UPDATE `+extrasTable+` x SET
+			state = CASE WHEN x.state = 'missing' THEN 'missing' ELSE 'ready' END,
+			packagepath = $2, recordpath = $2, recordedat = now(), packageid = $9, packagedat = now(), durationms = $3,
+			videocodec = $4, width = $5, height = $6, peakbandwidthbps = $7, packagesizebytes = $8,
+			failures = 0, error = NULL, nextretryat = NULL, dispatchedat = NULL, heartbeatat = now(), modifiedat = now()
+		WHERE id = $1 AND removedat IS NULL RETURNING `+xCols,
+		id, p.Path, p.DurationMs, clipped(p.VideoCodec, 40), p.Width, p.Height, p.PeakBandwidthBps, p.SizeBytes, packageID)
+	if err != nil {
+		return nil, err
+	}
+	if x == nil {
+		return nil, ErrExtraGone
+	}
+	return x, nil
+}
+
 // ClaimedExtra is an extra claimed to have its trigger sent.
 type ClaimedExtra struct {
 	ID, ItemID, Kind, RegisteredBy string

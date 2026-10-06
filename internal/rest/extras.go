@@ -243,6 +243,18 @@ func (h *Handlers) extraPackagingComplete(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "the body is no manifest")
 		return
 	}
+	if isV2(manifest) {
+		h.extraPackagingCompleteV2(w, r, x, it, manifest)
+		return
+	}
+	if set, err := h.settings(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "the library's settings could not be read")
+		return
+	} else if set.V2() {
+		writeError(w, http.StatusConflict, "the library's layout is v2: packaging-complete takes the v2 payload "+
+			"(layout v2) of an extra's folder in the record, and this is a legacy manifest")
+		return
+	}
 	for key, want := range map[string]string{"itemId": id, "parentId": x.ItemID, "type": "extra"} {
 		if v := asString(manifest[key]); v != nil && *v != want {
 			writeError(w, http.StatusBadRequest, "the manifest is another package's: its "+key+" is "+*v+", not "+want)

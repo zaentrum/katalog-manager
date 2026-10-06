@@ -48,6 +48,21 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(r, &manifest); err != nil || manifest == nil {
 		manifest = map[string]any{}
 	}
+	// The v2 payload (the library's v2 layout) is taken in either layout; a
+	// legacy manifest only in the legacy layout, where a package lies in the
+	// package store.
+	if isV2(manifest) {
+		h.packagingCompleteV2(w, r, itemID, manifest)
+		return
+	}
+	if set, err := h.settings(ctx); err != nil {
+		http.Error(w, "the library's settings could not be read", http.StatusInternalServerError)
+		return
+	} else if set.V2() {
+		writeError(w, http.StatusConflict, "the library's layout is v2: packaging-complete takes the v2 payload "+
+			"(layout v2) of a version in the record, and this is a legacy manifest")
+		return
+	}
 
 	source := asMap(manifest["source"])
 	renditions := asMap(manifest["renditions"])
