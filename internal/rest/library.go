@@ -87,7 +87,8 @@ type recordVersion struct {
 }
 
 // recordSegmentKinds are the kinds of a version's detected range; any other is
-// other, labelled with the catalog's kind.
+// other, labelled with the catalog's kind (lower-case), as the library's
+// record logic writes it.
 var recordSegmentKinds = map[string]bool{"intro": true, "recap": true, "credits": true, "preview": true, "commercial": true,
 	"other": true}
 
@@ -185,8 +186,7 @@ func (h *Handlers) itemLibraryOf(ctx context.Context, itemID string) (*itemLibra
 		if kind := strings.ToLower(sg.Kind); recordSegmentKinds[kind] {
 			sg.Kind = kind
 		} else {
-			label := sg.Kind
-			sg.Kind, sg.Label = "other", &label
+			sg.Kind, sg.Label = "other", &kind
 		}
 		b.Segments = append(b.Segments, sg)
 	}
