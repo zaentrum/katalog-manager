@@ -69,6 +69,93 @@ type Item {
   # taken in. removed: the removed ones too. None on a catalog older than
   # migration 039.
   extras(removed: Boolean): [Extra!]!
+  # what the library holds of it (see ItemLibrary); null on a catalog older
+  # than migration 040.
+  library: ItemLibrary
+}
+
+# What the library holds of a title: with library.layout=v2 its record on
+# storage, the packages it was packaged into (versions), the originals it was
+# given (sources) and the facts its folder records after its records were
+# written (events).
+type ItemLibrary {
+  # when its item.json was written: from then on its type and its parent
+  # are kept; null while it is not recorded
+  recorded: Time
+  # whether its originals are kept whatever library.originals says
+  # (holdOriginal)
+  hold: Boolean!
+  # its folder in the library, by the path rules; null for an item that has
+  # none (a season, a track)
+  dir: String
+  # its package runs, the newest first
+  versions: [LibraryVersion!]!
+  # its originals, the oldest first
+  sources: [LibrarySource!]!
+  # the events its folder records, in their order; none while its folder is
+  # not on storage
+  events: [LibraryEvent!]!
+}
+
+# A package run of a title: building while the pipeline works on it,
+# complete once its package is recorded (the one that plays), superseded by
+# a newer one, removed after its grace.
+type LibraryVersion {
+  id: ID!
+  state: String!
+  packageId: ID
+  dir: String
+  sourceIds: [ID!]!
+  completedAt: Time
+  # when its package was last verified, and how far: chain (its records) or
+  # full (every file's hash)
+  verifiedAt: Time
+  verifiedLevel: String
+  supersededBy: ID
+  supersededAt: Time
+  # when its removal began
+  removedAt: Time
+  createdAt: Time!
+}
+
+# An original a title was given: present while it is there (arrivalPath),
+# retiring while the retire job deletes it, deleted after packaging (its
+# event retireEventId, and what its package does not carry of it, lost), or
+# removed (no original of the title after all).
+type LibrarySource {
+  id: ID!
+  filename: String!
+  state: String!
+  arrivalPath: String
+  # where it arrived, relative to the arrivals' root
+  libraryPath: String
+  sizeBytes: Float!
+  qh1: String
+  # when its record (sources/<id>/) was written
+  recordedAt: Time
+  retireEventId: ID
+  deletedAt: Time
+  deletedBy: String
+  lost: [String!]!
+  # why its retirement did not go through
+  error: String
+}
+
+# A fact the title's folder records (events/): an original deleted, a
+# package superseded, a version or an extra removed.
+type LibraryEvent {
+  id: ID!
+  kind: String!
+  at: Time
+  by: String
+  versionId: ID
+  sourceId: ID
+  packageId: ID
+  extraId: ID
+  supersededBy: ID
+  reason: String
+  # what an original's deletion accepted to lose; null for another kind
+  accepted: [String!]
 }
 
 # An extra of a movie or a series: bonus material, a trailer or a teaser
@@ -949,6 +1036,10 @@ input ItemInput {
 }
 
 type Mutation {
+  # the library: hold the title's originals (hold: true), which the retire
+  # job then leaves whatever library.originals says, or let them go; a
+  # series' hold is its episodes' too. Answers what the library holds of it.
+  holdOriginal(id: ID!, hold: Boolean!): ItemLibrary!
   # operator actions
   triggerScan(source: String): ScanJob!
   enrichOne(id: ID!): EnrichResult!

@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	graphql "github.com/graph-gophers/graphql-go"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
@@ -127,8 +128,9 @@ func (r *genreResolver) ID() graphql.ID { return gid(r.m.ID) }
 func (r *genreResolver) Name() string   { return r.m.Name }
 
 type personResolver struct {
-	m *model.Person
-	s *store.Store
+	m   *model.Person
+	s   *store.Store
+	lib library.Paths
 }
 
 func (r *personResolver) ID() graphql.ID              { return gid(r.m.ID) }
@@ -174,7 +176,7 @@ func (r *personResolver) Credits(ctx context.Context) ([]*personCreditResolver, 
 	}
 	out := make([]*personCreditResolver, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, &personCreditResolver{m: c, s: r.s})
+		out = append(out, &personCreditResolver{m: c, s: r.s, lib: r.lib})
 	}
 	return out, nil
 }
@@ -182,8 +184,9 @@ func (r *personResolver) Credits(ctx context.Context) ([]*personCreditResolver, 
 // personCreditResolver is a person's credit; its title comes with its parent,
 // read with the credit.
 type personCreditResolver struct {
-	m *model.PersonCredit
-	s *store.Store
+	m   *model.PersonCredit
+	s   *store.Store
+	lib library.Paths
 }
 
 func (r *personCreditResolver) ID() graphql.ID       { return gid(r.m.ID) }
@@ -193,7 +196,7 @@ func (r *personCreditResolver) Character() *string   { return r.m.Character }
 func (r *personCreditResolver) Order() *int32        { return r.m.Order }
 func (r *personCreditResolver) EpisodeCount() *int32 { return r.m.EpisodeCount }
 func (r *personCreditResolver) Item() *itemResolver {
-	return &itemResolver{m: &r.m.Item, s: r.s, parent: r.m.Parent, parentRead: true}
+	return &itemResolver{m: &r.m.Item, s: r.s, lib: r.lib, parent: r.m.Parent, parentRead: true}
 }
 
 type localizedTextResolver struct{ language, text string }
@@ -226,6 +229,7 @@ type itemPersonResolver struct {
 	m      *model.ItemPerson
 	person *model.Person
 	s      *store.Store
+	lib    library.Paths
 }
 
 func (r *itemPersonResolver) ID() graphql.ID       { return gid(r.m.ID) }
@@ -236,9 +240,9 @@ func (r *itemPersonResolver) Order() *int32        { return r.m.Order }
 func (r *itemPersonResolver) EpisodeCount() *int32 { return r.m.EpisodeCount }
 func (r *itemPersonResolver) Person() *personResolver {
 	if r.person == nil {
-		return &personResolver{m: &model.Person{ID: r.m.PersonID}, s: r.s}
+		return &personResolver{m: &model.Person{ID: r.m.PersonID}, s: r.s, lib: r.lib}
 	}
-	return &personResolver{m: r.person, s: r.s}
+	return &personResolver{m: r.person, s: r.s, lib: r.lib}
 }
 
 // ---- ItemArtwork / ItemExternalId ----

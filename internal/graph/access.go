@@ -76,6 +76,7 @@ var fieldAccess = map[string]auth.Access{
 	"Mutation.removeExtra":              auth.Admin,
 	"Mutation.packageExtra":             auth.Admin,
 	"Mutation.packageExtras":            auth.Admin,
+	"Mutation.holdOriginal":             auth.Admin,
 }
 
 // allow returns nil when the caller in ctx may call field ("Query.items",

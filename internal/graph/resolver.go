@@ -9,6 +9,7 @@ import (
 	graphql "github.com/graph-gophers/graphql-go"
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/sourceprobe"
 	"github.com/zaentrum/katalog-manager/internal/sourcetracks"
@@ -121,10 +122,11 @@ type Resolver struct {
 	cfg    config.Config
 	svc    Services
 	access auth.Policy
+	lib    library.Paths
 }
 
 func NewResolver(s *store.Store, cfg config.Config, svc Services) *Resolver {
-	return &Resolver{store: s, cfg: cfg, svc: svc, access: cfg.Policy()}
+	return &Resolver{store: s, cfg: cfg, svc: svc, access: cfg.Policy(), lib: library.PathsOf(cfg)}
 }
 
 func deref32(p *int32) int32 {
@@ -167,7 +169,7 @@ func (r *Resolver) Item(ctx context.Context, args struct{ ID graphql.ID }) (*ite
 	if err != nil || row == nil {
 		return nil, err
 	}
-	return &itemResolver{m: &row.Item, s: r.store}, nil
+	return &itemResolver{m: &row.Item, s: r.store, lib: r.lib}, nil
 }
 
 type itemsArgs struct {
@@ -184,7 +186,7 @@ func (r *Resolver) listItems(ctx context.Context, f store.ItemFilter) ([]*itemRe
 	if err != nil {
 		return nil, err
 	}
-	return newItemResolvers(rows, r.store), nil
+	return newItemResolvers(rows, r.store, r.lib), nil
 }
 
 func (r *Resolver) Items(ctx context.Context, args itemsArgs) ([]*itemResolver, error) {
@@ -381,7 +383,7 @@ func (r *Resolver) People(ctx context.Context) ([]*personResolver, error) {
 	}
 	out := make([]*personResolver, 0, len(ps))
 	for _, p := range ps {
-		out = append(out, &personResolver{m: p, s: r.store})
+		out = append(out, &personResolver{m: p, s: r.store, lib: r.lib})
 	}
 	return out, nil
 }
@@ -394,7 +396,7 @@ func (r *Resolver) Person(ctx context.Context, args struct{ ID graphql.ID }) (*p
 	if err != nil || p == nil {
 		return nil, err
 	}
-	return &personResolver{m: p, s: r.store}, nil
+	return &personResolver{m: p, s: r.store, lib: r.lib}, nil
 }
 
 func (r *Resolver) EnrichStatus(ctx context.Context) (*enrichStatusResolver, error) {
@@ -596,7 +598,7 @@ func (r *Resolver) SetMinAgeOverride(ctx context.Context, args struct {
 	if err != nil || it == nil {
 		return nil, err
 	}
-	return newItemResolver(it, r.store), nil
+	return newItemResolver(it, r.store, r.lib), nil
 }
 
 // SetTrackLanguage sets the language of a track of a title's source by hand;
@@ -619,7 +621,7 @@ func (r *Resolver) SetTrackLanguage(ctx context.Context, args struct {
 	if err != nil || it == nil {
 		return nil, err
 	}
-	return newItemResolver(it, r.store), nil
+	return newItemResolver(it, r.store, r.lib), nil
 }
 
 func (r *Resolver) BackfillEpisodeBackdrops(ctx context.Context) (*backfillResultResolver, error) {
@@ -741,7 +743,7 @@ func (r *Resolver) CreateItem(ctx context.Context, args struct{ Input itemInput 
 	if err != nil {
 		return nil, err
 	}
-	return newItemResolver(it, r.store), nil
+	return newItemResolver(it, r.store, r.lib), nil
 }
 
 func (r *Resolver) UpdateItem(ctx context.Context, args struct {
@@ -758,7 +760,7 @@ func (r *Resolver) UpdateItem(ctx context.Context, args struct {
 	if err != nil || it == nil {
 		return nil, err
 	}
-	return newItemResolver(it, r.store), nil
+	return newItemResolver(it, r.store, r.lib), nil
 }
 
 func (r *Resolver) DeleteItem(ctx context.Context, args struct {
@@ -797,7 +799,7 @@ func (r *Resolver) SetItemGenres(ctx context.Context, args struct {
 	if err != nil || it == nil {
 		return nil, err
 	}
-	return newItemResolver(it, r.store), nil
+	return newItemResolver(it, r.store, r.lib), nil
 }
 
 func (r *Resolver) SetItemTags(ctx context.Context, args struct {
@@ -814,7 +816,7 @@ func (r *Resolver) SetItemTags(ctx context.Context, args struct {
 	if err != nil || it == nil {
 		return nil, err
 	}
-	return newItemResolver(it, r.store), nil
+	return newItemResolver(it, r.store, r.lib), nil
 }
 
 func (r *Resolver) CreateSetting(ctx context.Context, args struct {

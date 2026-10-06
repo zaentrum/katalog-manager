@@ -345,7 +345,8 @@ func fingerprint(t *testing.T, st *store.Store) string {
 var operations = []struct{ doc, calls string }{
 	{`{ item(id: "m1") { id title processingSteps { step status failures lastError nextRetryAt dispatchedAt updatedAt }
 		tracks { kind ordinal sourceLanguage languageOverride effectiveLanguage }
-		extras(removed: true) { id kind title state playable sourcePath removedAt } } }`, ""},
+		extras(removed: true) { id kind title state playable sourcePath removedAt }
+		library { recorded hold dir versions { id state } sources { id state } events { id kind } } } }`, ""},
 	{`{ items(limit: 5) { id } }`, ""},
 	{`{ movies { id } }`, ""},
 	{`{ series { id } }`, ""},
@@ -402,6 +403,7 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { removeExtra(id: "x1", reason: "a duplicate") { id removedAt } }`, "remove extra x1"},
 	{`mutation { packageExtra(id: "x1") { queued busy notSent message extras { id state } } }`, "package extra x1"},
 	{`mutation { packageExtras(itemId: "m1") { queued message extras { id } } }`, "package extras m1"},
+	{`mutation { holdOriginal(id: "m1", hold: true) { hold versions { id } } }`, ""},
 }
 
 var rootField = regexp.MustCompile(`^(?:mutation )?\{ (\w+)`)

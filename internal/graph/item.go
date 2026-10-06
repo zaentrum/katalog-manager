@@ -5,6 +5,7 @@ import (
 
 	graphql "github.com/graph-gophers/graphql-go"
 	"github.com/zaentrum/katalog-manager/internal/languages"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
@@ -15,6 +16,8 @@ import (
 type itemResolver struct {
 	m *model.Item
 	s *store.Store
+	// lib is where the library lies, as the configuration says.
+	lib library.Paths
 	// With parentRead the parent was read with the item (a person's credit
 	// reads its title's): parent, nil when there is none. Without, Parent
 	// reads it.
@@ -22,17 +25,17 @@ type itemResolver struct {
 	parentRead bool
 }
 
-func newItemResolver(m *model.Item, s *store.Store) *itemResolver {
+func newItemResolver(m *model.Item, s *store.Store, lib library.Paths) *itemResolver {
 	if m == nil {
 		return nil
 	}
-	return &itemResolver{m: m, s: s}
+	return &itemResolver{m: m, s: s, lib: lib}
 }
 
-func newItemResolvers(ms []*model.ItemRow, s *store.Store) []*itemResolver {
+func newItemResolvers(ms []*model.ItemRow, s *store.Store, lib library.Paths) []*itemResolver {
 	out := make([]*itemResolver, 0, len(ms))
 	for _, r := range ms {
-		out = append(out, &itemResolver{m: &r.Item, s: s})
+		out = append(out, &itemResolver{m: &r.Item, s: s, lib: lib})
 	}
 	return out
 }
@@ -113,13 +116,13 @@ func (r *itemResolver) Parent(ctx context.Context) (*itemResolver, error) {
 		return nil, nil
 	}
 	if r.parentRead {
-		return newItemResolver(r.parent, r.s), nil
+		return newItemResolver(r.parent, r.s, r.lib), nil
 	}
 	p, err := r.s.GetItemBase(ctx, *r.m.ParentID)
 	if err != nil || p == nil {
 		return nil, err
 	}
-	return newItemResolver(p, r.s), nil
+	return newItemResolver(p, r.s, r.lib), nil
 }
 
 func (r *itemResolver) Children(ctx context.Context) ([]*itemResolver, error) {
@@ -129,7 +132,7 @@ func (r *itemResolver) Children(ctx context.Context) ([]*itemResolver, error) {
 	}
 	out := make([]*itemResolver, 0, len(kids))
 	for _, k := range kids {
-		out = append(out, newItemResolver(k, r.s))
+		out = append(out, newItemResolver(k, r.s, r.lib))
 	}
 	return out, nil
 }
@@ -269,7 +272,7 @@ func (r *itemResolver) People(ctx context.Context) ([]*itemPersonResolver, error
 		if i < len(people) {
 			p = people[i]
 		}
-		out = append(out, &itemPersonResolver{m: x, person: p, s: r.s})
+		out = append(out, &itemPersonResolver{m: x, person: p, s: r.s, lib: r.lib})
 	}
 	return out, nil
 }
