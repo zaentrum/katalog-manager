@@ -223,6 +223,9 @@ func run() error {
 	// idle while there is no TMDB key.
 	go enricher.RunChangeSync(bgCtx, cfg.TMDBRefreshInterval)
 	go retries.Run(bgCtx)
+	// The library's projections (metadata.json, person.json) follow the
+	// database, with library.layout=v2, in one instance at a time.
+	go library.NewProjector(st.Pool(), cfg).Run(bgCtx)
 	// Event-driven enrichment: consume stube.catalog.item.discovered, enrich the
 	// item synchronously, then emit stube.catalog.item.enriched to trigger analyze.
 	// This replaces the old 60s enrichment poll ticker (pure-Kafka triggers).
@@ -240,6 +243,11 @@ func run() error {
 				// NOT enter analyze/transcode/package, so gate on a playable file.
 				switch status {
 				case "done", "not_found":
+					// With the library's v2 layout the item's identity is
+					// settled now: its record is written before the
+					// pipeline goes on (a series' too, before its first
+					// episode's).
+					recordItem(ctx, st, cfg, ev.ItemID)
 					if hasPrimaryAsset(ctx, st, ev.ItemID) {
 						out := events.NewItemEvent(ev.ItemID)
 						out.Type = ev.Type
@@ -354,6 +362,19 @@ func dropRetiredJobTables(ctx context.Context, st *store.Store) {
 		}
 		log.Printf("catalog: kept the job tables of a retired integration that hold rows: %s; nothing reads or writes them, "+
 			"and migration 035 drops a table only once it is empty", strings.Join(held, ", "))
+	}
+}
+
+// recordItem writes the item's record, item.json, with the library's v2
+// layout, once it is enriched; an item that cannot be recorded yet is said in
+// the log, and its worker record says why (the packager's to fail with).
+func recordItem(ctx context.Context, st *store.Store, cfg config.Config, itemID string) {
+	set, err := library.ReadSettings(ctx, st.Pool())
+	if err != nil || !set.V2() {
+		return
+	}
+	if _, err := library.PathsOf(cfg).EnsureItemRecord(ctx, st.Pool(), itemID); err != nil {
+		log.Printf("catalog: item %s is not recorded in the library: %v", itemID, err)
 	}
 }
 
