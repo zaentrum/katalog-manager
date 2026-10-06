@@ -36,6 +36,14 @@ var (
 // and the document is the one value of its last statement.
 func runExport(t *testing.T, st *store.Store) []byte {
 	t.Helper()
+	return runExportShard(t, st, "")
+}
+
+// runExportShard is runExport asked for one shard, as psql -v shard=<shard>
+// asks for it: psql gives the query the variable as a quoted literal, the
+// whole catalog when it is empty.
+func runExportShard(t *testing.T, st *store.Store, shard string) []byte {
+	t.Helper()
 	raw, err := os.ReadFile("library-export.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +67,8 @@ func runExport(t *testing.T, st *store.Store) []byte {
 	if _, err := conn.Exec(ctx, `SET xmlbinary TO hex`); err != nil {
 		t.Fatal(err)
 	}
-	results, err := conn.Conn().PgConn().Exec(ctx, strings.Join(sql, "\n")).ReadAll()
+	query := strings.ReplaceAll(strings.Join(sql, "\n"), ":'shard'", "'"+strings.ReplaceAll(shard, "'", "''")+"'")
+	results, err := conn.Conn().PgConn().Exec(ctx, query).ReadAll()
 	if err != nil {
 		t.Fatalf("the export failed: %v", err)
 	}
@@ -453,5 +462,172 @@ func TestExportCreditsWithoutMigration032(t *testing.T) {
 			{"personId": "p-5", "name": "Eve", "role": "writer", "job": null, "character": null, "order": null, "episodeCount": null},
 			{"personId": "p-3", "name": "Gus", "role": "gaffer", "job": null, "character": null, "order": null, "episodeCount": null},
 			{"personId": "p-4", "name": "Fay", "role": "narrator", "job": null, "character": null, "order": null, "episodeCount": null}]`)
+	}
+}
+
+// libraryRows gives the catalog a movie and a series, the series with a season
+// and two episodes — one under the season, one under the series — people the
+// movie and an episode credit, and the rows of the library record's tables
+// (039, 040): an extra of the movie and one it removed, a package run of the
+// movie and one removed, and an original of the movie and one of an episode.
+func libraryRows(t *testing.T, st *store.Store) {
+	t.Helper()
+	storetest.AddItem(t, st, "f0000000-0000-4000-8000-000000000001", "movie", "A Film", "")
+	storetest.AddItem(t, st, "ab000000-0000-4000-8000-000000000002", "series", "A Show", "")
+	storetest.AddItem(t, st, "cd000000-0000-4000-8000-000000000003", "season", "Season 1", "ab000000-0000-4000-8000-000000000002")
+	storetest.AddItem(t, st, "ef000000-0000-4000-8000-000000000004", "episode", "Pilot", "cd000000-0000-4000-8000-000000000003")
+	storetest.AddItem(t, st, "12000000-0000-4000-8000-000000000005", "episode", "Second", "ab000000-0000-4000-8000-000000000002")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ('p-1', 'Ada'), ('p-2', 'Ben')`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itempeople (id, item_id, person_id, role) VALUES
+		('c1', 'f0000000-0000-4000-8000-000000000001', 'p-1', 'actor'),
+		('c2', 'ef000000-0000-4000-8000-000000000004', 'p-2', 'actor')`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemextras (id, item_id, kind, title, localizedtitles, origin,
+		sourcepath, sourcesize, sourceqh1, registeredby, sortorder, hidden, label, state, packagepath, packagedat,
+		durationms, removedat, createdat, createdby) VALUES
+		('16aa63f3-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000001', 'trailer', 'Trailer',
+		 '{"de": "Vorschau"}', '{"kind": "link", "site": "example.org"}', '/srv/extras/a/trailer.mov', 34,
+		 'sha256:' || repeat('a', 64), 'api', 1, false, 'The Trailer', 'ready', '/srv/packages/extras/16/16aa63f3',
+		 '2026-10-06 10:05:00+02', 30000, NULL, '2026-10-06 08:00:00+00', 'api'),
+		('64000000-0000-4000-8000-000000000002', 'f0000000-0000-4000-8000-000000000001', 'featurette', 'Gone',
+		 NULL, NULL, NULL, NULL, NULL, 'api', NULL, false, NULL, 'ready', NULL, NULL, NULL,
+		 '2026-10-05 10:00:00+00', '2026-10-01 08:00:00+00', 'api')`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir,
+		completedat, verifiedat, verifiedlevel) VALUES
+		('9a2e0000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000001',
+		 '{0b6c0000-0000-4000-8000-000000000001}', 'complete', '4f1d0000-0000-4000-8000-000000000001',
+		 '/srv/movies/f0/f0000000-0000-4000-8000-000000000001/versions/9a2e0000-0000-4000-8000-000000000001',
+		 '2026-10-06 09:00:00+00', '2026-10-06 09:30:00+00', 'full'),
+		('77c10000-0000-4000-8000-000000000002', 'f0000000-0000-4000-8000-000000000001', '{}', 'removed',
+		 NULL, NULL, NULL, NULL, NULL)`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, librarypath,
+		sizebytes, qh1, state, recordedat, recorddir, sidecars) VALUES
+		('0b6c0000-0000-4000-8000-000000000001', 'f0000000-0000-4000-8000-000000000001', 'A Film (2024).mkv',
+		 '/srv/.work/incoming/A Film (2024).mkv', 'A Film (2024).mkv', 1234, 'sha256:' || repeat('b', 64), 'present',
+		 '2026-10-06 09:00:00+00', '/srv/movies/f0/f0000000-0000-4000-8000-000000000001/sources/0b6c0000-0000-4000-8000-000000000001',
+		 '[{"subtitleAssetId": "s-1", "rendition": "sub3", "path": "subs/3.vtt"}]'),
+		('0b6c0000-0000-4000-8000-000000000002', 'ef000000-0000-4000-8000-000000000004', 'Pilot.mkv', NULL, 'tv/Pilot.mkv',
+		 99, NULL, 'deleted', NULL, NULL, NULL)`)
+}
+
+// ids lists the ids of a section's entries, in their order.
+func ids(t *testing.T, raw json.RawMessage, key string) []string {
+	t.Helper()
+	var entries []map[string]any
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		t.Fatalf("not a list: %s", raw)
+	}
+	var out []string
+	for _, e := range entries {
+		out = append(out, e[key].(string))
+	}
+	return out
+}
+
+// The library tables the migration stages its records from are in the
+// document — the extras that are part of their titles, the package runs that
+// are not removed, the originals — and a shard narrows the items, the people
+// they credit and those tables to the titles whose folder is in it: a series
+// with its season and its episodes, the one under the season too. A catalog
+// without 039 and 040 exports them as null.
+func TestExportLibraryTablesAndShards(t *testing.T) {
+	st := storetest.Open(t)
+	libraryRows(t, st)
+	doc := runExport(t, st)
+	if s := string(section(t, doc, "shard")); s != "null" {
+		t.Errorf("the whole catalog's shard is %s, want null", s)
+	}
+	if got := ids(t, section(t, doc, "extras"), "id"); !reflect.DeepEqual(got, []string{"16aa63f3-0000-4000-8000-000000000001"}) {
+		t.Errorf("extras %v, want the one the movie did not remove", got)
+	}
+	if got := ids(t, section(t, doc, "versions"), "id"); !reflect.DeepEqual(got, []string{"9a2e0000-0000-4000-8000-000000000001"}) {
+		t.Errorf("versions %v, want the one not removed", got)
+	}
+	if got := ids(t, section(t, doc, "sources"), "id"); !reflect.DeepEqual(got, []string{
+		"0b6c0000-0000-4000-8000-000000000002", "0b6c0000-0000-4000-8000-000000000001"}) {
+		t.Errorf("sources %v, want both, by item", got)
+	}
+	var extras []map[string]any
+	_ = json.Unmarshal(section(t, doc, "extras"), &extras)
+	want := map[string]any{"id": "16aa63f3-0000-4000-8000-000000000001", "itemId": "f0000000-0000-4000-8000-000000000001",
+		"kind": "trailer", "title": "Trailer", "localizedTitles": map[string]any{"de": "Vorschau"}, "language": nil,
+		"seasonNumber": nil, "origin": map[string]any{"kind": "link", "site": "example.org"},
+		"sourcePath": "/srv/extras/a/trailer.mov", "sourceSize": float64(34), "sourceQh1": "sha256:" + strings.Repeat("a", 64),
+		"recordPath": nil, "registeredBy": "api", "sortOrder": float64(1), "hidden": false, "label": "The Trailer",
+		"state": "ready", "packageId": nil, "packagePath": "/srv/packages/extras/16/16aa63f3",
+		"packagedAt": "2026-10-06T08:05:00Z", "recordedAt": nil, "durationMs": float64(30000),
+		"createdAt": "2026-10-06T08:00:00Z", "createdBy": "api", "modifiedAt": extras[0]["modifiedAt"]}
+	if !reflect.DeepEqual(extras[0], want) {
+		pretty, _ := json.MarshalIndent(extras[0], "", "  ")
+		t.Errorf("the extra:\n%s", pretty)
+	}
+	var versions []map[string]any
+	_ = json.Unmarshal(section(t, doc, "versions"), &versions)
+	if v := versions[0]; !reflect.DeepEqual(v["sourceIds"], []any{"0b6c0000-0000-4000-8000-000000000001"}) ||
+		v["completedAt"] != "2026-10-06T09:00:00Z" || v["verifiedLevel"] != "full" || v["state"] != "complete" {
+		t.Errorf("the version: %v", v)
+	}
+	var sources []map[string]any
+	_ = json.Unmarshal(section(t, doc, "sources"), &sources)
+	if s := sources[1]; s["qh1"] != "sha256:"+strings.Repeat("b", 64) || s["sizeBytes"] != float64(1234) ||
+		!reflect.DeepEqual(s["sidecars"], []any{map[string]any{"subtitleAssetId": "s-1", "rendition": "sub3", "path": "subs/3.vtt"}}) {
+		t.Errorf("the movie's source: %v", s)
+	}
+
+	f0 := runExportShard(t, st, "f0")
+	if s := string(section(t, f0, "shard")); s != `"f0"` {
+		t.Errorf("the shard is %s", s)
+	}
+	if got := ids(t, section(t, f0, "items"), "id"); !reflect.DeepEqual(got, []string{"f0000000-0000-4000-8000-000000000001"}) {
+		t.Errorf("shard f0 holds %v, want the movie alone", got)
+	}
+	if got := ids(t, section(t, f0, "people"), "id"); !reflect.DeepEqual(got, []string{"p-1"}) {
+		t.Errorf("shard f0's people %v, want whom the movie credits", got)
+	}
+	if got := ids(t, section(t, f0, "sources"), "id"); !reflect.DeepEqual(got, []string{"0b6c0000-0000-4000-8000-000000000001"}) {
+		t.Errorf("shard f0's sources %v", got)
+	}
+	ab := runExportShard(t, st, "ab")
+	if got := ids(t, section(t, ab, "items"), "id"); !reflect.DeepEqual(got, []string{
+		"12000000-0000-4000-8000-000000000005", "ab000000-0000-4000-8000-000000000002",
+		"cd000000-0000-4000-8000-000000000003", "ef000000-0000-4000-8000-000000000004"}) {
+		t.Errorf("shard ab holds %v, want the series, its season and both episodes", got)
+	}
+	if got := ids(t, section(t, ab, "people"), "id"); !reflect.DeepEqual(got, []string{"p-2"}) {
+		t.Errorf("shard ab's people %v", got)
+	}
+	if got := ids(t, section(t, ab, "extras"), "id"); got != nil {
+		t.Errorf("shard ab's extras %v, want none", got)
+	}
+	if got := string(section(t, ab, "deletedItems")); got != "[]" {
+		t.Errorf("the deletion log of a shard is the whole log: %s", got)
+	}
+
+	// psql asked for a shard prints that shard: -v gives the file its variable
+	if psql, err := exec.LookPath("psql"); err == nil {
+		var schema string
+		if err := st.Pool().QueryRow(context.Background(), `SELECT current_schema()`).Scan(&schema); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(psql, "-X", "-At", "-v", "ON_ERROR_STOP=1", "-v", "shard=ab", "-f", "library-export.sql",
+			os.Getenv(storetest.EnvURL))
+		cmd.Env = append(os.Environ(), "PGOPTIONS=-c search_path="+schema)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("psql -v shard=ab: %v\n%s", err, stderr.String())
+		}
+		if got := ids(t, section(t, out, "items"), "id"); !reflect.DeepEqual(got, ids(t, section(t, ab, "items"), "id")) {
+			t.Errorf("psql -v shard=ab printed the items %v", got)
+		}
+	}
+
+	base := storetest.OpenBase(t)
+	storetest.AddItem(t, base, "f0000000-0000-4000-8000-000000000001", "movie", "A Film", "")
+	old := runExport(t, base)
+	for _, key := range []string{"extras", "versions", "sources"} {
+		if s := string(section(t, old, key)); s != "null" {
+			t.Errorf("a catalog without 039 and 040 exports %s as %s, want null", key, s)
+		}
 	}
 }
