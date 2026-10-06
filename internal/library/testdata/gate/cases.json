@@ -1,0 +1,388 @@
+[
+  {
+    "name": "a 4K HDR original with surround, styled and image subtitles, packaged to 1080p stereo",
+    "sources": [
+      {
+        "maxAudioChannels": 6,
+        "surround": true,
+        "losslessAudio": true,
+        "objectAudio": false,
+        "maxVideoHeight": 2160,
+        "videoBitDepth": 10,
+        "hdr10Metadata": true,
+        "dolbyVision": false,
+        "stereo3d": false,
+        "interlaced": false,
+        "audioLanguages": [
+          "de",
+          "en"
+        ],
+        "subtitleLanguages": [
+          "de",
+          "en",
+          "fr"
+        ],
+        "subtitleTracks": 4,
+        "imageSubtitles": true,
+        "styledSubtitles": true,
+        "fonts": true,
+        "chapters": true,
+        "commentaryTracks": 1,
+        "commentarySubtitles": 0,
+        "audioDescriptionTracks": 0,
+        "sdhSubtitleLanguages": [
+          "en"
+        ],
+        "forcedSubtitleLanguages": [
+          "de"
+        ],
+        "closedCaptions": false
+      }
+    ],
+    "package": {
+      "maxAudioChannels": 2,
+      "surround": false,
+      "losslessAudio": false,
+      "objectAudio": false,
+      "maxVideoHeight": 1080,
+      "videoBitDepth": 10,
+      "hdr10Metadata": false,
+      "dolbyVision": false,
+      "stereo3d": false,
+      "interlaced": false,
+      "audioLanguages": [
+        "de",
+        "en"
+      ],
+      "subtitleLanguages": [
+        "de",
+        "en"
+      ],
+      "subtitleTracks": 2,
+      "imageSubtitles": false,
+      "styledSubtitles": false,
+      "fonts": false,
+      "chapters": false,
+      "commentaryTracks": 0,
+      "commentarySubtitles": 0,
+      "audioDescriptionTracks": 0,
+      "sdhSubtitleLanguages": [],
+      "forcedSubtitleLanguages": [
+        "de"
+      ],
+      "closedCaptions": false
+    },
+    "gate": [
+      "commentaryTracks",
+      "fonts",
+      "hdr10Metadata",
+      "imageSubtitles",
+      "losslessAudio",
+      "maxAudioChannels",
+      "maxVideoHeight",
+      "sdhSubtitleLanguages:en",
+      "styledSubtitles",
+      "subtitleLanguages:fr",
+      "subtitleTracks",
+      "surround"
+    ]
+  },
+  {
+    "name": "a package that carries everything",
+    "sources": [
+      {
+        "maxAudioChannels": 2,
+        "surround": false,
+        "losslessAudio": false,
+        "objectAudio": false,
+        "maxVideoHeight": 1080,
+        "videoBitDepth": 10,
+        "hdr10Metadata": false,
+        "dolbyVision": false,
+        "stereo3d": false,
+        "interlaced": false,
+        "audioLanguages": [
+          "de",
+          "en"
+        ],
+        "subtitleLanguages": [
+          "de",
+          "en"
+        ],
+        "subtitleTracks": 2,
+        "imageSubtitles": false,
+        "styledSubtitles": false,
+        "fonts": false,
+        "chapters": false,
+        "commentaryTracks": 0,
+        "commentarySubtitles": 0,
+        "audioDescriptionTracks": 0,
+        "sdhSubtitleLanguages": [],
+        "forcedSubtitleLanguages": [
+          "de"
+        ],
+        "closedCaptions": false
+      }
+    ],
+    "package": {
+      "maxAudioChannels": 2,
+      "surround": false,
+      "losslessAudio": false,
+      "objectAudio": false,
+      "maxVideoHeight": 1080,
+      "videoBitDepth": 10,
+      "hdr10Metadata": false,
+      "dolbyVision": false,
+      "stereo3d": false,
+      "interlaced": false,
+      "audioLanguages": [
+        "de",
+        "en"
+      ],
+      "subtitleLanguages": [
+        "de",
+        "en"
+      ],
+      "subtitleTracks": 2,
+      "imageSubtitles": false,
+      "styledSubtitles": false,
+      "fonts": false,
+      "chapters": false,
+      "commentaryTracks": 0,
+      "commentarySubtitles": 0,
+      "audioDescriptionTracks": 0,
+      "sdhSubtitleLanguages": [],
+      "forcedSubtitleLanguages": [
+        "de"
+      ],
+      "closedCaptions": false
+    },
+    "gate": []
+  },
+  {
+    "name": "no source essence (an original never probed)",
+    "sources": [
+      {}
+    ],
+    "package": {
+      "maxAudioChannels": 2,
+      "surround": false,
+      "losslessAudio": false,
+      "objectAudio": false,
+      "maxVideoHeight": 1080,
+      "videoBitDepth": 10,
+      "hdr10Metadata": false,
+      "dolbyVision": false,
+      "stereo3d": false,
+      "interlaced": false,
+      "audioLanguages": [
+        "de",
+        "en"
+      ],
+      "subtitleLanguages": [
+        "de",
+        "en"
+      ],
+      "subtitleTracks": 2,
+      "imageSubtitles": false,
+      "styledSubtitles": false,
+      "fonts": false,
+      "chapters": false,
+      "commentaryTracks": 0,
+      "commentarySubtitles": 0,
+      "audioDescriptionTracks": 0,
+      "sdhSubtitleLanguages": [],
+      "forcedSubtitleLanguages": [
+        "de"
+      ],
+      "closedCaptions": false
+    },
+    "gate": []
+  },
+  {
+    "name": "no package essence",
+    "sources": [
+      {
+        "maxAudioChannels": 6,
+        "surround": true,
+        "losslessAudio": true,
+        "objectAudio": false,
+        "maxVideoHeight": 2160,
+        "videoBitDepth": 10,
+        "hdr10Metadata": true,
+        "dolbyVision": false,
+        "stereo3d": false,
+        "interlaced": false,
+        "audioLanguages": [
+          "de",
+          "en"
+        ],
+        "subtitleLanguages": [
+          "de",
+          "en",
+          "fr"
+        ],
+        "subtitleTracks": 4,
+        "imageSubtitles": true,
+        "styledSubtitles": true,
+        "fonts": true,
+        "chapters": true,
+        "commentaryTracks": 1,
+        "commentarySubtitles": 0,
+        "audioDescriptionTracks": 0,
+        "sdhSubtitleLanguages": [
+          "en"
+        ],
+        "forcedSubtitleLanguages": [
+          "de"
+        ],
+        "closedCaptions": false
+      }
+    ],
+    "package": {},
+    "gate": [
+      "audioDescriptionTracks",
+      "audioLanguages:de",
+      "audioLanguages:en",
+      "commentarySubtitles",
+      "commentaryTracks",
+      "fonts",
+      "forcedSubtitleLanguages:de",
+      "hdr10Metadata",
+      "imageSubtitles",
+      "losslessAudio",
+      "maxAudioChannels",
+      "maxVideoHeight",
+      "sdhSubtitleLanguages:en",
+      "styledSubtitles",
+      "subtitleLanguages:de",
+      "subtitleLanguages:en",
+      "subtitleLanguages:fr",
+      "subtitleTracks",
+      "surround",
+      "videoBitDepth"
+    ]
+  },
+  {
+    "name": "two sources, the most counts",
+    "sources": [
+      {
+        "maxAudioChannels": 2,
+        "subtitleTracks": 1,
+        "audioLanguages": [
+          "ja"
+        ]
+      },
+      {
+        "maxAudioChannels": 8,
+        "subtitleTracks": null,
+        "audioLanguages": [
+          "en"
+        ],
+        "fonts": 1
+      }
+    ],
+    "package": {
+      "maxAudioChannels": 6,
+      "subtitleTracks": 1,
+      "audioLanguages": [
+        "en"
+      ]
+    },
+    "gate": [
+      "audioLanguages:ja",
+      "fonts",
+      "maxAudioChannels"
+    ]
+  },
+  {
+    "name": "a count the package lacks or holds as null",
+    "sources": [
+      {
+        "maxVideoHeight": 720,
+        "videoBitDepth": 8
+      }
+    ],
+    "package": {
+      "maxVideoHeight": null
+    },
+    "gate": [
+      "maxVideoHeight",
+      "videoBitDepth"
+    ]
+  },
+  {
+    "name": "falsy and truthy values",
+    "sources": [
+      {
+        "surround": 0,
+        "fonts": "",
+        "closedCaptions": [],
+        "dolbyVision": "yes",
+        "stereo3d": [
+          1
+        ]
+      }
+    ],
+    "package": {
+      "dolbyVision": 0,
+      "stereo3d": []
+    },
+    "gate": [
+      "dolbyVision",
+      "stereo3d"
+    ]
+  },
+  {
+    "name": "booleans as counts",
+    "sources": [
+      {
+        "commentaryTracks": true
+      }
+    ],
+    "package": {
+      "commentaryTracks": false
+    },
+    "gate": [
+      "commentaryTracks"
+    ]
+  },
+  {
+    "name": "no sources",
+    "sources": [],
+    "package": {
+      "maxAudioChannels": 2,
+      "surround": false,
+      "losslessAudio": false,
+      "objectAudio": false,
+      "maxVideoHeight": 1080,
+      "videoBitDepth": 10,
+      "hdr10Metadata": false,
+      "dolbyVision": false,
+      "stereo3d": false,
+      "interlaced": false,
+      "audioLanguages": [
+        "de",
+        "en"
+      ],
+      "subtitleLanguages": [
+        "de",
+        "en"
+      ],
+      "subtitleTracks": 2,
+      "imageSubtitles": false,
+      "styledSubtitles": false,
+      "fonts": false,
+      "chapters": false,
+      "commentaryTracks": 0,
+      "commentarySubtitles": 0,
+      "audioDescriptionTracks": 0,
+      "sdhSubtitleLanguages": [],
+      "forcedSubtitleLanguages": [
+        "de"
+      ],
+      "closedCaptions": false
+    },
+    "gate": []
+  }
+]
