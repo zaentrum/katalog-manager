@@ -25,6 +25,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -36,6 +37,7 @@ import (
 
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/events"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
@@ -168,9 +170,21 @@ func (s *Scanner) heartbeat(ctx context.Context, jobID string) func() {
 // walk performs the filesystem traversal, calling beat at every entry it
 // visits. If the root does not exist it returns an empty result and nil error
 // (graceful no-op, like NfsScanner.scan).
+//
+// With the setting library.layout=v2 the root is ARRIVALS_ROOT, a folder whose
+// name begins with a dot is passed over as a dot file is, and every file is
+// told by its size and quick hash among the originals the library knows
+// (library.go).
 func (s *Scanner) walk(ctx context.Context, beat func()) (scanResult, error) {
 	var res scanResult
 	root := s.cfg.NFSRoot
+	var lib *library.Paths
+	if set, err := library.ReadSettings(ctx, s.st.Pool()); err != nil {
+		return res, fmt.Errorf("the library's settings could not be read: %w", err)
+	} else if set.V2() {
+		p := library.PathsOf(s.cfg)
+		lib, root = &p, s.cfg.ArrivalsRoot
+	}
 
 	info, statErr := os.Stat(root)
 	if statErr != nil || !info.IsDir() {
@@ -190,11 +204,14 @@ func (s *Scanner) walk(ctx context.Context, beat func()) (scanResult, error) {
 			return nil
 		}
 		if d.IsDir() {
+			if lib != nil && path != root && strings.HasPrefix(d.Name(), ".") {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		// Per-file processing is best-effort; a failure on one file must not
 		// abort the whole walk.
-		s.processFile(ctx, root, path, d, &res, xs)
+		s.processFile(ctx, root, path, d, &res, xs, lib)
 		return nil
 	})
 	// The extras once every title's file is in: a trailer is walked before
@@ -207,8 +224,10 @@ func (s *Scanner) walk(ctx context.Context, beat func()) (scanResult, error) {
 }
 
 // processFile classifies one regular file and upserts the catalog rows for it.
-// Errors are swallowed (logged-equivalent) so the walk continues.
-func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEntry, res *scanResult, xs *walkState) {
+// Errors are swallowed (logged-equivalent) so the walk continues. lib is the
+// library's paths with library.layout=v2, nil otherwise.
+func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEntry, res *scanResult, xs *walkState,
+	lib *library.Paths) {
 	name := d.Name()
 	// Skip hidden / transcoder-scratch dotfiles + extensionless files.
 	if strings.HasPrefix(name, ".") {
@@ -277,6 +296,15 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 
 	var itemID string
 	if existingItemID == nil {
+		// A file the library knows by its size and quick hash is no new title.
+		var fixity *fixity
+		if lib != nil {
+			f, known := s.knownArrival(ctx, *lib, absPath, res)
+			if known || f == nil {
+				return
+			}
+			fixity = f
+		}
 		// New item: INSERT items + primary asset + seed the 'scan' step.
 		if err := pool.QueryRow(ctx,
 			`INSERT INTO com_nalet_katalog_items
@@ -294,6 +322,9 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 			 VALUES (gen_random_uuid()::varchar, $1, $2, $3, true)`,
 			itemID, absPath, size); err != nil {
 			return
+		}
+		if fixity != nil {
+			s.addSource(ctx, *lib, itemID, absPath, *fixity)
 		}
 
 		// Seed processing steps for the freshly-ingested item (the scan step is
@@ -322,11 +353,18 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 		}
 	} else {
 		// Existing item: bump modifiedat ONLY (never clobber TMDB-owned fields),
-		// and refresh the asset's size + primary flag.
+		// and refresh the asset's size + primary flag. With the v2 layout
+		// modifiedat says what the library's projection shows changed, so a
+		// scan that finds a file as it was does not bump it, and the size of
+		// an original not recorded yet comes with its quick hash.
 		itemID = *existingItemID
-		if _, err := pool.Exec(ctx,
-			`UPDATE com_nalet_katalog_items SET modifiedat = now() WHERE id = $1`, itemID); err != nil {
-			return
+		if lib == nil {
+			if _, err := pool.Exec(ctx,
+				`UPDATE com_nalet_katalog_items SET modifiedat = now() WHERE id = $1`, itemID); err != nil {
+				return
+			}
+		} else {
+			s.refix(ctx, *lib, itemID, absPath, size)
 		}
 		res.itemsUpdated++
 

@@ -41,9 +41,9 @@ func TestABeatComesWellWithinTheScansTimeout(t *testing.T) {
 	}
 }
 
-// library is a media root with a film in a folder, a film's subtitles and a
+// mediaRoot is a media root with a film in a folder, a film's subtitles and a
 // file the scanner skips: six entries a walk visits, the root among them.
-func library(t *testing.T) string {
+func mediaRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	for _, f := range []string{"Example (2024)/Example (2024).mkv", "Example (2024)/Example (2024).en.srt", "notes.txt", "Other (2023).mp4"} {
@@ -61,7 +61,7 @@ func library(t *testing.T) string {
 // A walk calls its beat at every entry it visits, files it skips among them.
 func TestAWalkBeatsAtEveryEntry(t *testing.T) {
 	st := storetest.Open(t)
-	s := New(st, config.Config{NFSRoot: library(t)}, processing.New(st.Pool()), nil)
+	s := New(st, config.Config{NFSRoot: mediaRoot(t)}, processing.New(st.Pool()), nil)
 	beats := 0
 	if _, err := s.walk(context.Background(), func() { beats++ }); err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func TestAScanSaysItIsAliveWhileItWalks(t *testing.T) {
 		beat  time.Duration
 		spoke bool
 	}{{0, true}, {time.Hour, false}} {
-		s := New(st, config.Config{NFSRoot: library(t)}, processing.New(st.Pool()), nil)
+		s := New(st, config.Config{NFSRoot: mediaRoot(t)}, processing.New(st.Pool()), nil)
 		s.beat = tc.beat
 		job, err := st.StartScanJob(ctx, "nfs", s.runner)
 		if err != nil {
@@ -104,7 +104,7 @@ func TestAScanSaysItIsAliveWhileItWalks(t *testing.T) {
 // Trigger starts a scan job this process runs; the scan ends it.
 func TestTriggerStartsAJobThisProcessRuns(t *testing.T) {
 	st := storetest.Open(t)
-	s := New(st, config.Config{NFSRoot: library(t)}, processing.New(st.Pool()), nil)
+	s := New(st, config.Config{NFSRoot: mediaRoot(t)}, processing.New(st.Pool()), nil)
 	id, err := s.Trigger(context.Background(), "nfs")
 	if err != nil {
 		t.Fatal(err)
