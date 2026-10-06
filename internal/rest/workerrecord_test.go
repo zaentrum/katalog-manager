@@ -45,8 +45,8 @@ func files(t *testing.T, dir string, sizes map[string]int64) {
 // The worker record the packager reads: what it always said, and, when there
 // is any, the languages an admin set for the source's tracks (trackLanguages,
 // audio first, each kind by ordinal) and the subtitle files beside the
-// source (subtitleFiles, by path, each language an ISO 639-2 code, forced a
-// boolean). A subtitle file is one the packager takes: at an absolute path in
+// source (subtitleFiles, by path, each with its subtitle asset's id, its
+// language an ISO 639-2 code, forced a boolean). A subtitle file is one the packager takes: at an absolute path in
 // the source's folder or below it, a .srt, .vtt, .ass or .ssa file there is,
 // of at most 50 MB; a package's subtitle is none. Each key is left out when
 // there is none, so the record is what it was for a title without them.
@@ -103,11 +103,11 @@ func TestTheWorkerRecordNamesTrackLanguagesAndSubtitleFiles(t *testing.T) {
 		`,"trackLanguages":[{"kind":"audio","ordinal":0,"language":"zxx"},{"kind":"audio","ordinal":1,"language":"eng"},` +
 		`{"kind":"subtitle","ordinal":0,"language":"ger"}],` +
 		`"subtitleFiles":[` +
-		`{"path":"` + dir + `A Film (2024).de.srt","language":"deu","label":"Deutsch","forced":false},` +
-		`{"path":"` + dir + `A Film (2024).eng.ass","language":"eng","label":"English","forced":false},` +
-		`{"path":"` + dir + `A Film (2024).pt-BR.ssa","language":"por","label":"Português","forced":false},` +
-		`{"path":"` + dir + `A Film (2024).vtt","language":"und","label":"Subtitles","forced":false},` +
-		`{"path":"` + dir + `Subs/A Film (2024).fr.srt","language":"fra","label":"Français","forced":false}]}`
+		`{"id":"s-de","path":"` + dir + `A Film (2024).de.srt","language":"deu","label":"Deutsch","forced":false},` +
+		`{"id":"s-en","path":"` + dir + `A Film (2024).eng.ass","language":"eng","label":"English","forced":false},` +
+		`{"id":"s-pt","path":"` + dir + `A Film (2024).pt-BR.ssa","language":"por","label":"Português","forced":false},` +
+		`{"id":"s-none","path":"` + dir + `A Film (2024).vtt","language":"und","label":"Subtitles","forced":false},` +
+		`{"id":"s-fr","path":"` + dir + `Subs/A Film (2024).fr.srt","language":"fra","label":"Français","forced":false}]}`
 	if got := record(); got != want {
 		t.Errorf("a title with both:\n got  %s\n want %s", got, want)
 	}

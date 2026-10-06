@@ -243,7 +243,7 @@ func TestATitleEncodedAgainIsPackagedWithItsLanguagesAndFiles(t *testing.T) {
 	code, body := in.get(t, "/api/analyze/items/f9", service)
 	if code != http.StatusOK ||
 		!strings.Contains(body, `"trackLanguages":[{"kind":"audio","ordinal":0,"language":"zxx"}]`) ||
-		!strings.Contains(body, `"subtitleFiles":[{"path":"`+sidecar+`","language":"eng","label":"English","forced":false}]`) {
+		!strings.Contains(body, `"subtitleFiles":[{"id":"s-f9","path":"`+sidecar+`","language":"eng","label":"English","forced":false}]`) {
 		t.Errorf("the record the packager reads: %d %s", code, body)
 	}
 }

@@ -49,6 +49,10 @@ type claimItem struct {
 	// packager that reads neither expects.
 	TrackLanguages []trackLanguage
 	SubtitleFiles  []subtitleFile
+	// With the setting library.layout=v2, where the item's records go and
+	// what the run works on; left out otherwise, and the workers keep their
+	// legacy ways.
+	Library *itemLibrary
 }
 
 // trackLanguage is an admin's language of a track of the item's source: kind
@@ -68,6 +72,7 @@ type trackLanguage struct {
 // WebVTT and packages it after the source's own subtitles, never as the
 // default unless forced.
 type subtitleFile struct {
+	ID       string `json:"id"` // its subtitle asset's id, which packaging-complete maps the file's rendition back to
 	Path     string `json:"path"`
 	Language string `json:"language"`
 	Label    string `json:"label"`
@@ -118,6 +123,12 @@ func (c claimItem) MarshalJSON() ([]byte, error) {
 	if len(c.SubtitleFiles) > 0 {
 		b = append(b, ',')
 		if err := w("subtitleFiles", c.SubtitleFiles, false); err != nil {
+			return nil, err
+		}
+	}
+	if c.Library != nil {
+		b = append(b, ',')
+		if err := w("library", c.Library, false); err != nil {
 			return nil, err
 		}
 	}
@@ -179,6 +190,19 @@ func (h *Handlers) getAnalyzeItem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "item lookup failed", http.StatusInternalServerError)
 		return
 	}
+	set, err := h.settings(reqCtx(r))
+	if err != nil {
+		log.Printf("getAnalyzeItem: the library's settings: %v", err)
+		http.Error(w, "item lookup failed", http.StatusInternalServerError)
+		return
+	}
+	if set.V2() {
+		if it.Library, err = h.itemLibraryOf(reqCtx(r), it.ID); err != nil {
+			log.Printf("getAnalyzeItem: the library of %s: %v", it.ID, err)
+			http.Error(w, "item lookup failed", http.StatusInternalServerError)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, it)
 }
 
@@ -226,7 +250,7 @@ func (h *Handlers) subtitleFilesOf(ctx context.Context, itemID, source string) (
 	if err != nil {
 		return nil, err
 	}
-	rows, err := h.d.Store.Pool().Query(ctx, `SELECT path, COALESCE(lang, ''), COALESCE(label, '')
+	rows, err := h.d.Store.Pool().Query(ctx, `SELECT id, path, COALESCE(lang, ''), COALESCE(label, '')
 		FROM com_nalet_katalog_subtitleassets WHERE item_id = $1`, itemID)
 	if err != nil {
 		return nil, err
@@ -234,8 +258,8 @@ func (h *Handlers) subtitleFilesOf(ctx context.Context, itemID, source string) (
 	defer rows.Close()
 	var out []subtitleFile
 	for rows.Next() {
-		var path, lang, label string
-		if err := rows.Scan(&path, &lang, &label); err != nil {
+		var id, path, lang, label string
+		if err := rows.Scan(&id, &path, &lang, &label); err != nil {
 			return nil, err
 		}
 		path = filepath.Clean(path)
@@ -246,7 +270,7 @@ func (h *Handlers) subtitleFilesOf(ctx context.Context, itemID, source string) (
 		if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() || fi.Size() > maxSubtitleFileBytes {
 			continue
 		}
-		out = append(out, subtitleFile{Path: path, Language: languages.ISO6392(lang), Label: strings.TrimSpace(label)})
+		out = append(out, subtitleFile{ID: id, Path: path, Language: languages.ISO6392(lang), Label: strings.TrimSpace(label)})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -512,10 +536,12 @@ func (h *Handlers) putStep(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Chain promotion: transcode -> package (best-effort; failure swallowed).
+	// With the v2 layout the package's run builds a version, made now.
 	if step == "transcode" {
 		switch status {
 		case processing.StatusDone, processing.StatusNotApplicable, processing.StatusSkipped:
 			_ = h.d.Steps.PromoteTranscodeToPackage(ctx, id, status)
+			h.mintVersion(ctx, id)
 		}
 		// The transcoder probed the source before it planned, and says its
 		// codec and resolution in the details: the source asset keeps them

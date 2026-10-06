@@ -189,9 +189,9 @@ func ReadItemRecord(ctx context.Context, q Querier, id string) (ItemRecord, erro
 // is written once. Its content is the catalog's, the moment it was created
 // among it, so a write cut short and done again writes the same bytes.
 //
-// It answers the item's folder. An item that cannot be recorded is Blocked
-// (or Unplaced, for one the tree holds no folder for), one there is not
-// ErrNoItem.
+// It answers the item's folder, also when the item cannot be recorded
+// (Blocked) but has a place in the tree; one that has none is Blocked with no
+// folder, one there is not ErrNoItem.
 func (p Paths) EnsureItemRecord(ctx context.Context, q Querier, id string) (string, error) {
 	r, err := ReadItemRecord(ctx, q, id)
 	var unplaced *Unplaced
@@ -209,14 +209,14 @@ func (p Paths) EnsureItemRecord(ctx context.Context, q Querier, id string) (stri
 		if _, err := p.EnsureItemRecord(ctx, q, r.SeriesID); err != nil {
 			var blocked *Blocked
 			if errors.As(err, &blocked) {
-				return "", &Blocked{Reason: "its series " + r.SeriesID + " is not recorded: " + blocked.Reason}
+				return dir, &Blocked{Reason: "its series " + r.SeriesID + " is not recorded: " + blocked.Reason}
 			}
 			return "", err
 		}
 	}
 	doc, err := r.Doc()
 	if err != nil {
-		return "", err
+		return dir, err
 	}
 	if _, err := os.Stat(filepath.Join(dir, SumsFile)); errors.Is(err, os.ErrNotExist) {
 		b, err := Encode(doc)

@@ -101,6 +101,9 @@ type extraRecord struct {
 	Path         *string    `json:"path"`
 	State        string     `json:"state"`
 	RemovedAt    *time.Time `json:"removedAt,omitempty"`
+	// With the setting library.layout=v2, where its folder goes and what it
+	// records; left out otherwise.
+	Library *extraLibrary `json:"library,omitempty"`
 }
 
 // liveExtra is the extra id and its title, nil when there is no such extra,
@@ -133,9 +136,23 @@ func (h *Handlers) getAnalyzeExtra(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such extra: "+id)
 		return
 	}
-	writeJSON(w, http.StatusOK, extraRecord{ID: x.ID, Type: "extra", ParentID: x.ItemID, ParentType: it.Type,
+	rec := extraRecord{ID: x.ID, Type: "extra", ParentID: x.ItemID, ParentType: it.Type,
 		ParentTitle: it.Title, Kind: x.Kind, Title: x.Title, Language: x.Language, SeasonNumber: x.SeasonNumber,
-		Path: x.SourcePath, State: x.State, RemovedAt: x.RemovedAt})
+		Path: x.SourcePath, State: x.State, RemovedAt: x.RemovedAt}
+	set, err := h.settings(reqCtx(r))
+	if err != nil {
+		log.Printf("getAnalyzeExtra: the library's settings: %v", err)
+		writeError(w, http.StatusInternalServerError, "extra lookup failed")
+		return
+	}
+	if set.V2() {
+		if rec.Library, err = h.extraLibraryOf(reqCtx(r), x.ID, x.ItemID); err != nil {
+			log.Printf("getAnalyzeExtra: the library of %s: %v", id, err)
+			writeError(w, http.StatusInternalServerError, "extra lookup failed")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, rec)
 }
 
 // putExtraStep serves PUT /api/analyze/extras/{id}/steps/{step}: a worker's
