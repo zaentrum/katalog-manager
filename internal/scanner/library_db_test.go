@@ -191,3 +191,25 @@ func TestTheScannerKnowsTheLibrarysOriginals(t *testing.T) {
 		t.Errorf("the file that arrived again was not left alone: %v", err)
 	}
 }
+
+// The scanner walks the root of the layout the settings say when it scans:
+// with no root set, one that runs on through a switch walks the media root,
+// then the arrivals, without a restart.
+func TestTheScanRootFollowsTheLayoutWithoutARestart(t *testing.T) {
+	st := storetest.Open(t)
+	share := t.TempDir()
+	f := &v2{st: st, cfg: config.Config{NFSRoot: share + "/media", Share: share}, share: share}
+	f.s = New(st, f.cfg, processing.New(st.Pool()), nil)
+	f.write(t, "media/Legacy (2001).mkv", 10, 'l')
+	f.write(t, ".work/incoming/Arrival (2002).mkv", 10, 'a')
+	if res := f.scan(t); res.itemsInserted != 1 {
+		t.Errorf("legacy inserted %d titles, want the media root's", res.itemsInserted)
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('l', 'library.layout', 'v2')`)
+	if res := f.scan(t); res.itemsInserted != 1 {
+		t.Errorf("v2 inserted %d titles, want the arrival", res.itemsInserted)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE title IN ('Legacy', 'Arrival')`); n != 2 {
+		t.Errorf("%d titles, want both", n)
+	}
+}

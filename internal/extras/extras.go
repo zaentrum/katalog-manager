@@ -105,10 +105,9 @@ var languageRE = regexp.MustCompile(`^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$`)
 //   - it is a movie or a series: an episode has no extras, its series has;
 //   - a season is named only for a series, and only one it has episodes of;
 //   - the file is an absolute path of an existing video file under the media
-//     root, the share's library or extras folder or EXTRAS_ROOT (with
-//     library.layout=v2 under ARRIVALS_ROOT or EXTRAS_ROOT, never in the
-//     library's record), never under the package store, and no title's own
-//     file;
+//     root, LIBRARY_ROOT or EXTRAS_ROOT (with library.layout=v2 under
+//     ARRIVALS_ROOT or EXTRAS_ROOT, never in the library's record), never
+//     under the package store, and no title's own file;
 //   - its size and quick hash are stored with it;
 //   - the same file again for the same title answers its extra, created
 //     false; for another title it is refused, EXTRA_CONFLICT (409).

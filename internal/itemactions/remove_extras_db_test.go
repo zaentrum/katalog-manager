@@ -20,7 +20,7 @@ func TestRemovingAFilmTakesItsExtrasFilesAndPackages(t *testing.T) {
 	for _, withFiles := range []bool{true, false} {
 		st := storetest.Open(t)
 		dir := t.TempDir()
-		cfg := config.Config{NFSRoot: dir + "/media", PackagesRoot: dir + "/packages", LegacyLibraryRoot: dir + "/library",
+		cfg := config.Config{NFSRoot: dir + "/media", PackagesRoot: dir + "/packages", LibraryRoot: dir + "/library",
 			ExtrasRoot: dir + "/extras"}
 		const film = "f1f1f1f1-0000-4000-8000-000000000001"
 		write := func(rel string) string {

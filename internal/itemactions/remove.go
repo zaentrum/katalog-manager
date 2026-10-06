@@ -32,10 +32,10 @@ import (
 //  3. Remove media files (only with deleteFiles) and packaged dirs (only with
 //     deletePackages), every path validated to live UNDER its configured root —
 //     a corrupted path row must never turn into an rm outside the library.
-//     The items' extras go with them: their files under the media root,
-//     EXTRAS_ROOT or the share's extras folder (never a library record's,
-//     which is written once), their packages in packages/extras/ and the
-//     transcoder's handoffs left in the inbox.
+//     The items' extras go with them: their files under the media root or
+//     EXTRAS_ROOT (never a library record's, which is written once), their
+//     packages in packages/extras/ and the transcoder's handoffs left in the
+//     inbox.
 //  4. Emit stube.catalog.item.removed so live-refresh surfaces drop the item.
 func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, deletePackages bool, reason string) (graph.RemoveResult, error) {
 	var res graph.RemoveResult
@@ -111,7 +111,7 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 			if x.SourcePath == nil {
 				continue
 			}
-			for _, root := range []string{s.cfg.NFSRoot, s.cfg.ExtrasRoot, s.cfg.LegacyExtrasRoot} {
+			for _, root := range []string{s.cfg.NFSRoot, s.cfg.Roots(false).Extras} {
 				if p := *x.SourcePath; underRoot(root, p) && stops[p] == "" {
 					mediaFiles = append(mediaFiles, p)
 					stops[p] = root

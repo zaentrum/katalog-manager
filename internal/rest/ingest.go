@@ -82,7 +82,7 @@ func (h *Handlers) ingest(w http.ResponseWriter, r *http.Request) {
 	}
 	var fix *fixity
 	if set.V2() {
-		if !library.Within(h.d.Cfg.ArrivalsRoot, filepath.Clean(req.Path)) || !filepath.IsAbs(req.Path) {
+		if !library.Within(h.paths().Arrivals, filepath.Clean(req.Path)) || !filepath.IsAbs(req.Path) {
 			writeError(w, http.StatusBadRequest, "path must be under the arrivals' root (ARRIVALS_ROOT)")
 			return
 		}

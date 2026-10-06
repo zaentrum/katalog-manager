@@ -92,7 +92,7 @@ func aFilmWithATrailer(t *testing.T, st *store.Store, cfg config.Config) string 
 
 func extrasConfig(dir string) config.Config {
 	cfg := testConfig(dir)
-	cfg.ExtrasRoot, cfg.LegacyLibraryRoot = dir+"/extras", dir+"/library"
+	cfg.ExtrasRoot, cfg.LibraryRoot = dir+"/extras", dir+"/library"
 	return cfg
 }
 
@@ -383,7 +383,7 @@ func TestPostExtraRefusals(t *testing.T) {
 		{`{"itemId": "unknown", "path": "` + trailer + `", "kind": "trailer"}`, http.StatusNotFound,
 			`{"code":"NOT_FOUND","error":"unknown item: unknown"}`},
 		{`{"itemId": "s1", "path": "/etc/hosts", "kind": "trailer"}`, http.StatusBadRequest,
-			`{"code":"EXTRA_REFUSED","error":"/etc/hosts is not under the media root, the library's or the extras' folder or EXTRAS_ROOT (or is under the package store)"}`},
+			`{"code":"EXTRA_REFUSED","error":"/etc/hosts is not under the media root, LIBRARY_ROOT or EXTRAS_ROOT (or is under the package store)"}`},
 		{`{"itemId": 7}`, http.StatusBadRequest, `{"error":"invalid JSON body"}`},
 	} {
 		w := do(h, http.MethodPost, "/api/extras", c.body, admin)

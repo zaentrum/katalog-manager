@@ -181,24 +181,28 @@ func TestRetrySettingsThatAreNoneFailLoading(t *testing.T) {
 	}
 }
 
-// The share's root is the library, its work folder beside the record, the
-// arrivals and the extras' files in it, each where its variable says, and by
-// default under /var/lib/katalog; the legacy layout's folders of the share,
-// where an extra's file may lie too, are the library's.
+// The library's roots are the layout's: with no variable set, the legacy
+// layout's are what they always were (the media root, the v1 record's folder
+// and the extras' folder of the share), the v2 layout's the design's (the
+// share's root, its .work/ folder, and in that incoming/ and extras/). A
+// variable that is set wins in both layouts.
 func TestTheRootsOfTheLibrary(t *testing.T) {
+	type roots struct{ media, library, work, arrivals, extras string }
 	for _, tc := range []struct {
-		env                                   map[string]string
-		media, library, work, arrivals, extra string
-		legacyLibrary, legacyExtras           string
+		env        map[string]string
+		legacy, v2 roots
 	}{
-		{nil, "/var/lib/katalog/media", "/var/lib/katalog", "/var/lib/katalog/.work", "/var/lib/katalog/.work/incoming",
-			"/var/lib/katalog/.work/extras", "/var/lib/katalog/library", "/var/lib/katalog/extras"},
+		{nil,
+			roots{"/var/lib/katalog/media", "/var/lib/katalog/library", "/var/lib/katalog/.work", "/var/lib/katalog/.work/incoming",
+				"/var/lib/katalog/extras"},
+			roots{"/var/lib/katalog/media", "/var/lib/katalog", "/var/lib/katalog/.work", "/var/lib/katalog/.work/incoming",
+				"/var/lib/katalog/.work/extras"}},
 		{map[string]string{"SCANNER_NFS_ROOT": "/srv/media", "LIBRARY_ROOT": "/srv/share/", "EXTRAS_ROOT": " /srv/extras "},
-			"/srv/media", "/srv/share", "/srv/share/.work", "/srv/share/.work/incoming", "/srv/extras",
-			"/srv/share/library", "/srv/share/extras"},
+			roots{"/srv/media", "/srv/share", "/srv/share/.work", "/srv/share/.work/incoming", "/srv/extras"},
+			roots{"/srv/media", "/srv/share", "/srv/share/.work", "/srv/share/.work/incoming", "/srv/extras"}},
 		{map[string]string{"WORK_ROOT": "/scratch/work", "ARRIVALS_ROOT": "/drop"},
-			"/var/lib/katalog/media", "/var/lib/katalog", "/scratch/work", "/drop", "/scratch/work/extras",
-			"/var/lib/katalog/library", "/var/lib/katalog/extras"},
+			roots{"/var/lib/katalog/media", "/var/lib/katalog/library", "/scratch/work", "/drop", "/var/lib/katalog/extras"},
+			roots{"/var/lib/katalog/media", "/var/lib/katalog", "/scratch/work", "/drop", "/scratch/work/extras"}},
 	} {
 		for _, k := range []string{"SCANNER_NFS_ROOT", "NFS_ROOT", "LIBRARY_ROOT", "WORK_ROOT", "ARRIVALS_ROOT", "EXTRAS_ROOT"} {
 			t.Setenv(k, tc.env[k])
@@ -207,11 +211,11 @@ func TestTheRootsOfTheLibrary(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got := []string{cfg.NFSRoot, cfg.LibraryRoot, cfg.WorkRoot, cfg.ArrivalsRoot, cfg.ExtrasRoot,
-			cfg.LegacyLibraryRoot, cfg.LegacyExtrasRoot}
-		want := []string{tc.media, tc.library, tc.work, tc.arrivals, tc.extra, tc.legacyLibrary, tc.legacyExtras}
-		if strings.Join(got, " ") != strings.Join(want, " ") {
-			t.Errorf("%v:\n got  %v\n want %v", tc.env, got, want)
+		for v2, want := range map[bool]roots{false: tc.legacy, true: tc.v2} {
+			r := cfg.Roots(v2)
+			if got := (roots{cfg.NFSRoot, r.Library, r.Work, r.Arrivals, r.Extras}); got != want {
+				t.Errorf("%v, v2 %v:\n got  %+v\n want %+v", tc.env, v2, got, want)
+			}
 		}
 	}
 }

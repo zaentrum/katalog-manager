@@ -40,3 +40,31 @@ func TestTheRootsOfAnExtrasFileWithTheV2Layout(t *testing.T) {
 		t.Errorf("in the record: %d %s", r.Status, r.Message)
 	}
 }
+
+// The roots follow the layout the settings say when an extra is taken in:
+// with none set, a service that runs on through a switch of the layout takes
+// an extra's file from the legacy layout's extras' folder, then from the v2
+// layout's, without a restart.
+func TestTheRootsFollowTheLayoutWithoutARestart(t *testing.T) {
+	f := newFixture(t)
+	f.cfg.LibraryRoot, f.cfg.ExtrasRoot, f.cfg.Share = "", "", f.dir
+	f.svc = New(f.st, f.cfg, policy, events.ProducerOn(f.w))
+	ctx := asAdmin()
+	add := func(rel string) error {
+		_, err := f.svc.AddExtra(ctx, graph.AddExtraRequest{ItemID: film, Path: f.write(t, rel, 100), Kind: "trailer"})
+		return err
+	}
+	if err := add("extras/bbb/a.mov"); err != nil {
+		t.Errorf("legacy, the share's extras folder: %v", err)
+	}
+	if err := add(".work/extras/bbb/b.mov"); err == nil {
+		t.Error("legacy took a file from the v2 layout's extras' folder")
+	}
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('l', 'library.layout', 'v2')`)
+	if err := add(".work/extras/bbb/c.mov"); err != nil {
+		t.Errorf("v2, the work folder's extras: %v", err)
+	}
+	if err := add("extras/bbb/d.mov"); err == nil {
+		t.Error("v2 took a file from the legacy layout's extras' folder")
+	}
+}

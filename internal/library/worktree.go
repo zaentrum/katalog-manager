@@ -46,9 +46,10 @@ const (
 // missing, and the library's root with it: ARRIVALS_ROOT and EXTRAS_ROOT
 // where the configuration puts them, the others under WORK_ROOT.
 func EnsureWorkTree(cfg config.Config) error {
-	dirs := []string{cfg.ArrivalsRoot, cfg.ExtrasRoot}
+	r := cfg.Roots(true)
+	dirs := []string{r.Arrivals, r.Extras}
 	for _, d := range []string{WorkReplace, WorkInbox, WorkStaging, WorkTrash, WorkQuarantine, WorkMigration, WorkLegacy} {
-		dirs = append(dirs, filepath.Join(cfg.WorkRoot, d))
+		dirs = append(dirs, filepath.Join(r.Work, d))
 	}
 	for _, d := range dirs {
 		if d == "" || !filepath.IsAbs(d) {

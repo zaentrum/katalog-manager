@@ -100,11 +100,12 @@ func (s *Service) file(ctx context.Context, path string) (string, *graph.ExtraRe
 		return "", graph.Refused(http.StatusBadRequest, codeRefused, "%s cannot be read: %v", path, err)
 	}
 	if !inside(real, true) {
-		return "", graph.Refused(http.StatusBadRequest, codeRefused, "%s leads out of %s", path, named)
+		return "", graph.Refused(http.StatusBadRequest, codeRefused, "%s leads out of %s", path,
+			strings.Replace(named, " or ", " and ", 1))
 	}
 	if v2 {
 		for _, d := range []string{library.MoviesDir, library.SeriesDir, library.PeopleDir} {
-			if r := filepath.Join(s.cfg.LibraryRoot, d); within(r, path) || within(resolved(r), real) {
+			if r := filepath.Join(s.cfg.Roots(true).Library, d); within(r, path) || within(resolved(r), real) {
 				return "", graph.Refused(http.StatusBadRequest, codeRefused, "%s is in the library's record, which holds no original", path)
 			}
 		}
@@ -132,20 +133,20 @@ func (s *Service) layout(ctx context.Context) (bool, library.Settings, error) {
 }
 
 // fileRoots are whether the layout is v2, where an extra's file may lie, and
-// how a refusal names them:
-// with library.layout=v2, ARRIVALS_ROOT (beside its title, as the scanner's
-// convention finds it) and EXTRAS_ROOT; with the legacy layout the media
-// root, the share's library and extras folders and EXTRAS_ROOT, as before.
+// how a refusal names them (config.Roots): with library.layout=v2,
+// ARRIVALS_ROOT (beside its title, as the scanner's convention finds it) and
+// EXTRAS_ROOT; with the legacy layout the media root, LIBRARY_ROOT and
+// EXTRAS_ROOT, as before.
 func (s *Service) fileRoots(ctx context.Context) (bool, []string, string, error) {
 	v2, _, err := s.layout(ctx)
 	if err != nil {
 		return false, nil, "", err
 	}
+	r := s.cfg.Roots(v2)
 	if v2 {
-		return true, []string{s.cfg.ArrivalsRoot, s.cfg.ExtrasRoot}, "ARRIVALS_ROOT or EXTRAS_ROOT", nil
+		return true, []string{r.Arrivals, r.Extras}, "ARRIVALS_ROOT or EXTRAS_ROOT", nil
 	}
-	return false, []string{s.cfg.NFSRoot, s.cfg.LegacyLibraryRoot, s.cfg.LegacyExtrasRoot, s.cfg.ExtrasRoot},
-		"the media root, the library's or the extras' folder or EXTRAS_ROOT", nil
+	return false, []string{s.cfg.NFSRoot, r.Library, r.Extras}, "the media root, LIBRARY_ROOT or EXTRAS_ROOT", nil
 }
 
 // packageDir is the folder of the extra id's package in the package store:

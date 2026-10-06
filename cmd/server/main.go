@@ -139,7 +139,7 @@ func run() error {
 		}
 		if set.V2() {
 			if err := library.EnsureWorkTree(cfg); err != nil {
-				log.Printf("catalog: the library's work folder %s could not be made: %v", cfg.WorkRoot, err)
+				log.Printf("catalog: the library's work folder %s could not be made: %v", cfg.Roots(true).Work, err)
 			}
 		}
 		log.Printf("catalog: the library layout is %s, originals: %s", set.Layout, set.Originals)

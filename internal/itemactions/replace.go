@@ -122,7 +122,7 @@ func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	// the arrivals first: the title's file is the one there.
 	arrival := path
 	if v2 && library.Within(library.PathsOf(s.cfg).ReplaceDir(), path) {
-		arrival = filepath.Join(s.cfg.ArrivalsRoot, filepath.Base(path))
+		arrival = filepath.Join(library.PathsOf(s.cfg).Arrivals, filepath.Base(path))
 		if _, err := os.Lstat(arrival); err == nil {
 			return res, graph.RefuseSource(codeSourceConflict, "%s cannot be taken into the arrivals: %s is there already", path, arrival)
 		}
@@ -314,7 +314,8 @@ func sources(rows pgx.Rows, err error) ([]source, error) {
 func (s *Service) sourceFile(path string, v2 bool) (int64, *graph.SourceRefused) {
 	roots, named := []string{s.cfg.NFSRoot}, "the media root"
 	if v2 {
-		roots, named = []string{s.cfg.ArrivalsRoot, library.PathsOf(s.cfg).ReplaceDir()}, "ARRIVALS_ROOT or .work/replace"
+		p := library.PathsOf(s.cfg)
+		roots, named = []string{p.Arrivals, p.ReplaceDir()}, "ARRIVALS_ROOT or .work/replace"
 	}
 	inside := func(p string, resolve bool) bool {
 		pkgs := s.cfg.PackagesRoot
@@ -463,7 +464,7 @@ func forgetTheOldFile(ctx context.Context, tx pgx.Tx, itemID string) error {
 func (s *Service) dropOldFile(ctx context.Context, old, cur string, asked, v2 bool) (bool, string) {
 	root := s.cfg.NFSRoot
 	if v2 {
-		root = s.cfg.ArrivalsRoot
+		root = library.PathsOf(s.cfg).Arrivals
 	}
 	if old == "" {
 		return false, "the title had no file: its original was retired"

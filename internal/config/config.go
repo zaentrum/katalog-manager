@@ -53,22 +53,17 @@ type Config struct {
 	// package store, as they always did.
 	NFSRoot      string // SCANNER_NFS_ROOT / NFS_ROOT (default /var/lib/katalog/media)
 	PackagesRoot string // PACKAGES_ROOT (default /var/lib/katalog/packages)
-	// With library.layout=v2 the share's root is the library: LibraryRoot
-	// holds the record (movies/, series/, people/) and its work folder,
-	// WorkRoot, everything that is not the record: the files that arrive
-	// (ArrivalsRoot, which the scanner walks), the extras' files taken in by
-	// the API (ExtrasRoot, which it never walks), the workers' handoffs, the
-	// trash.
-	LibraryRoot  string // LIBRARY_ROOT (default /var/lib/katalog)
-	WorkRoot     string // WORK_ROOT (default <LIBRARY_ROOT>/.work)
-	ArrivalsRoot string // ARRIVALS_ROOT (default <WORK_ROOT>/incoming)
-	ExtrasRoot   string // EXTRAS_ROOT (default <WORK_ROOT>/extras)
-	// Where an extra's file may also lie with library.layout legacy, as it
-	// could before the v2 layout: the v1 record's folder (an extra's file
-	// there is a record's, written once, and never deleted) and the extras'
-	// folder of the share. Both are under LibraryRoot.
-	LegacyLibraryRoot string // <LIBRARY_ROOT>/library
-	LegacyExtrasRoot  string // <LIBRARY_ROOT>/extras
+	// The library's roots as the environment sets them, each empty when it
+	// does not: Roots resolves them for the layout the settings say, read
+	// where it is used, so an environment that switches its layout needs no
+	// restart. A root the environment sets is that one in both layouts.
+	LibraryRoot  string // LIBRARY_ROOT
+	WorkRoot     string // WORK_ROOT
+	ArrivalsRoot string // ARRIVALS_ROOT
+	ExtrasRoot   string // EXTRAS_ROOT
+	// Share is the export's mount, under which the roots the environment
+	// does not set lie.
+	Share string // /var/lib/katalog
 
 	// TMDB
 	TMDBAPIKey   string // TMDB_API_KEY (blank -> enrichment disabled)
@@ -321,6 +316,53 @@ func retryConfig(c *Config) error {
 	return nil
 }
 
+// cleanRoot is a root as the environment sets it, cleaned; empty when unset.
+func cleanRoot(v string) string {
+	if v == "" {
+		return ""
+	}
+	return filepath.Clean(v)
+}
+
+// Roots are the library's roots in a layout.
+type Roots struct {
+	// Library is the root of the record: with the v2 layout the share's root,
+	// which holds movies/, series/ and people/ beside the work folder; with
+	// the legacy layout the v1 record's folder, where an extra's file may lie.
+	Library string
+	// Work is the v2 layout's work folder: what is not the record.
+	Work string
+	// Arrivals is where the files that arrive lie, the v2 layout's scan root.
+	Arrivals string
+	// Extras is where the extras' files taken in by the API lie.
+	Extras string
+}
+
+// Roots are the library's roots in the v2 layout (v2) or the legacy one, as
+// the layout is when they are used. A root the environment sets is that one;
+// one it does not set is the layout's default: with the legacy layout the
+// share's library/ and extras/ folders, as before the v2 layout; with the v2
+// layout the share's root, its .work/ folder, and in that incoming/ and
+// extras/. The legacy layout has no work folder of its own: Work and
+// Arrivals are the v2 layout's there.
+func (c Config) Roots(v2 bool) Roots {
+	or := func(v, def string) string {
+		if v != "" {
+			return v
+		}
+		return def
+	}
+	lib := or(c.LibraryRoot, c.Share)
+	work := or(c.WorkRoot, filepath.Join(lib, ".work"))
+	r := Roots{Library: lib, Work: work, Arrivals: or(c.ArrivalsRoot, filepath.Join(work, "incoming")),
+		Extras: or(c.ExtrasRoot, filepath.Join(work, "extras"))}
+	if !v2 {
+		r.Library = or(c.LibraryRoot, filepath.Join(c.Share, "library"))
+		r.Extras = or(c.ExtrasRoot, filepath.Join(c.Share, "extras"))
+	}
+	return r
+}
+
 // RetryPolicy is how the configuration says to retry a processing step.
 func (c Config) RetryPolicy() processing.Policy {
 	p := processing.DefaultPolicy()
@@ -360,8 +402,6 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	packages := envDefault("/var/lib/katalog/packages", "PACKAGES_ROOT")
-	library := filepath.Clean(envDefault("/var/lib/katalog", "LIBRARY_ROOT"))
-	work := filepath.Clean(envDefault(filepath.Join(library, ".work"), "WORK_ROOT"))
 	c := Config{
 		Port:             envDefault("8080", "SERVER_PORT"),
 		DatabaseURL:      normalizeDSN(env("SPRING_DATASOURCE_URL", "DATABASE_URL")),
@@ -380,14 +420,13 @@ func Load() (Config, error) {
 
 		StreamSigningKey: env("STREAM_SIGNING_KEY"),
 
-		NFSRoot:           envDefault("/var/lib/katalog/media", "SCANNER_NFS_ROOT", "NFS_ROOT"),
-		PackagesRoot:      packages,
-		LibraryRoot:       library,
-		WorkRoot:          work,
-		ArrivalsRoot:      filepath.Clean(envDefault(filepath.Join(work, "incoming"), "ARRIVALS_ROOT")),
-		ExtrasRoot:        filepath.Clean(envDefault(filepath.Join(work, "extras"), "EXTRAS_ROOT")),
-		LegacyLibraryRoot: filepath.Join(library, "library"),
-		LegacyExtrasRoot:  filepath.Join(library, "extras"),
+		NFSRoot:      envDefault("/var/lib/katalog/media", "SCANNER_NFS_ROOT", "NFS_ROOT"),
+		PackagesRoot: packages,
+		LibraryRoot:  cleanRoot(env("LIBRARY_ROOT")),
+		WorkRoot:     cleanRoot(env("WORK_ROOT")),
+		ArrivalsRoot: cleanRoot(env("ARRIVALS_ROOT")),
+		ExtrasRoot:   cleanRoot(env("EXTRAS_ROOT")),
+		Share:        "/var/lib/katalog",
 
 		TMDBAPIKey:          envDefault(DefaultTMDBToken, "TMDB_API_KEY"),
 		TMDBLanguage:        envDefault("en-US", "TMDB_LANGUAGE"),

@@ -39,9 +39,10 @@ type Paths struct {
 	Extras   string // EXTRAS_ROOT: the extras' files taken in by the API
 }
 
-// PathsOf are the paths cfg configures.
+// PathsOf are the paths cfg configures for the v2 layout (config.Roots).
 func PathsOf(cfg config.Config) Paths {
-	return Paths{Root: cfg.LibraryRoot, Work: cfg.WorkRoot, Arrivals: cfg.ArrivalsRoot, Extras: cfg.ExtrasRoot}
+	r := cfg.Roots(true)
+	return Paths{Root: r.Library, Work: r.Work, Arrivals: r.Arrivals, Extras: r.Extras}
 }
 
 // The library's top folders: the record of movies, of series (and their

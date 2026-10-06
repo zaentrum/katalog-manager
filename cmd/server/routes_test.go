@@ -234,7 +234,7 @@ func newInstanceWired(t *testing.T, w wiring) *instance {
 	dir := t.TempDir()
 	cfg := config.Config{AdminRole: "zaentrum-admin", AddonRole: "zaentrum-addon", RolesClaim: auth.DefaultRolesClaim,
 		ServiceClients: []string{"zaentrum-manager"}, NFSRoot: dir + "/media", PackagesRoot: dir + "/packages",
-		LegacyLibraryRoot: dir + "/library", ExtrasRoot: dir + "/extras"}
+		LibraryRoot: dir + "/library", ExtrasRoot: dir + "/extras"}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	jwt, err := auth.NewJWTVerifier(ctx, iss.URL, cfg.Audience, false, false)

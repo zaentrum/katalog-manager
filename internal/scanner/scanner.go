@@ -183,7 +183,7 @@ func (s *Scanner) walk(ctx context.Context, beat func()) (scanResult, error) {
 		return res, fmt.Errorf("the library's settings could not be read: %w", err)
 	} else if set.V2() {
 		p := library.PathsOf(s.cfg)
-		lib, root = &p, s.cfg.ArrivalsRoot
+		lib, root = &p, p.Arrivals
 	}
 
 	info, statErr := os.Stat(root)
