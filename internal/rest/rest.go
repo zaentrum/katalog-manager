@@ -112,6 +112,11 @@ func (h *Handlers) Register(r chi.Router) {
 		// The settings the workers read (the packager's language whitelist),
 		// secrets left out.
 		r.Get("/api/settings", h.getSettings)
+
+		// The library's migration: the flip of a staged run, and its
+		// reversal.
+		r.Post("/api/library/migrations/{run}/adopt", h.adoptRun)
+		r.Post("/api/library/migrations/{run}/revert", h.revertRun)
 	})
 
 	// An admin's packaging action, as chino-api's admin route forwards it with

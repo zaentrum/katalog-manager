@@ -66,6 +66,8 @@ var routes = []route{
 	{http.MethodPut, "/api/analyze/extras/" + extraX1 + "/steps/transcode", `{"status": "in_progress"}`, "worker"},
 	{http.MethodPost, "/api/extras/" + extraX1 + "/packaging-complete",
 		`{"type": "extra", "renditions": {"video": [{"id": "v0", "codec": "avc1.64001f", "width": 1280, "height": 720}]}}`, "worker"},
+	{http.MethodPost, "/api/library/migrations/r1/adopt", "", "worker"},
+	{http.MethodPost, "/api/library/migrations/r1/revert", `{"items": []}`, "worker"},
 
 	{http.MethodPost, "/api/ingest", `{"path": "MEDIA/new.mkv", "type": "movie", "title": "New"}`, "ingest"},
 	{http.MethodPost, "/api/extras", `{"itemId": "m1", "path": "MEDIA/m1-trailer.mkv", "kind": "trailer"}`, "ingest"},
@@ -75,14 +77,15 @@ var routes = []route{
 
 // Every route answers whom it is for, and refuses everyone else before it
 // does anything: a viewer reads artwork, playback and subtitles; the worker
-// protocol is the service account's and the admins'; an addon only ingests;
-// the packaging action is an admin's alone.
+// protocol and the library's migration are the service account's and the
+// admins'; an addon only ingests; the packaging action is an admin's alone.
 // A stream token reads artwork and nothing else, and no token gets nowhere.
 func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 	st := storetest.Open(t)
 	dir := t.TempDir()
 	cfg := testConfig(dir)
-	for _, d := range []string{cfg.NFSRoot, cfg.PackagesRoot} {
+	cfg.LibraryRoot = dir // the migration run r1, staged with nothing in it
+	for _, d := range []string{cfg.NFSRoot, cfg.PackagesRoot, dir + "/.work/migration/r1"} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
