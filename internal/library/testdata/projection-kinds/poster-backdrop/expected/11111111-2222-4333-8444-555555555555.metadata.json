@@ -1,0 +1,122 @@
+{
+  "schema": "zaentrum.library.metadata/2",
+  "itemId": "11111111-2222-4333-8444-555555555555",
+  "type": "movie",
+  "asOf": "2026-10-06T12:00:00Z",
+  "projectedBy": "library-v2-from-catalog",
+  "databaseUpdatedAt": "2026-08-01T09:00:00Z",
+  "externalIds": {
+    "tmdbMovie": "1234",
+    "imdb": "tt9999999"
+  },
+  "titles": {
+    "primary": "Example Film",
+    "original": null,
+    "sort": "example film",
+    "qualifier": null,
+    "localized": {
+      "und": {
+        "title": "Example Film",
+        "sortTitle": "example film",
+        "tagline": "Only an example.",
+        "overview": "A film that stands in for a real one."
+      }
+    }
+  },
+  "releaseDate": "2024",
+  "genres": [
+    "Drama"
+  ],
+  "tags": [
+    "example"
+  ],
+  "rating": 7.5,
+  "contentRating": null,
+  "credits": [
+    {
+      "personId": "99999999-8888-4777-8666-555555555555",
+      "name": "A Director",
+      "role": "director",
+      "job": null,
+      "character": null,
+      "order": null,
+      "episodeCount": null,
+      "tmdbPerson": null
+    }
+  ],
+  "collection": null,
+  "library": {
+    "match": {
+      "status": "matched",
+      "decidedBy": "legacy-catalog",
+      "decidedAt": "2026-10-06T12:00:00Z"
+    },
+    "reference": {
+      "runtimeMs": 600000,
+      "runtimeSource": "legacy-catalog"
+    }
+  },
+  "images": [
+    {
+      "kind": "backdrop",
+      "file": "b63355f9a1f6274e48ef9c27ab6d683c460bf87cb4eefe3139711bcbea77c75c.png",
+      "sha256": "sha256:b63355f9a1f6274e48ef9c27ab6d683c460bf87cb4eefe3139711bcbea77c75c",
+      "contentType": "image/png",
+      "sizeBytes": 33,
+      "width": 2,
+      "height": 3,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": "2026-07-01T09:05:00Z",
+      "origin": {
+        "source": "legacy-catalog",
+        "fetchedAt": "2026-07-01T09:05:00Z"
+      }
+    },
+    {
+      "kind": "poster",
+      "file": "b63355f9a1f6274e48ef9c27ab6d683c460bf87cb4eefe3139711bcbea77c75c.png",
+      "sha256": "sha256:b63355f9a1f6274e48ef9c27ab6d683c460bf87cb4eefe3139711bcbea77c75c",
+      "contentType": "image/png",
+      "sizeBytes": 33,
+      "width": 2,
+      "height": 3,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": "2026-07-01T09:05:00Z",
+      "origin": {
+        "source": "legacy-catalog",
+        "fetchedAt": "2026-07-01T09:05:00Z"
+      }
+    }
+  ],
+  "videos": [
+    {
+      "site": "YouTube",
+      "key": "abc123",
+      "url": "https://example.org/abc123",
+      "name": "Trailer",
+      "kind": "trailer",
+      "language": null,
+      "durationMs": 90000,
+      "publishedAt": null,
+      "origin": "tmdb"
+    }
+  ],
+  "curation": {
+    "metadataLocked": false,
+    "lockedFields": [],
+    "notes": null
+  },
+  "fieldOrigins": {
+    "titles.primary": "legacy-catalog",
+    "titles.sort": "legacy-catalog",
+    "releaseDate": "legacy-catalog",
+    "genres": "legacy-catalog",
+    "tags": "legacy-catalog",
+    "rating": "legacy-catalog",
+    "credits": "legacy-catalog",
+    "images": "legacy-catalog",
+    "videos": "legacy-catalog"
+  }
+}

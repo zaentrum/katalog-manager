@@ -18,7 +18,13 @@ import (
 // golden reads an expected projection the tool wrote.
 func golden(t *testing.T, name string) []byte {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("testdata", "projection", "expected", name))
+	return goldenIn(t, filepath.Join("testdata", "projection"), name)
+}
+
+// goldenIn reads an expected projection of the fixture dir.
+func goldenIn(t *testing.T, dir, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, "expected", name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +58,29 @@ func imagesOf(t *testing.T, row Doc) []ImageIn {
 // library-v2-from-catalog.py --projections-only wrote of it, its images the
 // files the tool wrote.
 func TestTheProjectionsAreTheTools(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("testdata", "projection", "export.json"))
+	projectsAsTheTool(t, filepath.Join("testdata", "projection"))
+}
+
+// The schemas' cases of an image of several kinds (its tools' suite,
+// test_images_of_several_kinds): a poster whose bytes are the backdrop's
+// too, and those bytes as a thumb, a poster and a backdrop listed out of
+// order, are an entry of each kind sharing the one file, listed by kind, as
+// the tool projects them (testdata/projection-kinds).
+func TestTheImagesOfSeveralKindsAreTheTools(t *testing.T) {
+	cases, err := filepath.Glob(filepath.Join("testdata", "projection-kinds", "*"))
+	if err != nil || len(cases) != 2 {
+		t.Fatalf("the cases: %v, %v", cases, err)
+	}
+	for _, dir := range cases {
+		t.Run(filepath.Base(dir), func(t *testing.T) { projectsAsTheTool(t, dir) })
+	}
+}
+
+// projectsAsTheTool checks the port against the fixture dir: its
+// export.json, and in expected/ what the tool projected of it.
+func projectsAsTheTool(t *testing.T, fixture string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(fixture, "export.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +114,7 @@ func TestTheProjectionsAreTheTools(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := golden(t, id+".metadata.json"); !bytes.Equal(got, want) {
+		if want := goldenIn(t, fixture, id+".metadata.json"); !bytes.Equal(got, want) {
 			t.Errorf("%s's metadata.json:\n%s\nwant:\n%s", id, got, want)
 		}
 		for _, f := range files {
@@ -105,14 +133,14 @@ func TestTheProjectionsAreTheTools(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := golden(t, id+".person.json"); !bytes.Equal(got, want) {
+		if want := goldenIn(t, fixture, id+".person.json"); !bytes.Equal(got, want) {
 			t.Errorf("%s's person.json:\n%s\nwant:\n%s", id, got, want)
 		}
 		for _, f := range files {
 			images = append(images, id+"/"+f.Name)
 		}
 	}
-	if got, want := imageNames(images), imageNames(strings.Fields(string(golden(t, "images.txt")))); got != want {
+	if got, want := imageNames(images), imageNames(strings.Fields(string(goldenIn(t, fixture, "images.txt")))); got != want {
 		t.Errorf("the images:\n%s\nwant:\n%s", got, want)
 	}
 }

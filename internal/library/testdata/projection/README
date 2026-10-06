@@ -12,3 +12,9 @@ person.json, and in images.txt the images they wrote. To write them again:
 
 then copy export.json, every metadata.json as <itemId>.metadata.json, every
 person.json as <personId>.person.json, and the images' paths into images.txt.
+
+../projection-kinds/ holds the schemas' cases of an image of several kinds, from their tools'
+suite (test_images_of_several_kinds, schemas a08c78e): fake_export's film with its artwork of one
+image's bytes as a poster and a backdrop, and as a thumb, a poster and a backdrop, each projected
+by library-v2-from-catalog.py --projections-only --as-of 2026-10-06T12:00:00Z in a tree holding
+the film's item.json; each case's export.json, its metadata.json and images.txt as above.

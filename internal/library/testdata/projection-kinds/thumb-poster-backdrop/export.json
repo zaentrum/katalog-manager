@@ -1,0 +1,149 @@
+{
+  "exportedAt": "2026-09-21T17:00:00Z",
+  "items": [
+    {
+      "id": "11111111-2222-4333-8444-555555555555",
+      "type": "movie",
+      "title": "Example Film",
+      "sortTitle": "example film",
+      "year": 2024,
+      "description": "A film that stands in for a real one.",
+      "tagline": "Only an example.",
+      "rating": 7.5,
+      "durationMs": 600000,
+      "parentId": null,
+      "seasonNumber": null,
+      "episodeNumber": null,
+      "metadataLocked": false,
+      "createdAt": "2026-07-01T09:00:00Z",
+      "createdBy": null,
+      "modifiedAt": "2026-08-01T09:00:00Z",
+      "externalIds": [
+        {
+          "source": "tmdb",
+          "externalId": "1234"
+        },
+        {
+          "source": "imdb",
+          "externalId": "tt9999999"
+        }
+      ],
+      "genres": [
+        "Drama"
+      ],
+      "tags": [
+        "example"
+      ],
+      "people": [
+        {
+          "personId": "99999999-8888-4777-8666-555555555555",
+          "name": "A Director",
+          "role": "director"
+        }
+      ],
+      "chapters": [
+        {
+          "startMs": 0,
+          "endMs": 300000,
+          "title": "One",
+          "ordinal": 1
+        },
+        {
+          "startMs": 300000,
+          "endMs": 600000,
+          "title": "Two",
+          "ordinal": 2
+        }
+      ],
+      "segments": [
+        {
+          "kind": "credits",
+          "startMs": 580000,
+          "endMs": 600000,
+          "source": "blackframe",
+          "confidence": 0.8,
+          "label": "black 20.0s"
+        }
+      ],
+      "playbackAssets": [
+        {
+          "id": "a1",
+          "path": "/var/lib/katalog/media/Example Film (2024).mkv",
+          "kind": "primary",
+          "codec": null,
+          "resolution": null,
+          "bitrateKbps": null,
+          "sizeBytes": 4000,
+          "hash": null,
+          "isPrimary": true,
+          "audioCodec": null,
+          "audioLanguage": null,
+          "audioChannels": null,
+          "audioBitrateKbps": null,
+          "audioTrackCount": null,
+          "subtitleTrackCount": null,
+          "durationMs": null
+        },
+        {
+          "id": "a2",
+          "path": "/var/lib/katalog/packages/movies/11/11111111-2222-4333-8444-555555555555/manifest.json",
+          "kind": "packaged",
+          "codec": "hev1.1.6.L120.B0",
+          "resolution": "1920x800",
+          "bitrateKbps": 4200,
+          "sizeBytes": 0,
+          "hash": null,
+          "isPrimary": false,
+          "audioCodec": "mp4a.40.2",
+          "audioLanguage": "eng",
+          "audioChannels": 2,
+          "audioBitrateKbps": 192,
+          "audioTrackCount": 1,
+          "subtitleTrackCount": 1,
+          "durationMs": 600000
+        }
+      ],
+      "subtitleAssets": [
+        {
+          "id": "s1",
+          "path": "/var/lib/katalog/packages/movies/11/11111111-2222-4333-8444-555555555555/subs/0.vtt",
+          "format": "webvtt",
+          "language": "ger",
+          "label": "",
+          "isDefault": true
+        }
+      ],
+      "trailers": [
+        {
+          "source": "tmdb",
+          "site": "YouTube",
+          "externalId": "abc123",
+          "url": "https://example.org/abc123",
+          "title": "Trailer",
+          "durationSec": 90,
+          "localPath": null
+        }
+      ],
+      "artwork": [
+        {
+          "kind": "thumb",
+          "contentType": "image/png",
+          "fetchedAt": "2026-07-01T09:05:00Z",
+          "base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAAAAAAA"
+        },
+        {
+          "kind": "poster",
+          "contentType": "image/png",
+          "fetchedAt": "2026-07-01T09:05:00Z",
+          "base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAAAAAAA"
+        },
+        {
+          "kind": "backdrop",
+          "contentType": "image/png",
+          "fetchedAt": "2026-07-01T09:05:00Z",
+          "base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAAAAAAAA"
+        }
+      ]
+    }
+  ]
+}
