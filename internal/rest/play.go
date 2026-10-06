@@ -14,7 +14,9 @@ import (
 
 // getPlay streams the primary playback asset file for an item with HTTP
 // byte-range support (200/206/416, Accept-Ranges: bytes). Ports PlayController:
-// resolve the primary asset (isprimary=true) else fall back ORDER BY path; 404
+// resolve the primary asset (isprimary=true) else fall back ORDER BY path,
+// either only among the title's own files (kind primary): never a package's
+// record, nor a retired original's row, which names its record's folder; 404
 // when no asset row or the file is missing/unreadable. http.ServeContent does
 // the range parsing + Content-Range/Content-Length emission (RFC 7233), which
 // subsumes the hand-rolled Java parser. A viewer capped at an age is answered
@@ -34,11 +36,11 @@ func (h *Handlers) getPlay(w http.ResponseWriter, r *http.Request) {
 	var path string
 	err := h.d.Store.Pool().QueryRow(ctx,
 		`SELECT path FROM com_nalet_katalog_playbackassets
-		 WHERE item_id = $1 AND isprimary = true LIMIT 1`, itemID).Scan(&path)
+		 WHERE item_id = $1 AND isprimary = true AND COALESCE(kind, 'primary') = 'primary' LIMIT 1`, itemID).Scan(&path)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = h.d.Store.Pool().QueryRow(ctx,
 			`SELECT path FROM com_nalet_katalog_playbackassets
-			 WHERE item_id = $1 ORDER BY path LIMIT 1`, itemID).Scan(&path)
+			 WHERE item_id = $1 AND COALESCE(kind, 'primary') = 'primary' ORDER BY path LIMIT 1`, itemID).Scan(&path)
 	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
