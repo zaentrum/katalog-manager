@@ -21,7 +21,8 @@ type Packager interface {
 // enqueues the item's packaging as GraphQL's packageItem does, and answers its
 // result, {status, alreadyActive, message} for a movie or an episode and
 // {episodesEnqueued, episodesTotal, message} for a series; 404 for an unknown
-// item and 400 for one that cannot be packaged, with {"error": "..."}.
+// item, 400 for one that cannot be packaged and 409 for a title whose
+// original was deleted after packaging, with {"error": "..."}.
 func (h *Handlers) postPackage(w http.ResponseWriter, r *http.Request) {
 	if h.d.Packager == nil {
 		writeError(w, http.StatusServiceUnavailable, "packaging is not configured")
@@ -35,6 +36,9 @@ func (h *Handlers) postPackage(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, itemactions.ErrNotPackageable):
 		writeError(w, http.StatusBadRequest, "Packaging is only available for movies and episodes.")
+		return
+	case errors.Is(err, itemactions.ErrRetired):
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, "packaging could not be enqueued: "+err.Error())

@@ -2,10 +2,12 @@ package itemactions
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -13,6 +15,8 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/graph"
+	"github.com/zaentrum/katalog-manager/internal/library"
+	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
@@ -35,7 +39,11 @@ import (
 //     The items' extras go with them: their files under the media root or
 //     EXTRAS_ROOT (never a library record's, which is written once), their
 //     packages in packages/extras/ and the transcoder's handoffs left in the
-//     inbox.
+//     inbox. With the library's v2 layout the files are the originals the
+//     items still have where they arrived (presentArrivals), and the
+//     packages are the items' folders in the record and their entries in
+//     the work folder (libraryFolders), and the package store's folders of
+//     before.
 //  4. Emit stube.catalog.item.removed so live-refresh surfaces drop the item.
 func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, deletePackages bool, reason string) (graph.RemoveResult, error) {
 	var res graph.RemoveResult
@@ -83,7 +91,12 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 	// stops are where the folders a removed file leaves empty stop being
 	// pruned: the root it lies in.
 	stops := map[string]string{}
-	if deleteFiles {
+	v2 := s.v2(ctx)
+	if deleteFiles && v2 {
+		if mediaFiles, err = s.presentArrivals(ctx, ids, extras, stops); err != nil {
+			return res, err
+		}
+	} else if deleteFiles {
 		rows, err := s.st.Pool().Query(ctx, `
 			SELECT DISTINCT path FROM com_nalet_katalog_playbackassets
 			WHERE item_id = ANY($1) AND path IS NOT NULL`, ids)
@@ -120,12 +133,29 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 		}
 	}
 	var pkgRoots []string
+	// pkgStops are where the folders a removed package leaves empty stop
+	// being pruned: the package store, or the library's.
+	pkgStops := map[string]string{}
 	if deletePackages {
 		seen := map[string]bool{}
 		add := func(root string) {
 			if root != "" && underRoot(s.cfg.PackagesRoot, root) && !seen[root] {
 				seen[root] = true
 				pkgRoots = append(pkgRoots, root)
+				pkgStops[root] = s.cfg.PackagesRoot
+			}
+		}
+		if v2 {
+			folders, err := s.libraryFolders(ctx, ids, extras)
+			if err != nil {
+				return res, err
+			}
+			for dir, stop := range folders {
+				if !seen[dir] {
+					seen[dir] = true
+					pkgRoots = append(pkgRoots, dir)
+					pkgStops[dir] = stop
+				}
 			}
 		}
 		// The packaged asset's manifest path is AUTHORITATIVE for where the
@@ -186,6 +216,9 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 		res.FilesRemoved++
 		pruneEmptyDirs(filepath.Dir(f), stops[f])
 	}
+	if v2 {
+		sort.Strings(pkgRoots) // a series' folder before its episodes'
+	}
 	for _, root := range pkgRoots {
 		if _, err := os.Stat(root); err != nil {
 			continue // never packaged / already gone
@@ -195,7 +228,7 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 			continue
 		}
 		res.PackagesRemoved++
-		pruneEmptyDirs(filepath.Dir(root), s.cfg.PackagesRoot)
+		pruneEmptyDirs(filepath.Dir(root), pkgStops[root])
 	}
 
 	// 4. Announce the removal (one event for the whole cascade).
@@ -209,6 +242,123 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 			id, title, typ, res.ItemsRemoved, res.FilesRemoved, res.PackagesRemoved, len(res.Errors))
 	}
 	return res, nil
+}
+
+// presentArrivals are the files a removal with the v2 layout deletes: the
+// originals the items still have (present sources, and primary assets of no
+// source) and their extras' files, where they arrived (ARRIVALS_ROOT,
+// EXTRAS_ROOT) or under the media root before the library (NFS_ROOT). Never
+// a file in the record, nor an original being retired: the retire job has
+// it. stops gets the root each lies in.
+func (s *Service) presentArrivals(ctx context.Context, ids []string, extras []*model.Extra, stops map[string]string) ([]string, error) {
+	p := library.PathsOf(s.cfg)
+	roots := []string{p.Arrivals, p.Extras, s.cfg.NFSRoot, s.cfg.Roots(false).Extras}
+	rows, err := s.st.Pool().Query(ctx, `
+		SELECT arrivalpath FROM com_nalet_katalog_itemsources
+		WHERE item_id = ANY($1) AND state = 'present' AND arrivalpath IS NOT NULL
+		UNION
+		SELECT path FROM com_nalet_katalog_playbackassets
+		WHERE item_id = ANY($1) AND isprimary = true AND sourceid IS NULL AND path IS NOT NULL
+		ORDER BY 1`, ids)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		paths = append(paths, path)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, x := range extras {
+		if x.SourcePath != nil {
+			paths = append(paths, *x.SourcePath)
+		}
+	}
+	var out []string
+	for _, path := range paths {
+		for _, root := range roots {
+			if underRoot(root, path) && stops[path] == "" && !inRecord(p, path) {
+				out = append(out, path)
+				stops[path] = root
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// inRecord reports whether path lies in the library's record.
+func inRecord(p library.Paths, path string) bool {
+	for _, d := range []string{library.MoviesDir, library.SeriesDir, library.PeopleDir} {
+		if underRoot(filepath.Join(p.Root, d), path) {
+			return true
+		}
+	}
+	return false
+}
+
+// libraryFolders are what a removal with the v2 layout deletes of the items'
+// packages, each with where pruning the folders it leaves empty stops: each
+// item's folder in the record (a series' holds its episodes'), and the
+// items' and their extras' entries in the work folder (the transcoder's
+// handoffs in .work/inbox, the packager's builds in .work/staging). The
+// legacy package store's folders are the caller's.
+func (s *Service) libraryFolders(ctx context.Context, ids []string, extras []*model.Extra) (map[string]string, error) {
+	p := library.PathsOf(s.cfg)
+	out := map[string]string{}
+	pool := s.st.Pool()
+	for _, id := range ids {
+		pl, err := library.PlaceOf(ctx, pool, id)
+		var unplaced *library.Unplaced
+		if errors.As(err, &unplaced) || errors.Is(err, library.ErrNoItem) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		dir := p.ItemDir(pl)
+		stop := filepath.Join(p.Root, library.MoviesDir)
+		if pl.Type != "movie" {
+			stop = filepath.Join(p.Root, library.SeriesDir)
+		}
+		if underRoot(stop, dir) {
+			out[dir] = stop
+		}
+		out[p.InboxDir(id)] = p.Work
+	}
+	rows, err := pool.Query(ctx, `SELECT id FROM com_nalet_katalog_itemversions WHERE item_id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var vid string
+		if err := rows.Scan(&vid); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out[p.StagingDir(vid)] = p.Work
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, x := range extras {
+		out[p.ExtraInboxDir(x.ID)] = p.Work
+		out[p.ExtraStagingDir(x.ID)] = p.Work
+	}
+	for dir := range out {
+		if !underRoot(p.Root, dir) {
+			delete(out, dir)
+		}
+	}
+	return out, nil
 }
 
 // underRoot reports whether path (cleaned) lies strictly inside root — the

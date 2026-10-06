@@ -12,7 +12,8 @@ import (
 // POST /api/items/{id}/package answers as the CAP service's enqueuePackaging
 // did, which chino-api's admin route passes on: a movie's status, whether its
 // chain was active and a message; a series' episodes enqueued of all; 404
-// for an unknown item and 400 for one that cannot be packaged.
+// for an unknown item, 400 for one that cannot be packaged, and 409 for a
+// title whose original was deleted after packaging.
 func TestThePackagingActionAnswersAsChinoAPIExpects(t *testing.T) {
 	st := storetest.Open(t)
 	storetest.AddItem(t, st, "m1", "movie", "Sintel", "")
@@ -52,5 +53,14 @@ func TestThePackagingActionAnswersAsChinoAPIExpects(t *testing.T) {
 	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemprocessingsteps WHERE step = 'transcode' AND status = 'pending'`); n != 2 {
 		t.Errorf("%d transcodes enqueued, want the movie's and the episode's", n)
+	}
+
+	// A title whose original was deleted after packaging: 409.
+	storetest.AddItem(t, st, "m2", "movie", "Retired", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state, retireeventid, retireeventat)
+		VALUES ('s2', 'm2', 'm2.mkv', 1, 'deleted', 'ev', '2026-10-06 11:00:00+00')`)
+	if code, body := answer("/api/items/m2/package"); code != http.StatusConflict ||
+		body["error"] != "packaged; nothing to package from: the original was deleted after packaging (event ev, 2026-10-06T11:00:00Z)" {
+		t.Errorf("a retired title: %d %v", code, body)
 	}
 }

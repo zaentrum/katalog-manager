@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/graph"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
@@ -35,6 +37,12 @@ var ErrUnknownItem = errors.New("unknown item")
 // series. Callers map this to HTTP 400; the wrapped message reproduces the Java
 // body string "Packaging is only available for movies and episodes.".
 var ErrNotPackageable = errors.New("not packageable")
+
+// ErrRetired is returned when a movie or an episode is packaged whose
+// original was deleted after packaging: its package is what is left, and
+// nothing is left to package from. Callers map it to HTTP 409; the wrapped
+// message says when, and the event that records it.
+var ErrRetired = errors.New("packaged; nothing to package from")
 
 // Service implements graph.Packager (PackageItem) and graph.Validator
 // (ValidateItem).
@@ -74,6 +82,7 @@ func ptrI32(n int32) *int32   { return &n }
 //
 //   - unknown id            -> ErrUnknownItem (caller -> 404)
 //   - non-media type        -> ErrNotPackageable (caller -> 400)
+//   - original retired      -> ErrRetired (caller -> 409)
 //   - series                -> {EpisodesEnqueued, EpisodesTotal, Message}
 //   - movie/episode active  -> {Status:"<step> <status>", AlreadyActive:true, Message}
 //   - movie/episode fresh   -> {Status:"pending", AlreadyActive:false, Message}
@@ -129,6 +138,14 @@ func (s *Service) PackageItem(ctx context.Context, id string) (graph.PackageResu
 			return graph.PackageResult{}, err
 		}
 
+		// An episode whose original is being deleted after packaging has
+		// nothing to package from (one deleted has no primary asset).
+		originals, err := library.OriginalsOf(ctx, s.st.Pool(), epIDs)
+		if err != nil {
+			return graph.PackageResult{}, err
+		}
+		epIDs = slices.DeleteFunc(epIDs, func(e string) bool { return originals[e].Gone() })
+
 		enqueued := int32(0)
 		for _, epID := range epIDs {
 			if err := s.steps.Upsert(ctx, epID, "transcode", processing.StatusPending,
@@ -162,6 +179,17 @@ func (s *Service) PackageItem(ctx context.Context, id string) (graph.PackageResu
 		return graph.PackageResult{
 			Message: ptrStr("Packaging is only available for movies and episodes."),
 		}, fmt.Errorf("%w: type=%s", ErrNotPackageable, typ)
+	}
+
+	// A title whose original was deleted after packaging has its package,
+	// and nothing to package from.
+	o, err := library.OriginalOf(ctx, s.st.Pool(), id)
+	if err != nil {
+		return graph.PackageResult{}, err
+	}
+	if o.Gone() {
+		return graph.PackageResult{Message: ptrStr(ErrRetired.Error() + ": " + o.Why())},
+			fmt.Errorf("%w: %s", ErrRetired, o.Why())
 	}
 
 	// Movie / episode — single-item enqueue. Idempotent: refuse if either
@@ -304,7 +332,7 @@ func (s *Service) ValidateItem(ctx context.Context, id string) (graph.ValidateRe
 		return s.validateSeries(ctx, id)
 	}
 
-	res, err := s.validateOne(ctx, id)
+	res, err := s.validate(ctx, id)
 	if err != nil {
 		return graph.ValidateResult{}, err
 	}
@@ -334,15 +362,19 @@ func (s *Service) validateSeries(ctx context.Context, seriesID string) (graph.Va
 		return graph.ValidateResult{}, err
 	}
 
-	var ok, sourceMissing, noPackage, stale, codecMismatch, findingsCount int
+	var ok, sourceMissing, noPackage, stale, codecMismatch, findingsCount, retired, lost int
 	for _, epID := range epIDs {
-		r, err := s.validateOne(ctx, epID)
+		r, err := s.validate(ctx, epID)
 		if err != nil {
 			return graph.ValidateResult{}, err
 		}
 		switch r.Code {
 		case "ok":
 			ok++
+		case "retired":
+			retired++
+		case "lost":
+			lost++
 		case "source_missing":
 			sourceMissing++
 		case "no_package":
@@ -359,25 +391,141 @@ func (s *Service) validateSeries(ctx context.Context, seriesID string) (graph.Va
 	}
 
 	episodes := len(epIDs)
+	v2 := s.v2(ctx)
 	message := fmt.Sprintf(
 		"%d ok, %d not packaged, %d stale, %d source missing, %d codec mismatch, %d with findings (of %d episodes)",
 		ok, noPackage, stale, sourceMissing, codecMismatch, findingsCount, episodes)
-
-	findings := []graph.ValidateFinding{
-		{Code: "episodes", Message: strconv.Itoa(episodes)},
-		{Code: "ok", Message: strconv.Itoa(ok)},
-		{Code: "no_package", Message: strconv.Itoa(noPackage)},
-		{Code: "stale", Message: strconv.Itoa(stale)},
-		{Code: "source_missing", Message: strconv.Itoa(sourceMissing)},
-		{Code: "codec_mismatch", Message: strconv.Itoa(codecMismatch)},
-		{Code: "with_findings", Message: strconv.Itoa(findingsCount)},
+	if v2 {
+		message = fmt.Sprintf(
+			"%d ok, %d retired, %d not packaged, %d stale, %d source missing, %d lost, %d codec mismatch, %d with findings (of %d episodes)",
+			ok, retired, noPackage, stale, sourceMissing, lost, codecMismatch, findingsCount, episodes)
 	}
+
+	count := func(code string, n int) graph.ValidateFinding {
+		return graph.ValidateFinding{Code: code, Message: strconv.Itoa(n)}
+	}
+	findings := []graph.ValidateFinding{count("episodes", episodes), count("ok", ok)}
+	if v2 {
+		findings = append(findings, count("retired", retired))
+	}
+	findings = append(findings, count("no_package", noPackage), count("stale", stale), count("source_missing", sourceMissing))
+	if v2 {
+		findings = append(findings, count("lost", lost))
+	}
+	findings = append(findings, count("codec_mismatch", codecMismatch), count("with_findings", findingsCount))
 
 	return graph.ValidateResult{
 		Code:     "series",
 		Message:  message,
 		Findings: findings,
 	}, nil
+}
+
+// v2 reports whether the library's layout is v2.
+func (s *Service) v2(ctx context.Context) bool {
+	set, err := library.ReadSettings(ctx, s.st.Pool())
+	return err == nil && set.V2()
+}
+
+// validate validates a single item, as its layout keeps it.
+func (s *Service) validate(ctx context.Context, itemID string) (graph.ValidateResult, error) {
+	if s.v2(ctx) {
+		return s.validateV2(ctx, itemID)
+	}
+	return s.validateOne(ctx, itemID)
+}
+
+// validateV2 validates a single item of the library's v2 layout as
+// validateOne does one of the package store, its package the folder of its
+// current version as the catalog records it, whose chain it checks (its
+// records, not every byte). Its codes are validateOne's, and:
+//
+//	retired — the original was deleted after packaging, as its event says,
+//	          and the package's chain holds: what is left of the title plays
+//	lost    — the package the catalog records is not there, or its chain is
+//	          broken
+//
+// source_missing is an original the catalog holds present that is not there,
+// which no event says was deleted.
+func (s *Service) validateV2(ctx context.Context, itemID string) (graph.ValidateResult, error) {
+	pool := s.st.Pool()
+	cur, err := library.Current(ctx, pool, itemID)
+	if err != nil {
+		return graph.ValidateResult{}, err
+	}
+	var pkgPathPtr *string
+	var broken error
+	if cur != nil {
+		if cur.Dir == nil {
+			broken = errors.New("the catalog does not say where its folder is")
+		} else {
+			pkgPathPtr = ptrStr(*cur.Dir)
+			_, broken = library.VerifyVersion(*cur.Dir, false)
+		}
+	}
+	o, err := library.OriginalOf(ctx, pool, itemID)
+	if err != nil {
+		return graph.ValidateResult{}, err
+	}
+	if o.Gone() {
+		switch {
+		case cur == nil:
+			return graph.ValidateResult{Code: "lost",
+				Message: "No complete version, and " + o.Why() + ": nothing of the title plays."}, nil
+		case broken != nil:
+			return graph.ValidateResult{Code: "lost", PackagePath: pkgPathPtr,
+				Message: fmt.Sprintf("Version %s does not verify (%v), and %s.", cur.ID, broken, o.Why())}, nil
+		}
+		return graph.ValidateResult{Code: "retired", PackagePath: pkgPathPtr,
+			Message: fmt.Sprintf("Packaged as version %s, its chain holds; %s.", cur.ID, o.Why())}, nil
+	}
+
+	var sourcePath string
+	err = pool.QueryRow(ctx, `
+		SELECT path FROM com_nalet_katalog_playbackassets
+		WHERE item_id = $1 AND isprimary = true LIMIT 1`, itemID).Scan(&sourcePath)
+	if err != nil {
+		if isNoRows(err) {
+			return graph.ValidateResult{
+				Code:    "not_applicable",
+				Message: "No primary playback asset for this item.",
+			}, nil
+		}
+		return graph.ValidateResult{}, err
+	}
+	srcInfo, srcStatErr := os.Stat(sourcePath)
+	switch {
+	case srcStatErr != nil:
+		return graph.ValidateResult{
+			Code:        "source_missing",
+			Message:     "Source file not found at " + sourcePath + ", and no event says it was deleted.",
+			SourcePath:  ptrStr(sourcePath),
+			PackagePath: pkgPathPtr,
+		}, nil
+	case cur == nil:
+		return graph.ValidateResult{
+			Code:       "no_package",
+			Message:    "Source ok, but no version of it is recorded in the library.",
+			SourcePath: ptrStr(sourcePath),
+		}, nil
+	case broken != nil:
+		return graph.ValidateResult{
+			Code:        "lost",
+			Message:     fmt.Sprintf("Version %s is recorded, and its package does not verify: %v.", cur.ID, broken),
+			SourcePath:  ptrStr(sourcePath),
+			PackagePath: pkgPathPtr,
+		}, nil
+	}
+	if completeInfo, err := os.Stat(filepath.Join(*cur.Dir, library.CompleteFile)); err == nil &&
+		srcInfo.ModTime().UnixMilli() > completeInfo.ModTime().UnixMilli() {
+		return graph.ValidateResult{
+			Code:        "stale",
+			Message:     "Source modified after packaging (re-package recommended).",
+			SourcePath:  ptrStr(sourcePath),
+			PackagePath: pkgPathPtr,
+		}, nil
+	}
+	return s.packagedChecks(ctx, itemID, sourcePath, pkgPathPtr)
 }
 
 // validateOne validates a single item. Codes (exact strings; the UI keys off
@@ -449,11 +597,17 @@ func (s *Service) validateOne(ctx context.Context, itemID string) (graph.Validat
 		}, nil
 	}
 
+	return s.packagedChecks(ctx, itemID, sourcePath, pkgPathPtr)
+}
+
+// packagedChecks are the checks of a packaged title past its source and its
+// package: the packaged codec, then the files' hygiene, else ok.
+func (s *Service) packagedChecks(ctx context.Context, itemID, sourcePath string, pkgPathPtr *string) (graph.ValidateResult, error) {
 	// Codec invariant: every packaged output must be HEVC (hev1.*/hvc1.*).
 	// avc1/h264 on the packaged row means the transcoder skipped when it
 	// shouldn't have, or the row is from a pre-split historical run.
 	var pkgCodec *string
-	err = s.st.Pool().QueryRow(ctx, `
+	err := s.st.Pool().QueryRow(ctx, `
 		SELECT codec FROM com_nalet_katalog_playbackassets
 		WHERE item_id = $1 AND kind = 'packaged' LIMIT 1`, itemID).Scan(&pkgCodec)
 	if err != nil && !isNoRows(err) {
