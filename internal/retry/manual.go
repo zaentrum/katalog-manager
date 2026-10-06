@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/zaentrum/katalog-manager/internal/graph"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 )
 
@@ -16,7 +18,9 @@ import (
 // or without attempts left, or one in progress with no word from its worker,
 // or waiting for one to start it, for longer than its timeout. Its failures
 // in a row start afresh. A step running or waiting within its timeout is left
-// alone, as is one done, not applicable or skipped; the result says why.
+// alone, as is one done, not applicable or skipped; the result says why. A
+// step that reads the title's original is refused once the original was
+// retired.
 func (s *Service) RetryStep(ctx context.Context, itemID, step string) (graph.RetryStepResult, error) {
 	res := graph.RetryStepResult{ItemID: itemID, Step: step}
 	if !processing.ValidStep(step) {
@@ -30,6 +34,15 @@ func (s *Service) RetryStep(ctx context.Context, itemID, step string) (graph.Ret
 	}
 	if why := s.unavailable(ctx); why != "" {
 		return res, errors.New("cannot retry: " + why)
+	}
+	if slices.Contains(processing.OriginalSteps, step) && s.withOriginal(ctx) != "" {
+		o, err := library.OriginalOf(ctx, s.st.Pool(), itemID)
+		if err != nil {
+			return res, err
+		}
+		if o.Gone() {
+			return res, fmt.Errorf("cannot retry %s: it reads the title's original, and %s", step, o.RetiredAt())
+		}
 	}
 	timeout := s.pol.Timeout(step)
 	rows, err := s.claim(ctx, `WITH cur AS (
@@ -144,7 +157,8 @@ func (s *Service) whyNot(ctx context.Context, res graph.RetryStepResult, timeout
 // not all be sent. It runs on when the caller stops waiting, and one runs in
 // an instance at a time; instances share the work, each step once. The
 // failed retire steps, which delete originals, are retried only when the
-// step is named.
+// step is named, and the steps that read an original that was retired are
+// left as they are.
 func (s *Service) RetryFailed(ctx context.Context, step string) (graph.RetryFailedResult, error) {
 	var res graph.RetryFailedResult
 	if step != "" {
@@ -170,7 +184,7 @@ func (s *Service) RetryFailed(ctx context.Context, step string) (graph.RetryFail
 		rows, err := s.claim(ctx, `WITH failed AS (
 				SELECT s.id, s.status FROM `+tbl+` s
 				WHERE s.status = 'failed' AND ($1::text = '' OR s.step = $1::text) AND s.step = ANY($3::text[])
-				  AND EXISTS (SELECT 1 FROM com_nalet_katalog_items i WHERE i.id = s.item_id)
+				  AND EXISTS (SELECT 1 FROM com_nalet_katalog_items i WHERE i.id = s.item_id)`+s.withOriginal(ctx)+`
 				ORDER BY s.id
 				LIMIT $2
 				FOR UPDATE SKIP LOCKED)

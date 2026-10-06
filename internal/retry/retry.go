@@ -55,6 +55,7 @@ import (
 
 	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/graph"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
@@ -78,6 +79,9 @@ type Service struct {
 	// migrated is set once migration 033 is seen in place (it is not undone
 	// under a running service).
 	migrated atomic.Bool
+	// sources is set once migration 040 is seen in place, which tells the
+	// titles whose originals were retired.
+	sources atomic.Bool
 	// retryingFailed is set while a retryFailed runs in this instance.
 	retryingFailed atomic.Bool
 	// extras are the sweep's jobs for the titles' extras (extras.go).
@@ -153,6 +157,23 @@ func (s *Service) stepTable(ctx context.Context) string {
 		s.migrated.Store(true)
 	}
 	return ""
+}
+
+// withOriginal is the condition on a claimed step s that one reading the
+// title's original is claimed only while the title has it: once the original
+// was deleted after packaging, or while it is being deleted, nothing can read
+// it, and the step is left as it is. It needs migration 040: without it every
+// original is there.
+func (s *Service) withOriginal(ctx context.Context) string {
+	if !s.sources.Load() {
+		ok, err := s.st.LibraryReady(ctx)
+		if err != nil || !ok {
+			return ""
+		}
+		s.sources.Store(true)
+	}
+	return ` AND NOT (s.step = ANY('{` + strings.Join(processing.OriginalSteps, ",") + `}'::text[]) AND ` +
+		library.OriginalGone("s.item_id") + `)`
 }
 
 // automatic reports whether the sweep sends due retries and reaps by itself.
@@ -312,12 +333,13 @@ func claimSet(manual bool) string {
 
 // claimDue claims the failed steps whose retry is due, oldest first, at most
 // a batch of them; a step whose item is gone is left alone, and so is one no
-// event triggers (retire).
+// event triggers (retire), and one that reads the original of a title whose
+// original was retired (withOriginal).
 func (s *Service) claimDue(ctx context.Context) ([]claimed, error) {
 	return s.claim(ctx, `WITH due AS (
 			SELECT s.id, s.status FROM `+tbl+` s
 			WHERE s.status = 'failed' AND s.nextretryat <= now() AND s.step = ANY($2::text[])
-			  AND EXISTS (SELECT 1 FROM com_nalet_katalog_items i WHERE i.id = s.item_id)
+			  AND EXISTS (SELECT 1 FROM com_nalet_katalog_items i WHERE i.id = s.item_id)`+s.withOriginal(ctx)+`
 			ORDER BY s.nextretryat, s.id
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED)

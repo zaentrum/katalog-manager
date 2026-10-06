@@ -463,3 +463,102 @@ func TestReencodesAtOnceEncodeATitleOnce(t *testing.T) {
 		}
 	}
 }
+
+// retire has the title's original deleted after packaging, as the retire job
+// leaves it: its primary asset an original's, its source deleted with its
+// event.
+func retire(t *testing.T, st *store.Store, item, event, at string) {
+	t.Helper()
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state, retireeventid,
+			retireeventat, deletedat) VALUES ('s-' || $1::varchar, $1::varchar, 'f.mkv', 1, 'deleted', $2, $3::timestamptz, $3::timestamptz)`,
+		item, event, at)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_playbackassets SET isprimary = false, kind = 'original', sourceid = 's-' || item_id
+		WHERE item_id = $1`, item)
+}
+
+// A title whose original was deleted after packaging is not encoded again,
+// and the result says so, naming the event: a better version is a new
+// arrival. One whose original is being deleted is not either. A series'
+// episodes whose originals were deleted are skipped and counted.
+func TestAReencodeOfARetiredOriginal(t *testing.T) {
+	st := catalog(t)
+	storetest.AddItem(t, st, "e2", "episode", "Second", "s1")
+	storetest.AddItem(t, st, "e3", "episode", "Third", "s1")
+	file(t, st, "m1", "m2", "e1", "e2", "e3")
+	retire(t, st, "m1", "ev-m1", "2026-10-05 09:00:00+00")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state, retireeventid, retireeventat)
+		VALUES ('s-m2', 'm2', 'f.mkv', 1, 'retiring', 'ev-m2', '2026-10-06 08:00:00+00')`)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_playbackassets SET sourceid = 's-m2' WHERE item_id = 'm2'`)
+	retire(t, st, "e2", "ev-e2", "2026-10-04 09:00:00+00")
+	retire(t, st, "e3", "ev-e3", "2026-10-05 10:00:00+00")
+	b := &bus{}
+	s := newService(t, st, b)
+	for id, want := range map[string]string{
+		"m1": "the original was deleted after packaging (event ev-m1, 2026-10-05T09:00:00Z); a better version is a new arrival: " +
+			"put it in .work/replace and call replaceSource",
+		"m2": "the original is being deleted after packaging (event ev-m2, 2026-10-06T08:00:00Z); a better version is a new arrival: " +
+			"put it in .work/replace and call replaceSource",
+	} {
+		res, err := s.ReencodeItem(context.Background(), id)
+		if err != nil || res.Titles != 0 || res.Reencoded != 0 || res.Message != want {
+			t.Errorf("ReencodeItem(%s): %+v, %v\nwant %q", id, res, err, want)
+		}
+	}
+	res, err := s.ReencodeItem(context.Background(), "s1")
+	if err != nil || res.Titles != 1 || res.Reencoded != 1 || !strings.HasSuffix(res.Message,
+		"; 2 episodes are skipped, their originals deleted after packaging (the last: event ev-e3, 2026-10-05T10:00:00Z); "+
+			"a better version is a new arrival: put it in .work/replace and call replaceSource") {
+		t.Errorf("ReencodeItem(s1): %+v, %v", res, err)
+	}
+	if got := b.take(); len(got) != 1 || !strings.Contains(got[0], " e1 transcode ") {
+		t.Errorf("sent %v", got)
+	}
+	retire(t, st, "e1", "ev-e1", "2026-10-06 07:00:00+00")
+	res, err = s.ReencodeItem(context.Background(), "s1")
+	if want := "the series has no episode with a file to encode: 3 episodes are skipped, their originals deleted after " +
+		"packaging (the last: event ev-e1, 2026-10-06T07:00:00Z); a better version is a new arrival: put it in .work/replace " +
+		"and call replaceSource"; err != nil || res.Titles != 0 || res.Message != want {
+		t.Errorf("ReencodeItem(s1) of retired episodes: %+v, %v\nwant %q", res, err, want)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemprocessingsteps WHERE item_id IN ('m1', 'm2', 'e2', 'e3')`); n != 0 {
+		t.Errorf("%d steps given to titles without their original", n)
+	}
+}
+
+// The steps that read a title's original are not retried once it was
+// deleted after packaging: the sweep leaves them failed, a retry of every
+// failed step too, and an admin's retry of one is refused, saying when and
+// by which event; the steps that do not read it are retried as any other.
+func TestNoRetryReadsARetiredOriginal(t *testing.T) {
+	st := catalog(t)
+	file(t, st, "m1", "m2")
+	retire(t, st, "m1", "ev-m1", "2026-10-05 09:00:00+00")
+	put(t, st, "m1", "transcode", "failed", due)
+	put(t, st, "m1", "subtitle", "failed", due)
+	put(t, st, "m1", "tmdb", "failed", due)
+	put(t, st, "m2", "transcode", "failed", due)
+	b := &bus{}
+	s := newService(t, st, b)
+	if _, sent, err := s.Sweep(context.Background()); err != nil || sent != 2 {
+		t.Fatalf("Sweep: sent %d, %v; want m1's tmdb and m2's transcode", sent, err)
+	}
+	got := strings.Join(b.take(), "\n")
+	if !strings.Contains(got, " m1 tmdb ") || !strings.Contains(got, " m2 transcode ") || strings.Contains(got, "m1 transcode") {
+		t.Errorf("the sweep sent:\n%s", got)
+	}
+	for _, step := range []string{"transcode", "subtitle"} {
+		if got := state(t, st, "m1", step); !strings.HasPrefix(got, "failed 1 ") {
+			t.Errorf("m1's %s after the sweep: %s", step, got)
+		}
+	}
+	if res, err := s.RetryFailed(context.Background(), ""); err != nil || res.Retried != 0 {
+		t.Errorf("RetryFailed: %+v, %v; want none of m1's", res, err)
+	}
+	if _, err := s.RetryStep(context.Background(), "m1", "transcode"); err == nil || err.Error() !=
+		"cannot retry transcode: it reads the title's original, and the original was retired at 2026-10-05T09:00:00Z (event ev-m1)" {
+		t.Errorf("RetryStep(m1, transcode): %v", err)
+	}
+	if got := b.take(); len(got) != 0 {
+		t.Errorf("sent for m1: %v", got)
+	}
+}

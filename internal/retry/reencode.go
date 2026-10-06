@@ -11,6 +11,7 @@ import (
 
 	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/graph"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 )
 
@@ -67,14 +68,19 @@ func (s *Service) ReencodeItem(ctx context.Context, id string) (graph.ReencodeRe
 		return res, errors.New("cannot re-encode: " + why)
 	}
 
-	titles, err := s.titlesOf(ctx, id, typ)
+	titles, gone, err := s.titlesOf(ctx, id, typ)
 	if err != nil {
 		return res, err
 	}
 	res.Titles = int32(len(titles))
 	if len(titles) == 0 {
 		res.Message = "the " + typ + " has no file to encode"
-		if typ == "series" {
+		switch {
+		case typ != "series" && gone.Gone():
+			res.Message = gone.Why() + "; " + newArrival
+		case typ == "series" && gone.State != "":
+			res.Message = "the series has no episode with a file to encode: " + retiredEpisodes(gone)
+		case typ == "series":
 			res.Message = "the series has no episode with a file to encode"
 		}
 		return res, nil
@@ -107,40 +113,104 @@ func (s *Service) ReencodeItem(ctx context.Context, id string) (graph.ReencodeRe
 	}
 	res.Reencoded, res.Busy, res.NotSent = int32(sent), int32(len(whys)), int32(len(notSent))
 	res.Message = s.reencodeMessage(typ, res, whys, first)
+	if typ == "series" && gone.State != "" {
+		res.Message += "; " + retiredEpisodes(gone)
+	}
 	return res, nil
+}
+
+// newArrival is how a title whose original was deleted after packaging gets
+// a better version: from a file it is given anew.
+const newArrival = "a better version is a new arrival: put it in .work/replace and call replaceSource"
+
+// retired are a series' episodes whose originals were deleted after
+// packaging, which a re-encode skips: how many, and the last one's.
+type retired struct {
+	library.Original
+	episodes int
+}
+
+// retiredEpisodes says which episodes a re-encode of a series skipped.
+func retiredEpisodes(r retired) string {
+	event, at := r.EventID, "an unknown time"
+	if r.At != nil {
+		at = library.Timestamp(*r.At)
+	}
+	if r.episodes == 1 {
+		return fmt.Sprintf("1 episode is skipped, its original deleted after packaging (event %s, %s); %s", event, at, newArrival)
+	}
+	return fmt.Sprintf("%d episodes are skipped, their originals deleted after packaging (the last: event %s, %s); %s",
+		r.episodes, event, at, newArrival)
 }
 
 // titlesOf are the titles a re-encode of id encodes: the movie or episode
 // when it has a primary asset, a series' episodes (under it or under a season
-// of it) that have one, by season and episode.
-func (s *Service) titlesOf(ctx context.Context, id, typ string) ([]string, error) {
+// of it) that have one, by season and episode; of those whose original was
+// deleted after packaging, or is being deleted, none: it answers what became
+// of the movie's or the episode's original, or of the series' episodes'.
+func (s *Service) titlesOf(ctx context.Context, id, typ string) ([]string, retired, error) {
+	pool := s.st.Pool()
 	if typ != "series" {
 		var ok bool
-		err := s.st.Pool().QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets
+		err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets
 			WHERE item_id = $1 AND isprimary = true)`, id).Scan(&ok)
-		if err != nil || !ok {
-			return nil, err
+		if err != nil {
+			return nil, retired{}, err
 		}
-		return []string{id}, nil
+		o, err := library.OriginalOf(ctx, pool, id)
+		if err != nil {
+			return nil, retired{}, err
+		}
+		if !ok || o.Gone() {
+			return nil, retired{Original: o}, nil
+		}
+		return []string{id}, retired{}, nil
 	}
-	rows, err := s.st.Pool().Query(ctx, `SELECT e.id FROM com_nalet_katalog_items e
+	rows, err := pool.Query(ctx, `SELECT e.id,
+			EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets p WHERE p.item_id = e.id AND p.isprimary = true)
+		FROM com_nalet_katalog_items e
 		WHERE e.type = 'episode'
 		  AND (e.parent_id = $1 OR e.parent_id IN (SELECT id FROM com_nalet_katalog_items WHERE parent_id = $1))
-		  AND EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets p WHERE p.item_id = e.id AND p.isprimary = true)
 		ORDER BY e.seasonnumber NULLS LAST, e.episodenumber NULLS LAST, e.id`, id)
 	if err != nil {
-		return nil, err
+		return nil, retired{}, err
 	}
-	defer rows.Close()
-	var out []string
+	var all []string
+	has := map[string]bool{}
 	for rows.Next() {
 		var e string
-		if err := rows.Scan(&e); err != nil {
-			return nil, err
+		var file bool
+		if err := rows.Scan(&e, &file); err != nil {
+			rows.Close()
+			return nil, retired{}, err
 		}
-		out = append(out, e)
+		all = append(all, e)
+		has[e] = file
 	}
-	return out, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, retired{}, err
+	}
+	originals, err := library.OriginalsOf(ctx, pool, all)
+	if err != nil {
+		return nil, retired{}, err
+	}
+	var out []string
+	var gone retired
+	for _, e := range all {
+		o := originals[e]
+		if o.Gone() {
+			gone.episodes++
+			if gone.At == nil || (o.At != nil && o.At.After(*gone.At)) {
+				gone.Original = o
+			}
+			continue
+		}
+		if has[e] {
+			out = append(out, e)
+		}
+	}
+	return out, gone, nil
 }
 
 // chainStep is a title's transcode or package as a re-encode finds it.
