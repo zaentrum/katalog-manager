@@ -121,6 +121,12 @@ func run() error {
 	if err := st.EnsureItemExtras(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/039_item_extras.sql is missing and could not be applied: %v; no extra is taken in until it is", err)
 	}
+	// The library record's paths (migration 040) and the triggers that mark
+	// a changed projection (041). Without them the layout stays legacy
+	// whatever library.layout says.
+	if err := st.EnsureLibrary(bgCtx); err != nil {
+		log.Printf("catalog: migrations db/migrations/040_library_v2.sql and 041_library_projection.sql are missing and could not be applied: %v; the library layout stays legacy until they are", err)
+	}
 	dropRetiredJobTables(bgCtx, st)
 
 	steps := processing.New(st.Pool()).WithPolicy(cfg.RetryPolicy())

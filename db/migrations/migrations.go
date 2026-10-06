@@ -7,10 +7,11 @@
 // objects are missing (see store.EnsureDeletionLog, store.EnsurePeople,
 // store.EnsureItemLockedFields, store.EnsureCreditDetails,
 // store.EnsureStepRetries, store.EnsureScanJobRunner, store.EnsureItemRatings,
-// store.EnsureTrackLanguages, store.EnsureSubtitleForced and
-// store.EnsureItemExtras). It applies 035, which drops what is left of a
-// retired integration, at every start when any of that is there
-// (store.DropRetiredJobTables).
+// store.EnsureTrackLanguages, store.EnsureSubtitleForced,
+// store.EnsureItemExtras and store.EnsureLibrary, which applies 040, 041 and
+// 042).
+// It applies 035, which drops what is left of a retired integration, at every
+// start when any of that is there (store.DropRetiredJobTables).
 package migrations
 
 import _ "embed"
@@ -79,3 +80,21 @@ var SubtitleForced string
 //
 //go:embed 039_item_extras.sql
 var ItemExtras string
+
+// LibraryV2 is 040_library_v2.sql: what the catalog keeps of the library
+// record's paths, a title's originals and its versions.
+//
+//go:embed 040_library_v2.sql
+var LibraryV2 string
+
+// LibraryProjection is 041_library_projection.sql: the triggers that mark an
+// item or a person whose projection changed.
+//
+//go:embed 041_library_projection.sql
+var LibraryProjection string
+
+// PlaybackItemIndex is 042_playback_item_index.sql: a title's playback
+// assets found by the title.
+//
+//go:embed 042_playback_item_index.sql
+var PlaybackItemIndex string

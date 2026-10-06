@@ -123,6 +123,14 @@ func hexSHA(b []byte) string {
 // with everything, two images among it; one locked; one from before 030.
 func fillPeople(t *testing.T, st *store.Store) {
 	t.Helper()
+	// Their images first: images given to a person mark them changed
+	// (migration 041), and the people are as their rows say.
+	primary, older := pattern(300, 7, 3), pattern(80, 13, 1)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_personartwork
+		(id, person_id, kind, contenttype, bytes, sha256, width, height, isprimary, sourcepath, fetchedat) VALUES
+		('art-older', 'a1a1a1a1-0000-4000-8000-000000000001', 'profile', 'image/png', $1, $2, NULL, NULL, false, NULL, '2026-09-01 02:00:00+02'),
+		('art-primary', 'a1a1a1a1-0000-4000-8000-000000000001', 'profile', 'image/jpeg', $3, $4, 421, 632, true, '/ada.jpg', '2026-10-01 06:00:00+00')`,
+		older, hexSHA(older), primary, hexSHA(primary))
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name, sortname, alsoknownas, birthdate, deathdate,
 		birthplace, biography, tmdbpersonid, imdbid, knownfordepartment, metadatalocked, lockedfields, fieldorigins,
 		tmdbfetchedat, tmdbchangedat, createdat, modifiedat) VALUES
@@ -134,12 +142,6 @@ func fillPeople(t *testing.T, st *store.Store) {
 		('b2b2b2b2-0000-4000-8000-000000000002', 'Ben Example', NULL, NULL, NULL, NULL, NULL, NULL,
 		 '102', NULL, NULL, true, NULL, '{"name": "manual"}', NULL, NULL, NULL, '2026-09-16 00:00:00+02')`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ('0c0c0c0c-0000-4000-8000-000000000003', 'Name Only')`)
-	primary, older := pattern(300, 7, 3), pattern(80, 13, 1)
-	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_personartwork
-		(id, person_id, kind, contenttype, bytes, sha256, width, height, isprimary, sourcepath, fetchedat) VALUES
-		('art-older', 'a1a1a1a1-0000-4000-8000-000000000001', 'profile', 'image/png', $1, $2, NULL, NULL, false, NULL, '2026-09-01 02:00:00+02'),
-		('art-primary', 'a1a1a1a1-0000-4000-8000-000000000001', 'profile', 'image/jpeg', $3, $4, 421, 632, true, '/ada.jpg', '2026-10-01 06:00:00+00')`,
-		older, hexSHA(older), primary, hexSHA(primary))
 }
 
 // The export's people are exactly testdata/people.json: every person, ordered

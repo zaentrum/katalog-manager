@@ -13,8 +13,9 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
 
-// After 030 a person has these columns, and so do their images and the
-// change-list cursors.
+// After 030 a person has these columns (and 040's, when the library's
+// projection was last written), and so do their images and the change-list
+// cursors.
 var peopleShape = map[string][]string{
 	"com_nalet_katalog_people": {
 		"id character varying(36) NOT NULL",
@@ -35,6 +36,7 @@ var peopleShape = map[string][]string{
 		"tmdbchangedat date NULL",
 		"createdat timestamp with time zone NULL",
 		"modifiedat timestamp with time zone NULL",
+		"libraryprojectedat timestamp with time zone NULL",
 	},
 	"com_nalet_katalog_personartwork": {
 		"id character varying(36) NOT NULL",
