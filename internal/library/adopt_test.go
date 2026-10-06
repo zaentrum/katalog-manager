@@ -66,6 +66,9 @@ func newMigrationFixture(t *testing.T) *migrationFixture {
 	storetest.AddItem(t, f.st, mgEp, "episode", "Pilot", mgShow)
 	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_items SET seasonnumber = 1, episodenumber = 1 WHERE id = $1`, mgEp)
 	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_people (id, name, modifiedat) VALUES ($1, 'Ada Example', now())`, mgPerson)
+	// As the export had them, a while before the adoption.
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_items SET modifiedat = '2026-10-01 09:00:00.25'`)
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_people SET modifiedat = '2026-10-01 09:00:00.25+00'`)
 
 	f.packaged(t, mgFilm, "media/Film (2020)/Film.mkv", true)
 	f.packaged(t, mgGone, "", false)
@@ -351,9 +354,11 @@ func (f *migrationFixture) tree(t *testing.T) string {
 // arrivals, the packaged row from package.json (the item's other packaged
 // rows gone), the subtitle rows where their files went, their defaults kept,
 // the extra recorded, the items recorded and projected as the export had
-// them. An original gone before the library has its event and a retired
-// original's row. Every action is journaled, and adopting again skips what
-// is adopted.
+// them; an item the adoption itself marked changed (the film, whose extra
+// it recorded) is projected again from the catalog, as the projector
+// projects it. An original gone before the library has its event and a
+// retired original's row. Every action is journaled, and adopting again
+// skips what is adopted.
 func TestTheAdoptOfAMigrationRun(t *testing.T) {
 	f := newMigrationFixture(t)
 	ctx := context.Background()
@@ -416,11 +421,34 @@ func TestTheAdoptOfAMigrationRun(t *testing.T) {
 			t.Errorf("%s:\n got  %q, %v\n want %q", sql, got, err, want)
 		}
 	}
+	// The film's extra recorded marked it changed: its projection was
+	// written again from the catalog, the others' are the staged ones.
+	var modified string
+	if err := f.st.Pool().QueryRow(ctx, `SELECT to_char(modifiedat, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') FROM com_nalet_katalog_items
+		WHERE id = $1`, mgFilm).Scan(&modified); err != nil || modified == "2026-10-01T09:00:00Z" {
+		t.Fatalf("the film's modifiedat: %s, %v; want it marked by its extra", modified, err)
+	}
+	b, _ := os.ReadFile(filepath.Join(film.ItemDir, "metadata.json"))
+	md, err := DecodeDoc(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lib, _ := md.Get("library")
+	primary, _ := lib.(Doc).Get("primaryVersionId")
+	if by, _ := md.Get("projectedBy"); by != "katalog-manager" || primary != vid {
+		t.Errorf("the film's projection: by %v, primary version %v:\n%s", by, primary, b)
+	}
+	if at, _ := md.Get("databaseUpdatedAt"); at != modified {
+		t.Errorf("the film's projection reflects %v, and the film is of %s", at, modified)
+	}
+	if b, _ := os.ReadFile(filepath.Join(f.itemDir(mgGone), "metadata.json")); string(b) != "{\n  \"itemId\": \""+mgGone+"\"\n}\n" {
+		t.Errorf("the gone film's projection is not the staged one:\n%s", b)
+	}
 	events, err := ReadEvents(f.itemDir(mgGone))
 	if err != nil || len(events) != 1 {
 		t.Fatalf("the gone film's events: %v, %v", events, err)
 	}
-	b, _ := Encode(events[0])
+	b, _ = Encode(events[0])
 	for _, want := range []string{`"kind": "original-deleted"`, `"reason": "gone before the library was recorded"`, `"accepted": []`,
 		`"by": "katalog-manager (migration)"`, `"sourceId": "` + IDOf(mgGone+":source") + `"`} {
 		if !strings.Contains(string(b), want) {
@@ -428,7 +456,7 @@ func TestTheAdoptOfAMigrationRun(t *testing.T) {
 		}
 	}
 	journal, _ := os.ReadFile(filepath.Join(f.runDir, "journal.jsonl"))
-	if n := strings.Count(string(journal), "\n"); n != 32 {
+	if n := strings.Count(string(journal), "\n"); n != 33 || !strings.Contains(string(journal), `"op":"projection"`) {
 		t.Errorf("the journal holds %d lines:\n%s", n, journal)
 	}
 
@@ -442,8 +470,9 @@ func TestTheAdoptOfAMigrationRun(t *testing.T) {
 // the policy deletes originals, its version's full verification by the stage
 // standing in for the job's; and a revert brings it back from the trash with
 // everything else of the run: the renames undone, the published records back
-// in staging, the database as it was, the people back in staging. The run
-// is adopted again after.
+// in staging (the staged projection of an item projected again too), the
+// database as it was, the people back in staging. The run is adopted again
+// after.
 func TestARevertBringsTheRunBack(t *testing.T) {
 	f := newMigrationFixture(t)
 	ctx := context.Background()
@@ -532,7 +561,8 @@ func TestAUnitThatCannotBeAdoptedIsLeft(t *testing.T) {
 }
 
 // An adoption a crash stopped is put right before the next: renamed and not
-// in the database, its renames are put back and it is adopted afresh.
+// in the database, its renames are put back (its staged projection too, and
+// what a projection of it added) and it is adopted afresh.
 func TestAnAdoptionACrashStoppedIsPutRight(t *testing.T) {
 	f := newMigrationFixture(t)
 	ctx := context.Background()
@@ -547,6 +577,15 @@ func TestAnAdoptionACrashStoppedIsPutRight(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// its projection written again, then the crash
+	md := filepath.Join(f.itemDir(mgFilm), "metadata.json")
+	staged, _ := os.ReadFile(md)
+	librarytest.Write(t, md, []byte("{\"projected\": true}\n"))
+	librarytest.Write(t, filepath.Join(f.itemDir(mgFilm), "metadata", "new.jpg"), []byte("an image"))
+	un, _ := json.Marshal(unprojection{Metadata: staged, Images: []string{"new.jpg"}})
+	if err := j.Add(JournalEntry{ItemID: mgFilm, Op: OpProjection, Before: un, State: StateDone}); err != nil {
+		t.Fatal(err)
+	}
 	_ = j.Close()
 	rep, err := m.Adopt(ctx, []string{mgFilm})
 	if err != nil || rep.Adopted != 1 {
@@ -559,6 +598,9 @@ func TestAnAdoptionACrashStoppedIsPutRight(t *testing.T) {
 	}
 	if v, _ := Current(ctx, f.st.Pool(), mgFilm); v == nil {
 		t.Error("the film is not adopted")
+	}
+	if statOK(filepath.Join(f.itemDir(mgFilm), "metadata", "new.jpg")) {
+		t.Error("the image the crashed projection wrote is there")
 	}
 }
 

@@ -174,6 +174,11 @@ func (m *Migration) open(ctx context.Context) ([]*Unit, *Journal, error) {
 		for _, e := range (attempt{entries: ij.open}).moves(StateDone) {
 			done = append(done, Move{Kind: e.Kind, From: e.From, To: e.To})
 		}
+		if un := unprojectionOf(ij.open); un != nil {
+			if _, err := os.Stat(byID[id].ItemDir); err == nil {
+				_ = unproject(byID[id].ItemDir, un)
+			}
+		}
 		m.undo(j, id, done)
 		if err := j.Add(JournalEntry{ItemID: id, Op: OpUnit, State: StateFailed,
 			Reason: "a crash stopped its adoption: its renames are put back"}); err != nil {
@@ -278,7 +283,13 @@ func (m *Migration) adoptUnit(ctx context.Context, j *Journal, ij *itemJournal, 
 		return end(StateFailed, err.Error())
 	}
 	var done []Move
+	var unproj *unprojection
 	fail := func(why string) UnitResult {
+		if unproj != nil {
+			if err := unproject(u.ItemDir, unproj); err != nil {
+				why += "; and its staged metadata.json could not be put back: " + err.Error()
+			}
+		}
 		m.undo(j, u.ItemID, done)
 		return end(StateFailed, why)
 	}
@@ -295,8 +306,21 @@ func (m *Migration) adoptUnit(ctx context.Context, j *Journal, ij *itemJournal, 
 	if err != nil {
 		return fail(err.Error())
 	}
-	if err := m.apply(ctx, tx, u, before, gone); err != nil {
+	if err := m.apply(ctx, tx, u, gone); err != nil {
 		return fail("the database: " + err.Error())
+	}
+	if unproj, err = m.recordItem(ctx, tx, u); err != nil {
+		return fail("the item's record: " + err.Error())
+	}
+	if unproj != nil {
+		pb, err := json.Marshal(unproj)
+		if err != nil {
+			return fail(err.Error())
+		}
+		if err := j.Add(JournalEntry{ItemID: u.ItemID, Op: OpProjection, Before: pb, State: StateDone,
+			Reason: "the item changed since its projection was staged: projected again"}); err != nil {
+			return fail("the journal cannot be written: " + err.Error())
+		}
 	}
 	b, err := json.Marshal(before)
 	if err != nil {
@@ -617,9 +641,9 @@ func (m *Migration) goneBefore(u *Unit) ([]goneEvent, error) {
 // apply is the adoption's database change, in tx: the sources, the
 // versions, the playback rows (the packaged one as packaging-complete writes
 // it from package.json, the others of the item gone), the subtitle rows'
-// paths (their defaults kept), the extras recorded, and the item recorded
-// with the moment its staged projection reflects.
-func (m *Migration) apply(ctx context.Context, tx pgx.Tx, u *Unit, before *unitBefore, gone []goneEvent) error {
+// paths (their defaults kept) and the extras recorded. recordItem records
+// the item after.
+func (m *Migration) apply(ctx context.Context, tx pgx.Tx, u *Unit, gone []goneEvent) error {
 	goneOf := map[string]Event{}
 	for _, g := range gone {
 		goneOf[g.source] = g.ev
@@ -734,24 +758,93 @@ func (m *Migration) apply(ctx context.Context, tx pgx.Tx, u *Unit, before *unitB
 			return fmt.Errorf("extra %s: %w", x.ID, err)
 		}
 	}
+	return nil
+}
+
+// unprojection is what a projection the adoption wrote replaced, which an
+// undo or a revert puts back: the staged metadata.json, and the images the
+// projection added beside the staged ones.
+type unprojection struct {
+	Metadata []byte   `json:"metadata"`
+	Images   []string `json:"images"`
+}
+
+// recordItem records the item in tx (recordedat), and its projection: the
+// staged metadata.json reflects the item as the export had it, to the
+// second. When the item's modifiedat says otherwise (the adoption's own
+// extras marked it changed, or it changed since the stage), its projection
+// is written again, as the projector writes it, from the catalog as tx
+// leaves it; it answers what that replaced. libraryprojectedat is the
+// modifiedat the projection on storage reflects.
+func (m *Migration) recordItem(ctx context.Context, tx pgx.Tx, u *Unit) (*unprojection, error) {
 	recorded, err := time.Parse(time.RFC3339, u.DB.RecordedAt)
 	if err != nil {
-		return fmt.Errorf("the plan's recordedAt %q: %w", u.DB.RecordedAt, err)
+		return nil, fmt.Errorf("the plan's recordedAt %q: %w", u.DB.RecordedAt, err)
 	}
-	var item struct {
-		ModifiedAt *string `json:"modifiedat"`
+	if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_items SET recordedat = $2 WHERE id = $1`, u.ItemID, recorded); err != nil {
+		return nil, err
 	}
-	_ = json.Unmarshal(before.Item, &item)
-	// The staged metadata.json reflects the item as the export had it, to
-	// the second: when it has not changed since, it reflects the item as it
-	// is (an extra recorded just now marked it changed too), and the
-	// projector leaves it; else the projector writes it again.
-	_, err = tx.Exec(ctx, `UPDATE com_nalet_katalog_items SET recordedat = $2,
-			libraryprojectedat = CASE WHEN $3::text IS NULL THEN libraryprojectedat
-				WHEN date_trunc('second', $4::timestamp) = ($3::timestamptz AT TIME ZONE 'UTC') THEN modifiedat
-				ELSE ($3::timestamptz AT TIME ZONE 'UTC') END
-		WHERE id = $1`, u.ItemID, recorded, u.DB.ProjectedDatabaseUpdatedAt, item.ModifiedAt)
-	return err
+	var modified *time.Time
+	var stale bool
+	if err := tx.QueryRow(ctx, `SELECT modifiedat, $2::text IS NULL OR modifiedat IS NULL
+			OR date_trunc('second', modifiedat) <> ($2::timestamptz AT TIME ZONE 'UTC')
+		FROM com_nalet_katalog_items WHERE id = $1`, u.ItemID, u.DB.ProjectedDatabaseUpdatedAt).Scan(&modified, &stale); err != nil {
+		return nil, err
+	}
+	var undo *unprojection
+	if stale {
+		staged, err := os.ReadFile(filepath.Join(u.ItemDir, "metadata.json"))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		pj := NewProjector(m.pool, m.cfg)
+		pj.now = m.now
+		pr, err := pj.projectItem(ctx, tx, u.ItemID)
+		if err != nil {
+			return nil, fmt.Errorf("its projection: %w", err)
+		}
+		if pr == nil {
+			return nil, fmt.Errorf("its projection: %s holds no item.json", u.ItemDir)
+		}
+		undo = &unprojection{Metadata: staged, Images: pr.images}
+		modified = pr.modified
+	}
+	_, err = tx.Exec(ctx, `UPDATE com_nalet_katalog_items SET libraryprojectedat = COALESCE($2::timestamp, '-infinity')
+		WHERE id = $1`, u.ItemID, modified)
+	return undo, err
+}
+
+// unproject puts back in the item folder dir what a projection of the
+// adoption replaced.
+func unproject(dir string, un *unprojection) error {
+	md := filepath.Join(dir, "metadata.json")
+	if un.Metadata == nil {
+		if err := os.Remove(md); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	} else if err := WriteFile(md, un.Metadata); err != nil {
+		return err
+	}
+	for _, name := range un.Images {
+		if err := os.Remove(filepath.Join(dir, "metadata", name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// unprojectionOf is what the projection entry of entries says it replaced;
+// nil when they hold none.
+func unprojectionOf(entries []JournalEntry) *unprojection {
+	for _, e := range entries {
+		if e.Op == OpProjection && e.State == StateDone {
+			var un unprojection
+			if json.Unmarshal(e.Before, &un) == nil {
+				return &un
+			}
+		}
+	}
+	return nil
 }
 
 func nonNilSidecars(s []mappedSidecar) []mappedSidecar {
@@ -927,6 +1020,15 @@ func (m *Migration) revertUnit(ctx context.Context, j *Journal, ij *itemJournal,
 			return end(StateFailed, fmt.Sprintf("the event %s cannot be deleted: %v", dir, err))
 		}
 		_ = os.Remove(filepath.Dir(dir)) // events/, when it was the last
+	}
+	if un := unprojectionOf(a.entries); un != nil {
+		dir := u.ItemDir
+		if _, err := os.Stat(dir); err != nil {
+			dir = u.StagedDir // its publish reverted by a revert a crash stopped
+		}
+		if err := unproject(dir, un); err != nil {
+			return end(StateFailed, "its staged metadata.json cannot be put back: "+err.Error())
+		}
 	}
 	for _, r := range restore {
 		if err := renameInto(r.From, r.To); err != nil {

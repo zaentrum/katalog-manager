@@ -171,14 +171,37 @@ func (p *Projector) skipped() []string {
 // notes the state it reflects. An item whose folder holds no record is left
 // alone (false), said once.
 func (p *Projector) ProjectItem(ctx context.Context, id string) (bool, error) {
+	pr, err := p.projectItem(ctx, p.pool, id)
+	if err != nil || pr == nil {
+		return false, err
+	}
+	_, err = p.pool.Exec(ctx, `UPDATE com_nalet_katalog_items SET libraryprojectedat = COALESCE($2::timestamp, '-infinity')
+		WHERE id = $1`, id, pr.modified)
+	return err == nil, err
+}
+
+// projected is what writing an item's projection did: its folder, the
+// modifiedat the projection reflects, and the images it wrote that the
+// folder did not hold.
+type projected struct {
+	dir      string
+	modified *time.Time
+	images   []string
+}
+
+// projectItem writes the item id's projection as q reads the catalog (the
+// pool, or a transaction whose changes it reflects): nil for an item whose
+// folder holds no record, said once. The caller notes the state it
+// reflects.
+func (p *Projector) projectItem(ctx context.Context, q Querier, id string) (*projected, error) {
 	paths := PathsOf(p.cfg)
-	pl, err := PlaceOf(ctx, p.pool, id)
+	pl, err := PlaceOf(ctx, q, id)
 	var unplaced *Unplaced
 	if errors.As(err, &unplaced) || errors.Is(err, ErrNoItem) {
-		return false, nil
+		return nil, nil
 	}
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	dir := paths.ItemDir(pl)
 	if _, err := os.Stat(filepath.Join(dir, ItemFile)); err != nil {
@@ -186,52 +209,51 @@ func (p *Projector) ProjectItem(ctx context.Context, id string) (bool, error) {
 			log.Printf("library: item %s is recorded, and its folder %s holds no item.json: no projection of it is written", id, dir)
 			p.missing[id] = true
 		}
-		return false, nil
+		return nil, nil
 	}
 	var rowJSON []byte
 	var modified *time.Time
-	if err := p.pool.QueryRow(ctx, itemSnapshot, id).Scan(&rowJSON, &modified); err != nil {
-		return false, err
+	if err := q.QueryRow(ctx, itemSnapshot, id).Scan(&rowJSON, &modified); err != nil {
+		return nil, err
 	}
 	row, err := DecodeDoc(rowJSON)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	proj := ItemProjection{ProjectedBy: "katalog-manager", AsOf: Timestamp(p.now()), ExternalIDs: true}
-	if proj.Images, err = p.artwork(ctx, `SELECT id, kind, encode(sha256(bytes), 'hex'), length(bytes),
+	if proj.Images, err = p.artwork(ctx, q, `SELECT id, kind, encode(sha256(bytes), 'hex'), length(bytes),
 			substring(bytes FROM 1 FOR $2), false, NULL::text, to_char(fetchedat, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
 		FROM com_nalet_katalog_itemartworkdata WHERE item_id = $1 AND bytes IS NOT NULL ORDER BY kind, id`,
 		`SELECT bytes FROM com_nalet_katalog_itemartworkdata WHERE id = $1`, id); err != nil {
-		return false, err
+		return nil, err
 	}
 	if pl.Type == "series" {
-		if proj.Seasons, err = p.seasons(ctx, id); err != nil {
-			return false, err
+		if proj.Seasons, err = p.seasons(ctx, q, id); err != nil {
+			return nil, err
 		}
 	}
-	if v, err := Current(ctx, p.pool, id); err != nil {
-		return false, err
+	if v, err := Current(ctx, q, id); err != nil {
+		return nil, err
 	} else if v != nil {
 		proj.PrimaryVersionID = v.ID
 	}
 	if pl.Type != "episode" {
-		if proj.Extras, err = p.extras(ctx, id); err != nil {
-			return false, err
+		if proj.Extras, err = p.extras(ctx, q, id); err != nil {
+			return nil, err
 		}
 	}
 	doc, files, err := MetadataDoc(row, proj)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	if err := writeImages(filepath.Join(dir, "metadata"), files); err != nil {
-		return false, err
+	images, err := writeImages(filepath.Join(dir, "metadata"), files)
+	if err != nil {
+		return nil, err
 	}
 	if err := WriteRecord(filepath.Join(dir, "metadata.json"), doc); err != nil {
-		return false, err
+		return nil, err
 	}
-	_, err = p.pool.Exec(ctx, `UPDATE com_nalet_katalog_items SET libraryprojectedat = COALESCE($2::timestamp, '-infinity')
-		WHERE id = $1`, id, modified)
-	return err == nil, err
+	return &projected{dir: dir, modified: modified, images: images}, nil
 }
 
 // itemSnapshot reads an item as the catalog's export holds one
@@ -265,9 +287,9 @@ const itemSnapshot = `SELECT json_build_object(
 
 // artwork reads the images of a row (list: id, kind, sha256 hex, size,
 // first bytes, primary, source path, fetched), each read whole by one
-// (whole) when it is written.
-func (p *Projector) artwork(ctx context.Context, list, whole string, owner string) ([]ImageIn, error) {
-	rows, err := p.pool.Query(ctx, list, owner, imageHead)
+// (whole) when it is written, as q reads them.
+func (p *Projector) artwork(ctx context.Context, q Querier, list, whole string, owner string) ([]ImageIn, error) {
+	rows, err := q.Query(ctx, list, owner, imageHead)
 	if err != nil {
 		return nil, err
 	}
@@ -285,7 +307,7 @@ func (p *Projector) artwork(ctx context.Context, list, whole string, owner strin
 		}
 		in.Bytes = func() ([]byte, error) {
 			var b []byte
-			err := p.pool.QueryRow(ctx, whole, id).Scan(&b)
+			err := q.QueryRow(ctx, whole, id).Scan(&b)
 			return b, err
 		}
 		out = append(out, in)
@@ -295,8 +317,8 @@ func (p *Projector) artwork(ctx context.Context, list, whole string, owner strin
 
 // seasons are the season numbers of the series' episodes, under it or under
 // a season of it, each once.
-func (p *Projector) seasons(ctx context.Context, seriesID string) ([]int64, error) {
-	rows, err := p.pool.Query(ctx, `SELECT DISTINCT e.seasonnumber FROM com_nalet_katalog_items e
+func (p *Projector) seasons(ctx context.Context, q Querier, seriesID string) ([]int64, error) {
+	rows, err := q.Query(ctx, `SELECT DISTINCT e.seasonnumber FROM com_nalet_katalog_items e
 		LEFT JOIN com_nalet_katalog_items s ON s.id = e.parent_id
 		WHERE e.type = 'episode' AND e.seasonnumber IS NOT NULL
 		  AND (e.parent_id = $1 OR (s.type <> 'series' AND s.parent_id = $1))
@@ -319,8 +341,8 @@ func (p *Projector) seasons(ctx context.Context, seriesID string) ([]int64, erro
 // extras are the decisions a person made about how the item's recorded
 // extras are shown: an order, hidden, a label; an extra without any is not
 // listed.
-func (p *Projector) extras(ctx context.Context, itemID string) (Doc, error) {
-	rows, err := p.pool.Query(ctx, `SELECT id, sortorder, hidden, label FROM com_nalet_katalog_itemextras
+func (p *Projector) extras(ctx context.Context, q Querier, itemID string) (Doc, error) {
+	rows, err := q.Query(ctx, `SELECT id, sortorder, hidden, label FROM com_nalet_katalog_itemextras
 		WHERE item_id = $1 AND recordedat IS NOT NULL AND removedat IS NULL ORDER BY id`, itemID)
 	if isUndefinedTable(err) || isUndefinedColumn(err) {
 		return nil, nil
@@ -361,25 +383,28 @@ func isUndefinedColumn(err error) bool {
 }
 
 // writeImages writes the images a projection lists that dir does not hold
-// yet: an image is written once, by the name of its bytes.
-func writeImages(dir string, files []ImageFile) error {
+// yet: an image is written once, by the name of its bytes. It answers the
+// names it wrote.
+func writeImages(dir string, files []ImageFile) ([]string, error) {
+	var wrote []string
 	for _, f := range files {
 		path := filepath.Join(dir, f.Name)
 		if _, err := os.Stat(path); err == nil {
 			continue
 		}
 		if f.Bytes == nil {
-			return fmt.Errorf("the bytes of %s cannot be read", f.Name)
+			return wrote, fmt.Errorf("the bytes of %s cannot be read", f.Name)
 		}
 		b, err := f.Bytes()
 		if err != nil {
-			return err
+			return wrote, err
 		}
 		if err := WriteFile(path, b); err != nil {
-			return err
+			return wrote, err
 		}
+		wrote = append(wrote, f.Name)
 	}
-	return nil
+	return wrote, nil
 }
 
 // people projects the people a recorded item credits whose projection is
@@ -460,7 +485,7 @@ func (p *Projector) ProjectPerson(ctx context.Context, id string) error {
 		return err
 	}
 	proj := PersonProjection{ProjectedBy: "katalog-manager", AsOf: Timestamp(p.now())}
-	if proj.Images, err = p.artwork(ctx, `SELECT id, kind, encode(sha256(bytes), 'hex'), length(bytes),
+	if proj.Images, err = p.artwork(ctx, p.pool, `SELECT id, kind, encode(sha256(bytes), 'hex'), length(bytes),
 			substring(bytes FROM 1 FOR $2), COALESCE(isprimary, false), sourcepath,
 			to_char(fetchedat AT TIME ZONE 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
 		FROM com_nalet_katalog_personartwork WHERE person_id = $1 AND bytes IS NOT NULL
@@ -473,7 +498,7 @@ func (p *Projector) ProjectPerson(ctx context.Context, id string) error {
 		return err
 	}
 	dir := PathsOf(p.cfg).PersonDir(id)
-	if err := writeImages(dir, files); err != nil {
+	if _, err := writeImages(dir, files); err != nil {
 		return err
 	}
 	if err := WriteRecord(filepath.Join(dir, "person.json"), doc); err != nil {

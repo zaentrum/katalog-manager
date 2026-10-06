@@ -250,9 +250,10 @@ func sameMtime(a, b string) bool {
 
 // The journal's operations and their states.
 const (
-	OpMove = "move"
-	OpDB   = "db"
-	OpUnit = "unit"
+	OpMove       = "move"
+	OpDB         = "db"
+	OpProjection = "projection" // an item's projection written again: what it replaced
+	OpUnit       = "unit"
 
 	StateDone     = "done"     // a move made, the database changed
 	StateUndone   = "undone"   // a move put back after its unit failed
