@@ -22,6 +22,9 @@ func (s *Service) RetryStep(ctx context.Context, itemID, step string) (graph.Ret
 	if !processing.ValidStep(step) {
 		return res, errUnknownStep(step)
 	}
+	if step == processing.StepRetire {
+		return s.retryRetire(ctx, res)
+	}
 	if _, _, ok := Trigger(step); !ok {
 		return res, fmt.Errorf("%s is katalog-manager's own step, which no event triggers: its job runs it", step)
 	}
@@ -66,6 +69,42 @@ func (s *Service) RetryStep(ctx context.Context, itemID, step string) (graph.Ret
 	return res, nil
 }
 
+// retryRetire has an item's failed retire step wait for the retire job's
+// next pass, its failures in a row afresh: the job runs it, as no event
+// does, so it needs no event bus. A retire step waiting or running, or done,
+// is left alone, as RetryStep leaves any other.
+func (s *Service) retryRetire(ctx context.Context, res graph.RetryStepResult) (graph.RetryStepResult, error) {
+	if why := s.stepTable(ctx); why != "" {
+		return res, errors.New("cannot retry: " + why)
+	}
+	tag, err := s.st.Pool().Exec(ctx, resetRetire+` AND item_id = $1`, res.ItemID)
+	if err != nil {
+		return res, err
+	}
+	if tag.RowsAffected() == 0 {
+		res, err = s.whyNot(ctx, res, s.pol.Timeout(res.Step))
+		if err == nil && res.Status != nil {
+			switch *res.Status {
+			case processing.StatusPending:
+				res.Message = "retire is waiting for the retire job's next pass, which comes once a minute: nothing to retry"
+			case processing.StatusInProgress:
+				res.Message = "retire is running: the retire job is deleting the title's original"
+			}
+		}
+		return res, err
+	}
+	status := processing.StatusPending
+	res.Retried, res.Status = true, &status
+	res.Message = "retried: retire waits for the retire job's next pass, which comes once a minute"
+	return res, nil
+}
+
+// resetRetire sets the failed retire steps waiting for the retire job, their
+// failures in a row afresh.
+const resetRetire = `UPDATE ` + tbl + ` SET status = 'pending', startedat = NULL, finishedat = NULL, error = NULL,
+		nextretryat = NULL, dispatchedat = NULL, failures = 0, modifiedat = now()
+	WHERE step = 'retire' AND status = 'failed'`
+
 // whyNot says why a step was left alone.
 func (s *Service) whyNot(ctx context.Context, res graph.RetryStepResult, timeout time.Duration) (graph.RetryStepResult, error) {
 	var status string
@@ -103,7 +142,9 @@ func (s *Service) whyNot(ctx context.Context, res graph.RetryStepResult, timeout
 // RetryFailed retries every failed step (of one step when given) as
 // RetryStep does, a batch at a time, and stops at a batch whose events could
 // not all be sent. It runs on when the caller stops waiting, and one runs in
-// an instance at a time; instances share the work, each step once.
+// an instance at a time; instances share the work, each step once. The
+// failed retire steps, which delete originals, are retried only when the
+// step is named.
 func (s *Service) RetryFailed(ctx context.Context, step string) (graph.RetryFailedResult, error) {
 	var res graph.RetryFailedResult
 	if step != "" {
@@ -111,6 +152,9 @@ func (s *Service) RetryFailed(ctx context.Context, step string) (graph.RetryFail
 			return res, errUnknownStep(step)
 		}
 		res.Step = &step
+	}
+	if step == processing.StepRetire {
+		return s.retryFailedRetire(ctx, res)
 	}
 	if why := s.unavailable(ctx); why != "" {
 		return res, errors.New("cannot retry: " + why)
@@ -159,6 +203,27 @@ func (s *Service) RetryFailed(ctx context.Context, step string) (graph.RetryFail
 		res.Message = "no " + what + " to retry"
 	default:
 		res.Message = fmt.Sprintf("retried %d %s of %d items", res.Retried, what, res.Items)
+	}
+	return res, nil
+}
+
+// retryFailedRetire has every failed retire step wait for the retire job's
+// next pass, as retryRetire has one.
+func (s *Service) retryFailedRetire(ctx context.Context, res graph.RetryFailedResult) (graph.RetryFailedResult, error) {
+	if why := s.stepTable(ctx); why != "" {
+		return res, errors.New("cannot retry: " + why)
+	}
+	tag, err := s.st.Pool().Exec(ctx, resetRetire+`
+		AND EXISTS (SELECT 1 FROM com_nalet_katalog_items i WHERE i.id = item_id)`)
+	if err != nil {
+		return res, err
+	}
+	n := int32(tag.RowsAffected())
+	res.Retried, res.Items = n, n
+	if n == 0 {
+		res.Message = "no failed retire steps to retry"
+	} else {
+		res.Message = fmt.Sprintf("retried %d failed retire steps of %d items: they wait for the retire job's next pass", n, n)
 	}
 	return res, nil
 }

@@ -668,7 +668,9 @@ func TestLabel(t *testing.T) {
 
 // The retire step is katalog-manager's own, which no event triggers: neither
 // the sweep nor an admin's retry of every failed step sends anything for it,
-// and a retry of it alone is refused.
+// nor retries it. An admin's retry of it, or of every failed retire step, has
+// it wait for the retire job afresh, sending nothing, with no event bus too;
+// a retire step waiting or running is left alone, saying so.
 func TestNoRetrySendsTheRetireStep(t *testing.T) {
 	st := catalog(t)
 	b := &bus{}
@@ -687,9 +689,35 @@ func TestNoRetrySendsTheRetireStep(t *testing.T) {
 	if res, err := s.RetryFailed(context.Background(), ""); err != nil || res.Retried != 0 {
 		t.Errorf("RetryFailed: %+v, %v; want nothing retried", res, err)
 	}
-	if _, err := s.RetryStep(context.Background(), "m1", "retire"); err == nil ||
-		!strings.Contains(err.Error(), "retire is katalog-manager's own step") {
-		t.Errorf("RetryStep of retire: %v", err)
+	if got := state(t, st, "m1", "retire"); !strings.HasPrefix(got, "failed 1 ") {
+		t.Errorf("the retire step after a retry of every failed step: %s", got)
+	}
+
+	noBus := New(st, testPolicy, nil, 30*time.Second)
+	res, err := noBus.RetryStep(context.Background(), "m1", "retire")
+	if err != nil || !res.Retried || res.Status == nil || *res.Status != "pending" ||
+		res.Message != "retried: retire waits for the retire job's next pass, which comes once a minute" {
+		t.Errorf("RetryStep of retire: %+v, %v", res, err)
+	}
+	if got := state(t, st, "m1", "retire"); got != "pending 0 error=- last=it failed retry=false sent=false" {
+		t.Errorf("the retire step after its retry: %s", got)
+	}
+	res, err = noBus.RetryStep(context.Background(), "m1", "retire")
+	if err != nil || res.Retried || res.Message != "retire is waiting for the retire job's next pass, which comes once a minute: nothing to retry" {
+		t.Errorf("RetryStep of a retire step waiting: %+v, %v", res, err)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemprocessingsteps SET status = 'failed', failures = 3, nextretryat = NULL
+		WHERE step = 'retire'`)
+	put(t, st, "m2", "retire", "failed", "failures = 2")
+	all, err := noBus.RetryFailed(context.Background(), "retire")
+	if err != nil || all.Retried != 2 ||
+		all.Message != "retried 2 failed retire steps of 2 items: they wait for the retire job's next pass" {
+		t.Errorf("RetryFailed of retire: %+v, %v", all, err)
+	}
+	for _, item := range []string{"m1", "m2"} {
+		if got := state(t, st, item, "retire"); !strings.HasPrefix(got, "pending 0 ") {
+			t.Errorf("%s's retire step after a retry of every failed one: %s", item, got)
+		}
 	}
 	if got := b.take(); len(got) != 0 {
 		t.Errorf("sent for the retire step: %v", got)

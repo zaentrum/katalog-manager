@@ -58,3 +58,34 @@ func (s *Service) sweepExtras(ctx context.Context) {
 		log.Printf("retry: extras: %d stuck reaped, %d triggers sent, %d removed extras' packages deleted", reaped, sent, deleted)
 	}
 }
+
+// LibraryJobs are the library's jobs (library.Retirer): with library.layout
+// v2 they delete an original after packaging, a superseded version after its
+// grace, and what the trash and the legacy folder hold after theirs. Sweep
+// runs them when a minute has passed since they last ran, and says what
+// they did ("" when nothing).
+type LibraryJobs interface {
+	Sweep(ctx context.Context) (string, error)
+}
+
+// WithLibrary has the sweep run the library's jobs too: on each of its
+// rounds, which runs them once a minute; with no sweep, once a minute by
+// themselves. They need no event bus.
+func (s *Service) WithLibrary(l LibraryJobs) *Service {
+	s.library = l
+	return s
+}
+
+// sweepLibrary runs the library's jobs, saying what they did.
+func (s *Service) sweepLibrary(ctx context.Context) {
+	if s.library == nil {
+		return
+	}
+	did, err := s.library.Sweep(ctx)
+	if err != nil {
+		log.Printf("retry: the library's jobs: %v", err)
+	}
+	if did != "" {
+		log.Printf("retry: the library's jobs: %s", did)
+	}
+}

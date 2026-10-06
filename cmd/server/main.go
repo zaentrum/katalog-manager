@@ -212,7 +212,12 @@ func run() error {
 	// The pipeline heals itself: a failed step is retried by sending its
 	// trigger event again, after a backoff, a bounded number of times, and a
 	// step whose worker went silent past its timeout is reaped into a failure.
-	retries := retry.New(st, cfg.RetryPolicy(), eventProducer, cfg.RetryInterval).WithExtras(extrasSvc)
+	// The same sweep runs the library's retire job once a minute: with
+	// library.layout=v2 and library.originals=delete-after-package it deletes
+	// a title's original once its package is recorded and verified, and it
+	// removes superseded versions and empties the trash after their grace.
+	retries := retry.New(st, cfg.RetryPolicy(), eventProducer, cfg.RetryInterval).WithExtras(extrasSvc).
+		WithLibrary(library.NewRetirer(st.Pool(), cfg, steps))
 	// A title given another file (replaceSource) is encoded again from it as
 	// reencodeItem encodes one.
 	actions.WithReencoder(retries)

@@ -126,3 +126,59 @@ func TestTheSweepHealsAStuckExtra(t *testing.T) {
 		t.Errorf("sent: %v", w.msgs)
 	}
 }
+
+// libraryJobs stand in for the library's jobs: they count their sweeps.
+type libraryJobs struct {
+	mu   sync.Mutex
+	runs int
+	ran  chan struct{}
+}
+
+func (l *libraryJobs) Sweep(context.Context) (string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.runs++
+	if l.runs == 1 {
+		close(l.ran)
+	}
+	return "", nil
+}
+
+// With no sweep (KATALOG_RETRY_INTERVAL off), the library's jobs still run,
+// once a minute by themselves: the first at once. They need no event bus and
+// no step table.
+func TestTheLibrarysJobsRunWithoutASweep(t *testing.T) {
+	l := &libraryJobs{ran: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		New(nil, testPolicy, nil, 0).WithLibrary(l).Run(ctx)
+	}()
+	select {
+	case <-l.ran:
+	case <-time.After(10 * time.Second):
+		t.Error("the library's jobs did not run")
+	}
+	cancel()
+	<-done
+}
+
+// A sweep's round runs the library's jobs, with no event bus too.
+func TestASweepRunsTheLibrarysJobs(t *testing.T) {
+	st := storetest.Open(t)
+	l := &libraryJobs{ran: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		New(st, testPolicy, nil, time.Hour).WithLibrary(l).Run(ctx)
+	}()
+	select {
+	case <-l.ran:
+	case <-time.After(10 * time.Second):
+		t.Error("the sweep did not run the library's jobs")
+	}
+	cancel()
+	<-done
+}

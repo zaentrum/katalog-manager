@@ -30,7 +30,11 @@
 // the step.
 //
 // The sweep runs the extras' jobs too (extras.go): an extra of a title is
-// packaged on a chain of its own, and retried by the same policy.
+// packaged on a chain of its own, and retried by the same policy. It runs
+// the library's jobs as well, once a minute: the retire job, which deletes a
+// title's original after packaging (library.originals) and is the step
+// retire of the title, which no event triggers. An admin's retry of retire
+// has it wait for the job's next pass.
 //
 // The reaper takes a scan job silent for longer than the scan's timeout (the
 // scan step's) for lost too: its scanner, which gives it a word every so
@@ -78,6 +82,8 @@ type Service struct {
 	retryingFailed atomic.Bool
 	// extras are the sweep's jobs for the titles' extras (extras.go).
 	extras ExtraJobs
+	// library are the library's jobs (extras.go): the retire job.
+	library LibraryJobs
 }
 
 // New is the retries of st's steps by pol, sending events through pub (nil:
@@ -124,6 +130,18 @@ var triggered = func() []string {
 // unavailable says why no step can be retried, "" when one can: the step
 // table lacks migration 033, or the service has no event bus.
 func (s *Service) unavailable(ctx context.Context) string {
+	if why := s.stepTable(ctx); why != "" {
+		return why
+	}
+	if s.pub == nil || !s.pub.Enabled() {
+		return "no event bus: a retry sends the step's trigger event again, and KAFKA_BROKERS is not set"
+	}
+	return ""
+}
+
+// stepTable says why the step table keeps no retry, "" when it does: it
+// lacks migration 033.
+func (s *Service) stepTable(ctx context.Context) string {
 	if !s.migrated.Load() {
 		ok, err := s.st.StepRetriesReady(ctx)
 		if err != nil {
@@ -133,9 +151,6 @@ func (s *Service) unavailable(ctx context.Context) string {
 			return "migration 033 (db/migrations/033_step_retries.sql) is not applied"
 		}
 		s.migrated.Store(true)
-	}
-	if s.pub == nil || !s.pub.Enabled() {
-		return "no event bus: a retry sends the step's trigger event again, and KAFKA_BROKERS is not set"
 	}
 	return ""
 }
@@ -148,6 +163,9 @@ func (s *Service) Run(ctx context.Context) {
 	if s.interval <= 0 {
 		log.Printf("retry: no sweep (KATALOG_RETRY_INTERVAL off): failed steps are retried by an admin only, no silent step or scan is reaped, " +
 			"and an extra is sent only when it is taken in or packaged again")
+		if s.library != nil {
+			s.runLibrary(ctx)
+		}
 		return
 	}
 	log.Printf("retry: sweeping every %s (up to %d runs in a row, a backoff from %s to %s)",
@@ -162,6 +180,7 @@ func (s *Service) Run(ctx context.Context) {
 			log.Printf("retry: %d scans silent past the scan's timeout failed", n)
 		}
 		s.sweepExtras(ctx)
+		s.sweepLibrary(ctx)
 		if why := s.unavailable(ctx); why != "" {
 			if why != said {
 				log.Printf("retry: the sweep idles: %s", why)
@@ -175,6 +194,21 @@ func (s *Service) Run(ctx context.Context) {
 				log.Printf("retry: sweep: %d steps reaped, %d retries sent", reaped, sent)
 			}
 		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// runLibrary runs the library's jobs once a minute until ctx ends, when
+// there is no sweep to run them.
+func (s *Service) runLibrary(ctx context.Context) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		s.sweepLibrary(ctx)
 		select {
 		case <-ctx.Done():
 			return
