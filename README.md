@@ -106,6 +106,7 @@ account, whose token carries the addon role. Everyone else signed in is a
 | `GET /api/artwork/...`, `/api/manage/artwork/...` (also a person's portrait) | any signed-in caller, or a stream token; a capped viewer is answered for a title above its cap as for a title there is not |
 | `GET /api/play/...`, `GET /api/subtitles/...` | any signed-in caller; a capped viewer as for the artwork |
 | `PUT /api/artwork/...`, `/api/analyze/*` (an extra's record and steps too), segments, chapters, `packaging-complete` (an item's and an extra's), `GET /api/settings` | admin, service account |
+| `POST /api/library/migrations/{run}/adopt`, `…/revert` (the library's migration) | admin, service account |
 | `POST /api/ingest`, `POST /api/extras` | admin, service account, addon |
 | `POST /api/items/{id}/package` | admin |
 
@@ -213,6 +214,29 @@ the base schema in the order of their numbers, and each is idempotent:
   rows go with it. Applied at startup when its table or an index of it is
   missing; without it no extra is taken in, and katalog-api lists none. A
   read-only role (katalog-api's) needs a grant on the new table.
+- `040_library_v2.sql` keeps the library record's paths (see
+  [The library](#the-library)): a title's originals
+  (`com_nalet_katalog_itemsources`: where each arrived, its size and quick
+  hash, whether it is present, being retired, deleted after packaging or
+  removed, its record and its deletion's event) and its package runs
+  (`com_nalet_katalog_itemversions`: building, complete, superseded or
+  removed, one complete one at most, where each is and how far it was
+  verified); when a title's `item.json` was written (`recordedat`), the
+  `modifiedat` its projection reflects (`libraryprojectedat`, a person's
+  too) and whether its originals are held (`retirehold`); the source and
+  the version a playback row is of; an extra's package, record and the
+  deletion of its original. Nothing reads them while `library.layout` is
+  `legacy`. Applied at startup when any of it is missing; katalog-api's
+  read-only role is granted the new tables.
+- `041_library_projection.sql` marks a title changed (`modifiedat`) when
+  anything its projection holds changes: its genres, tags, credits,
+  reference ids, artwork and trailer links, a recorded extra's order,
+  visibility, label or removal, an episode added, moved or deleted (its
+  series), a credited person renamed, a person's portraits (the person).
+  Its triggers are statement-level, so a statement marks a title once.
+  Applied at startup after 040.
+- `042_playback_item_index.sql` indexes a title's playback rows
+  (`idx_playbackassets_item`), which katalog-api reads by title.
 
 ## Track languages
 
@@ -730,6 +754,79 @@ always took for a trailer is skipped and no extra is taken in. Whatever the
 setting, the scanner writes no trailer asset rows (`kind = 'trailer'`) any
 more, and deletes the one a file it meets has.
 
+## The library
+
+With the setting `library.layout` at `v2` the share's root is the library:
+`movies/`, `series/` and `people/` hold its record, written once, and
+`.work/` everything else (the arrivals in `.work/incoming`, the extras taken
+in by the API in `.work/extras`, the files handed to replaceSource in
+`.work/replace`, the workers' handoffs, the trash, the migration's runs).
+katalog-manager decides every path in it, by the path rules of
+`internal/library/paths.go`, and hands the workers theirs in their worker
+records (`library`, contract 1). With `legacy`, the default, nothing of it
+is read or written: the service works as before.
+
+The library's settings are read on every use, as `extras.scan` is:
+
+- `library.layout`: `legacy` (default) or `v2`. With `v2` the scanner walks
+  the arrivals and knows an original it has seen by its size and quick hash
+  (a copy of one is skipped, a moved one followed, a deleted one named);
+  ingest, replaceSource and addExtra take files from the arrivals alone; a
+  title is recorded (`item.json`) once it is enriched; the transcode's end
+  makes the version its package builds, and packaging-complete takes the v2
+  payload of a version or an extra (a refused one's folder goes to
+  `.work/legacy/<day>/refused/`); the projector writes `metadata.json` and
+  `person.json` from the catalog. The layout does not change while a
+  title's or an extra's transcode waits for its packager (`LAYOUT_BUSY`).
+- `library.originals`: `keep` (default) or `delete-after-package`: the
+  retire job's policy.
+- `library.retire.delay` (`10m`), `library.retire.rate` (`30` a minute),
+  `library.verify` (`full` or `chain`), `library.verify.maxAge` (`30d`),
+  `library.superseded.grace` (`24h`), `library.trash.grace` (`24h`; `0`
+  deletes a retired original at once). A duration is a Go duration or days
+  (`30d`).
+
+The retire job runs once a minute in the sweep, in one instance at a time.
+With `delete-after-package` it deletes a title's original once a complete
+version of it is as old as the delay, the title is not held, and every step
+that reads the original is over: claimed (the step `retire` runs), the
+original checked against its size and quick hash, the version verified (in
+full, unless the migration's stage did that within `library.verify.maxAge`),
+its `original-deleted` event recorded with what the package does not carry
+of it, the original and its sidecars moved to `.work/trash/<day>/`, then
+the catalog says so: the playback row is an original's, which points at its
+record, and the sidecars' subtitle rows point at the package's renditions
+or the copies in the record, their ids kept. A mismatch fails the step with
+the file's name and keeps the original. The same job deletes an extra's
+original once its folder is recorded and verifies, removes a superseded
+version after its grace (`version-removed`, its folder deleted), moves a
+package folder of the store before the library a version replaced to
+`.work/legacy/`, and empties the trash's and the legacy folder's days after
+their grace. retryStep of `retire` has it wait for the job's next pass.
+
+Once a title's original is retired, nothing reads it any more: reencodeItem
+says so, naming the event (a better version is a new arrival:
+`.work/replace` and replaceSource), packageItem refuses it (409), the retries
+leave the steps that read it, a series' reset leaves its episode, and
+validateItem says `retired` (or `lost` when its package's chain is broken).
+A recorded title keeps its type and its parent (`IDENTITY_KEPT`). A recorded
+extra is written once: its removal is its `extra-removed` event (its folder
+goes after the grace), and it is not packaged again. The console reads what
+the library holds of a title in `item.library` (its record, versions,
+originals, events), and holds its originals with `holdOriginal`.
+
+The migration of a catalog's store before the library is staged by the
+schemas' `library-v2-from-catalog.py --platform` under
+`.work/migration/<run>/`, and adopted by `POST
+/api/library/migrations/<run>/adopt` (the service account and admins): unit
+by unit, a series before its episodes, its guards checked (a package changed
+since is stale), the planned renames made, the database changed as
+packaging-complete leaves it, each action journaled in the run's
+`journal.jsonl`; a failure puts the unit's renames back, and adopting again
+skips what is adopted. `POST …/revert` replays the journal backwards while
+the originals are not purged from the trash. Both take
+`{"items": ["<itemId>", …]}` to work on some units only.
+
 ## Configuration
 
 Env vars mirror the previous service so existing manifests keep working — see
@@ -738,7 +835,12 @@ Env vars mirror the previous service so existing manifests keep working — see
 `TMDB_API_KEY`, `SCANNER_NFS_ROOT`, `KAFKA_BROKERS`. An extra's file lives
 under the media root, `LIBRARY_ROOT` (default `/var/lib/katalog/library`)
 or `EXTRAS_ROOT` (default `/var/lib/katalog/extras`, a root the scanner
-never walks). The extras' topics are `<KAFKA_TOPIC_PREFIX>catalog.extra.queued`,
+never walks). With the library's v2 layout the roots are the library's:
+`LIBRARY_ROOT` (default `/var/lib/katalog`), `WORK_ROOT` (default
+`<LIBRARY_ROOT>/.work`), `ARRIVALS_ROOT` (default `<WORK_ROOT>/incoming`, the
+scan root) and `EXTRAS_ROOT` (default `<WORK_ROOT>/extras`). A root the
+environment sets wins in either layout, and the layout is read where a root
+is used, so switching it needs no restart. The extras' topics are `<KAFKA_TOPIC_PREFIX>catalog.extra.queued`,
 `.transcoded` and `.packaged`; where the broker creates no topic by itself
 they must be provisioned.
 `AUTH_DISABLED=true` turns off auth for local dev: every caller may then do
