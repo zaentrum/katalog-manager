@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -393,59 +392,14 @@ func (h *Handlers) writePackaged(ctx context.Context, tx pgx.Tx, itemID, itemDir
 	if _, err := tx.Exec(ctx, `DELETE FROM com_nalet_katalog_playbackassets WHERE item_id = $1 AND kind = 'packaged'`, itemID); err != nil {
 		return 0, err
 	}
-	ren := asMap(pkg["renditions"])
-	video := asListOfMap(ren["video"])
-	audio := asListOfMap(ren["audio"])
-	var codec, res *string
-	if len(video) > 0 {
-		codec = asString(video[0]["codec"])
-		if wd, ok := asInt(video[0]["width"]); ok {
-			if ht, ok := asInt(video[0]["height"]); ok {
-				s := strconv.Itoa(wd) + "x" + strconv.Itoa(ht)
-				res = &s
-			}
-		}
-	}
-	var kbps *int64
-	if peak, ok := asLong(pkg["peakBandwidthBps"]); ok && peak > 0 {
-		k := peak / 1000
-		kbps = &k
-	}
-	var size, duration *int64
-	if n, ok := asLong(pkg["sizeBytes"]); ok {
-		size = &n
-	}
-	if d, ok := asLong(pkg["durationMs"]); ok {
-		duration = &d
-	}
-	var primary map[string]any
-	for _, a := range audio {
-		if def, _ := a["default"].(bool); def {
-			primary = a
-			break
-		}
-	}
-	if primary == nil && len(audio) > 0 {
-		primary = audio[0]
-	}
-	var aCodec, aLang *string
-	var aChannels, aKbps *int
-	if primary != nil {
-		aCodec, aLang = asString(primary["codec"]), asString(primary["language"])
-		if ch, ok := asInt(primary["channels"]); ok {
-			aChannels = &ch
-		}
-		if bps, ok := asLong(primary["bitrateBps"]); ok && bps > 0 {
-			k := int(bps / 1000)
-			aKbps = &k
-		}
-	}
+	r := library.PackagedRowOf(pkg)
 	if _, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_playbackassets
 		(id, item_id, path, codec, resolution, bitratekbps, sizebytes, isprimary, kind, audiocodec, audiolanguage,
 		 audiochannels, audiobitratekbps, audiotrackcount, subtitletrackcount, durationms, versionid)
 		VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, $5, $6, false, 'packaged', $7, $8, $9, $10, $11, $12, $13, $14)`,
-		itemID, filepath.Join(versionDir, library.PackageFile), codec, res, kbps, size, aCodec, aLang, aChannels, aKbps,
-		len(audio), len(asListOfMap(pkg["subtitles"])), duration, versionID); err != nil {
+		itemID, filepath.Join(versionDir, library.PackageFile), r.Codec, r.Resolution, r.BitrateKbps, r.SizeBytes,
+		r.AudioCodec, r.AudioLanguage, r.AudioChannels, r.AudioBitrateKbps, r.AudioTracks, r.SubtitleTracks, r.DurationMs,
+		versionID); err != nil {
 		return 0, err
 	}
 	// The package's rows go, those of every version and of the legacy
