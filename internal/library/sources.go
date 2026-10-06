@@ -214,28 +214,6 @@ func (p Paths) EnsureSource(ctx context.Context, q Querier, itemID string) (*Sou
 	return s, nil
 }
 
-// Retired says of an item whose original was deleted after packaging which
-// source it was and when, and the event that records it; "" when it was
-// not.
-func Retired(ctx context.Context, q Querier, itemID string) (string, error) {
-	var id, event *string
-	var at *time.Time
-	err := q.QueryRow(ctx, `SELECT id, retireeventid, COALESCE(retireeventat, deletedat)
-		FROM com_nalet_katalog_itemsources WHERE item_id = $1 AND state = 'deleted'
-		ORDER BY COALESCE(retireeventat, deletedat) DESC NULLS LAST, id LIMIT 1`, itemID).Scan(&id, &event, &at)
-	if errors.Is(err, pgx.ErrNoRows) || isUndefinedTable(err) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	when := "an unknown time"
-	if at != nil {
-		when = Timestamp(*at)
-	}
-	return fmt.Sprintf("the original was deleted after packaging (event %s, %s)", deref(event), when), nil
-}
-
 // isUndefinedTable reports whether err is Postgres saying a table does not
 // exist (42P01): a catalog older than migration 040.
 func isUndefinedTable(err error) bool {
