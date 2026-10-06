@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -47,14 +48,27 @@ type Config struct {
 	// Stream token (base64-encoded HMAC key; blank -> stream tokens disabled)
 	StreamSigningKey string // STREAM_SIGNING_KEY
 
-	// Filesystem roots
+	// Filesystem roots. With the setting library.layout legacy, the default,
+	// the scanner walks the media root and the packager writes into the
+	// package store, as they always did.
 	NFSRoot      string // SCANNER_NFS_ROOT / NFS_ROOT (default /var/lib/katalog/media)
 	PackagesRoot string // PACKAGES_ROOT (default /var/lib/katalog/packages)
-	// The library's records, and the files an operator keeps for extras
-	// outside the media root (one the scanner never walks). An extra's file
-	// lives under the media root, LibraryRoot or ExtrasRoot.
-	LibraryRoot string // LIBRARY_ROOT (default /var/lib/katalog/library)
-	ExtrasRoot  string // EXTRAS_ROOT (default /var/lib/katalog/extras)
+	// With library.layout=v2 the share's root is the library: LibraryRoot
+	// holds the record (movies/, series/, people/) and its work folder,
+	// WorkRoot, everything that is not the record: the files that arrive
+	// (ArrivalsRoot, which the scanner walks), the extras' files taken in by
+	// the API (ExtrasRoot, which it never walks), the workers' handoffs, the
+	// trash.
+	LibraryRoot  string // LIBRARY_ROOT (default /var/lib/katalog)
+	WorkRoot     string // WORK_ROOT (default <LIBRARY_ROOT>/.work)
+	ArrivalsRoot string // ARRIVALS_ROOT (default <WORK_ROOT>/incoming)
+	ExtrasRoot   string // EXTRAS_ROOT (default <WORK_ROOT>/extras)
+	// Where an extra's file may also lie with library.layout legacy, as it
+	// could before the v2 layout: the v1 record's folder (an extra's file
+	// there is a record's, written once, and never deleted) and the extras'
+	// folder of the share. Both are under LibraryRoot.
+	LegacyLibraryRoot string // <LIBRARY_ROOT>/library
+	LegacyExtrasRoot  string // <LIBRARY_ROOT>/extras
 
 	// TMDB
 	TMDBAPIKey   string // TMDB_API_KEY (blank -> enrichment disabled)
@@ -346,6 +360,8 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	packages := envDefault("/var/lib/katalog/packages", "PACKAGES_ROOT")
+	library := filepath.Clean(envDefault("/var/lib/katalog", "LIBRARY_ROOT"))
+	work := filepath.Clean(envDefault(filepath.Join(library, ".work"), "WORK_ROOT"))
 	c := Config{
 		Port:             envDefault("8080", "SERVER_PORT"),
 		DatabaseURL:      normalizeDSN(env("SPRING_DATASOURCE_URL", "DATABASE_URL")),
@@ -364,10 +380,14 @@ func Load() (Config, error) {
 
 		StreamSigningKey: env("STREAM_SIGNING_KEY"),
 
-		NFSRoot:      envDefault("/var/lib/katalog/media", "SCANNER_NFS_ROOT", "NFS_ROOT"),
-		PackagesRoot: packages,
-		LibraryRoot:  envDefault("/var/lib/katalog/library", "LIBRARY_ROOT"),
-		ExtrasRoot:   envDefault("/var/lib/katalog/extras", "EXTRAS_ROOT"),
+		NFSRoot:           envDefault("/var/lib/katalog/media", "SCANNER_NFS_ROOT", "NFS_ROOT"),
+		PackagesRoot:      packages,
+		LibraryRoot:       library,
+		WorkRoot:          work,
+		ArrivalsRoot:      filepath.Clean(envDefault(filepath.Join(work, "incoming"), "ARRIVALS_ROOT")),
+		ExtrasRoot:        filepath.Clean(envDefault(filepath.Join(work, "extras"), "EXTRAS_ROOT")),
+		LegacyLibraryRoot: filepath.Join(library, "library"),
+		LegacyExtrasRoot:  filepath.Join(library, "extras"),
 
 		TMDBAPIKey:          envDefault(DefaultTMDBToken, "TMDB_API_KEY"),
 		TMDBLanguage:        envDefault("en-US", "TMDB_LANGUAGE"),

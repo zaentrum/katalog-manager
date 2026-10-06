@@ -111,7 +111,7 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Config{NFSRoot: dir + "/media", PackagesRoot: dir + "/packages", LibraryRoot: dir + "/library",
+	cfg := config.Config{NFSRoot: dir + "/media", PackagesRoot: dir + "/packages", LegacyLibraryRoot: dir + "/library",
 		ExtrasRoot: dir + "/extras"}
 	w := &writer{}
 	f := &fixture{st: st, cfg: cfg, w: w, svc: New(st, cfg, policy, events.ProducerOn(w)), dir: dir}
@@ -329,7 +329,7 @@ func TestAddExtraRefusesWhatIsNoExtra(t *testing.T) {
 		{graph.AddExtraRequest{ItemID: film, Path: video, Kind: "trailer", Language: lang("English")}, `not "English"`},
 		{graph.AddExtraRequest{ItemID: film, Path: "extras/x/trailer.mkv", Kind: "trailer"}, "is no absolute path"},
 		{graph.AddExtraRequest{ItemID: film, Path: "", Kind: "trailer"}, "path is required"},
-		{graph.AddExtraRequest{ItemID: film, Path: outside, Kind: "trailer"}, "is not under the media root, LIBRARY_ROOT or EXTRAS_ROOT"},
+		{graph.AddExtraRequest{ItemID: film, Path: outside, Kind: "trailer"}, "is not under the media root, the library's or the extras' folder or EXTRAS_ROOT"},
 		{graph.AddExtraRequest{ItemID: film, Path: f.cfg.ExtrasRoot + "/../elsewhere/secret.mkv", Kind: "trailer"}, "is not under"},
 		{graph.AddExtraRequest{ItemID: film, Path: f.cfg.ExtrasRoot, Kind: "trailer"}, "is not under"},
 		{graph.AddExtraRequest{ItemID: film, Path: f.cfg.PackagesRoot + "/extras/aa/staged.mkv", Kind: "trailer"}, "is not under"},

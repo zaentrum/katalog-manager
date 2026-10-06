@@ -70,7 +70,7 @@ func newReplacing(t *testing.T) *replacing {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Config{NFSRoot: dir + "/media", PackagesRoot: dir + "/packages", LibraryRoot: dir + "/library",
+	cfg := config.Config{NFSRoot: dir + "/media", PackagesRoot: dir + "/packages", LegacyLibraryRoot: dir + "/library",
 		ExtrasRoot: dir + "/extras"}
 	f := &replacing{st: st, cfg: cfg, dir: dir,
 		re: &fakeReencoder{res: graph.ReencodeResult{Titles: 1, Reencoded: 1, Message: "encoding it again"}}}

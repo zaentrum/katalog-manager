@@ -181,27 +181,37 @@ func TestRetrySettingsThatAreNoneFailLoading(t *testing.T) {
 	}
 }
 
-// An extra's file lives under the media root, the library's records or the
-// extras' own root, each where its variable says, and by default under
-// /var/lib/katalog.
-func TestTheRootsOfAnExtrasFile(t *testing.T) {
+// The share's root is the library, its work folder beside the record, the
+// arrivals and the extras' files in it, each where its variable says, and by
+// default under /var/lib/katalog; the legacy layout's folders of the share,
+// where an extra's file may lie too, are the library's.
+func TestTheRootsOfTheLibrary(t *testing.T) {
 	for _, tc := range []struct {
-		env                   map[string]string
-		media, library, extra string
+		env                                   map[string]string
+		media, library, work, arrivals, extra string
+		legacyLibrary, legacyExtras           string
 	}{
-		{nil, "/var/lib/katalog/media", "/var/lib/katalog/library", "/var/lib/katalog/extras"},
-		{map[string]string{"SCANNER_NFS_ROOT": "/srv/media", "LIBRARY_ROOT": "/srv/library", "EXTRAS_ROOT": " /srv/extras "},
-			"/srv/media", "/srv/library", "/srv/extras"},
+		{nil, "/var/lib/katalog/media", "/var/lib/katalog", "/var/lib/katalog/.work", "/var/lib/katalog/.work/incoming",
+			"/var/lib/katalog/.work/extras", "/var/lib/katalog/library", "/var/lib/katalog/extras"},
+		{map[string]string{"SCANNER_NFS_ROOT": "/srv/media", "LIBRARY_ROOT": "/srv/share/", "EXTRAS_ROOT": " /srv/extras "},
+			"/srv/media", "/srv/share", "/srv/share/.work", "/srv/share/.work/incoming", "/srv/extras",
+			"/srv/share/library", "/srv/share/extras"},
+		{map[string]string{"WORK_ROOT": "/scratch/work", "ARRIVALS_ROOT": "/drop"},
+			"/var/lib/katalog/media", "/var/lib/katalog", "/scratch/work", "/drop", "/scratch/work/extras",
+			"/var/lib/katalog/library", "/var/lib/katalog/extras"},
 	} {
-		for _, k := range []string{"SCANNER_NFS_ROOT", "NFS_ROOT", "LIBRARY_ROOT", "EXTRAS_ROOT"} {
+		for _, k := range []string{"SCANNER_NFS_ROOT", "NFS_ROOT", "LIBRARY_ROOT", "WORK_ROOT", "ARRIVALS_ROOT", "EXTRAS_ROOT"} {
 			t.Setenv(k, tc.env[k])
 		}
 		cfg, err := Load()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.NFSRoot != tc.media || cfg.LibraryRoot != tc.library || cfg.ExtrasRoot != tc.extra {
-			t.Errorf("%v: media %s, library %s, extras %s", tc.env, cfg.NFSRoot, cfg.LibraryRoot, cfg.ExtrasRoot)
+		got := []string{cfg.NFSRoot, cfg.LibraryRoot, cfg.WorkRoot, cfg.ArrivalsRoot, cfg.ExtrasRoot,
+			cfg.LegacyLibraryRoot, cfg.LegacyExtrasRoot}
+		want := []string{tc.media, tc.library, tc.work, tc.arrivals, tc.extra, tc.legacyLibrary, tc.legacyExtras}
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("%v:\n got  %v\n want %v", tc.env, got, want)
 		}
 	}
 }

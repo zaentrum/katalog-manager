@@ -100,9 +100,9 @@ func resolved(root string) string {
 
 // file checks that path names a file an extra may be, and answers it clean:
 // an absolute path of an existing regular video file, inside the media root,
-// the library or the extras' root and outside the package store, as written
-// and with its links followed (a link inside a root that leads out of it is
-// refused).
+// the share's library or extras folder (the legacy layout's) or EXTRAS_ROOT
+// and outside the package store, as written and with its links followed (a
+// link inside a root that leads out of it is refused).
 func (s *Service) file(path string) (string, *graph.ExtraRefused) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -112,7 +112,7 @@ func (s *Service) file(path string) (string, *graph.ExtraRefused) {
 		return "", graph.Refused(http.StatusBadRequest, codeRefused, "%s is no absolute path", path)
 	}
 	path = filepath.Clean(path)
-	roots := []string{s.cfg.NFSRoot, s.cfg.LibraryRoot, s.cfg.ExtrasRoot}
+	roots := []string{s.cfg.NFSRoot, s.cfg.LegacyLibraryRoot, s.cfg.LegacyExtrasRoot, s.cfg.ExtrasRoot}
 	inside := func(p string, resolve bool) bool {
 		pkgs := s.cfg.PackagesRoot
 		if resolve {
@@ -133,7 +133,7 @@ func (s *Service) file(path string) (string, *graph.ExtraRefused) {
 	}
 	if !inside(path, false) {
 		return "", graph.Refused(http.StatusBadRequest, codeRefused,
-			"%s is not under the media root, LIBRARY_ROOT or EXTRAS_ROOT (or is under the package store)", path)
+			"%s is not under the media root, the library's or the extras' folder or EXTRAS_ROOT (or is under the package store)", path)
 	}
 	real, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -143,7 +143,8 @@ func (s *Service) file(path string) (string, *graph.ExtraRefused) {
 		return "", graph.Refused(http.StatusBadRequest, codeRefused, "%s cannot be read: %v", path, err)
 	}
 	if !inside(real, true) {
-		return "", graph.Refused(http.StatusBadRequest, codeRefused, "%s leads out of the media root, LIBRARY_ROOT and EXTRAS_ROOT", path)
+		return "", graph.Refused(http.StatusBadRequest, codeRefused,
+			"%s leads out of the media root, the library's and the extras' folder and EXTRAS_ROOT", path)
 	}
 	fi, err := os.Stat(real)
 	if err != nil {

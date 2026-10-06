@@ -26,6 +26,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/extras"
 	"github.com/zaentrum/katalog-manager/internal/graph"
 	"github.com/zaentrum/katalog-manager/internal/itemactions"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/rest"
 	"github.com/zaentrum/katalog-manager/internal/retry"
@@ -42,6 +43,9 @@ func main() {
 }
 
 func run() error {
+	// The library's folders and records are written group-writable, as the
+	// workers write theirs.
+	setUmask()
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -126,6 +130,19 @@ func run() error {
 	// whatever library.layout says.
 	if err := st.EnsureLibrary(bgCtx); err != nil {
 		log.Printf("catalog: migrations db/migrations/040_library_v2.sql and 041_library_projection.sql are missing and could not be applied: %v; the library layout stays legacy until they are", err)
+	}
+	if set, err := library.ReadSettings(bgCtx, st.Pool()); err != nil {
+		log.Printf("catalog: the library's settings could not be read: %v", err)
+	} else {
+		for _, p := range set.Problems {
+			log.Printf("catalog: %s", p)
+		}
+		if set.V2() {
+			if err := library.EnsureWorkTree(cfg); err != nil {
+				log.Printf("catalog: the library's work folder %s could not be made: %v", cfg.WorkRoot, err)
+			}
+		}
+		log.Printf("catalog: the library layout is %s, originals: %s", set.Layout, set.Originals)
 	}
 	dropRetiredJobTables(bgCtx, st)
 
