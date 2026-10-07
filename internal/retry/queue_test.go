@@ -539,3 +539,32 @@ func TestOneInstanceSendsTheQueueAtATime(t *testing.T) {
 		t.Errorf("a pass once it is free: %+v, %v", p, err)
 	}
 }
+
+// A pass that cannot note why a title waits still sends the titles it reset
+// before, and notes them sent: no title is left reset without its event.
+func TestAPassThatCannotNoteATitleStillSendsWhatItReset(t *testing.T) {
+	st := catalog(t)
+	b := &bus{}
+	s := newService(t, st, b)
+	ctx := context.Background()
+	file(t, st, "m1", "m2")
+	put(t, st, "m2", "transcode", "in_progress", "startedat = localtimestamp")
+	if _, err := s.EnqueueReencode(ctx, graph.ReencodeRequest{Items: []string{"m1", "m2"}}); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Exec(t, st, `CREATE FUNCTION refuse_busy() RETURNS trigger LANGUAGE plpgsql AS
+		$$ BEGIN IF NEW.reason LIKE 'transcode is running%' THEN RAISE EXCEPTION 'the disk is full'; END IF; RETURN NEW; END $$`)
+	storetest.Exec(t, st, `CREATE TRIGGER refuse_busy BEFORE UPDATE ON com_nalet_katalog_reencodequeue
+		FOR EACH ROW EXECUTE FUNCTION refuse_busy()`)
+	p, err := s.DrainQueue(ctx)
+	if err == nil || !strings.Contains(err.Error(), "the disk is full") || p.Sent != 1 {
+		t.Fatalf("the pass: %+v, %v", p, err)
+	}
+	if got := b.take(); len(got) != 1 || !strings.Contains(got[0], " m1 ") {
+		t.Errorf("sent %v, want m1", got)
+	}
+	if got := queueOf(t, st); got != "m1 sent items by=katalog-manager sent=true done=false reason=-\n"+
+		"m2 queued items by=katalog-manager sent=false done=false reason=-" {
+		t.Errorf("the queue:\n%s", got)
+	}
+}

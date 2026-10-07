@@ -514,7 +514,8 @@ func (s *Service) sendQueued(ctx context.Context, set library.Settings, p *Queue
 		return err
 	}
 
-	// No title reset is left without its event, nor its row unmarked.
+	// No title reset is left without its event, nor its row unmarked: an
+	// error ends the walk, and what was reset goes.
 	ctx = context.WithoutCancel(ctx)
 	rowOf := map[string]string{}
 	var reset []claimed
@@ -524,8 +525,8 @@ func (s *Service) sendQueued(ctx context.Context, set library.Settings, p *Queue
 			break
 		}
 		if w := why[r.item]; w != "" {
-			if err := s.markQueued(ctx, r.id, QueueFailed, w); err != nil {
-				return err
+			if failed = s.markQueued(ctx, r.id, QueueFailed, w); failed != nil {
+				break
 			}
 			p.Refused++
 			continue
@@ -536,8 +537,8 @@ func (s *Service) sendQueued(ctx context.Context, set library.Settings, p *Queue
 			break
 		}
 		if busy != "" {
-			if err := s.markQueued(ctx, r.id, QueueQueued, busy); err != nil {
-				return err
+			if failed = s.markQueued(ctx, r.id, QueueQueued, busy); failed != nil {
+				break
 			}
 			p.Busy++
 			continue
@@ -546,15 +547,12 @@ func (s *Service) sendQueued(ctx context.Context, set library.Settings, p *Queue
 		reset = append(reset, claimed{id: tr, itemID: r.item, step: "transcode", itemType: types[r.item]})
 	}
 	// A title whose event could not be sent is put back failed, with no retry
-	// of its own: the queue sends it again on a later pass.
+	// of its own: it stays queued, and the queue sends it again on a later
+	// pass.
 	_, _, notSent, first := s.dispatch(ctx, reset, false, asReencode)
 	back := map[string]bool{}
 	for _, c := range notSent {
 		back[c.itemID] = true
-		if err := s.markQueued(ctx, rowOf[c.itemID], QueueQueued, "the re-encode could not be sent: "+first.Error()); err != nil {
-			return err
-		}
-		p.NotSent++
 	}
 	var sent []string
 	for _, c := range reset {
@@ -562,14 +560,23 @@ func (s *Service) sendQueued(ctx context.Context, set library.Settings, p *Queue
 			sent = append(sent, rowOf[c.itemID])
 		}
 	}
+	errs := []error{failed}
 	if len(sent) > 0 {
 		if _, err := pool.Exec(ctx, `UPDATE `+queueTbl+` SET state = 'sent', sentat = now(), reason = NULL
 			WHERE id = ANY($1) AND state = 'queued'`, sent); err != nil {
-			return fmt.Errorf("note the titles sent: %w", err)
+			errs = append(errs, fmt.Errorf("note the titles sent: %w", err))
+		} else {
+			p.Sent = len(sent)
 		}
 	}
-	p.Sent = len(sent)
-	return failed
+	for _, c := range notSent {
+		if err := s.markQueued(ctx, rowOf[c.itemID], QueueQueued, "the re-encode could not be sent: "+first.Error()); err != nil {
+			errs = append(errs, err)
+			break
+		}
+		p.NotSent++
+	}
+	return errors.Join(errs...)
 }
 
 // markQueued puts a queued title in state, saying why: one busy or not sent
