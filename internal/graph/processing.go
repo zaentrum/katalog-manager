@@ -15,6 +15,9 @@ type Pipeline interface {
 	ReencodeItem(ctx context.Context, id string) (ReencodeResult, error)
 	Overview(ctx context.Context, step string, limit, offset int32) (ProcessingOverview, error)
 	Policy(ctx context.Context) (RetryPolicyInfo, error)
+	// ClearReencodeQueue deletes the queue's titles in states (by default the
+	// waiting and the finished, not those sent), and answers how many.
+	ClearReencodeQueue(ctx context.Context, states []string) (int32, error)
 }
 
 // ReencodeRequest is what a request to the re-encode queue names: titles (a
@@ -216,6 +219,58 @@ func (r *processingOverviewResolver) Failed() []*failedStepResolver {
 	return out
 }
 func (r *processingOverviewResolver) FailedTotal() int32 { return r.m.FailedTotal }
+func (r *processingOverviewResolver) ReencodeQueue() *reencodeQueueResolver {
+	if r.m.Reencode == nil {
+		return nil
+	}
+	return &reencodeQueueResolver{m: *r.m.Reencode}
+}
+
+type reencodeQueueResolver struct{ m ReencodeQueue }
+
+func (r *reencodeQueueResolver) Queued() int32 { return r.m.Queued }
+func (r *reencodeQueueResolver) Sent() int32   { return r.m.Sent }
+func (r *reencodeQueueResolver) Done() int32   { return r.m.Done }
+func (r *reencodeQueueResolver) Failed() int32 { return r.m.Failed }
+func (r *reencodeQueueResolver) Oldest() *queuedTitleResolver {
+	return newQueuedTitleResolver(r.m.Oldest)
+}
+func (r *reencodeQueueResolver) Newest() *queuedTitleResolver {
+	return newQueuedTitleResolver(r.m.Newest)
+}
+func (r *reencodeQueueResolver) Idle() *string { return r.m.Idle }
+
+type queuedTitleResolver struct{ m QueuedTitle }
+
+func newQueuedTitleResolver(m *QueuedTitle) *queuedTitleResolver {
+	if m == nil {
+		return nil
+	}
+	return &queuedTitleResolver{m: *m}
+}
+
+func (r *queuedTitleResolver) ItemID() graphql.ID { return gid(r.m.ItemID) }
+func (r *queuedTitleResolver) State() string      { return r.m.State }
+func (r *queuedTitleResolver) EnqueuedAt() graphql.Time {
+	return graphql.Time{Time: r.m.EnqueuedAt.UTC()}
+}
+
+// ClearReencodeQueue deletes the re-encode queue's titles in states, by
+// default those waiting and those done or failed (a title sent is encoded,
+// and its end still noted), and answers how many it deleted.
+func (r *Resolver) ClearReencodeQueue(ctx context.Context, args struct{ States *[]string }) (int32, error) {
+	if err := r.allow(ctx, "Mutation.clearReencodeQueue"); err != nil {
+		return 0, err
+	}
+	if r.svc.Pipeline == nil {
+		return 0, errNotConfigured
+	}
+	var states []string
+	if args.States != nil {
+		states = *args.States
+	}
+	return r.svc.Pipeline.ClearReencodeQueue(ctx, states)
+}
 func (r *processingOverviewResolver) Retry() *retryPolicyResolver {
 	return &retryPolicyResolver{m: r.m.Retry}
 }

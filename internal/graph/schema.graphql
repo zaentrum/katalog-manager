@@ -541,6 +541,32 @@ type ProcessingOverview {
   failedTotal: Int!
   # how the service retries a step
   retry: RetryPolicy!
+  # the titles queued to be encoded again (POST /api/library/reencode); null
+  # on a catalog older than migration 043
+  reencodeQueue: ReencodeQueue
+}
+
+# The re-encode queue: its titles by state — waiting (queued), sent to the
+# transcoder, done once their package completed, failed when their
+# transcode or package failed with no attempt left — of those waiting or
+# sent the one queued first and the one queued last, and why the sweep
+# sends none now (null when it may: library.reencode.rate a pass, no more
+# than library.reencode.inflight sent at once, within
+# library.reencode.window).
+type ReencodeQueue {
+  queued: Int!
+  sent: Int!
+  done: Int!
+  failed: Int!
+  oldest: QueuedTitle
+  newest: QueuedTitle
+  idle: String
+}
+
+type QueuedTitle {
+  itemId: ID!
+  state: String!
+  enqueuedAt: Time!
 }
 
 type ProcessingStepCounts {
@@ -1123,6 +1149,10 @@ type Mutation {
   # an event bus or migration 033; the run finishes even when the caller
   # stops waiting.
   reencodeItem(id: ID!): ReencodeResult!
+  # delete the re-encode queue's titles in states: by default those queued,
+  # done and failed (a title sent is being encoded, and its end is still
+  # noted). Answers how many it deleted.
+  clearReencodeQueue(states: [String!]): Int!
   # Gives a title another file, its source, and keeps the title: a movie or an
   # episode with a file, named one way, by itemId or by itemPath (the path of
   # the file replaced, which a demo's reset keeps where it changes ids). path

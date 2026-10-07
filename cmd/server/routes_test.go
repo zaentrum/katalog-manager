@@ -125,6 +125,10 @@ func (f *fakes) Overview(context.Context, string, int32, int32) (graph.Processin
 	f.called("processing overview")
 	return graph.ProcessingOverview{}, nil
 }
+func (f *fakes) ClearReencodeQueue(_ context.Context, states []string) (int32, error) {
+	f.called("clear the re-encode queue " + strings.Join(states, ","))
+	return 2, nil
+}
 func (f *fakes) Policy(context.Context) (graph.RetryPolicyInfo, error) {
 	f.called("retry policy")
 	return graph.RetryPolicyInfo{MaxAttempts: 3}, nil
@@ -365,7 +369,8 @@ var operations = []struct{ doc, calls string }{
 	{`{ enrichmentStatusCodes { code } }`, ""},
 	{`{ deletedItems { id } }`, ""},
 	{`{ referenceSync { kind } }`, ""},
-	{`{ processingOverview(step: "transcode") { failedTotal steps { step failed } failed { itemId } retry { available } } }`, "processing overview"},
+	{`{ processingOverview(step: "transcode") { failedTotal steps { step failed } failed { itemId } retry { available }
+		reencodeQueue { queued sent done failed idle oldest { itemId state enqueuedAt } newest { itemId } } } }`, "processing overview"},
 	{`{ retryPolicy { available automatic maxAttempts reason } }`, "retry policy"},
 
 	{`mutation { triggerScan(source: "nfs") { id status } }`, "scan nfs"},
@@ -383,6 +388,7 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { retryStep(itemId: "m1", step: "transcode") { retried message } }`, "retry m1 transcode"},
 	{`mutation { retryFailed(step: "package") { retried message } }`, "retry the failed package"},
 	{`mutation { reencodeItem(id: "m1") { itemId titles reencoded busy notSent message } }`, "reencode m1"},
+	{`mutation { clearReencodeQueue(states: ["done", "failed"]) }`, "clear the re-encode queue done,failed"},
 	{`mutation { replaceSource(itemId: "m1", path: "/media/a-film-1080p.mkv", deleteOldFile: true) { itemId oldPath path
 		replaced oldFileDeleted oldSidecars reencode { reencoded busy notSent message } message } }`,
 		"replace the file of m1 with /media/a-film-1080p.mkv, delete true, reencode true"},
