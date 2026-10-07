@@ -823,6 +823,10 @@ func TestAnOriginalIsKeptUntilItsPackageCarriesItsSurround(t *testing.T) {
 	if got := f.step(t, rtFilm); got != want {
 		t.Errorf("the retire step after a pass again: %s", got)
 	}
+	// the titles the re-encode queue takes as held are those the job holds
+	if got := heldTitles(t, f.st); got != rtFilm {
+		t.Errorf("the titles held for their surround: %q, want the film", got)
+	}
 
 	// Encoded again: a version with the 5.1 companion takes over.
 	const again, againPkg = "9b2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5b", "4e1d2e3f-4a5b-4c6d-8e7f-8a9b0c1d2e3e"
@@ -833,6 +837,10 @@ func TestAnOriginalIsKeptUntilItsPackageCarriesItsSurround(t *testing.T) {
 		WHERE id = $1`, rtVersion, again)
 	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
 		VALUES ($1, $2, ARRAY[$3::varchar], 'complete', $4, $5, now() - interval '1 hour')`, again, rtFilm, rtSource, againPkg, dir)
+	// the job looks at it again: it is no longer held
+	if got := heldTitles(t, f.st); got != "" {
+		t.Errorf("held once a newer version is complete: %q", got)
+	}
 	rep = f.pass(t)
 	if rep.Originals != 1 || rep.Held != 0 {
 		t.Fatalf("once a version with its 5.1 is complete: %+v", rep)
@@ -860,6 +868,9 @@ func TestAnOriginalIsKeptUntilItsPackageCarriesItsSurround(t *testing.T) {
 			if s := f.source(t, rtSource); s.State != SourceDeleted || string(s.Lost) != c.lost {
 				t.Errorf("the source: %s, lost %s; want deleted, %s", s.State, s.Lost, c.lost)
 			}
+			if got := heldTitles(t, f.st); got != "" {
+				t.Errorf("held: %q", got)
+			}
 		})
 	}
 	// 6 to 4 channels is not a 5.1 of it either.
@@ -868,4 +879,19 @@ func TestAnOriginalIsKeptUntilItsPackageCarriesItsSurround(t *testing.T) {
 	if rep := g.pass(t); rep.Held != 1 {
 		t.Errorf("a 5.1 original whose package has four channels: %+v", rep)
 	}
+	if got := heldTitles(t, g.st); got != rtFilm {
+		t.Errorf("the titles held for their surround: %q, want the film", got)
+	}
+}
+
+// heldTitles are the titles HeldForSurround takes, as the re-encode queue
+// selects them, by id.
+func heldTitles(t *testing.T, st *store.Store) string {
+	t.Helper()
+	var out string
+	if err := st.Pool().QueryRow(context.Background(), `SELECT coalesce(string_agg(i.id, ',' ORDER BY i.id), '')
+		FROM com_nalet_katalog_items i WHERE `+HeldForSurround("i.id")).Scan(&out); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

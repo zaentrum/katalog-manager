@@ -16,8 +16,72 @@ import (
 func TestTheLibrarysDefaults(t *testing.T) {
 	d := Defaults()
 	if d.V2() || d.DeleteOriginals() || d.RetireDelay != 10*time.Minute || d.RetireRate != 30 || d.Verify != VerifyFull ||
-		d.VerifyMaxAge != 30*24*time.Hour || d.SupersededGrace != 24*time.Hour || d.TrashGrace != 24*time.Hour {
+		d.VerifyMaxAge != 30*24*time.Hour || d.SupersededGrace != 24*time.Hour || d.TrashGrace != 24*time.Hour ||
+		d.ReencodeRate != 4 || d.ReencodeInflight != 4 || d.ReencodeWindow != "" {
 		t.Errorf("the defaults: %+v", d)
+	}
+}
+
+// The re-encode queue's settings: a rate of 0 or more titles a pass, 1 or
+// more in flight, and a window kept as written, one that is none said (the
+// queue waits then: the sweep reads no window from it).
+func TestTheReencodeSettingsAreRead(t *testing.T) {
+	s := Defaults()
+	for k, v := range map[string]string{SettingReencodeRate: "0", SettingReencodeInflight: " 2 ", SettingReencodeWindow: " 23:00-07:00 "} {
+		s.set(k, v)
+	}
+	if s.ReencodeRate != 0 || s.ReencodeInflight != 2 || s.ReencodeWindow != "23:00-07:00" || len(s.Problems) != 0 {
+		t.Errorf("read: %+v", s)
+	}
+	s = Defaults()
+	for k, v := range map[string]string{SettingReencodeRate: "-1", SettingReencodeInflight: "0", SettingReencodeWindow: "nights"} {
+		s.set(k, v)
+	}
+	if s.ReencodeRate != 4 || s.ReencodeInflight != 4 || s.ReencodeWindow != "nights" || len(s.Problems) != 3 ||
+		!strings.Contains(strings.Join(s.Problems, "\n"), `library.reencode.window is "nights", which is not a window, HH:MM-HH:MM`) {
+		t.Errorf("what cannot be read: %+v", s)
+	}
+}
+
+// A window is HH:MM-HH:MM of the local time, from its start up to its end,
+// past midnight when it ends before it starts; empty is any time, and one
+// that starts where it ends is the whole day.
+func TestAWindowIsADailySpan(t *testing.T) {
+	at := func(h, m int) time.Time { return time.Date(2026, 10, 7, h, m, 0, 0, time.Local) }
+	for _, tc := range []struct {
+		window  string
+		in, out []time.Time
+	}{
+		{"", []time.Time{at(0, 0), at(12, 0), at(23, 59)}, nil},
+		{"23:00-07:00", []time.Time{at(23, 0), at(23, 59), at(0, 0), at(3, 30), at(6, 59)}, []time.Time{at(7, 0), at(12, 0), at(22, 59)}},
+		{"09:00-17:30", []time.Time{at(9, 0), at(12, 0), at(17, 29)}, []time.Time{at(8, 59), at(17, 30), at(23, 0)}},
+		{" 08:15 - 08:15 ", []time.Time{at(8, 15), at(0, 0), at(20, 0)}, nil},
+	} {
+		w, err := ParseWindow(tc.window)
+		if err != nil {
+			t.Errorf("%q: %v", tc.window, err)
+			continue
+		}
+		for _, x := range tc.in {
+			if !w.Contains(x) {
+				t.Errorf("%q does not hold %s", tc.window, x.Format("15:04"))
+			}
+		}
+		for _, x := range tc.out {
+			if w.Contains(x) {
+				t.Errorf("%q holds %s", tc.window, x.Format("15:04"))
+			}
+		}
+	}
+	// a time of another zone is read in the local time
+	w, _ := ParseWindow("23:00-07:00")
+	if !w.Contains(at(2, 0).UTC()) || w.Contains(at(12, 0).UTC()) {
+		t.Error("a time in UTC is not read in the local time")
+	}
+	for _, v := range []string{"23-07", "24:00-01:00", "7:00-9:00", "23:00 07:00", "23:60-01:00", "nights", "23:00-07:00-09:00"} {
+		if _, err := ParseWindow(v); err == nil {
+			t.Errorf("%q: a window, want an error", v)
+		}
 	}
 }
 

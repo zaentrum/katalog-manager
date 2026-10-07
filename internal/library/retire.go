@@ -78,6 +78,20 @@ const SurroundHeld = "its package has no 5.1 of the source's surround; re-encode
 // another version is complete.
 const heldFor = "held for version "
 
+// HeldDetails are the details of a retire step held for the surround of the
+// package of the version versionID.
+func HeldDetails(versionID string) string { return heldFor + versionID }
+
+// HeldForSurround is the SQL condition that the title item's retire is held
+// for its surround (its current package has no 5.1 of it): its retire step
+// held for the version complete now, as the retire job holds one.
+func HeldForSurround(item string) string {
+	return `EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps hr
+		JOIN com_nalet_katalog_itemversions hv ON hv.item_id = hr.item_id AND hv.state = 'complete'
+		WHERE hr.item_id = ` + item + ` AND hr.step = 'retire' AND hr.status = 'failed'
+		  AND hr.details = '` + heldFor + `' || hv.id)`
+}
+
 // errHeld says an original is kept for its surround.
 var errHeld = errors.New(SurroundHeld)
 
@@ -576,7 +590,7 @@ func (r *Retirer) hold(ctx context.Context, rt *retirement) error {
 			error = $2::text, lasterror = $2::text, details = $3::text, nextretryat = NULL, dispatchedat = NULL,
 			failures = CASE WHEN com_nalet_katalog_itemprocessingsteps.status <> 'failed'
 				THEN com_nalet_katalog_itemprocessingsteps.failures + 1 ELSE com_nalet_katalog_itemprocessingsteps.failures END`,
-		s.ItemID, *reason, heldFor+rt.ver.ID); err != nil {
+		s.ItemID, *reason, HeldDetails(rt.ver.ID)); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
