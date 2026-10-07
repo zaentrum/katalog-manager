@@ -69,6 +69,8 @@ var routes = []route{
 	{http.MethodPost, "/api/library/migrations/r1/adopt", "", "worker"},
 	{http.MethodPost, "/api/library/migrations/r1/revert", `{"items": []}`, "worker"},
 	{http.MethodPost, "/api/library/projections", `{}`, "worker"},
+	{http.MethodPost, "/api/library/reencode", `{"items": ["m1"]}`, "worker"},
+	{http.MethodGet, "/api/library/reencode", "", "worker"},
 
 	{http.MethodPost, "/api/ingest", `{"path": "MEDIA/new.mkv", "type": "movie", "title": "New"}`, "ingest"},
 	{http.MethodPost, "/api/extras", `{"itemId": "m1", "path": "MEDIA/m1-trailer.mkv", "kind": "trailer"}`, "ingest"},
@@ -157,6 +159,7 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 		"the extra taken in":    storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemextras WHERE kind = 'trailer'`),
 		"the extra's report": storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemextras
 			WHERE state <> 'queued' OR heartbeatat IS NOT NULL`),
+		"a title queued to be encoded again": storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue`),
 	} {
 		if n != 0 {
 			t.Errorf("a refused caller left %s behind (%d rows)", what, n)
@@ -188,6 +191,9 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemextras WHERE id = $1 AND state = 'ready'`, extraX1); n != 1 {
 		t.Error("the workers' packaging-complete did not make the extra ready")
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue WHERE item_id = 'm1'`); n != 1 {
+		t.Errorf("the film queued by the service account and the admins: %d rows, want the one", n)
 	}
 }
 

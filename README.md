@@ -25,12 +25,14 @@ The surface is split deliberately:
   job, character, order and episode count), `referenceSync`
   (the change-list refresh's cursors and last runs, read-only),
   `processingOverview` (every step's items by state, the failed steps with
-  their last errors, and how the service retries), and the operator actions
+  their last errors, how the service retries, and the re-encode queue), and
+  the operator actions
   (`triggerScan`, `enrichOne`/`enrichPending`, `refreshPeople`, `packageItem`,
   `validateItem`, `retryStep`/`retryFailed` (see
   [The pipeline heals itself](#the-pipeline-heals-itself)), `reencodeItem`
-  (see [Encoding a title again](#encoding-a-title-again)), `replaceSource`
-  (see [Replacing a title's file](#replacing-a-titles-file)),
+  (see [Encoding a title again](#encoding-a-title-again)),
+  `clearReencodeQueue` (see [The re-encode queue](#the-re-encode-queue)),
+  `replaceSource` (see [Replacing a title's file](#replacing-a-titles-file)),
   `backfillSourceProbes`, `backfillRatings` and `setMinAgeOverride` (see
   [Ratings](#ratings); an item's `ageRating` says what it is rated),
   `setTrackLanguage` and `backfillSourceTracks` (see
@@ -107,6 +109,7 @@ account, whose token carries the addon role. Everyone else signed in is a
 | `GET /api/play/...`, `GET /api/subtitles/...` | any signed-in caller; a capped viewer as for the artwork |
 | `PUT /api/artwork/...`, `/api/analyze/*` (an extra's record and steps too), segments, chapters, `packaging-complete` (an item's and an extra's), `GET /api/settings` | admin, service account |
 | `POST /api/library/migrations/{run}/adopt`, `…/revert` (the library's migration), `POST /api/library/projections` | admin, service account |
+| `POST /api/library/reencode`, `GET /api/library/reencode` (the re-encode queue) | admin, service account |
 | `POST /api/ingest`, `POST /api/extras` | admin, service account, addon |
 | `POST /api/items/{id}/package` | admin |
 
@@ -535,6 +538,54 @@ each as a title of its own.
 
 Without an event bus or migration 033 a re-encode is refused, as a retry is.
 
+### The re-encode queue
+
+Many titles are encoded again through the queue, which the sweep sends a
+few at a time so the transcoder is not flooded. `POST /api/library/reencode`
+(the service account and admins) queues titles by its body, any of them
+together, each title once:
+
+- `{"items": ["<itemId>", …]}`: movies and episodes, a series its episodes
+  (under it or a season of it), by season and episode;
+- `{"held": true}`: every title whose retire is held for its surround (see
+  [The library](#the-library)), as the retire job holds it now;
+- `{"all": true}`: every packaged movie and episode.
+
+It answers `{"queued", "alreadyQueued", "skipped": [{"itemId", "reason"}]}`:
+a title queued already, waiting or sent, stays as it is; one with nothing to
+encode (unknown, no file, its original deleted after packaging, no movie,
+episode or series) is skipped, saying why. A body that names none is 400.
+`GET /api/library/reencode` answers the queue's titles by state, `{"queued",
+"sent", "done", "failed"}`, of those waiting or sent the one queued first and
+the one queued last (`"oldest"`, `"newest"`: `{"itemId", "state",
+"enqueuedAt"}`, null when none), and `"idle"`, why the sweep sends none now
+(left out when it may). Both are 503 without migration 043. The console
+reads the same in `processingOverview.reencodeQueue`; an admin clears it
+with `clearReencodeQueue(states:)`, by default the titles queued, done and
+failed (a title sent is being encoded: clearing it frees its place in
+flight, and its encoding goes on).
+
+On each round the sweep ends the titles sent: done once their package is,
+failed when their transcode or package failed with no retry left, or the
+package was skipped or is not applicable, saying why (a step failed with a
+retry scheduled is still being tried). Then it sends the titles queued
+first, as reencodeItem sends one:
+
+- `library.reencode.rate` (`4`): titles a pass at most; `0` sends none;
+- `library.reencode.inflight` (`4`): no more while this many are sent and
+  not done;
+- `library.reencode.window` (empty, any time): when, `HH:MM-HH:MM` of the
+  service's local time, as `23:00-07:00` across midnight; one that is no
+  window sends nothing until it is.
+
+A busy title (its transcode or package running, or waiting for its worker)
+stays queued, saying why, and takes no place of the pass: the next one goes.
+One whose event could not be sent stays queued too, its transcode failed
+with no retry of its own; the queue sends it again on a later pass. One
+whose original was retired while it waited fails. One instance sends the
+queue at a time. With no sweep (`KATALOG_RETRY_INTERVAL` off) or no event
+bus the queue waits.
+
 ### Lost scans
 
 A scan runs in the process that started it, which writes its end into its
@@ -791,6 +842,9 @@ The library's settings are read on every use, as `extras.scan` is:
   `library.superseded.grace` (`24h`), `library.trash.grace` (`24h`; `0`
   deletes a retired original at once). A duration is a Go duration or days
   (`30d`).
+- `library.reencode.rate`, `library.reencode.inflight`,
+  `library.reencode.window`: how the sweep sends the re-encode queue (see
+  [The re-encode queue](#the-re-encode-queue)), in either layout.
 
 The retire job runs once a minute in the sweep, in one instance at a time.
 With `delete-after-package` it deletes a title's original once a complete
@@ -811,7 +865,9 @@ original's, or holds fewer channels than a 5.1 of it would (a 7.1 original's
 source saying why, and its retire step waits — failed, with no retry of its
 own, its error "its package has no 5.1 of the source's surround; re-encode it
 first", its details `held for version <versionId>` — until another version
-of the title is complete, or an admin retries the step. The same job deletes an extra's
+of the title is complete, or an admin retries the step. `{"held": true}`
+queues these titles to be encoded again (see
+[The re-encode queue](#the-re-encode-queue)). The same job deletes an extra's
 original once its folder is recorded and verifies, removes a superseded
 version after its grace (`version-removed`, its folder deleted), moves a
 package folder of the store before the library a version replaced to

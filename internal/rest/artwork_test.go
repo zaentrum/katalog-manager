@@ -21,6 +21,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/extras"
 	"github.com/zaentrum/katalog-manager/internal/itemactions"
 	"github.com/zaentrum/katalog-manager/internal/processing"
+	"github.com/zaentrum/katalog-manager/internal/retry"
 	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
@@ -69,7 +70,7 @@ func server(t *testing.T, st *store.Store, cfg config.Config) (http.Handler, *au
 		pr.Use(auth.NewMiddleware(jwt, stream).Handler)
 		steps := processing.New(st.Pool())
 		New(Deps{Store: st, Cfg: cfg, Steps: steps, Packager: itemactions.New(st, cfg, steps, nil),
-			Extras: extras.New(st, cfg, steps.Policy(), nil)}).Register(pr)
+			Extras: extras.New(st, cfg, steps.Policy(), nil), Reencode: retry.New(st, steps.Policy(), nil, 0)}).Register(pr)
 	})
 	return r, iss
 }

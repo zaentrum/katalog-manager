@@ -247,3 +247,48 @@ func TestATitleEncodedAgainIsPackagedWithItsLanguagesAndFiles(t *testing.T) {
 		t.Errorf("the record the packager reads: %d %s", code, body)
 	}
 }
+
+// The re-encode queue through the service as main wires it: the service
+// account queues a film (POST /api/library/reencode) and reads the queue
+// (GET), the console's overview counts it, the sweep sends it to the
+// transcoder, and an admin, and only an admin, clears it.
+func TestTheReencodeQueueThroughTheService(t *testing.T) {
+	b := &markingBus{}
+	var svc *retry.Service
+	in := newInstanceWith(t, func(st *store.Store) graph.Pipeline {
+		svc = retry.New(st, processing.DefaultPolicy(), b, time.Minute)
+		return svc
+	})
+	service, admin := in.iss.Service(t, "zaentrum-manager"), in.iss.Admin(t)
+	if code, body := in.post(t, "/api/library/reencode", service, `{"items": ["m1", "p1"]}`); code != http.StatusOK ||
+		strings.TrimSpace(body) != `{"queued":1,"alreadyQueued":0,"skipped":[{"itemId":"p1","reason":"unknown item"}]}` {
+		t.Fatalf("POST: %d %s", code, body)
+	}
+	const overview = `{ processingOverview { reencodeQueue { queued sent done failed idle oldest { itemId state } newest { itemId } } } }`
+	_, a := in.gql(t, "/api/manage/query", admin, overview)
+	if len(a.Errors) > 0 || string(a.Data) != `{"processingOverview":{"reencodeQueue":{"queued":1,"sent":0,"done":0,"failed":0,"idle":null,`+
+		`"oldest":{"itemId":"m1","state":"queued"},"newest":{"itemId":"m1"}}}}` {
+		t.Errorf("the overview: %s %v", a.Data, a.Errors)
+	}
+	p, err := svc.DrainQueue(context.Background())
+	if err != nil || p.Sent != 1 {
+		t.Fatalf("the sweep's pass: %+v, %v", p, err)
+	}
+	if sent := b.take(); sent != events.TopicAnalyzed+" m1 transcode reencode reencode movie" {
+		t.Errorf("sent %q, want the transcoder's trigger", sent)
+	}
+	if code, body := in.get(t, "/api/library/reencode", service); code != http.StatusOK ||
+		!strings.HasPrefix(body, `{"queued":0,"sent":1,"done":0,"failed":0,"oldest":{"itemId":"m1","state":"sent","enqueuedAt":"`) {
+		t.Errorf("GET: %d %s", code, body)
+	}
+	const clear = `mutation { clearReencodeQueue(states: ["sent"]) }`
+	if _, a := in.gql(t, "/api/manage/query", service, clear); len(a.Errors) != 1 || a.Errors[0].Extensions["code"] != "FORBIDDEN" {
+		t.Errorf("the service account's clear: %v, want it refused", a.Errors)
+	}
+	if _, a := in.gql(t, "/api/manage/query", admin, clear); len(a.Errors) > 0 || string(a.Data) != `{"clearReencodeQueue":1}` {
+		t.Errorf("an admin's clear: %s %v", a.Data, a.Errors)
+	}
+	if n := storetest.Count(t, in.st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue`); n != 0 {
+		t.Errorf("%d titles queued after the clear", n)
+	}
+}

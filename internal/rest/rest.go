@@ -20,6 +20,7 @@ type Deps struct {
 	Events   *events.Producer // nil-safe: packaged-event emit no-ops without a bus
 	Packager Packager         // nil: POST /api/items/{id}/package answers 503
 	Extras   ExtraTaker       // nil: POST /api/extras answers 503
+	Reencode Reencoder        // nil: /api/library/reencode answers 503
 }
 
 // Handlers groups the REST handlers.
@@ -53,7 +54,7 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 // packaging-complete) is in the worker group too. Bodies are implemented in
 // the per-area files (artwork.go, play.go, subtitles.go, analyzer.go,
 // segments.go, chapters.go, packaging.go, package.go, settings.go,
-// ingest.go, extras.go).
+// ingest.go, extras.go, migrations.go, reencode.go).
 func (h *Handlers) Register(r chi.Router) {
 	pol := h.d.Cfg.Policy()
 
@@ -120,6 +121,10 @@ func (h *Handlers) Register(r chi.Router) {
 		// The items' projections written now, as the migration's verify
 		// needs them.
 		r.Post("/api/library/projections", h.refreshProjections)
+		// The re-encode queue: titles queued to be encoded again, and what
+		// it holds.
+		r.Post("/api/library/reencode", h.postReencode)
+		r.Get("/api/library/reencode", h.getReencode)
 	})
 
 	// An admin's packaging action, as chino-api's admin route forwards it with

@@ -264,11 +264,15 @@ func newInstanceWired(t *testing.T, w wiring) *instance {
 	if w.sources != nil {
 		sources = w.sources(st, cfg, pipe)
 	}
+	var reencode rest.Reencoder
+	if q, ok := pipe.(rest.Reencoder); ok {
+		reencode = q
+	}
 	schema := graph.MustSchema(graph.NewResolver(st, cfg, graph.Services{Scanner: f, Enricher: f, People: f,
 		Ratings: f, Packager: f, Validator: f, Remover: f, Pipeline: pipe, Secrets: f, Extras: x, Sources: sources}))
 	r := chi.NewRouter()
 	routes(r, auth.NewMiddleware(jwt, sv).Handler, cfg.Policy(), schema, stream.NewBroker().Handler,
-		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool()), Events: w.events, Extras: taker}))
+		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool()), Events: w.events, Extras: taker, Reencode: reencode}))
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 	in := &instance{url: srv.URL, iss: iss, st: st, cfg: cfg, f: f}
