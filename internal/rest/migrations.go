@@ -72,14 +72,16 @@ func (h *Handlers) migrate(w http.ResponseWriter, r *http.Request, adopt bool) {
 
 // refreshProjections serves POST /api/library/projections: the items' library
 // projections (metadata.json and its images) written now from the catalog,
-// in either layout, where they do not reflect it (library.Projector.Refresh)
-// — as the migration's verify needs them before the layout is v2, which the
+// in either layout, where they are not what the projector would write
+// (library.Projector.Refresh: rendered and compared byte for byte) — as the
+// migration's verify needs them before the layout is v2, which the
 // projector waits for. The body names the items, {"items": ["<itemId>", …]};
 // {} (or none) looks at every recorded item. It answers {"projected",
 // "unchanged", "failed", "items": [{"itemId", "state", "reason"}]}: each item
-// named, or, with none named, each projected or failed; 409 while another
-// projection holds the projector's lock. For the workers' service account
-// and admins.
+// named, or, with none named, each projected or failed; a projected one's
+// reason is "behind" (its time marks said so) or "shape" (they did not: a
+// projection of a shape from before). 409 while another projection holds
+// the projector's lock. For the workers' service account and admins.
 func (h *Handlers) refreshProjections(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Items []string `json:"items"`

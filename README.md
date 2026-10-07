@@ -831,12 +831,16 @@ within its unit; revert puts the staged projection back.
 
 `POST /api/library/projections` writes the items' projections now, in
 either layout (the migration's verify runs before the layout is v2, which
-the projector waits for): those named, `{"items": ["<itemId>", …]}`, or with
-`{}` every recorded item whose `metadata.json` does not reflect it (another
-`databaseUpdatedAt` than its `modifiedat`) or that the catalog marks behind.
-It answers `{"projected", "unchanged", "failed", "items": [{"itemId",
-"state", "reason"}]}`, each named item or, with none named, each projected
-or failed; an item not recorded fails. 409 while another projection runs.
+the projector waits for): of those named, `{"items": ["<itemId>", …]}`, or
+with `{}` of every recorded item, each whose `metadata.json` is not what the
+projector would write now (rendered and compared byte for byte, its `asOf`
+and `projectedBy` the file's own) or lacks an image it lists. It answers
+`{"projected", "unchanged", "failed", "items": [{"itemId", "state",
+"reason"}]}`, each named item or, with none named, each projected or failed;
+a projected item's reason is `behind` when its time marks said so too (its
+`databaseUpdatedAt`, its `libraryprojectedat`) and `shape` when they did not
+(a projection of a shape from before). An item not recorded fails. 409 while
+another projection runs.
 
 ## Configuration
 

@@ -1,6 +1,7 @@
 package library
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -194,6 +195,34 @@ type projected struct {
 // folder holds no record, said once. The caller notes the state it
 // reflects.
 func (p *Projector) projectItem(ctx context.Context, q Querier, id string) (*projected, error) {
+	r, err := p.render(ctx, q, id, Timestamp(p.now()), "katalog-manager")
+	if err != nil || r == nil {
+		return nil, err
+	}
+	images, err := writeImages(filepath.Join(r.dir, "metadata"), r.files)
+	if err != nil {
+		return nil, err
+	}
+	if err := WriteRecord(filepath.Join(r.dir, "metadata.json"), r.doc); err != nil {
+		return nil, err
+	}
+	return &projected{dir: r.dir, modified: r.modified, images: images}, nil
+}
+
+// rendered is an item's projection as the projector writes it, not
+// written: its folder, metadata.json's record, the images it lists, and
+// the modifiedat it reflects.
+type rendered struct {
+	dir      string
+	doc      Doc
+	files    []ImageFile
+	modified *time.Time
+}
+
+// render makes the item id's projection as q reads the catalog, its asOf
+// and projectedBy as given: nil for an item whose folder holds no record,
+// said once. It writes nothing.
+func (p *Projector) render(ctx context.Context, q Querier, id, asOf, by string) (*rendered, error) {
 	paths := PathsOf(p.cfg)
 	pl, err := PlaceOf(ctx, q, id)
 	var unplaced *Unplaced
@@ -220,7 +249,7 @@ func (p *Projector) projectItem(ctx context.Context, q Querier, id string) (*pro
 	if err != nil {
 		return nil, err
 	}
-	proj := ItemProjection{ProjectedBy: "katalog-manager", AsOf: Timestamp(p.now()), ExternalIDs: true}
+	proj := ItemProjection{ProjectedBy: by, AsOf: asOf, ExternalIDs: true}
 	if proj.Images, err = p.artwork(ctx, q, `SELECT id, kind, encode(sha256(bytes), 'hex'), length(bytes),
 			substring(bytes FROM 1 FOR $2), false, NULL::text, to_char(fetchedat, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
 		FROM com_nalet_katalog_itemartworkdata WHERE item_id = $1 AND bytes IS NOT NULL ORDER BY kind, id`,
@@ -246,14 +275,7 @@ func (p *Projector) projectItem(ctx context.Context, q Querier, id string) (*pro
 	if err != nil {
 		return nil, err
 	}
-	images, err := writeImages(filepath.Join(dir, "metadata"), files)
-	if err != nil {
-		return nil, err
-	}
-	if err := WriteRecord(filepath.Join(dir, "metadata.json"), doc); err != nil {
-		return nil, err
-	}
-	return &projected{dir: dir, modified: modified, images: images}, nil
+	return &rendered{dir: dir, doc: doc, files: files, modified: modified}, nil
 }
 
 // itemSnapshot reads an item as the catalog's export holds one
@@ -586,13 +608,18 @@ type RefreshReport struct {
 }
 
 // Refresh projects now, whatever the layout, the items ids, or with none
-// named every recorded item, whose projection on storage does not reflect
-// the catalog: its metadata.json is not there or says another
-// databaseUpdatedAt than the item's modifiedat, or the catalog marks it
-// behind (libraryprojectedat). One whose projection reflects it is left
-// unchanged, its mark set when it was behind; one not recorded fails. With
-// items named the report lists each of them, with none the ones projected
-// or failed. It waits for the projector's lock (ErrProjectorBusy).
+// named every recorded item, whose projection on storage is not what the
+// projector would write now: each is rendered and compared, byte for byte,
+// with its metadata.json (its asOf and projectedBy the file's own), and the
+// images it lists looked for. One that differs, or lacks an image, is
+// written: projected, its reason "behind" when the time marks say so too
+// (the file's databaseUpdatedAt is not the item's modifiedat, or the
+// catalog marks it behind), "shape" when they do not (a projection the
+// marks call current, written in a shape from before). One that is the
+// same is left unchanged, its mark set when it was behind; one not recorded
+// fails. With items named the report lists each of them, with none the ones
+// projected or failed. It waits for the projector's lock
+// (ErrProjectorBusy).
 func (p *Projector) Refresh(ctx context.Context, ids []string) (RefreshReport, error) {
 	rep := RefreshReport{Items: []RefreshResult{}}
 	conn, err := p.pool.Acquire(ctx)
@@ -691,16 +718,42 @@ func (p *Projector) refresh(ctx context.Context, id string) RefreshResult {
 	if !statOK(filepath.Join(dir, ItemFile)) {
 		return fail("not recorded: " + dir + " holds no item.json")
 	}
-	fresh := false
-	if b, err := os.ReadFile(filepath.Join(dir, "metadata.json")); err == nil {
-		if d, err := DecodeDoc(b); err == nil {
+	// The time marks: whether the file says the item's modifiedat, and the
+	// catalog marks it current.
+	fresh, asOf, by := false, "", ""
+	disk, err := os.ReadFile(filepath.Join(dir, "metadata.json"))
+	if err == nil {
+		if d, err := DecodeDoc(disk); err == nil {
 			v, has := d.Get("databaseUpdatedAt")
 			at, _ := v.(string)
 			fresh = (has && updated != nil && at == *updated) || (!has && updated == nil)
+			asOf, by = str(d, "asOf"), str(d, "projectedBy")
 		}
 	}
 	marked := projectedAt != nil && (modified == nil || !modified.After(*projectedAt))
-	if fresh {
+	// The content: the projection as the projector would write it now, but
+	// for its moment and its writer, which are the file's.
+	same := false
+	if disk != nil && asOf != "" && by != "" {
+		r, err := p.render(ctx, p.pool, id, asOf, by)
+		if err != nil {
+			return fail(err.Error())
+		}
+		if r == nil {
+			return fail("not recorded: " + dir + " holds no item.json")
+		}
+		b, err := Encode(r.doc)
+		if err != nil {
+			return fail(err.Error())
+		}
+		same = bytes.Equal(b, disk)
+		for _, f := range r.files {
+			if same && !statOK(filepath.Join(dir, "metadata", f.Name)) {
+				same = false
+			}
+		}
+	}
+	if same {
 		if !marked {
 			if _, err := p.pool.Exec(ctx, `UPDATE com_nalet_katalog_items SET libraryprojectedat = COALESCE($2::timestamp, '-infinity')
 				WHERE id = $1`, id, modified); err != nil {
@@ -716,6 +769,10 @@ func (p *Projector) refresh(ctx context.Context, id string) RefreshResult {
 		return fail(err.Error())
 	case !ok:
 		return fail("not recorded: " + dir + " holds no item.json")
+	}
+	res.Reason = "behind"
+	if fresh && marked {
+		res.Reason = "shape"
 	}
 	res.State = "projected"
 	return res

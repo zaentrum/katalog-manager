@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
 
@@ -287,28 +288,14 @@ func TestTheProjectorWritesTheToolsProjections(t *testing.T) {
 // A refresh projects now, with the legacy layout too, what does not reflect
 // the catalog: an item marked behind, and one whose metadata.json says
 // another moment than its modifiedat though the catalog marks it current
-// (the mark set after a change of the item, its projection not written); it
-// leaves one that reflects it, and an item not recorded fails. Named items
-// are each in the report; with none named, every recorded item is looked at,
-// and the report lists those it projected or failed.
+// (the mark set after a change of the item, its projection not written),
+// both "behind"; it leaves one that reflects it, and an item not recorded
+// fails. Named items are each in the report; with none named, every
+// recorded item is looked at, and the report lists those it projected or
+// failed.
 func TestARefreshProjectsWhatIsBehind(t *testing.T) {
-	st := storetest.Open(t)
-	fillProjection(t, st)
-	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('l', 'library.layout', 'v2')`)
-	root := t.TempDir()
-	cfg := config.Config{LibraryRoot: root, WorkRoot: root + "/.work"}
-	paths := PathsOf(cfg)
+	st, p, paths := refreshFixture(t)
 	ctx := context.Background()
-	for _, id := range []string{fxFilm, fxPlain} {
-		if _, err := paths.EnsureItemRecord(ctx, st.Pool(), id); err != nil {
-			t.Fatal(err)
-		}
-	}
-	p := NewProjector(st.Pool(), cfg)
-	if _, _, err := p.Pass(ctx); err != nil {
-		t.Fatal(err)
-	}
-	storetest.Exec(t, st, `UPDATE com_nalet_katalog_settings SET valuetext = 'legacy'`)
 	// The film changed, its mark set as if projected; the plain film marked
 	// behind.
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET modifiedat = modifiedat + interval '1 hour' WHERE id = $1`, fxFilm)
@@ -323,7 +310,7 @@ func TestARefreshProjectsWhatIsBehind(t *testing.T) {
 	for _, r := range rep.Items {
 		got[r.ItemID] = r.State + " " + r.Reason
 	}
-	want := map[string]string{fxFilm: "projected ", fxPlain: "unchanged ",
+	want := map[string]string{fxFilm: "projected behind", fxPlain: "unchanged ",
 		fxSeries: "failed not recorded: its item.json is not written", "nobody": "failed unknown item"}
 	for id, w := range want {
 		if got[id] != w {
@@ -356,7 +343,109 @@ func TestARefreshProjectsWhatIsBehind(t *testing.T) {
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET modifiedat = modifiedat + interval '1 hour', libraryprojectedat = NULL
 		WHERE id = $1`, fxPlain)
 	if all, err = p.Refresh(ctx, nil); err != nil || all.Projected != 1 || all.Unchanged != 1 || len(all.Items) != 1 ||
-		all.Items[0].ItemID != fxPlain {
+		all.Items[0].ItemID != fxPlain || all.Items[0].Reason != "behind" {
 		t.Errorf("a refresh of everything: %+v, %v", all, err)
+	}
+}
+
+// refreshFixture is the projection's fixture with its two films recorded and
+// projected, the layout legacy again: a refresh's catalog.
+func refreshFixture(t *testing.T) (*store.Store, *Projector, Paths) {
+	t.Helper()
+	st := storetest.Open(t)
+	fillProjection(t, st)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('l', 'library.layout', 'v2')`)
+	root := t.TempDir()
+	cfg := config.Config{LibraryRoot: root, WorkRoot: root + "/.work"}
+	paths := PathsOf(cfg)
+	ctx := context.Background()
+	for _, id := range []string{fxFilm, fxPlain} {
+		if _, err := paths.EnsureItemRecord(ctx, st.Pool(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := NewProjector(st.Pool(), cfg)
+	if _, _, err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_settings SET valuetext = 'legacy'`)
+	return st, p, paths
+}
+
+// A refresh decides what is current by content: a metadata.json in the shape
+// from before (the film's thumb, which is its poster's bytes, listed only as
+// the poster), its time marks current, is projected again ("shape"), named
+// or with every item; one the tool wrote, byte for byte what the projector
+// writes of the item but for its writer and its moment, is left unchanged,
+// and so is one whose image is there, but not one whose image is gone.
+func TestARefreshProjectsAProjectionOfAnotherShape(t *testing.T) {
+	_, p, paths := refreshFixture(t)
+	ctx := context.Background()
+	md := filepath.Join(paths.MovieDir(fxFilm), "metadata.json")
+	oldShape := func() {
+		t.Helper()
+		b, err := os.ReadFile(md)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, err := DecodeDoc(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var kept []any
+		for _, e := range asSlice(get(d, "images")) {
+			if str(e.(Doc), "kind") != "thumb" {
+				kept = append(kept, e)
+			}
+		}
+		b, err = Encode(d.With("images", kept))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteFile(md, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	thumbs := func() int {
+		t.Helper()
+		b, _ := os.ReadFile(md)
+		return strings.Count(string(b), `"kind": "thumb"`)
+	}
+	if thumbs() != 1 {
+		t.Fatal("the film's projection lists no thumb")
+	}
+	oldShape()
+	rep, err := p.Refresh(ctx, []string{fxFilm})
+	if err != nil || rep.Projected != 1 || rep.Items[0].Reason != "shape" || thumbs() != 1 {
+		t.Errorf("named, the shape from before: %+v, %v; %d thumbs", rep, err, thumbs())
+	}
+	oldShape()
+	rep, err = p.Refresh(ctx, nil)
+	if err != nil || rep.Projected != 1 || len(rep.Items) != 1 || rep.Items[0].ItemID != fxFilm || rep.Items[0].Reason != "shape" ||
+		thumbs() != 1 {
+		t.Errorf("every item, the shape from before: %+v, %v; %d thumbs", rep, err, thumbs())
+	}
+
+	// The tool's projection, its writer and moment its own: unchanged.
+	if err := WriteFile(md, golden(t, fxFilm+".metadata.json")); err != nil {
+		t.Fatal(err)
+	}
+	if rep, err := p.Refresh(ctx, []string{fxFilm}); err != nil || rep.Unchanged != 1 {
+		t.Errorf("the tool's projection: %+v, %v", rep, err)
+	}
+	if b, _ := os.ReadFile(md); !bytes.Equal(b, golden(t, fxFilm+".metadata.json")) {
+		t.Error("the tool's projection was written again")
+	}
+	// An image it lists gone: projected again, the image back.
+	entries, _ := os.ReadDir(filepath.Join(paths.MovieDir(fxFilm), "metadata"))
+	if len(entries) == 0 {
+		t.Fatal("no images")
+	}
+	gone := filepath.Join(paths.MovieDir(fxFilm), "metadata", entries[0].Name())
+	if err := os.Remove(gone); err != nil {
+		t.Fatal(err)
+	}
+	if rep, err := p.Refresh(ctx, []string{fxFilm}); err != nil || rep.Projected != 1 || rep.Items[0].Reason != "shape" || !statOK(gone) {
+		t.Errorf("an image gone: %+v, %v", rep, err)
 	}
 }
