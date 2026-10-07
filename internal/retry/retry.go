@@ -34,7 +34,8 @@
 // the library's jobs as well, once a minute: the retire job, which deletes a
 // title's original after packaging (library.originals) and is the step
 // retire of the title, which no event triggers. An admin's retry of retire
-// has it wait for the job's next pass.
+// has it wait for the job's next pass. And it sends the re-encode queue
+// (queue.go): the titles queued to be encoded again, a few a pass.
 //
 // The reaper takes a scan job silent for longer than the scan's timeout (the
 // scan step's) for lost too: its scanner, which gives it a word every so
@@ -88,12 +89,19 @@ type Service struct {
 	extras ExtraJobs
 	// library are the library's jobs (extras.go): the retire job.
 	library LibraryJobs
+	// queue is set once migration 043 is seen in place: the re-encode queue
+	// (queue.go).
+	queue atomic.Bool
+	// queueSaid is why the sweep last said the queue waits (Run's alone).
+	queueSaid string
+	// now is the clock the queue's window is read by.
+	now func() time.Time
 }
 
 // New is the retries of st's steps by pol, sending events through pub (nil:
 // no bus), the sweep every interval (0: no sweep).
 func New(st *store.Store, pol processing.Policy, pub Publisher, interval time.Duration) *Service {
-	return &Service{st: st, pol: pol, pub: pub, interval: interval}
+	return &Service{st: st, pol: pol, pub: pub, interval: interval, now: time.Now}
 }
 
 const tbl = "com_nalet_katalog_itemprocessingsteps"
@@ -183,7 +191,7 @@ func (s *Service) automatic() bool { return s.interval > 0 && s.pol.MaxAttempts 
 func (s *Service) Run(ctx context.Context) {
 	if s.interval <= 0 {
 		log.Printf("retry: no sweep (KATALOG_RETRY_INTERVAL off): failed steps are retried by an admin only, no silent step or scan is reaped, " +
-			"and an extra is sent only when it is taken in or packaged again")
+			"an extra is sent only when it is taken in or packaged again, and the re-encode queue is not sent")
 		if s.library != nil {
 			s.runLibrary(ctx)
 		}
@@ -215,6 +223,7 @@ func (s *Service) Run(ctx context.Context) {
 				log.Printf("retry: sweep: %d steps reaped, %d retries sent", reaped, sent)
 			}
 		}
+		s.sweepQueue(ctx)
 		select {
 		case <-ctx.Done():
 			return

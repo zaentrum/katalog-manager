@@ -2,6 +2,7 @@ package retry
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/graph"
@@ -13,11 +14,18 @@ import (
 // items are in each state of it, how many of the failed the service retries
 // by itself, and how many are silent past their timeout; the failed steps (of
 // step when given), the latest failure first, at most limit (default 50, max
-// 200) from offset, and how many failed in all; and how the service retries.
+// 200) from offset, and how many failed in all; how the service retries; and
+// the re-encode queue (none without migration 043).
 func (s *Service) Overview(ctx context.Context, step string, limit, offset int32) (graph.ProcessingOverview, error) {
 	var o graph.ProcessingOverview
 	if step != "" && !processing.ValidStep(step) {
 		return o, errUnknownStep(step)
+	}
+	switch q, err := s.ReencodeQueue(ctx); {
+	case err == nil:
+		o.Reencode = &q
+	case !errors.Is(err, ErrNoQueue):
+		return o, err
 	}
 	if limit <= 0 || limit > 200 {
 		limit = 50

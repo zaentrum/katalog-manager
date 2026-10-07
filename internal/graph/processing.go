@@ -17,6 +17,40 @@ type Pipeline interface {
 	Policy(ctx context.Context) (RetryPolicyInfo, error)
 }
 
+// ReencodeRequest is what a request to the re-encode queue names: titles (a
+// series its episodes), the titles whose retire is held for their surround,
+// every packaged movie and episode; together, each title once.
+type ReencodeRequest struct {
+	Items     []string
+	Held, All bool
+}
+
+// ReencodeSkipped is a title a request named that the queue does not take,
+// and why.
+type ReencodeSkipped struct{ ItemID, Reason string }
+
+// ReencodeEnqueued is what a request to the queue did: the titles queued,
+// those that were queued already (waiting or sent), and those skipped.
+type ReencodeEnqueued struct {
+	Queued, AlreadyQueued int32
+	Skipped               []ReencodeSkipped
+}
+
+// ReencodeQueue is the re-encode queue: its titles by state, of the live
+// ones (queued or sent) the one enqueued first and the one enqueued last, and
+// why the sweep sends none now (nil when it may).
+type ReencodeQueue struct {
+	Queued, Sent, Done, Failed int32
+	Oldest, Newest             *QueuedTitle
+	Idle                       *string
+}
+
+// QueuedTitle is a title in the queue.
+type QueuedTitle struct {
+	ItemID, State string
+	EnqueuedAt    time.Time
+}
+
 // ReencodeResult says what a reencodeItem call did.
 type ReencodeResult struct {
 	ItemID    string
@@ -51,6 +85,8 @@ type ProcessingOverview struct {
 	Failed      []FailedStep
 	FailedTotal int32
 	Retry       RetryPolicyInfo
+	// Reencode is the re-encode queue; nil without migration 043.
+	Reencode *ReencodeQueue
 }
 
 // StepCounts are the items in each state of a step.
