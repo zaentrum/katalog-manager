@@ -8,8 +8,8 @@
 // store.EnsureItemLockedFields, store.EnsureCreditDetails,
 // store.EnsureStepRetries, store.EnsureScanJobRunner, store.EnsureItemRatings,
 // store.EnsureTrackLanguages, store.EnsureSubtitleForced,
-// store.EnsureItemExtras and store.EnsureLibrary, which applies 040, 041 and
-// 042).
+// store.EnsureItemExtras, store.EnsureLibrary, which applies 040, 041 and
+// 042, and store.EnsureReencodeQueue).
 // It applies 035, which drops what is left of a retired integration, at every
 // start when any of that is there (store.DropRetiredJobTables).
 package migrations
@@ -98,3 +98,9 @@ var LibraryProjection string
 //
 //go:embed 042_playback_item_index.sql
 var PlaybackItemIndex string
+
+// ReencodeQueue is 043_reencode_queue.sql: the titles queued to be encoded
+// again, which the sweep sends at the pace the settings allow.
+//
+//go:embed 043_reencode_queue.sql
+var ReencodeQueue string

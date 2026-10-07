@@ -170,9 +170,10 @@ func (s *Store) LayoutWaits(ctx context.Context) (titles, extras int, err error)
 }
 
 // deleteLibraryOf removes, in tx, the originals and the versions the catalog
-// keeps of the items of ids, on a catalog that has their tables (040).
+// keeps of the items of ids, and their places in the re-encode queue, on a
+// catalog that has their tables (040, 043).
 func deleteLibraryOf(ctx context.Context, tx pgx.Tx, ids []string) error {
-	for _, t := range []string{SourcesTable, VersionsTable} {
+	for _, t := range []string{SourcesTable, VersionsTable, ReencodeQueueTable} {
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT to_regclass($1::text) IS NOT NULL`, t).Scan(&exists); err != nil {
 			return err
@@ -185,4 +186,28 @@ func deleteLibraryOf(ctx context.Context, tx pgx.Tx, ids []string) error {
 		}
 	}
 	return nil
+}
+
+// ReencodeQueueTable is the table db/migrations/043_reencode_queue.sql
+// creates: the titles queued to be encoded again.
+const ReencodeQueueTable = "com_nalet_katalog_reencodequeue"
+
+// ReencodeQueueReady reports whether migration 043 is in place: its table and
+// its indexes.
+func (s *Store) ReencodeQueueReady(ctx context.Context) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `SELECT to_regclass($1::text) IS NOT NULL AND to_regclass('idx_reencodequeue_live') IS NOT NULL
+		AND to_regclass('idx_reencodequeue_state') IS NOT NULL`, ReencodeQueueTable).Scan(&ok)
+	return ok, err
+}
+
+// EnsureReencodeQueue applies db/migrations/043_reencode_queue.sql when any of
+// its objects is missing. Without it no title is queued to be encoded again.
+func (s *Store) EnsureReencodeQueue(ctx context.Context) error {
+	ready, err := s.ReencodeQueueReady(ctx)
+	if err != nil || ready {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, migrations.ReencodeQueue)
+	return err
 }

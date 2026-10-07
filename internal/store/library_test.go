@@ -294,3 +294,59 @@ func TestDeleteTakesTheItemsOriginalsAndVersions(t *testing.T) {
 		}
 	}
 }
+
+// Migration 043 applies to a catalog without it, and again, unchanged:
+// EnsureReencodeQueue twice, and the file twice. A catalog with it is ready,
+// one without it or its index of the titles waiting or sent is not; a title
+// waits or is sent once, its titles done or failed aside.
+func TestTheReencodeQueueMigrationIsIdempotent(t *testing.T) {
+	st := storetest.OpenBase(t)
+	ctx := context.Background()
+	ready := func() bool {
+		t.Helper()
+		ok, err := st.ReencodeQueueReady(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if ready() {
+		t.Fatal("a catalog without 043 is ready")
+	}
+	for i := 0; i < 2; i++ {
+		if err := st.EnsureReencodeQueue(ctx); err != nil {
+			t.Fatalf("EnsureReencodeQueue, %d. time: %v", i+1, err)
+		}
+		storetest.Exec(t, st, migrations.ReencodeQueue)
+		if !ready() {
+			t.Fatalf("after EnsureReencodeQueue and the file %d times: not ready", i+1)
+		}
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_reencodequeue (id, item_id, state) VALUES
+		('q1', 'm1', 'done'), ('q2', 'm1', 'failed'), ('q3', 'm1', 'queued')`)
+	if _, err := st.Pool().Exec(ctx, `INSERT INTO com_nalet_katalog_reencodequeue (id, item_id, state) VALUES ('q4', 'm1', 'sent')`); err == nil {
+		t.Error("a title waiting is queued twice")
+	}
+	storetest.Exec(t, st, `DROP INDEX idx_reencodequeue_live`)
+	if ready() {
+		t.Error("043 without its index of the titles waiting or sent is ready")
+	}
+}
+
+// A deleted item leaves the re-encode queue.
+func TestADeletedItemLeavesTheReencodeQueue(t *testing.T) {
+	st := storetest.Open(t)
+	storetest.AddItem(t, st, movieA, "movie", "Movie A", "")
+	storetest.AddItem(t, st, movieB, "movie", "Movie B", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_reencodequeue (id, item_id, state) VALUES
+		('q1', $1, 'done'), ('q2', $1, 'queued'), ('q3', $2, 'queued')`, movieA, movieB)
+	if n, err := st.DeleteItems(context.Background(), []string{movieA}, store.Deletion{By: "subject-1", Reason: "a duplicate"}); err != nil || n != 1 {
+		t.Fatalf("DeleteItems: %d, %v", n, err)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue WHERE item_id = $1`, movieA); n != 0 {
+		t.Errorf("the deleted item's titles in the queue: %d, want none", n)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue`); n != 1 {
+		t.Errorf("the queue holds %d titles, want the other item's", n)
+	}
+}

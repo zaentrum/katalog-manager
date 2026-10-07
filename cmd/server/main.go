@@ -131,6 +131,10 @@ func run() error {
 	if err := st.EnsureLibrary(bgCtx); err != nil {
 		log.Printf("catalog: migrations db/migrations/040_library_v2.sql and 041_library_projection.sql are missing and could not be applied: %v; the library layout stays legacy until they are", err)
 	}
+	// The titles queued to be encoded again (migration 043).
+	if err := st.EnsureReencodeQueue(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/043_reencode_queue.sql is missing and could not be applied: %v; no title is queued to be encoded again until it is", err)
+	}
 	if set, err := library.ReadSettings(bgCtx, st.Pool()); err != nil {
 		log.Printf("catalog: the library's settings could not be read: %v", err)
 	} else {

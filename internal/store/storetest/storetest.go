@@ -77,6 +77,9 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	if err := st.EnsureLibrary(ctx); err != nil {
 		t.Fatalf("apply the library migrations: %v", err)
 	}
+	if err := st.EnsureReencodeQueue(ctx); err != nil {
+		t.Fatalf("apply the re-encode queue migration: %v", err)
+	}
 	return st
 }
 

@@ -237,6 +237,12 @@ the base schema in the order of their numbers, and each is idempotent:
   Applied at startup after 040.
 - `042_playback_item_index.sql` indexes a title's playback rows
   (`idx_playbackassets_item`), which katalog-api reads by title.
+- `043_reencode_queue.sql` adds the re-encode queue
+  (`com_nalet_katalog_reencodequeue`): a title a row, its state (`queued`,
+  `sent`, `done`, `failed`), what queued it (`items`, `held`, `all`), when
+  and by whom, when it was sent and ended, and why it waits or failed; one
+  row a title while it waits or is sent. A deleted item's rows go with it.
+  Applied at startup when missing; katalog-api's read-only role may read it.
 
 ## Track languages
 
