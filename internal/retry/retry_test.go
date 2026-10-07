@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/events"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
@@ -721,5 +722,32 @@ func TestNoRetrySendsTheRetireStep(t *testing.T) {
 	}
 	if got := b.take(); len(got) != 0 {
 		t.Errorf("sent for the retire step: %v", got)
+	}
+}
+
+// A retire step the retire job holds for a title's surround (its package
+// has no 5.1 of it) is among the overview's failed steps, saying why, with no
+// retry of its own; a retry of every failed retire step has it wait for the
+// job again.
+func TestARetireHeldForItsSurroundIsInTheOverview(t *testing.T) {
+	st := catalog(t)
+	s := New(st, testPolicy, nil, 30*time.Second)
+	reason := library.SurroundHeld
+	quoted := strings.ReplaceAll(reason, "'", "''")
+	put(t, st, "m1", "retire", "failed", `failures = 1, error = '`+quoted+`', lasterror = '`+quoted+`',
+		details = 'held for version v1', nextretryat = NULL`)
+	o, err := s.Overview(context.Background(), "retire", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.FailedTotal != 1 || len(o.Failed) != 1 || o.Failed[0].ItemID != "m1" || o.Failed[0].LastError == nil ||
+		*o.Failed[0].LastError != reason || o.Failed[0].NextRetryAt != nil {
+		t.Errorf("the overview's failed retire steps: %+v", o.Failed)
+	}
+	if res, err := s.RetryFailed(context.Background(), "retire"); err != nil || res.Retried != 1 {
+		t.Errorf("RetryFailed of retire: %+v, %v", res, err)
+	}
+	if got := state(t, st, "m1", "retire"); !strings.HasPrefix(got, "pending 0 ") {
+		t.Errorf("the held step after its retry: %s", got)
 	}
 }
