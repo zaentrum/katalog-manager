@@ -797,7 +797,15 @@ of it, the original and its sidecars moved to `.work/trash/<day>/`, then
 the catalog says so: the playback row is an original's, which points at its
 record, and the sidecars' subtitle rows point at the package's renditions
 or the copies in the record, their ids kept. A mismatch fails the step with
-the file's name and keeps the original. The same job deletes an extra's
+the file's name and keeps the original. No original is retired before its
+title's current package carries the surround it had: when the package's
+essence (which counts its 5.1 companions) lacks the `surround` of the
+original's, or holds fewer channels than a 5.1 of it would (a 7.1 original's
+5.1 is enough, a 5.1 original's stereo is not), the original is kept, its
+source saying why, and its retire step waits — failed, with no retry of its
+own, its error "its package has no 5.1 of the source's surround; re-encode it
+first", its details `held for version <versionId>` — until another version
+of the title is complete, or an admin retries the step. The same job deletes an extra's
 original once its folder is recorded and verifies, removes a superseded
 version after its grace (`version-removed`, its folder deleted), moves a
 package folder of the store before the library a version replaced to

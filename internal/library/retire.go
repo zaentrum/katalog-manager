@@ -68,6 +68,19 @@ const RetireReason = "originals are not kept: the package is the record"
 // retireLock is the advisory lock a pass holds.
 const retireLock = "library-retire"
 
+// SurroundHeld is why an original whose title's current package has no 5.1
+// of the surround it had is kept (owner decision 2026-10-07): the package
+// must carry it before the original goes.
+const SurroundHeld = "its package has no 5.1 of the source's surround; re-encode it first"
+
+// heldFor marks, in the details of a retire step held for its surround, the
+// version whose package lacked it: the job looks at the original again once
+// another version is complete.
+const heldFor = "held for version "
+
+// errHeld says an original is kept for its surround.
+var errHeld = errors.New(SurroundHeld)
+
 // Retirer runs the retire job.
 type Retirer struct {
 	pool  *pgxpool.Pool
@@ -96,6 +109,7 @@ type Report struct {
 	Versions  int // superseded versions removed
 	Legacy    int // legacy package folders moved aside
 	Purged    int // days of the trash and of the legacy folder deleted
+	Held      int // originals kept: their package has no 5.1 of their surround
 	Failed    int // originals, extras and versions that could not be
 }
 
@@ -107,7 +121,7 @@ func (r Report) String() string {
 		what string
 	}{{r.Originals, "originals deleted"}, {r.Extras, "extras' originals deleted"}, {r.Versions, "superseded versions removed"},
 		{r.Legacy, "legacy package folders moved aside"}, {r.Purged, "days of the trash and the legacy folder deleted"},
-		{r.Failed, "failed"}} {
+		{r.Held, "originals kept for their surround"}, {r.Failed, "failed"}} {
 		if c.n > 0 {
 			out = append(out, fmt.Sprintf("%d %s", c.n, c.what))
 		}
@@ -153,11 +167,11 @@ func (r *Retirer) Pass(ctx context.Context) (Report, error) {
 	p := PathsOf(r.cfg)
 	now := r.now().UTC()
 	var errs []error
-	n, failed, err := r.originals(ctx, p, set, now, set.RetireRate)
-	rep.Originals, rep.Failed = n, failed
+	n, held, failed, err := r.originals(ctx, p, set, now, set.RetireRate)
+	rep.Originals, rep.Held, rep.Failed = n, held, failed
 	errs = append(errs, err)
-	if set.DeleteOriginals() && n+failed < set.RetireRate {
-		n, failed, err = r.extras(ctx, p, set, now, set.RetireRate-n-failed)
+	if set.DeleteOriginals() && n+held+failed < set.RetireRate {
+		n, failed, err = r.extras(ctx, p, set, now, set.RetireRate-n-held-failed)
 		rep.Extras, rep.Failed = n, rep.Failed+failed
 		errs = append(errs, err)
 	}
@@ -186,22 +200,23 @@ func (r *Retirer) say(key, msg string) {
 
 // originals resumes the retirements left retiring, then, with the policy
 // on, retires the originals that are due, at most budget in all: it
-// answers how many were deleted and how many failed.
-func (r *Retirer) originals(ctx context.Context, p Paths, set Settings, now time.Time, budget int) (done, failed int, err error) {
+// answers how many were deleted, how many were kept for their surround and
+// how many failed.
+func (r *Retirer) originals(ctx context.Context, p Paths, set Settings, now time.Time, budget int) (done, held, failed int, err error) {
 	todo, err := querySources(ctx, r.pool, `SELECT `+sourceCols+` FROM com_nalet_katalog_itemsources
 		WHERE state = 'retiring' ORDER BY retireeventat, id LIMIT $1`, budget)
 	if err != nil {
-		return 0, 0, fmt.Errorf("the originals being retired: %w", err)
+		return 0, 0, 0, fmt.Errorf("the originals being retired: %w", err)
 	}
 	if set.DeleteOriginals() && len(todo) < budget {
 		ids, err := r.dueSources(ctx, set, now, budget-len(todo))
 		if err != nil {
-			return 0, 0, fmt.Errorf("the originals due: %w", err)
+			return 0, 0, 0, fmt.Errorf("the originals due: %w", err)
 		}
 		for _, id := range ids {
 			s, err := SourceByID(ctx, r.pool, id)
 			if err != nil {
-				return 0, 0, err
+				return 0, 0, 0, err
 			}
 			if s != nil {
 				todo = append(todo, s)
@@ -215,6 +230,8 @@ func (r *Retirer) originals(ctx context.Context, p Paths, set Settings, now time
 		}
 		deleted, err := r.retire(ctx, p, set, now, s)
 		switch {
+		case errors.Is(err, errHeld):
+			held++
 		case err != nil:
 			failed++
 			errs = append(errs, err)
@@ -222,7 +239,7 @@ func (r *Retirer) originals(ctx context.Context, p Paths, set Settings, now time
 			done++
 		}
 	}
-	return done, failed, errors.Join(errs...)
+	return done, held, failed, errors.Join(errs...)
 }
 
 // originalStepsOver holds when no step of the item $item that reads its
@@ -237,7 +254,8 @@ func originalStepsOver(item, steps string) string {
 // dueSources are the present originals whose retirement is due, the ones of
 // the versions completed first first: of a complete version for the delay,
 // the title not held, its steps that read the original over, and its retire
-// step not failed (unless its retry is due).
+// step not failed (unless its retry is due, or it was kept for its surround
+// in another version than the one complete now).
 func (r *Retirer) dueSources(ctx context.Context, set Settings, now time.Time, n int) ([]string, error) {
 	rows, err := r.pool.Query(ctx, `SELECT s.id FROM com_nalet_katalog_itemsources s
 		JOIN com_nalet_katalog_items i ON i.id = s.item_id
@@ -247,7 +265,8 @@ func (r *Retirer) dueSources(ctx context.Context, set Settings, now time.Time, n
 		  AND `+originalStepsOver("s.item_id", "$3")+`
 		  AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps r
 			WHERE r.item_id = s.item_id AND r.step = 'retire' AND r.status = 'failed'
-			  AND (r.nextretryat IS NULL OR r.nextretryat > $2::timestamptz))
+			  AND (r.nextretryat IS NULL OR r.nextretryat > $2::timestamptz)
+			  AND NOT (COALESCE(r.details, '') LIKE '`+heldFor+`%' AND r.details <> '`+heldFor+`' || v.id))
 		ORDER BY v.completedat, s.id
 		LIMIT $4`, set.RetireDelay.Seconds(), now, processing.OriginalSteps, n)
 	if err != nil {
@@ -316,7 +335,7 @@ func (r *Retirer) retire(ctx context.Context, p Paths, set Settings, now time.Ti
 			}
 		}
 		if err := r.prepare(ctx, p, set, now, rt); err != nil || rt.src == nil {
-			return false, err
+			return false, err // errHeld: kept for its surround
 		}
 	}
 	if err := r.deleteFiles(p, set, rt); err != nil {
@@ -442,6 +461,16 @@ func (r *Retirer) prepare(ctx context.Context, p Paths, set Settings, now time.T
 		return r.fail(ctx, rt, "no complete version holds the original any more; nothing is deleted")
 	}
 	rt.ver = ver
+	if lacks, err := surroundLost(rt.itemDir, ver.ID, rt.src.ID); err != nil {
+		return r.fail(ctx, rt, fmt.Sprintf("the essences of the source and of version %s cannot be read: %v; nothing is deleted",
+			ver.ID, err))
+	} else if lacks {
+		if err := r.hold(ctx, rt); err != nil {
+			return err
+		}
+		rt.src = nil
+		return errHeld
+	}
 	if rt.src.State == SourcePresent {
 		claimed, err := r.claim(ctx, p, now, rt)
 		if err != nil || !claimed {
@@ -486,6 +515,78 @@ func (r *Retirer) prepare(ctx context.Context, p Paths, set Settings, now time.T
 		Kind: EventOriginalDeleted, VersionID: rt.ver.ID, SourceID: s.ID, Reason: &reason, Accepted: rt.accepted}); err != nil {
 		return r.fail(ctx, rt, fmt.Sprintf("the event cannot be recorded: %v; the original is kept", err))
 	}
+	return nil
+}
+
+// surroundLost reports whether the package of the version vid lacks the
+// surround the source sid had (owner decision 2026-10-07), from the essences
+// of their records, as the deletion gate reads them (the package's counts
+// its 5.1 companions): the source had surround and the package has none, or
+// the package carries fewer channels than a 5.1 companion of the source's
+// would (a 7.1 source's 5.1 is enough, a 5.1 source's stereo is not).
+func surroundLost(itemDir, vid, sid string) (bool, error) {
+	src, err := Essence(filepath.Join(SourceDir(itemDir, sid), "source.json"))
+	if err != nil {
+		return false, err
+	}
+	pkg, err := Essence(filepath.Join(VersionDir(itemDir, vid), PackageFile))
+	if err != nil {
+		return false, err
+	}
+	srcSurround, _ := src.Get("surround")
+	pkgSurround, _ := pkg.Get("surround")
+	if truthy(srcSurround) && !truthy(pkgSurround) {
+		return true, nil
+	}
+	had, _ := src.Get("maxAudioChannels")
+	kept, _ := pkg.Get("maxAudioChannels")
+	n, ok := toFloat(had)
+	k, _ := toFloat(kept)
+	return ok && n > 2 && k < min(n, 6), nil
+}
+
+// hold keeps the original of rt, whose version's package has no 5.1 of its
+// surround: the source stays present (a claimed one is present again, an
+// event folder begun goes), saying why, and the retire step waits: failed,
+// with no retry of its own, held for the version (heldFor). The job looks at
+// the original again once another version of the title is complete, and an
+// admin's retry of the step has it look now.
+func (r *Retirer) hold(ctx context.Context, rt *retirement) error {
+	s := rt.src
+	_, begun, _ := r.eventOf(rt)
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if err := LockItem(ctx, tx, s.ItemID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET state = 'present', retireeventid = NULL,
+			retireeventat = NULL, trashpath = NULL, error = $2, modifiedat = now()
+		WHERE id = $1 AND state IN ('present', 'retiring')`, s.ID, SurroundHeld); err != nil {
+		return err
+	}
+	reason := processing.CleanError(SurroundHeld)
+	if _, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_itemprocessingsteps
+			(id, createdat, modifiedat, item_id, step, status, finishedat, attempts, error, details, failures, lasterror,
+			 nextretryat, dispatchedat)
+		VALUES (gen_random_uuid()::varchar, now(), now(), $1, 'retire', 'failed', now(), 0, $2::text, $3::text, 1, $2::text, NULL, NULL)
+		ON CONFLICT (item_id, step) DO UPDATE SET status = 'failed', finishedat = now(), modifiedat = now(),
+			error = $2::text, lasterror = $2::text, details = $3::text, nextretryat = NULL, dispatchedat = NULL,
+			failures = CASE WHEN com_nalet_katalog_itemprocessingsteps.status <> 'failed'
+				THEN com_nalet_katalog_itemprocessingsteps.failures + 1 ELSE com_nalet_katalog_itemprocessingsteps.failures END`,
+		s.ItemID, *reason, heldFor+rt.ver.ID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	if begun != "" {
+		_ = os.RemoveAll(begun)
+	}
+	r.say("source:"+s.ID, fmt.Sprintf("original %s of item %s is kept: %s (version %s); it is retired once a version "+
+		"whose package carries it is complete", s.ID, s.ItemID, SurroundHeld, rt.ver.ID))
 	return nil
 }
 

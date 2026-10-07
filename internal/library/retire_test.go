@@ -37,9 +37,29 @@ type retireFixture struct {
 	itemDir, versionDir, sourceDir string
 	folder, original               string
 	en, de, nfo                    string
+	src, pkg                       map[string]any // the essences of the records addMovie writes
 }
 
+// The essences of the fixture's records, as the deletion gate reads them:
+// a 7.1 original, and a package with its 5.1 companion (stereo and the 5.1).
+var (
+	sevenOne = map[string]any{"surround": true, "maxAudioChannels": 8, "audioLanguages": []string{"en"},
+		"subtitleLanguages": []string{"en", "de"}}
+	withFiveOne = map[string]any{"surround": true, "maxAudioChannels": 6, "audioLanguages": []string{"en"},
+		"subtitleLanguages": []string{"en", "de"}}
+	fiveOne = withFiveOne
+	stereo  = map[string]any{"surround": false, "maxAudioChannels": 2, "audioLanguages": []string{"en"},
+		"subtitleLanguages": []string{"en", "de"}}
+)
+
 func newRetireFixture(t *testing.T) *retireFixture {
+	t.Helper()
+	return newRetireFixtureOf(t, sevenOne, withFiveOne)
+}
+
+// newRetireFixtureOf is the fixture with its original's essence src and its
+// package's pkg.
+func newRetireFixtureOf(t *testing.T, src, pkg map[string]any) *retireFixture {
 	t.Helper()
 	st := storetest.Open(t)
 	root := t.TempDir()
@@ -48,6 +68,7 @@ func newRetireFixture(t *testing.T) *retireFixture {
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES
 		('s1', 'library.layout', 'v2'), ('s2', 'library.originals', 'delete-after-package')`)
 	f.r = NewRetirer(st.Pool(), cfg, processing.New(st.Pool()))
+	f.src, f.pkg = src, pkg
 	f.addMovie(t, rtFilm, rtSource, rtVersion, rtPackage, "Example Film")
 	f.itemDir = f.p.MovieDir(rtFilm)
 	f.versionDir = VersionDir(f.itemDir, rtVersion)
@@ -103,8 +124,7 @@ func (f *retireFixture) addMovie(t *testing.T, item, source, version, pkg, title
 		}
 	}
 	librarytest.WriteVersion(t, versionDir, librarytest.Version{VersionID: version, PackageID: pkg, SourceIDs: []string{source},
-		CreatedAt: "2026-10-06T10:00:00Z", Package: map[string]any{"essence": map[string]any{"surround": false,
-			"maxAudioChannels": 2, "audioLanguages": []string{"en"}, "subtitleLanguages": []string{"en", "de"}}}})
+		CreatedAt: "2026-10-06T10:00:00Z", Package: map[string]any{"essence": f.pkg}})
 	copies := map[string]string{}
 	var listed []any
 	for _, name := range []string{title + ".de.srt", title + ".en.srt", title + ".nfo"} {
@@ -116,9 +136,7 @@ func (f *retireFixture) addMovie(t *testing.T, item, source, version, pkg, title
 		listed = append(listed, map[string]any{"file": "sources/" + source + "/" + name, "originalName": name, "kind": kind})
 	}
 	librarytest.WriteSource(t, sourceDir, map[string]any{"sourceId": source, "file": map[string]any{"name": title + ".mkv",
-		"sizeBytes": size, "fixity": map[string]any{"qh1": qh1}}, "sidecars": listed,
-		"essence": map[string]any{"surround": true, "maxAudioChannels": 6, "audioLanguages": []string{"en"},
-			"subtitleLanguages": []string{"en", "de"}}}, copies)
+		"sizeBytes": size, "fixity": map[string]any{"qh1": qh1}}, "sidecars": listed, "essence": f.src}, copies)
 }
 
 // set sets a library setting.
@@ -205,7 +223,8 @@ func (f *retireFixture) kept(t *testing.T) {
 
 // With the v2 layout and library.originals=delete-after-package, the retire
 // job deletes the original of a version complete for the delay: verified in
-// full, its event recorded with what the package does not carry of it, the
+// full, its event recorded with what the package does not carry of it (a
+// 7.1 original's two channels its 5.1 companion has not), the
 // original and every sidecar the scanner paired or the source's record lists
 // moved to the trash, and the arrival folder pruned. The catalog says it is
 // deleted: the playback row is an original's in its record, the subtitle row
@@ -224,7 +243,7 @@ func TestTheRetireJobDeletesAnOriginalAfterPackaging(t *testing.T) {
 		s.DeletedAt == nil || s.RetireEventID == nil || s.RetireEventAt == nil {
 		t.Fatalf("the source: %+v", s)
 	}
-	if string(s.Lost) != `["maxAudioChannels", "surround"]` {
+	if string(s.Lost) != `["maxAudioChannels"]` {
 		t.Errorf("lost: %s", s.Lost)
 	}
 	trash := f.p.TrashDir(*s.RetireEventAt, rtSource)
@@ -253,8 +272,7 @@ func TestTheRetireJobDeletesAnOriginalAfterPackaging(t *testing.T) {
   "sourceId": "` + rtSource + `",
   "reason": "originals are not kept: the package is the record",
   "accepted": [
-    "maxAudioChannels",
-    "surround"
+    "maxAudioChannels"
   ]
 }
 `
@@ -278,7 +296,7 @@ func TestTheRetireJobDeletesAnOriginalAfterPackaging(t *testing.T) {
 			t.Errorf("subtitle row %s: %q, %v; want %q", id, got, err, want)
 		}
 	}
-	if got := f.step(t, rtFilm); got != "done 0 error=- details=lost: maxAudioChannels, surround" {
+	if got := f.step(t, rtFilm); got != "done 0 error=- details=lost: maxAudioChannels" {
 		t.Errorf("the retire step: %s", got)
 	}
 	v, _ := VersionByID(ctx, f.st.Pool(), rtVersion)
@@ -524,7 +542,7 @@ func TestARetirementResumesWhereACrashStoppedIt(t *testing.T) {
 			if got := files(t, deref(s.TrashPath)); len(got) != 4 {
 				t.Errorf("the trash: %v", got)
 			}
-			if got := f.step(t, rtFilm); got != "done 0 error=- details=lost: maxAudioChannels, surround" {
+			if got := f.step(t, rtFilm); got != "done 0 error=- details=lost: maxAudioChannels" {
 				t.Errorf("the retire step: %s", got)
 			}
 		})
@@ -767,5 +785,87 @@ func TestOnePassAtATimeAndItsRate(t *testing.T) {
 	f.r.last = time.Now().Add(-time.Minute)
 	if did, err := f.r.Sweep(ctx); err != nil || did != "1 originals deleted" {
 		t.Errorf("a sweep a minute later: %q, %v", did, err)
+	}
+}
+
+// No original is retired before its title's current package carries the
+// surround it had (owner decision 2026-10-07): a 5.1 original whose package
+// is stereo is kept, the source saying why and its retire step waiting —
+// failed, with no retry of its own, held for the version — and is not looked
+// at again until another version is complete; once one with its 5.1
+// companion is, it is retired. A 5.1 original whose package has the
+// companion is retired with nothing lost; a stereo original with a stereo
+// package too.
+func TestAnOriginalIsKeptUntilItsPackageCarriesItsSurround(t *testing.T) {
+	ctx := context.Background()
+	f := newRetireFixtureOf(t, fiveOne, stereo)
+	rep := f.pass(t)
+	if rep.Held != 1 || rep.Originals != 0 || rep.Failed != 0 {
+		t.Fatalf("a 5.1 original with a stereo package: %+v", rep)
+	}
+	f.kept(t)
+	if s := f.source(t, rtSource); deref(s.Error) != SurroundHeld {
+		t.Errorf("the source's error: %q", deref(s.Error))
+	}
+	want := "failed 1 error=" + SurroundHeld + " details=held for version " + rtVersion
+	if got := f.step(t, rtFilm); got != want {
+		t.Errorf("the retire step: %s\nwant: %s", got, want)
+	}
+	var retry *time.Time
+	var last string
+	if err := f.st.Pool().QueryRow(ctx, `SELECT nextretryat, lasterror FROM com_nalet_katalog_itemprocessingsteps
+		WHERE item_id = $1 AND step = 'retire'`, rtFilm).Scan(&retry, &last); err != nil || retry != nil || last != SurroundHeld {
+		t.Errorf("the held step's retry %v and last error %q, %v; want none and the reason", retry, last, err)
+	}
+	if rep := f.pass(t); rep != (Report{}) {
+		t.Errorf("a pass again, the same version: %+v", rep)
+	}
+	if got := f.step(t, rtFilm); got != want {
+		t.Errorf("the retire step after a pass again: %s", got)
+	}
+
+	// Encoded again: a version with the 5.1 companion takes over.
+	const again, againPkg = "9b2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5b", "4e1d2e3f-4a5b-4c6d-8e7f-8a9b0c1d2e3e"
+	dir := VersionDir(f.itemDir, again)
+	librarytest.WriteVersion(t, dir, librarytest.Version{VersionID: again, PackageID: againPkg, SourceIDs: []string{rtSource},
+		CreatedAt: "2026-10-07T10:00:00Z", Package: map[string]any{"essence": withFiveOne}})
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2, supersededat = now()
+		WHERE id = $1`, rtVersion, again)
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
+		VALUES ($1, $2, ARRAY[$3::varchar], 'complete', $4, $5, now() - interval '1 hour')`, again, rtFilm, rtSource, againPkg, dir)
+	rep = f.pass(t)
+	if rep.Originals != 1 || rep.Held != 0 {
+		t.Fatalf("once a version with its 5.1 is complete: %+v", rep)
+	}
+	if s := f.source(t, rtSource); s.State != SourceDeleted || string(s.Lost) != "[]" || s.Error != nil {
+		t.Errorf("the retired source: %s, lost %s, error %v", s.State, s.Lost, deref(s.Error))
+	}
+	if got := f.step(t, rtFilm); got != "done 0 error=- details=lost: nothing" {
+		t.Errorf("the retire step: %s", got)
+	}
+
+	for name, c := range map[string]struct {
+		src, pkg map[string]any
+		lost     string
+	}{
+		"a 5.1 original whose package has its companion": {fiveOne, withFiveOne, "[]"},
+		"a stereo original":                      {stereo, stereo, "[]"},
+		"a 7.1 original whose package has a 5.1": {sevenOne, withFiveOne, `["maxAudioChannels"]`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newRetireFixtureOf(t, c.src, c.pkg)
+			if rep := f.pass(t); rep.Originals != 1 || rep.Held != 0 {
+				t.Fatalf("the pass: %+v", rep)
+			}
+			if s := f.source(t, rtSource); s.State != SourceDeleted || string(s.Lost) != c.lost {
+				t.Errorf("the source: %s, lost %s; want deleted, %s", s.State, s.Lost, c.lost)
+			}
+		})
+	}
+	// 6 to 4 channels is not a 5.1 of it either.
+	g := newRetireFixtureOf(t, fiveOne, map[string]any{"surround": true, "maxAudioChannels": 4,
+		"audioLanguages": []string{"en"}, "subtitleLanguages": []string{"en", "de"}})
+	if rep := g.pass(t); rep.Held != 1 {
+		t.Errorf("a 5.1 original whose package has four channels: %+v", rep)
 	}
 }
