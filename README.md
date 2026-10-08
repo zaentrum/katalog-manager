@@ -883,7 +883,8 @@ package failed with no attempt left. The service sends the packager its step
 `takein` (`transcoded`, step `takein`) at once when the worker reports the
 failure, and the sweep sends what that missed; the step is counted in the
 processing overview, retried and reaped as any other, and holds the layout
-(`LAYOUT_BUSY`). `POST /api/items/{id}/takein` takes a title in by hand. A
+(`LAYOUT_BUSY`). A take-in reported failed whose version was taken all the
+same (the answer to its handover lost) is done, not sent again. `POST /api/items/{id}/takein` takes a title in by hand. A
 package is added to the version later by `reencodeItem` or `packageItem`.
 
 The retire job runs once a minute in the sweep, in one instance at a time.
