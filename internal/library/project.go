@@ -261,7 +261,20 @@ func (p *Projector) render(ctx context.Context, q Querier, id, asOf, by string) 
 			return nil, err
 		}
 	}
-	if v, err := Current(ctx, q, id); err != nil {
+	// An episode another's file covers plays its holder's version, and names
+	// it; a holder numbers itself up to the last episode its file covers.
+	plays := id
+	if pl.Type == "episode" {
+		if proj.CoveredBy, err = HolderOf(ctx, q, id); err != nil {
+			return nil, err
+		}
+		if proj.CoveredBy != "" {
+			plays = proj.CoveredBy
+		} else if proj.EpisodeEnd, err = episodeEndOf(ctx, q, id); err != nil {
+			return nil, err
+		}
+	}
+	if v, err := Current(ctx, q, plays); err != nil {
 		return nil, err
 	} else if v != nil {
 		proj.PrimaryVersionID = v.ID
@@ -358,6 +371,29 @@ func (p *Projector) seasons(ctx context.Context, q Querier, seriesID string) ([]
 		out = append(out, n)
 	}
 	return out, rows.Err()
+}
+
+// episodeEndOf is the number of the last episode the file of the episode
+// holder covers, of its own season; nil when it covers no other.
+func episodeEndOf(ctx context.Context, q Querier, holder string) (*int64, error) {
+	covered, err := CoveredOf(ctx, q, holder)
+	if err != nil || len(covered) == 0 {
+		return nil, err
+	}
+	var season *int32
+	if err := q.QueryRow(ctx, `SELECT seasonnumber FROM com_nalet_katalog_items WHERE id = $1`, holder).Scan(&season); err != nil {
+		return nil, err
+	}
+	var end *int64
+	for _, c := range covered {
+		if c.Episode != nil && season != nil && c.Season != nil && *c.Season == *season {
+			n := int64(*c.Episode)
+			if end == nil || n > *end {
+				end = &n
+			}
+		}
+	}
+	return end, nil
 }
 
 // extras are the decisions a person made about how the item's recorded

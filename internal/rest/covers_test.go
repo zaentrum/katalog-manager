@@ -76,3 +76,24 @@ func TestTheRoutesOfACoveredEpisodeAndADiscImage(t *testing.T) {
 		t.Errorf("the reset touched the covered episode: %d of its analyzer's steps still do not apply", n)
 	}
 }
+
+// A version taken marks the episodes its title's file covers changed with the
+// title: their projections play it.
+func TestPackagingCompleteMarksTheEpisodesItsFileCovers(t *testing.T) {
+	f := newV2Film(t)
+	complete := f.version(t, filmVersion, filmPackage)
+	storetest.AddItem(t, f.st, "covered", "episode", "Part Two", "")
+	storetest.AddItem(t, f.st, "other", "episode", "Another", "")
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_items SET coveredby = $1 WHERE id = 'covered'`, filmItem)
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_items SET modifiedat = '2001-01-01'`)
+	if code, answer := f.complete(t, f.payload(filmVersion, filmPackage, complete)); code != http.StatusOK {
+		t.Fatalf("packaging-complete: %d %v", code, answer)
+	}
+	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_items WHERE modifiedat > '2001-01-01'
+		AND id IN ($1, 'covered')`, filmItem); n != 2 {
+		t.Errorf("%d of the title and the episode its file covers are marked changed, want both", n)
+	}
+	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_items WHERE id = 'other' AND modifiedat > '2001-01-01'`); n != 0 {
+		t.Error("an episode the file does not cover is marked changed")
+	}
+}

@@ -184,7 +184,8 @@ func supersedeEventID(old, next string) string {
 // superseded), its source recorded (where its original lies now, when the
 // run renamed it into the folder, and the asset of the title's file with
 // it), the packaged asset of package.json, the package's subtitles, the
-// source's tracks and probe, and the item modified.
+// source's tracks and probe, and the item modified, with the episodes its
+// file covers besides it, whose projections play its version.
 func (h *Handlers) packagingCompleteV2(w http.ResponseWriter, r *http.Request, itemID string, raw map[string]any) {
 	ctx := reqCtx(r)
 	var in v2Payload
@@ -371,6 +372,10 @@ func (h *Handlers) takeVersion(ctx context.Context, itemID string, in v2Payload)
 		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_items SET modifiedat = now() WHERE id = $1`, itemID); err != nil {
+		return nil, err
+	}
+	// The episodes its file covers play this version now.
+	if err := library.MarkCoveredChanged(ctx, tx, itemID); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {

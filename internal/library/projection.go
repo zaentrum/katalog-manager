@@ -17,8 +17,9 @@ import (
 // (ImageIn), so that the projector reads their bytes only for an image it
 // writes. Where the catalog projects, it differs from the tool as the
 // contract says: projectedBy katalog-manager, asOf the moment it writes, the
-// version that plays, the extras' decisions, the current reference ids
-// (externalIds), and a series' seasons from its episodes under a season too.
+// version that plays (a covered episode's its holder's), the extras'
+// decisions, the current reference ids (externalIds), and a series' seasons
+// from its episodes under a season too.
 
 // TextLanguage is the language the catalog's texts are projected under: it
 // keeps no word of theirs (the tool's --text-language by default).
@@ -553,13 +554,18 @@ func videos(row Doc) []any {
 // ItemProjection is what an item's metadata.json says beside its row: when
 // it is written, its images, a series' season numbers, the version that
 // plays, the extras' decisions; what the tool fills in itself
-// (ProjectedBy, AsOf) is the projector's.
+// (ProjectedBy, AsOf) is the projector's. Of one file of several episodes,
+// the holder's numbering ends at the last episode its file covers
+// (EpisodeEnd), and every other one it covers names it (CoveredBy) and plays
+// its version (PrimaryVersionID, the holder's).
 type ItemProjection struct {
 	ProjectedBy      string
 	AsOf             string
 	Images           []ImageIn
 	Seasons          []int64 // a series' episodes' seasons, each once
 	PrimaryVersionID string
+	CoveredBy        string
+	EpisodeEnd       *int64
 	Extras           Doc // extraId: {order, hidden, label}, as a person decided
 	ExternalIDs      bool
 }
@@ -629,6 +635,9 @@ func MetadataDoc(row Doc, p ItemProjection) (Doc, []ImageFile, error) {
 	if p.PrimaryVersionID != "" {
 		lib = append(lib, Field{"primaryVersionId", p.PrimaryVersionID})
 	}
+	if p.CoveredBy != "" {
+		lib = append(lib, Field{"coveredBy", p.CoveredBy})
+	}
 	if d, ok := pyInt(get(row, "durationMs")); ok && d != 0 {
 		lib = append(lib, Field{"reference", Doc{{"runtimeMs", d}, {"runtimeSource", "legacy-catalog"}}})
 	}
@@ -639,7 +648,7 @@ func MetadataDoc(row Doc, p ItemProjection) (Doc, []ImageFile, error) {
 		s, okS := pyInt(get(row, "seasonNumber"))
 		e, okE := pyInt(get(row, "episodeNumber"))
 		if okS && okE {
-			lib = append(lib, Field{"numbering", Doc{{"aired", Doc{{"season", s}, {"episode", e}, {"episodeEnd", nil}}}}})
+			lib = append(lib, Field{"numbering", Doc{{"aired", Doc{{"season", s}, {"episode", e}, {"episodeEnd", ptrInt(p.EpisodeEnd)}}}}})
 		}
 	}
 	if len(p.Extras) > 0 {

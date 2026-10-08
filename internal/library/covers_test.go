@@ -2,9 +2,14 @@ package library
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
@@ -153,5 +158,85 @@ func TestCoversWithoutTheMigration(t *testing.T) {
 	}
 	if err := MarkCoveredChanged(ctx, pool, cvE15); err != nil {
 		t.Error(err)
+	}
+}
+
+// The projection of one file of several episodes: the holder plays its
+// version and its numbering ends at the last episode its file covers; the
+// episode it covers plays the holder's version and names it, its own
+// numbering left as it is. The holder's next version, marked on the covered
+// one, is projected on it at the projector's next pass; an episode that no
+// file covers plays none and names none, as before.
+func TestTheProjectionOfOneFileOfSeveralEpisodes(t *testing.T) {
+	st := storetest.Open(t)
+	fillProjection(t, st)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('l', 'library.layout', 'v2')`)
+	root := t.TempDir()
+	cfg := config.Config{LibraryRoot: root, WorkRoot: root + "/.work"}
+	paths := PathsOf(cfg)
+	ctx := context.Background()
+	pool := st.Pool()
+	for _, id := range []string{fxSeries, fxEp1, fxEp2, fxEp3} {
+		if _, err := paths.EnsureItemRecord(ctx, pool, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const v1, v2 = "a0a0a0a0-0000-4000-8000-0000000000a1", "a0a0a0a0-0000-4000-8000-0000000000a2"
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, state) VALUES ($1, $2, 'complete')`, v1, fxEp1)
+	if _, err := Link(ctx, pool, fxEp1, fxEp2); err != nil {
+		t.Fatal(err)
+	}
+	at, _ := time.Parse(time.RFC3339, fxAsOf)
+	p := NewProjector(pool, cfg)
+	p.now = func() time.Time { return at }
+	if _, _, err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	libraryOf := func(id string) string {
+		t.Helper()
+		pl, err := PlaceOf(ctx, pool, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(filepath.Join(paths.ItemDir(pl), "metadata.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, err := DecodeDoc(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lib, _ := d.Get("library")
+		out, err := Encode(lib)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(strings.Fields(string(out)), " ")
+	}
+	match := `"match": { "status": "unmatched", "decidedBy": "legacy-catalog", "decidedAt": "2026-10-06T12:00:00Z" }`
+	if got, want := libraryOf(fxEp1), `{ "match": { "status": "matched", "decidedBy": "legacy-catalog", "decidedAt": "2026-10-06T12:00:00Z" }, `+
+		`"primaryVersionId": "`+v1+`", "reference": { "runtimeMs": 2100000, "runtimeSource": "legacy-catalog" }, `+
+		`"numbering": { "aired": { "season": 1, "episode": 1, "episodeEnd": 2 } } }`; got != want {
+		t.Errorf("the holder's library:\n%s\nwant:\n%s", got, want)
+	}
+	if got, want := libraryOf(fxEp2), `{ `+match+`, "primaryVersionId": "`+v1+`", "coveredBy": "`+fxEp1+`", `+
+		`"numbering": { "aired": { "season": 1, "episode": 2, "episodeEnd": null } } }`; got != want {
+		t.Errorf("the covered episode's library:\n%s\nwant:\n%s", got, want)
+	}
+	if got, want := libraryOf(fxEp3), `{ `+match+`, "numbering": { "aired": { "season": 2, "episode": 1, "episodeEnd": null } } }`; got != want {
+		t.Errorf("an episode no file covers:\n%s\nwant:\n%s", got, want)
+	}
+
+	// The holder's next version.
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded' WHERE id = $1`, v1)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, state) VALUES ($1, $2, 'complete')`, v2, fxEp1)
+	if err := MarkCoveredChanged(ctx, pool, fxEp1); err != nil {
+		t.Fatal(err)
+	}
+	if items, _, err := p.Pass(ctx); err != nil || items != 1 {
+		t.Fatalf("the pass after the holder's next version: %d items, %v; want the covered one", items, err)
+	}
+	if got := libraryOf(fxEp2); !strings.Contains(got, `"primaryVersionId": "`+v2+`"`) {
+		t.Errorf("the covered episode plays %s, want the holder's next version", got)
 	}
 }
