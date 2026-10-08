@@ -85,7 +85,10 @@ type UnitDB struct {
 
 // UnitSource is a source of the item: its original in its version's folder
 // (a plan of before: at the arrivals), or, gone before the library was
-// recorded, at none.
+// recorded, at none. Covers are the episodes its one file holds when it
+// holds several, as its source record lists them: the item first, then the
+// others in episode order, whose items the adopt links to it; none for a
+// file of one.
 type UnitSource struct {
 	SourceID    string          `json:"sourceId"`
 	Filename    string          `json:"filename"`
@@ -95,6 +98,7 @@ type UnitSource struct {
 	QH1         *string         `json:"qh1"`
 	RecordDir   *string         `json:"recordDir"`
 	Sidecars    []mappedSidecar `json:"sidecars"`
+	Covers      []string        `json:"covers,omitempty"`
 }
 
 // UnitVersion is the item's version its old package becomes, or, for an

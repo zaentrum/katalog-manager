@@ -29,7 +29,10 @@ import (
 // version's folder (versions/<versionId>/original.<ext>), the title's first
 // version; a title nothing packaged gets one too, taken in (its original and
 // no package), which the catalog records taken (migration 044). A plan of
-// before moves originals to the arrivals.
+// before moves originals to the arrivals. The episodes a source's one file
+// covers besides the item (db.sources[].covers, the item first) are linked
+// to it in the same transaction (migration 045), and a revert puts their
+// links back as they were.
 //
 // The revert replays an adoption backwards, the last adopted first: the
 // originals the retire job deleted since come back from the trash, every
@@ -248,6 +251,9 @@ func (m *Migration) adoptUnit(ctx context.Context, j *Journal, ij *itemJournal, 
 		return res
 	}
 	if err := m.checkPlan(ctx, u); err != nil {
+		return end(StateRefused, err.Error())
+	}
+	if err := m.checkCovers(ctx, u); err != nil {
 		return end(StateRefused, err.Error())
 	}
 	tx, err := m.pool.Begin(ctx)
@@ -490,6 +496,83 @@ func (m *Migration) checkPlan(ctx context.Context, u *Unit) error {
 	return nil
 }
 
+// coveredOf are the episodes the sources of the plan of u cover besides the
+// item, each once, in the order the plan lists them.
+func coveredOf(u *Unit) []string {
+	var out []string
+	for _, s := range u.DB.Sources {
+		for i, id := range s.Covers {
+			if i > 0 && id != u.ItemID && !slices.Contains(out, id) {
+				out = append(out, id)
+			}
+		}
+	}
+	return out
+}
+
+// checkCovers refuses a plan whose sources cover episodes besides the item
+// (db.sources[].covers) that the catalog cannot link to it: it lacks
+// migration 045; a source's covers do not begin with the item; the item is
+// no episode; an episode it names twice; one that is no episode of the item's
+// series, in the catalog; one with a file of its own, which wins; one another
+// episode's file covers already.
+func (m *Migration) checkCovers(ctx context.Context, u *Unit) error {
+	for _, s := range u.DB.Sources {
+		if len(s.Covers) > 0 && s.Covers[0] != u.ItemID {
+			return fmt.Errorf("source %s covers %v, which do not begin with the item", s.SourceID, s.Covers)
+		}
+		seen := map[string]bool{}
+		for _, id := range s.Covers {
+			if seen[id] {
+				return fmt.Errorf("source %s covers episode %s twice", s.SourceID, id)
+			}
+			seen[id] = true
+		}
+	}
+	covered := coveredOf(u)
+	if len(covered) == 0 {
+		return nil
+	}
+	if ok, err := CoversReady(ctx, m.pool); err != nil {
+		return err
+	} else if !ok {
+		return errors.New("its file covers other episodes, and migration 045 (db/migrations/045_multi_episode_files.sql) " +
+			"is not applied: adopt it once it is")
+	}
+	holder, err := PlaceOf(ctx, m.pool, u.ItemID)
+	if err != nil {
+		return err
+	}
+	if holder.Type != "episode" {
+		return fmt.Errorf("a %s covers no episodes", holder.Type)
+	}
+	for _, id := range covered {
+		pl, err := PlaceOf(ctx, m.pool, id)
+		switch {
+		case errors.Is(err, ErrNoItem):
+			return fmt.Errorf("its file covers episode %s, which the catalog does not hold", id)
+		case err != nil:
+			return fmt.Errorf("its file covers episode %s: %w", id, err)
+		case pl.Type != "episode" || pl.SeriesID != holder.SeriesID:
+			return fmt.Errorf("its file covers %s, which is no episode of its series", id)
+		}
+		var file bool
+		if err := m.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets WHERE item_id = $1)`,
+			id).Scan(&file); err != nil {
+			return err
+		}
+		if file {
+			return fmt.Errorf("its file covers episode %s, which has a file of its own, which wins: stage it again", id)
+		}
+		if by, err := HolderOf(ctx, m.pool, id); err != nil {
+			return err
+		} else if by != "" && by != u.ItemID {
+			return fmt.Errorf("its file covers episode %s, which the file of episode %s covers already", id, by)
+		}
+	}
+	return nil
+}
+
 // intoVersion reports whether a plan of u may move an original to to: into
 // the folder of one of its versions, the staged one (under staged) or the
 // item's, directly, named as the library names an original.
@@ -603,13 +686,14 @@ func busyItem(ctx context.Context, q Querier, itemID string) (string, error) {
 // unitBefore is what an adoption changes in the database, as it was: what a
 // revert puts back.
 type unitBefore struct {
-	Item      json.RawMessage   `json:"item"`      // recordedat, libraryprojectedat, modifiedat
-	Assets    []json.RawMessage `json:"assets"`    // every playback row of the item
-	Subtitles []json.RawMessage `json:"subtitles"` // the subtitle rows the plan points elsewhere
-	Extras    []json.RawMessage `json:"extras"`    // the extras the plan records
-	Sources   []json.RawMessage `json:"sources"`   // the plan's sources the catalog held already
-	Versions  []string          `json:"versions"`  // the versions the adoption makes
-	NewIDs    []string          `json:"sourceIds"` // every source the adoption writes
+	Item      json.RawMessage   `json:"item"`              // recordedat, libraryprojectedat, modifiedat
+	Assets    []json.RawMessage `json:"assets"`            // every playback row of the item
+	Subtitles []json.RawMessage `json:"subtitles"`         // the subtitle rows the plan points elsewhere
+	Extras    []json.RawMessage `json:"extras"`            // the extras the plan records
+	Sources   []json.RawMessage `json:"sources"`           // the plan's sources the catalog held already
+	Versions  []string          `json:"versions"`          // the versions the adoption makes
+	NewIDs    []string          `json:"sourceIds"`         // every source the adoption writes
+	Covered   []json.RawMessage `json:"covered,omitempty"` // the episodes its file covers: id, coveredby
 }
 
 // snapshot reads what the adoption of u changes, as it is.
@@ -664,6 +748,12 @@ func (m *Migration) snapshot(ctx context.Context, tx pgx.Tx, u *Unit) (*unitBefo
 		sources); err != nil {
 		return nil, err
 	}
+	if covered := coveredOf(u); len(covered) > 0 {
+		if err := rows(&b.Covered, `SELECT jsonb_build_object('id', i.id, 'coveredby', to_jsonb(i)->'coveredby')
+			FROM com_nalet_katalog_items i WHERE i.id = ANY($1) ORDER BY i.id`, covered); err != nil {
+			return nil, err
+		}
+	}
 	return b, nil
 }
 
@@ -712,8 +802,11 @@ func (m *Migration) goneBefore(u *Unit) ([]goneEvent, error) {
 // apply is the adoption's database change, in tx: the sources, the
 // versions, the playback rows (the packaged one as packaging-complete writes
 // it from package.json, the others of the item gone), the subtitle rows'
-// paths (their defaults kept) and the extras recorded. recordItem records
-// the item after.
+// paths (their defaults kept), the extras recorded, and the episodes the
+// item's file covers besides it linked to it (Link: their steps of a file do
+// not apply, and they and the item are marked changed, so that the item is
+// projected again, numbered up to the last of them). recordItem records the
+// item after.
 func (m *Migration) apply(ctx context.Context, tx pgx.Tx, u *Unit, gone []goneEvent) error {
 	goneOf := map[string]Event{}
 	for _, g := range gone {
@@ -848,6 +941,11 @@ func (m *Migration) apply(ctx context.Context, tx pgx.Tx, u *Unit, gone []goneEv
 		}
 		if err != nil {
 			return fmt.Errorf("extra %s: %w", x.ID, err)
+		}
+	}
+	for _, id := range coveredOf(u) {
+		if _, err := Link(ctx, tx, u.ItemID, id); err != nil {
+			return fmt.Errorf("episode %s, which its file covers: %w", id, err)
 		}
 	}
 	return nil
@@ -1347,8 +1445,33 @@ func (m *Migration) restore(ctx context.Context, tx pgx.Tx, u *Unit, before *uni
 			return err
 		}
 	}
-	// Last, after the extras (whose change marks the item changed): the item
-	// as it was, its modifiedat too.
+	// The episodes its file covers, linked as they were: one the adoption
+	// linked is unlinked, saying so, and one linked otherwise since is left.
+	for _, c := range before.Covered {
+		var was struct {
+			ID        string  `json:"id"`
+			CoveredBy *string `json:"coveredby"`
+		}
+		if err := json.Unmarshal(c, &was); err != nil {
+			return err
+		}
+		now, err := HolderOf(ctx, tx, was.ID)
+		switch {
+		case err != nil:
+			return err
+		case now != u.ItemID:
+		case was.CoveredBy == nil:
+			if _, err := Unlink(ctx, tx, []string{was.ID}, "covers it no more: its adoption was reverted"); err != nil {
+				return err
+			}
+		case *was.CoveredBy != u.ItemID:
+			if _, err := Link(ctx, tx, *was.CoveredBy, was.ID); err != nil {
+				return err
+			}
+		}
+	}
+	// Last, after the extras and the episodes it covers (whose change marks
+	// the item changed): the item as it was, its modifiedat too.
 	_, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_items i SET recordedat = s.recordedat, libraryprojectedat = s.libraryprojectedat,
 			modifiedat = s.modifiedat
 		FROM jsonb_populate_record(NULL::com_nalet_katalog_items, $2::jsonb) s WHERE i.id = $1`, u.ItemID, string(before.Item))
