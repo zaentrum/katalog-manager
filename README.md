@@ -855,7 +855,12 @@ version's folder: `versions/<versionId>/original.<ext>`, named by its
 extension alone (lower-cased when it is 1 to 8 letters and digits, else
 `bin`; `original-<n>.<ext>` for a version in parts), as the schemas' record
 logic names it: nothing in the library says where a file came from. Until
-then it waits where it arrived, in `.work/incoming`. katalog-manager decides
+then it waits where it arrived, in `.work/incoming`. The catalog keeps the
+name it arrived under, and its place among the arrivals (its source's
+`libraryPath`), only until its source's record is written, as
+packaging-complete, a take-in and the adoption leave it: from then on the
+source's name is the library's, and its original is known by where it lies.
+katalog-manager decides
 what the packager's run does with a title's source, in the worker record's
 `library.build`: `mode` is `establish` while the source has no version (the
 package and the original, renamed into the version's folder with it, under
@@ -930,7 +935,9 @@ library a version replaced to `.work/legacy/`, and empties the trash's and
 the legacy folder's days after their grace. retryStep of `retire` has it
 wait for the job's next pass. A removal that keeps the title's files puts an
 original in its version's folder back where it arrived before the folder
-goes.
+goes, where the catalog still knows that place (a source recorded before it
+kept none); the folder of one whose place it does not know stays, said in the
+removal's errors.
 
 Once a title's original is retired, nothing reads it any more: reencodeItem
 says so, naming the event (a better version is a new arrival:
