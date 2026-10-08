@@ -97,9 +97,11 @@ type ItemLibrary {
   events: [LibraryEvent!]!
 }
 
-# A package run of a title: building while the pipeline works on it,
-# complete once its package is recorded (the one that plays), superseded by
-# a newer one, removed after its grace.
+# A package run of a title: building while the pipeline works on it, taken
+# while its folder holds the original it was taken in from and no package
+# (the title plays from that original until a package is added), complete
+# once its package is recorded (the one that plays), superseded by a newer
+# one, removed after its grace once its folder holds no original.
 type LibraryVersion {
   id: ID!
   state: String!
@@ -118,12 +120,15 @@ type LibraryVersion {
   createdAt: Time!
 }
 
-# An original a title was given: present while it is there (arrivalPath),
-# retiring while the retire job deletes it, deleted after packaging (its
-# event retireEventId, and what its package does not carry of it, lost), or
-# removed (no original of the title after all).
+# An original a title was given: present while it is there (arrivalPath:
+# where it arrived, or, from its first version on, versions/<versionId>/ of
+# its title's folder), retiring while the retire job deletes it, deleted
+# after packaging (its event retireEventId, and what its package does not
+# carry of it, lost), or removed (no original of the title after all).
 type LibrarySource {
   id: ID!
+  # its name: the one the library gives it in its version's folder
+  # (original.<ext>) once it is there, the one it arrived with before
   filename: String!
   state: String!
   arrivalPath: String

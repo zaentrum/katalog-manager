@@ -88,6 +88,9 @@ The surface is split deliberately:
     (`{status, alreadyActive, message}`, a series'
     `{episodesEnqueued, episodesTotal, message}`; 404 unknown, 400 not
     packageable).
+  - `POST /api/items/{id}/takein` — an admin's take-in of a title with the
+    library's v2 layout (see [The library](#the-library)), answered
+    `{itemId, sent, message}`.
 
 ## Who may do what
 
@@ -111,7 +114,7 @@ account, whose token carries the addon role. Everyone else signed in is a
 | `POST /api/library/migrations/{run}/adopt`, `…/revert` (the library's migration), `POST /api/library/projections` | admin, service account |
 | `POST /api/library/reencode`, `GET /api/library/reencode` (the re-encode queue) | admin, service account |
 | `POST /api/ingest`, `POST /api/extras` | admin, service account, addon |
-| `POST /api/items/{id}/package` | admin |
+| `POST /api/items/{id}/package`, `POST /api/items/{id}/takein` | admin |
 
 A refused GraphQL field answers with an error whose `extensions.code` is
 `FORBIDDEN` and whose message names the role; a refused route answers 403
@@ -459,8 +462,9 @@ this service read it from the settings.
 A step that fails is retried: the event that triggers its worker is sent
 again — `discovered` for `tmdb` (the enricher) and the `scan` step (the item's
 pipeline from its start), `enriched` for the analyzer's passes, `analyzed` for
-`transcode`, `transcoded` for `package` — one event per item and worker. Each
-worker passes the chain on, and its own guard skips work that is done.
+`transcode`, `transcoded` for `package` and `takein` — one event per item and
+worker. Each worker passes the chain on, and its own guard skips work that is
+done.
 
 - **Backoff and attempts.** A failure is retried after `KATALOG_RETRY_BACKOFF`
   (1m), doubled with every failure in a row, at most
@@ -474,7 +478,7 @@ worker passes the chain on, and its own guard skips work that is done.
   it, is taken for a failed run and retried the same way. A step is timed
   from its worker's last word (a worker that reports in progress again keeps
   it alive); the timeouts are 15m for `scan` and `tmdb`, 2h for the
-  analyzer's passes and `package`, 6h for `transcode`
+  analyzer's passes, `package` and `takein`, 6h for `transcode`
   (`KATALOG_STEP_TIMEOUTS`).
 - **No step runs twice.** A retry claims its step in the database before it
   sends anything, in one statement whose rows only one caller gets, so two
@@ -846,6 +850,42 @@ The library's settings are read on every use, as `extras.scan` is:
   `library.reencode.window`: how the sweep sends the re-encode queue (see
   [The re-encode queue](#the-re-encode-queue)), in either layout.
 
+A title's original lives in the library from its first version on, in that
+version's folder: `versions/<versionId>/original.<ext>`, named by its
+extension alone (lower-cased when it is 1 to 8 letters and digits, else
+`bin`; `original-<n>.<ext>` for a version in parts), as the schemas' record
+logic names it: nothing in the library says where a file came from. Until
+then it waits where it arrived, in `.work/incoming`. katalog-manager decides
+what the packager's run does with a title's source, in the worker record's
+`library.build`: `mode` is `establish` while the source has no version (the
+package and the original, renamed into the version's folder with it, under
+`originalName`), `takein` while its step `takein` waits or runs (the original
+alone, no package), `add` while the source's version holds its original alone
+(the package is added to that folder, `versionDir`), and `repackage` once a
+version of it is packaged (a new version, its package alone, the original
+staying where it lies: an older version's folder, or where it arrived; the
+worker record's `path` is where it lies). packaging-complete takes the
+payload's `original: {path, name}` with the version, in one transaction: the
+source and the asset of the title's file point at it there; a path outside
+the version's folder, a name the library does not give one, one
+`version.json` does not name, or a file that is not the source's is refused
+(422). `takenIn: true` records a version with no package, `taken` (migration
+044): the title plays from its original as one without a package does. A
+refused folder goes out of the record only once the original a run renamed
+into it is back where the catalog says it lies, and a version taken in keeps
+its folder, the package added to it going out.
+
+A title is taken in when it gets no package now and its source has no
+version: its transcode was refused (the transcoder keeps the original of a
+picture no package would show as it is, its error ending "kept the
+original"; that transcode is retried no more), or its transcode or its
+package failed with no attempt left. The service sends the packager its step
+`takein` (`transcoded`, step `takein`) at once when the worker reports the
+failure, and the sweep sends what that missed; the step is counted in the
+processing overview, retried and reaped as any other, and holds the layout
+(`LAYOUT_BUSY`). `POST /api/items/{id}/takein` takes a title in by hand. A
+package is added to the version later by `reencodeItem` or `packageItem`.
+
 The retire job runs once a minute in the sweep, in one instance at a time.
 With `delete-after-package` it deletes a title's original once a complete
 version of it is as old as the delay, the title is not held, and every step
@@ -853,10 +893,12 @@ that reads the original is over: claimed (the step `retire` runs), the
 original checked against its size and quick hash, the version verified (in
 full, unless the migration's stage did that within `library.verify.maxAge`),
 its `original-deleted` event recorded with what the package does not carry
-of it, the original and its sidecars moved to `.work/trash/<day>/`, then
-the catalog says so: the playback row is an original's, which points at its
-record, and the sidecars' subtitle rows point at the package's renditions
-or the copies in the record, their ids kept. A mismatch fails the step with
+of it, the original moved to `.work/trash/<day>/<sourceId>/` from its
+version's folder (or from where it arrived, one from before), the files
+that came with it from where it arrived, then the catalog says so: the
+playback row is an original's, which points at its record, and the
+sidecars' subtitle rows point at the package's renditions or the copies in
+the record (found by their content), their ids kept. A mismatch fails the step with
 the file's name and keeps the original. No original is retired before its
 title's current package carries the surround it had: when the package's
 essence (which counts its 5.1 companions) lacks the `surround` of the
@@ -869,10 +911,14 @@ of the title is complete, or an admin retries the step. `{"held": true}`
 queues these titles to be encoded again (see
 [The re-encode queue](#the-re-encode-queue)). The same job deletes an extra's
 original once its folder is recorded and verifies, removes a superseded
-version after its grace (`version-removed`, its folder deleted), moves a
-package folder of the store before the library a version replaced to
-`.work/legacy/`, and empties the trash's and the legacy folder's days after
-their grace. retryStep of `retire` has it wait for the job's next pass.
+version after its grace (`version-removed`, its folder deleted) once its
+folder holds no original (one there is retired first, against the newest
+package of its source), moves a package folder of the store before the
+library a version replaced to `.work/legacy/`, and empties the trash's and
+the legacy folder's days after their grace. retryStep of `retire` has it
+wait for the job's next pass. A removal that keeps the title's files puts an
+original in its version's folder back where it arrived before the folder
+goes.
 
 Once a title's original is retired, nothing reads it any more: reencodeItem
 says so, naming the event (a better version is a new arrival:
@@ -890,10 +936,12 @@ schemas' `library-v2-from-catalog.py --platform` under
 `.work/migration/<run>/`, and adopted by `POST
 /api/library/migrations/<run>/adopt` (the service account and admins): unit
 by unit, a series before its episodes, its guards checked (a package changed
-since is stale), the planned renames made, the database changed as
-packaging-complete leaves it, each action journaled in the run's
-`journal.jsonl`; a failure puts the unit's renames back, and adopting again
-skips what is adopted. `POST …/revert` replays the journal backwards while
+since is stale), the planned renames made (an original into its version's
+folder, named as the library names it; a title nothing packaged gets a
+version taken in), the database changed as packaging-complete leaves it,
+each action journaled in the run's `journal.jsonl`; a failure puts the
+unit's renames back, and adopting again skips what is adopted. A plan that
+puts an original anywhere else in the record is refused. `POST …/revert` replays the journal backwards while
 the originals are not purged from the trash. Both take
 `{"items": ["<itemId>", …]}` to work on some units only. An item the
 adoption itself marks changed (an extra it records) is projected again
