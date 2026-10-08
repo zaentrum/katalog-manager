@@ -150,14 +150,16 @@ func (s *Store) LayoutRows(ctx context.Context) ([]*model.Setting, error) {
 
 // LayoutWaits counts what is between its transcode and its package: the
 // titles whose transcode runs, or is finished while their package waits,
-// runs or is to be retried, and the extras transcoding, transcoded or
-// packaging. The transcode's handoff to the packager lies in the inbox of
-// the layout it ran in, so the layout does not change while any is.
+// runs or is to be retried, or whose take-in (the v2 layout's) does, and the
+// extras transcoding, transcoded or packaging. The transcode's handoff to the
+// packager lies in the inbox of the layout it ran in, and a take-in is the
+// v2 layout's, so the layout does not change while any is.
 func (s *Store) LayoutWaits(ctx context.Context) (titles, extras int, err error) {
 	if err = s.pool.QueryRow(ctx, `SELECT count(DISTINCT t.item_id) FROM com_nalet_katalog_itemprocessingsteps t
-		WHERE t.step = 'transcode' AND (t.status = 'in_progress' OR (t.status IN ('done', 'not_applicable', 'skipped')
+		WHERE (t.step = 'transcode' AND (t.status = 'in_progress' OR (t.status IN ('done', 'not_applicable', 'skipped')
 		  AND EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps p WHERE p.item_id = t.item_id AND p.step = 'package'
-		              AND (p.status IN ('pending', 'in_progress') OR (p.status = 'failed' AND p.nextretryat IS NOT NULL)))))`).
+		              AND (p.status IN ('pending', 'in_progress') OR (p.status = 'failed' AND p.nextretryat IS NOT NULL))))))
+		   OR (t.step = 'takein' AND (t.status IN ('pending', 'in_progress') OR (t.status = 'failed' AND t.nextretryat IS NOT NULL)))`).
 		Scan(&titles); err != nil {
 		return 0, 0, err
 	}

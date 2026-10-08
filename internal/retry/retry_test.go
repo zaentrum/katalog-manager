@@ -543,7 +543,8 @@ func TestTheOverview(t *testing.T) {
 	want := []string{"scan 0/0/0/0/0/0 r0 s0 7200", "tmdb 0/0/1/0/0/0 r0 s0 7200", "tidb 0/0/0/0/0/0 r0 s0 7200",
 		"chapter 0/0/0/0/0/1 r0 s0 7200", "chromaprint 0/0/0/0/0/0 r0 s0 7200", "blackframe 0/0/0/0/0/0 r0 s0 7200",
 		"silence 0/0/0/0/0/0 r0 s0 7200", "subtitle 0/0/0/0/1/0 r0 s0 7200", "transcode 0/1/0/2/0/0 r1 s1 3600",
-		"package 2/0/0/0/0/0 r0 s1 7200", "retire 0/0/0/0/0/0 r0 s0 7200", "rescan 0/0/0/1/0/0 r0 s0 7200"}
+		"package 2/0/0/0/0/0 r0 s1 7200", "takein 0/0/0/0/0/0 r0 s0 7200", "retire 0/0/0/0/0/0 r0 s0 7200",
+		"rescan 0/0/0/1/0/0 r0 s0 7200"}
 	if strings.Join(steps, "\n") != strings.Join(want, "\n") {
 		t.Errorf("the counts:\n%s\nwant:\n%s", strings.Join(steps, "\n"), strings.Join(want, "\n"))
 	}

@@ -42,6 +42,7 @@ var DefaultTimeouts = map[string]time.Duration{
 	"subtitle":    2 * time.Hour,
 	"transcode":   6 * time.Hour,
 	"package":     2 * time.Hour,
+	"takein":      2 * time.Hour,
 	"retire":      2 * time.Hour,
 }
 

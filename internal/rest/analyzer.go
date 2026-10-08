@@ -659,6 +659,16 @@ func (h *Handlers) putStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A title whose transcode was refused, or whose transcode or package
+	// failed with no attempt left, gets no package now: with the v2 layout it
+	// is taken in, its original into a version of its own (best-effort, as
+	// the promotion: the sweep takes in what this misses).
+	if (step == "transcode" || step == "package") && status == processing.StatusFailed && h.d.TakeIn != nil {
+		if _, err := h.d.TakeIn.TakeIn(ctx, []string{id}); err != nil {
+			log.Printf("putStep: the take-in of %s: %v", id, err)
+		}
+	}
+
 	// Chain promotion: transcode -> package (best-effort; failure swallowed).
 	// With the v2 layout the package's run builds a version, made now.
 	if step == "transcode" {

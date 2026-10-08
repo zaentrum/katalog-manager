@@ -54,6 +54,13 @@ func router(t *testing.T, st *store.Store) http.Handler {
 // server is router with cfg, and the issuer whose tokens it takes.
 func server(t *testing.T, st *store.Store, cfg config.Config) (http.Handler, *authtest.Issuer) {
 	t.Helper()
+	return serverWith(t, st, cfg, nil)
+}
+
+// serverWith is server whose retries send their events through pub (nil:
+// no event bus).
+func serverWith(t *testing.T, st *store.Store, cfg config.Config, pub retry.Publisher) (http.Handler, *authtest.Issuer) {
+	t.Helper()
 	iss := authtest.NewIssuer(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel) // stops the verifier's discovery retries, if any
@@ -69,8 +76,9 @@ func server(t *testing.T, st *store.Store, cfg config.Config) (http.Handler, *au
 	r.Group(func(pr chi.Router) {
 		pr.Use(auth.NewMiddleware(jwt, stream).Handler)
 		steps := processing.New(st.Pool())
+		retries := retry.New(st, steps.Policy(), pub, 0)
 		New(Deps{Store: st, Cfg: cfg, Steps: steps, Packager: itemactions.New(st, cfg, steps, nil),
-			Extras: extras.New(st, cfg, steps.Policy(), nil), Reencode: retry.New(st, steps.Policy(), nil, 0)}).Register(pr)
+			Extras: extras.New(st, cfg, steps.Policy(), nil), Reencode: retries, TakeIn: retries}).Register(pr)
 	})
 	return r, iss
 }

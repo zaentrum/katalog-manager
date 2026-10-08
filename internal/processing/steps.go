@@ -23,19 +23,33 @@ const (
 	StatusNotApplicable = "not_applicable"
 )
 
-// StepOrder is every step, in the order the pipeline runs them. The last,
+// StepOrder is every step, in the order the pipeline runs them. takein is
+// the packager's when a title gets no package now (with the library's v2
+// layout): it renames the title's original into a version of its own, with
+// no package, which katalog-manager sends when the transcode was refused or
+// the transcode or the package failed with no attempt left. The last,
 // retire, is katalog-manager's own: with library.originals set to
 // delete-after-package it deletes a title's original once its package is
 // recorded and verified. No worker runs it and no event triggers it.
-var StepOrder = []string{"scan", "tmdb", "tidb", "chapter", "chromaprint", "blackframe", "silence", "subtitle", "transcode", "package", "retire"}
+var StepOrder = []string{"scan", "tmdb", "tidb", "chapter", "chromaprint", "blackframe", "silence", "subtitle", "transcode", "package",
+	"takein", "retire"}
 
 // StepRetire is the step that deletes a title's original after packaging.
 const StepRetire = "retire"
 
+// StepTakeIn is the step that takes a title in without a package.
+const StepTakeIn = "takein"
+
 // OriginalSteps are the steps whose workers read a title's original: none of
 // them may wait or run when the original is deleted, and none is retried
-// once it is.
-var OriginalSteps = []string{"chapter", "chromaprint", "blackframe", "silence", "subtitle", "transcode", "package"}
+// once it is. The take-in moves it into the library.
+var OriginalSteps = []string{"chapter", "chromaprint", "blackframe", "silence", "subtitle", "transcode", "package", "takein"}
+
+// RefusedMark ends the error of a transcode the transcoder refused for good:
+// it keeps the original of a picture no package would show as it is (Dolby
+// Vision whose base layer no other device plays), and says so ("...; kept
+// the original"). Encoding it again cannot help: the title is taken in.
+const RefusedMark = "kept the original"
 
 var validSteps = func() map[string]bool {
 	m := map[string]bool{}

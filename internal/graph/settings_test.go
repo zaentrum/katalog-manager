@@ -279,9 +279,10 @@ func TestTheGeneralSettingWritesRefuseSecrets(t *testing.T) {
 }
 
 // The library's layout does not change while a title or an extra is between
-// its transcode and its package: the transcode's handoff lies in the inbox of
-// the layout it ran in. A write that changes it is refused, saying how many
-// wait (LAYOUT_BUSY); one that keeps it, and any once nothing waits, goes.
+// its transcode and its package (the transcode's handoff lies in the inbox of
+// the layout it ran in), or while a take-in waits for the packager. A write
+// that changes it is refused, saying how many wait (LAYOUT_BUSY); one that
+// keeps it, and any once nothing waits, goes.
 func TestTheLayoutDoesNotChangeUnderAHandoff(t *testing.T) {
 	st := storetest.Open(t)
 	storetest.AddItem(t, st, "m1", "movie", "Sintel", "")
@@ -320,5 +321,12 @@ func TestTheLayoutDoesNotChangeUnderAHandoff(t *testing.T) {
 	if got := exec(t, st, `mutation { updateSetting(id: "`+id+`", description: "the layout") { valueText } }`, false); got !=
 		`{"updateSetting":{"valueText":"v2"}}` {
 		t.Errorf("a description: %s", got)
+	}
+	// A take-in waiting for the packager is the v2 layout's: it stays.
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemprocessingsteps SET status = 'done', nextretryat = NULL WHERE id = 'p2'`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemprocessingsteps (id, item_id, step, status) VALUES ('k1', 'm1', 'takein', 'pending')`)
+	if got := exec(t, st, `mutation { updateSetting(id: "`+id+`", valueText: "legacy") { id } }`, true); !strings.Contains(got,
+		"library.layout stays v2: 1 titles") {
+		t.Errorf("a take-in waiting: %s", got)
 	}
 }

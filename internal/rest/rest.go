@@ -21,6 +21,7 @@ type Deps struct {
 	Packager Packager         // nil: POST /api/items/{id}/package answers 503
 	Extras   ExtraTaker       // nil: POST /api/extras answers 503
 	Reencode Reencoder        // nil: /api/library/reencode answers 503
+	TakeIn   TakeIn           // nil: a title that gets no package is taken in by the sweep alone; POST /api/items/{id}/takein answers 503
 }
 
 // Handlers groups the REST handlers.
@@ -48,13 +49,14 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 //   - ingest (a worker, or an addon's service account): POST /api/ingest, and
 //     POST /api/extras, which takes a file in as a title's extra;
 //   - admins: POST /api/items/{id}/package, the packaging action an admin's
-//     client forwards (chino-api's admin route).
+//     client forwards (chino-api's admin route), and POST
+//     /api/items/{id}/takein, a title's take-in without a package.
 //
 // The workers' protocol of an extra (its record, its steps, its
 // packaging-complete) is in the worker group too. Bodies are implemented in
 // the per-area files (artwork.go, play.go, subtitles.go, analyzer.go,
 // segments.go, chapters.go, packaging.go, package.go, settings.go,
-// ingest.go, extras.go, migrations.go, reencode.go).
+// ingest.go, extras.go, migrations.go, reencode.go, takein.go).
 func (h *Handlers) Register(r chi.Router) {
 	pol := h.d.Cfg.Policy()
 
@@ -130,6 +132,9 @@ func (h *Handlers) Register(r chi.Router) {
 	// An admin's packaging action, as chino-api's admin route forwards it with
 	// the admin's bearer token: what GraphQL's packageItem does.
 	r.With(pol.Require(auth.Admin)).Post("/api/items/{id}/package", h.postPackage)
+	// An admin's take-in of a title: its original into a version of its own,
+	// with no package (the library's v2 layout).
+	r.With(pol.Require(auth.Admin)).Post("/api/items/{id}/takein", h.postTakeIn)
 
 	// External-file ingest: register a staged file (item + primary asset) and
 	// emit discovered so it flows the pipeline. Neutral machine contract used by

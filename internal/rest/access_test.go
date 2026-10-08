@@ -76,6 +76,7 @@ var routes = []route{
 	{http.MethodPost, "/api/extras", `{"itemId": "m1", "path": "MEDIA/m1-trailer.mkv", "kind": "trailer"}`, "ingest"},
 
 	{http.MethodPost, "/api/items/m1/package", "", "admin"},
+	{http.MethodPost, "/api/items/m1/takein", "", "admin"},
 }
 
 // Every route answers whom it is for, and refuses everyone else before it

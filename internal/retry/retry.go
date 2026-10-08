@@ -21,8 +21,9 @@
 // (the enricher) and for the scan step (the item's pipeline from its start:
 // the scan step is the scanner's, which never reports on it again, so its
 // retry leaves it done), enriched for the analyzer's passes, analyzed for the
-// transcode and transcoded for the package. Each worker passes the chain on,
-// and its own idempotency guard skips the work that is done.
+// transcode and transcoded for the package, and for the take-in (its step
+// takein), which katalog-manager sends itself (takein.go). Each worker passes
+// the chain on, and its own idempotency guard skips the work that is done.
 //
 // An admin also encodes a title again whose transcode and package are done
 // (reencode.go): both wait for their workers afresh, claimed as a retry is,
@@ -92,6 +93,9 @@ type Service struct {
 	// queue is set once migration 043 is seen in place: the re-encode queue
 	// (queue.go).
 	queue atomic.Bool
+	// takeInMigrated is set once migration 044 is seen in place: a title
+	// is taken in (takein.go).
+	takeInMigrated atomic.Bool
 	// queueSaid is why the sweep last said the queue waits (Run's alone).
 	queueSaid string
 	// now is the clock the queue's window is read by.
@@ -123,6 +127,8 @@ func Trigger(step string) (topic, next string, ok bool) {
 		return events.TopicAnalyzed, "transcode", true
 	case "package":
 		return events.TopicTranscoded, "package", true
+	case "takein":
+		return events.TopicTranscoded, "takein", true
 	}
 	return "", "", false
 }
@@ -222,6 +228,7 @@ func (s *Service) Run(ctx context.Context) {
 			} else if reaped+sent > 0 {
 				log.Printf("retry: sweep: %d steps reaped, %d retries sent", reaped, sent)
 			}
+			s.sweepTakeIns(ctx)
 		}
 		s.sweepQueue(ctx)
 		select {
