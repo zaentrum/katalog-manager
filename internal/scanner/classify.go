@@ -16,9 +16,9 @@ var (
 
 // Patterns — ported verbatim from NfsScanner. Go's regexp (RE2) does not support
 // \b at the engine level the same way Java does; RE2 DOES support \b, so these
-// compile and behave equivalently for the ASCII tokens used here.
+// compile and behave equivalently for the ASCII tokens used here. An episode's
+// number is read by episodeTokens (below), which reads a range too.
 var (
-	episodePattern   = regexp.MustCompile(`(?i)\bS(\d{1,2})E(\d{1,3})\b`)
 	parenYearPattern = regexp.MustCompile(`\(((?:19|20)\d{2})\)`)
 	yearPattern      = regexp.MustCompile(`\b(?:19|20)\d{2}\b`)
 	cleanupPattern   = regexp.MustCompile(`[._]+`)
@@ -37,10 +37,113 @@ func classify(rel string, isVideo, isAudio bool) string {
 	if isAudio {
 		return "track"
 	}
-	if hasSeriesFolder(rel) || episodePattern.MatchString(rel) {
+	if hasSeriesFolder(rel) || hasEpisodeToken(rel) {
 		return "episode"
 	}
 	return "movie"
+}
+
+// A name numbers an episode as S05E15, its season and its number, letter
+// case aside, the token standing apart from the words around it (no letter,
+// digit or underscore right before or after). One file that covers several
+// episodes numbers the others after it, each in the order they air: S05E15E16,
+// S05E15-E16 (or .E16, _E16, " E16"), S05E15-16, and so on (S05E15-E17,
+// S05E15E16E17), and it covers every episode from its first to its last. A
+// number after a dash followed by a digit or a p is none (S05E15-720p is the
+// fifteenth episode in 720p), and so is one that does not come after the one
+// before it, or that would make the file cover more than maxCovered
+// episodes: the name then numbers the episodes before it.
+var (
+	episodeHead = regexp.MustCompile(`(?i)\bS(\d{1,2})E(\d{1,3})`)
+	episodeMore = regexp.MustCompile(`(?i)^(?:[ ._-]?E|-)(\d{1,3})`)
+)
+
+// maxCovered is the most episodes one file covers.
+const maxCovered = 10
+
+// episodeToken is where a name numbers its episodes: the token's bytes in the
+// name, its season, and the first and the last episode the file covers (the
+// same for a file of one).
+type episodeToken struct {
+	start, end          int
+	season, first, last int
+}
+
+// episodeTokens are the tokens of name that number episodes, in order.
+func episodeTokens(name string) []episodeToken {
+	var out []episodeToken
+	for _, m := range episodeHead.FindAllStringSubmatchIndex(name, -1) {
+		end := m[1]
+		if end < len(name) && isDigit(name[end]) {
+			continue // E1500: no episode of a season numbers so
+		}
+		season, _ := strconv.Atoi(name[m[2]:m[3]])
+		first, _ := strconv.Atoi(name[m[4]:m[5]])
+		tok := episodeToken{start: m[0], season: season, first: first}
+		// The episodes after the first, each where the one before ends.
+		type more struct{ end, last int }
+		var after []more
+		at, last := end, first
+		for {
+			x := episodeMore.FindStringSubmatchIndex(name[at:])
+			if x == nil {
+				break
+			}
+			n, _ := strconv.Atoi(name[at+x[2] : at+x[3]])
+			next := at + x[1]
+			dashed := name[at] == '-' && isDigit(name[at+1])
+			if next < len(name) && (isDigit(name[next]) || (dashed && (name[next] == 'p' || name[next] == 'P'))) {
+				break // -720p, -1080: no episode
+			}
+			if n <= last || n-first+1 > maxCovered {
+				break
+			}
+			after = append(after, more{next, n})
+			at, last = next, n
+		}
+		// The token stands apart where it ends: the longest of it that does.
+		for k := len(after); k >= 0; k-- {
+			tok.end, tok.last = end, first
+			if k > 0 {
+				tok.end, tok.last = after[k-1].end, after[k-1].last
+			}
+			if tok.end == len(name) || !isWordByte(name[tok.end]) {
+				out = append(out, tok)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// firstEpisodeToken is the first token of name that numbers episodes.
+func firstEpisodeToken(name string) (episodeToken, bool) {
+	toks := episodeTokens(name)
+	if len(toks) == 0 {
+		return episodeToken{}, false
+	}
+	return toks[0], true
+}
+
+// hasEpisodeToken reports whether s numbers an episode.
+func hasEpisodeToken(s string) bool { return len(episodeTokens(s)) > 0 }
+
+// withoutEpisodeTokens is s with every token that numbers episodes replaced
+// by a space.
+func withoutEpisodeTokens(s string) string {
+	toks := episodeTokens(s)
+	for i := len(toks) - 1; i >= 0; i-- {
+		s = s[:toks[i].start] + " " + s[toks[i].end:]
+	}
+	return s
+}
+
+func isDigit(b byte) bool { return b >= '0' && b <= '9' }
+
+// isWordByte is a byte of a word as \b reads one: a letter, a digit or an
+// underscore.
+func isWordByte(b byte) bool {
+	return isDigit(b) || b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 // seriesFolderNames are the path segments that mark a TV library subtree. A file
@@ -73,8 +176,8 @@ func seriesTitleFor(rel, filename string) string {
 		}
 	}
 	base := stripExt(filename)
-	if loc := episodePattern.FindStringIndex(base); loc != nil {
-		base = base[:loc[0]]
+	if tok, ok := firstEpisodeToken(base); ok {
+		base = base[:tok.start]
 	}
 	return showTitle(base)
 }
@@ -106,7 +209,7 @@ func extractTitle(filename, typ string) string {
 	replacer := strings.NewReplacer("(", " ", ")", " ", "[", " ", "]", " ")
 	name = replacer.Replace(name)
 	if typ == "episode" {
-		name = episodePattern.ReplaceAllString(name, " ")
+		name = withoutEpisodeTokens(name)
 	}
 	name = collapseWS(name)
 	return cleanTitle(name)
@@ -131,22 +234,16 @@ func extractYear(s string) *int32 {
 	return nil
 }
 
-// episodeCoords parses the SxxEyy token from a filename (group1=season,
-// group2=episode). Returns nil pointers when absent / unparseable.
+// episodeCoords parses the SxxEyy token from a filename: its season and the
+// first episode it numbers, which the file belongs to. Returns nil pointers
+// when absent.
 func episodeCoords(name string) (season, episode *int32) {
-	m := episodePattern.FindStringSubmatch(name)
-	if m == nil {
+	tok, ok := firstEpisodeToken(name)
+	if !ok {
 		return nil, nil
 	}
-	if s, err := strconv.Atoi(m[1]); err == nil {
-		v := int32(s)
-		season = &v
-	}
-	if e, err := strconv.Atoi(m[2]); err == nil {
-		v := int32(e)
-		episode = &v
-	}
-	return season, episode
+	s, e := int32(tok.season), int32(tok.first)
+	return &s, &e
 }
 
 // isTrailerPath reproduces NfsScanner.isTrailerPath(absPath, filename).

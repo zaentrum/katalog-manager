@@ -140,7 +140,7 @@ func (w *walkState) extraFileOf(absPath, name string) (extraFile, bool) {
 	}
 	// A file named as an episode (S01E02) is one, also in a folder named as
 	// a folder of extras: a show may be called Extras.
-	episode := episodePattern.MatchString(name)
+	episode := hasEpisodeToken(name)
 	if kind, ok := folderKind(filepath.Base(dir)); ok && !episode && !seriesFolderNames[strings.ToLower(filepath.Base(filepath.Dir(dir)))] {
 		anchor := filepath.Dir(dir)
 		kind, title := folderExtra(stem, kind, w.stems(anchor))
