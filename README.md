@@ -966,6 +966,28 @@ the originals are not purged from the trash. Both take
 adoption itself marks changed (an extra it records) is projected again
 within its unit; revert puts the staged projection back.
 
+A tree written before 2026-10-08 is given the names the library gives its
+files by the schemas' `library-v2-neutral-names.py` (an original in its
+version's folder becomes `original.<ext>`, a subtitle file's copy in its
+source's record `subtitle-<n>.<lang>….<ext>`, any other copy leaves the
+record for the run's `removed/`), which changes no database. `POST
+/api/library/migrations/<run>/names` (the service account and admins; the
+tool's run is `neutral-names` unless it named another) points the catalog
+at them by the run's `journal.jsonl`: for each item the run finished, in one
+transaction under the item's lock, every row of the item naming a file the
+run renamed or took out of the record (the asset of the title's file, a
+source's place, a subtitle row, an extra's original, its diagnostics) names
+it where it is now, and each of its recorded sources gets the name its
+record gives its file and keeps no place among the arrivals. A row is
+changed only while it names a file where it was, so calling it again changes
+nothing. It takes `{"items": ["<itemId>", …]}` to work on some items only,
+and answers `{"run", "items", "rows", "skipped": [{"itemId", "reason"}]}`:
+how many items it took, how many rows it changed, and those it left and why
+(one the run did not finish, one the catalog does not keep where the journal
+has it, one a row of which would name a file that is not there). A journal
+that names a file outside the folder of its item is refused whole (422), and
+nothing changes; 409 while an adopt or a revert of the run runs.
+
 `POST /api/library/projections` writes the items' projections now, in
 either layout (the migration's verify runs before the layout is v2, which
 the projector waits for): of those named, `{"items": ["<itemId>", …]}`, or
