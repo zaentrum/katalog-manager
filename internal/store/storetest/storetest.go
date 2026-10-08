@@ -83,6 +83,9 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	if err := st.EnsureTakeIn(ctx); err != nil {
 		t.Fatalf("apply the take-in migration: %v", err)
 	}
+	if err := st.EnsureMultiEpisodeFiles(ctx); err != nil {
+		t.Fatalf("apply the multi-episode files migration: %v", err)
+	}
 	return st
 }
 

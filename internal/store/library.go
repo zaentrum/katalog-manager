@@ -242,3 +242,33 @@ func (s *Store) EnsureTakeIn(ctx context.Context) error {
 	_, err = s.pool.Exec(ctx, migrations.TakeIn)
 	return err
 }
+
+// multiEpisodeColumns are the columns db/migrations/045_multi_episode_files.sql
+// adds, as table.column.
+var multiEpisodeColumns = []string{"com_nalet_katalog_items.coveredby", "com_nalet_katalog_scanjobs.report"}
+
+// MultiEpisodeFilesReady reports whether migration 045 is in place: an
+// episode may name the episode whose file covers it (coveredby), the index
+// that finds them, and a scan job keeps what its scan passed over (report).
+func (s *Store) MultiEpisodeFilesReady(ctx context.Context) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `SELECT to_regclass('idx_items_coveredby') IS NOT NULL
+		AND (SELECT count(*) FROM unnest($1::text[]) AS c(name)
+		     JOIN pg_attribute a ON a.attrelid = to_regclass(split_part(c.name, '.', 1))
+		      AND a.attname = split_part(c.name, '.', 2) AND a.attnum > 0 AND NOT a.attisdropped) = cardinality($1::text[])`,
+		multiEpisodeColumns).Scan(&ok)
+	return ok, err
+}
+
+// EnsureMultiEpisodeFiles applies db/migrations/045_multi_episode_files.sql
+// when any of its objects is missing. Without it a file covers the episode
+// its name numbers first and no other, as before, and a scan says what it
+// passed over in the log alone.
+func (s *Store) EnsureMultiEpisodeFiles(ctx context.Context) error {
+	ready, err := s.MultiEpisodeFilesReady(ctx)
+	if err != nil || ready {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, migrations.MultiEpisodeFiles)
+	return err
+}

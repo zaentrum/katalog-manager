@@ -140,6 +140,12 @@ func run() error {
 	if err := st.EnsureTakeIn(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/044_library_takein.sql is missing and could not be applied: %v; no title is taken in until it is", err)
 	}
+	// One file of several episodes: each episode it covers besides its first
+	// names that one, whose file it is, and a scan job says what its scan
+	// passed over (migration 045).
+	if err := st.EnsureMultiEpisodeFiles(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/045_multi_episode_files.sql is missing and could not be applied: %v; a file covers the episode its name numbers first and no other, and a scan says what it passed over in the log alone, until it is", err)
+	}
 	if set, err := library.ReadSettings(bgCtx, st.Pool()); err != nil {
 		log.Printf("catalog: the library's settings could not be read: %v", err)
 	} else {

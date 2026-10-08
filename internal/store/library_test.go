@@ -401,3 +401,46 @@ func TestTheTakeInMigrationIsIdempotent(t *testing.T) {
 		t.Error("a version is of a state there is none of")
 	}
 }
+
+// Migration 045 applies to a catalog without it, and again, unchanged, by
+// EnsureMultiEpisodeFiles and by the file itself: an item may name the
+// episode whose file covers it, the index finds those, and a scan job keeps
+// its report. A catalog missing any of it is not ready.
+func TestTheMultiEpisodeMigrationIsIdempotent(t *testing.T) {
+	st := storetest.OpenBase(t)
+	ctx := context.Background()
+	ready := func() bool {
+		t.Helper()
+		ok, err := st.MultiEpisodeFilesReady(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if ready() {
+		t.Fatal("a catalog without 045 is ready")
+	}
+	for i := 0; i < 2; i++ {
+		if err := st.EnsureMultiEpisodeFiles(ctx); err != nil {
+			t.Fatalf("EnsureMultiEpisodeFiles, %d. time: %v", i+1, err)
+		}
+		storetest.Exec(t, st, migrations.MultiEpisodeFiles)
+		if !ready() {
+			t.Fatalf("after EnsureMultiEpisodeFiles and the file %d times: not ready", i+1)
+		}
+	}
+	storetest.Exec(t, st, `DROP INDEX idx_items_coveredby`)
+	if ready() {
+		t.Fatal("a catalog without the index is ready")
+	}
+	if err := st.EnsureMultiEpisodeFiles(ctx); err != nil || !ready() {
+		t.Fatalf("EnsureMultiEpisodeFiles puts the index back: ready %v, %v", ready(), err)
+	}
+	storetest.AddItem(t, st, "h", "episode", "Holder", "")
+	storetest.AddItem(t, st, "c", "episode", "Covered", "")
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET coveredby = 'h' WHERE id = 'c'`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_scanjobs (id, source, report) VALUES ('j', 'nfs', '[]')`)
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE coveredby = 'h'`); n != 1 {
+		t.Errorf("%d items name the holder, want the covered one", n)
+	}
+}
