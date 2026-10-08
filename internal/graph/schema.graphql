@@ -127,12 +127,15 @@ type LibraryVersion {
 # carry of it, lost), or removed (no original of the title after all).
 type LibrarySource {
   id: ID!
-  # its name: the one the library gives it in its version's folder
-  # (original.<ext>) once it is there, the one it arrived with before
+  # its name: the one the library gives it (original.<ext>) once its record
+  # is written, the one it arrived with before
   filename: String!
   state: String!
+  # where its original lies: where it arrived until it is in its version's
+  # folder, there after; null once it is deleted
   arrivalPath: String
-  # where it arrived, relative to the arrivals' root
+  # where it arrived, relative to the arrivals' root, until its record is
+  # written: the catalog keeps no name a file arrived under after
   libraryPath: String
   sizeBytes: Float!
   qh1: String

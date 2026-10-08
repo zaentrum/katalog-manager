@@ -730,9 +730,16 @@ func (m *Migration) apply(ctx context.Context, tx pgx.Tx, u *Unit, gone []goneEv
 			by, none := MigratedBy, "[]"
 			state, retireID, retireAt, deletedAt, deletedBy, lost = SourceDeleted, &ev.ID, &ev.At, &now, &by, &none
 		}
+		// A source with a version keeps no name it arrived under: its name is
+		// the library's, and the place it had among the arrivals goes.
 		var recorded *time.Time
+		filename, libraryPath := s.Filename, s.LibraryPath
 		if s.RecordDir != nil {
 			recorded = &now
+			if !IsOriginalName(filename) {
+				filename = OriginalName(filename, 0)
+			}
+			libraryPath = nil
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, librarypath,
 				sizebytes, qh1, state, recordedat, recorddir, sidecars, retireeventid, retireeventat, deletedat, deletedby, lost)
@@ -743,7 +750,7 @@ func (m *Migration) apply(ctx context.Context, tx pgx.Tx, u *Unit, gone []goneEv
 				sidecars = EXCLUDED.sidecars, retireeventid = EXCLUDED.retireeventid, retireeventat = EXCLUDED.retireeventat,
 				deletedat = EXCLUDED.deletedat, deletedby = EXCLUDED.deletedby, lost = EXCLUDED.lost, error = NULL,
 				modifiedat = now()`,
-			s.SourceID, u.ItemID, s.Filename, s.ArrivalPath, s.LibraryPath, s.SizeBytes, s.QH1, state, recorded, s.RecordDir,
+			s.SourceID, u.ItemID, filename, s.ArrivalPath, libraryPath, s.SizeBytes, s.QH1, state, recorded, s.RecordDir,
 			sidecars, retireID, retireAt, deletedAt, deletedBy, lost); err != nil {
 			return fmt.Errorf("source %s: %w", s.SourceID, err)
 		}

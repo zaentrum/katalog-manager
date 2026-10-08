@@ -233,8 +233,9 @@ func timeOf(t *testing.T, s string) time.Time {
 }
 
 // inVersion moves the title's original into its version's folder, as the
-// packager renames it in, and has the catalog say so: it answers where it
-// lies now.
+// packager renames it in, and has the catalog say so as it did before it
+// kept no place a file arrived at (its source's library path names it): it
+// answers where it lies now.
 func (l *v2Library) inVersion(t *testing.T, id, original, version string) string {
 	t.Helper()
 	to := filepath.Join(version, "original.mkv")
@@ -250,8 +251,9 @@ func (l *v2Library) inVersion(t *testing.T, id, original, version string) string
 
 // An original in its version's folder is a file of its title: a removal
 // that keeps the files puts it back where it arrived before the title's
-// folder goes, and keeps the folder when its place is taken, saying so; one
-// that deletes the files deletes it.
+// folder goes, and keeps the folder when its place is taken, or when the
+// catalog keeps no place it arrived at (a source recorded now), saying so;
+// one that deletes the files deletes it.
 func TestARemovalKeepsAnOriginalInItsVersionsFolder(t *testing.T) {
 	l := newV2Library(t)
 	ctx := context.Background()
@@ -279,6 +281,23 @@ func TestARemovalKeepsAnOriginalInItsVersionsFolder(t *testing.T) {
 	}
 	if _, err := os.Stat(moved); err != nil {
 		t.Errorf("the original whose place is taken is gone: %v", err)
+	}
+
+	// The catalog keeping no place it arrived at, as a source recorded now
+	// keeps none: the folder stays, with the original in it.
+	const fourth = "f4f4f4f4-0000-4000-8000-000000000004"
+	original, version = l.title(t, fourth, "movie", "", true)
+	moved = l.inVersion(t, fourth, original, version)
+	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_itemsources SET librarypath = NULL WHERE item_id = $1`, fourth)
+	res, err = l.svc.RemoveItem(ctx, fourth, false, true, "")
+	if err != nil || !res.Deleted || len(res.Errors) != 1 || !strings.Contains(res.Errors[0], "naming no place it arrived at") {
+		t.Fatalf("RemoveItem of a title whose arrival the catalog does not keep: %+v, %v", res, err)
+	}
+	if _, err := os.Stat(moved); err != nil {
+		t.Errorf("the original whose arrival the catalog does not keep is gone: %v", err)
+	}
+	if _, err := os.Stat(original); !os.IsNotExist(err) {
+		t.Errorf("something lies where it arrived: %v", err)
 	}
 
 	// Deleting the files deletes it.

@@ -47,8 +47,8 @@ func newV2Film(t *testing.T) *v2Film {
 		source: filmSource, ver: filmVersion}
 	original := cfg.Roots(true).Arrivals + "/A Film (2024)/A Film (2024).mkv"
 	storetest.AddItem(t, st, filmItem, "movie", "A Film", "")
-	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state)
-		VALUES ($1, $2, 'A Film (2024).mkv', $3, 1000, 'present')`, filmSource, filmItem, original)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, librarypath, sizebytes, state)
+		VALUES ($1, $2, 'A Film (2024).mkv', $3, 'A Film (2024)/A Film (2024).mkv', 1000, 'present')`, filmSource, filmItem, original)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, sizebytes, sourceid)
 		VALUES ('src-f1', $1, $2, true, 1000, $3)`, filmItem, original, filmSource)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state) VALUES ($1, $2, $3, 'building')`,
@@ -113,7 +113,8 @@ func (f *v2Film) complete(t *testing.T, body string) (int, map[string]any) {
 
 // A version the packager built is taken: it is complete (its package, its
 // folder, completed when its package was), its source recorded with the
-// files it mapped, the packaged asset is its package.json with what its top
+// files it mapped and the library's name for its original (no name it
+// arrived under, nor where), the packaged asset is its package.json with what its top
 // rendition, default audio, peak and size say, the package's subtitles
 // replace the package's before (each not default, labelled by its name else
 // its title; the rendition of a file beside the source gets none, the file's
@@ -138,6 +139,11 @@ func TestPackagingCompleteTakesAVersion(t *testing.T) {
 		AND recorddir = $2 AND sidecars = '[{"path": "subs/2.vtt", "rendition": "sub2", "subtitleAssetId": "s-de"}]'`,
 		filmSource, library.SourceDir(f.itemDir, filmSource)); n != 1 {
 		t.Error("the source is not recorded with the files it mapped")
+	}
+	// A source with a version keeps no name it arrived under, nor where.
+	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_itemsources WHERE id = $1 AND filename = 'original.mkv'
+		AND librarypath IS NULL`, filmSource); n != 1 {
+		t.Error("the source recorded keeps a name it arrived under")
 	}
 	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE item_id = $1 AND kind = 'packaged'
 		AND path = $2 AND versionid = $3 AND codec = 'hvc1.1.6.L120.90' AND resolution = '1920x800' AND bitratekbps = 4200

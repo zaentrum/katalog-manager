@@ -481,22 +481,35 @@ func (h *Handlers) movedOriginalOf(ctx context.Context, itemID, want string, ver
 // recordTheSource records, in tx, the source sourceID of the item: its record
 // written (sources/<id>/), how the packager mapped its subtitle files, and,
 // when the run renamed its original into the version's folder (orig), where
-// it lies now and its name there, which the asset of the title's file
-// follows.
+// it lies now, which the asset of the title's file follows. A source with a
+// version keeps no name it arrived under: its name is the library's (its
+// name in the version's folder, or the one its record gives it), and the
+// place it had among the arrivals goes.
 func recordTheSource(ctx context.Context, tx pgx.Tx, itemID, itemDir, sourceID string, sidecars []byte, orig *movedOriginal) error {
-	var path, name *string
-	if orig != nil {
-		path, name = &orig.path, &orig.name
+	src, err := library.SourceByID(ctx, tx, sourceID)
+	if err != nil {
+		return err
+	}
+	var path *string
+	name := ""
+	switch {
+	case orig != nil:
+		path, name = &orig.path, orig.name
+	case src != nil && library.IsOriginalName(src.Filename):
+		name = src.Filename
+	case src != nil:
+		name = library.OriginalName(src.Filename, 0)
 	}
 	if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET recordedat = COALESCE(recordedat, now()), recorddir = $2,
-			sidecars = $3, arrivalpath = COALESCE($4, arrivalpath), filename = COALESCE($5, filename), modifiedat = now()
+			sidecars = $3, arrivalpath = COALESCE($4, arrivalpath), filename = COALESCE(NULLIF($5, ''), filename),
+			librarypath = NULL, modifiedat = now()
 		WHERE id = $1`, sourceID, library.SourceDir(itemDir, sourceID), sidecars, path, name); err != nil {
 		return err
 	}
 	if orig == nil {
 		return nil
 	}
-	_, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET path = $3, sourceid = $2
+	_, err = tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET path = $3, sourceid = $2
 		WHERE item_id = $1 AND COALESCE(kind, 'primary') = 'primary' AND (sourceid = $2 OR (sourceid IS NULL AND path = $4))`,
 		itemID, sourceID, orig.path, orig.from)
 	return err

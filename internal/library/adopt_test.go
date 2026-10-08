@@ -416,6 +416,8 @@ func TestTheAdoptOfAMigrationRun(t *testing.T) {
 		`SELECT state || ' ' || arrivalpath || ' ' || (recordedat IS NOT NULL) || ' ' || sidecars::text FROM com_nalet_katalog_itemsources
 			WHERE item_id = '` + mgFilm + `'`: "present " + filepath.Join(f.p.Arrivals, "Film (2020)", "Film.mkv") +
 			` true [{"path": "subs/1.vtt", "rendition": "s1", "subtitleAssetId": "se-a0a0"}]`,
+		// a source with a version keeps no name it arrived under, nor where
+		`SELECT filename || ' ' || (librarypath IS NULL) FROM com_nalet_katalog_itemsources WHERE item_id = '` + mgFilm + `'`: "original.mkv true",
 		`SELECT packagepath || ' ' || (recordedat IS NOT NULL) || ' ' || sourcepath FROM com_nalet_katalog_itemextras`: filepath.Join(film.ItemDir,
 			"extras", mgExtra) + " true " + filepath.Join(f.p.Extras, "film", "trailer.mov"),
 		`SELECT (recordedat IS NOT NULL) || ' ' || (libraryprojectedat = modifiedat) FROM com_nalet_katalog_items WHERE id = '` + mgFilm + `'`: "true true",

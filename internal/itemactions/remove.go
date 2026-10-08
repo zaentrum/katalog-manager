@@ -47,7 +47,9 @@ import (
 //     (libraryFolders), and the package store's folders of before. An
 //     original in its version's folder is a file of its title, never a
 //     package's: without deleteFiles it is put back where it arrived before
-//     its folder goes, and a folder whose original cannot be put back stays.
+//     its folder goes, and a folder whose original cannot be put back stays
+//     (so does one whose original's source keeps no place it arrived at, as
+//     a source keeps none once its record is written).
 //  4. Emit stube.catalog.item.removed so live-refresh surfaces drop the item.
 func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, deletePackages bool, reason string) (graph.RemoveResult, error) {
 	var res graph.RemoveResult
