@@ -67,8 +67,15 @@ func newV2Film(t *testing.T) *v2Film {
 // answers its .complete.
 func (f *v2Film) version(t *testing.T, vid, pid string) string {
 	t.Helper()
+	return f.versionOf(t, vid, pid, nil)
+}
+
+// versionOf is version with version.json's fields besides those
+// librarytest.WriteVersion sets (its originalFiles, say).
+func (f *v2Film) versionOf(t *testing.T, vid, pid string, version map[string]any) string {
+	t.Helper()
 	return librarytest.WriteVersion(t, library.VersionDir(f.itemDir, vid), librarytest.Version{VersionID: vid, PackageID: pid,
-		SourceIDs: []string{filmSource}, CreatedAt: "2026-10-06T09:00:00Z", Package: map[string]any{
+		SourceIDs: []string{filmSource}, CreatedAt: "2026-10-06T09:00:00Z", Version: version, Package: map[string]any{
 			"durationMs": 600000, "peakBandwidthBps": 4200000,
 			"renditions": map[string]any{
 				"video": []map[string]any{{"id": "v0", "dir": "hls/v0", "codec": "hvc1.1.6.L120.90", "width": 1920, "height": 800,

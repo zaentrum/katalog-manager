@@ -178,6 +178,16 @@ func primaryOf(ctx context.Context, q Querier, itemID string) (*primaryAsset, er
 	return &a, nil
 }
 
+// PrimarySource is the source the item's primary asset names, as it is; nil
+// when the asset names none, or the item has no primary asset.
+func PrimarySource(ctx context.Context, q Querier, itemID string) (*Source, error) {
+	a, err := primaryOf(ctx, q, itemID)
+	if err != nil || a == nil || a.SourceID == nil {
+		return nil, err
+	}
+	return SourceByID(ctx, q, *a.SourceID)
+}
+
 // EnsureSource is the source behind the item's primary asset: the one it
 // names, or the one whose original lies at its path; a row from before
 // migration 040, or one the scanner took in before the v2 layout, gets its

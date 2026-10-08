@@ -49,6 +49,9 @@ func brokenChain(format string, args ...any) error {
 }
 
 // v2Payload is what the packager sends for a version (2.5) or an extra (2.6).
+// A run that renamed the original into the version's folder (establish,
+// takein) names it there (original); a version taken in (takenIn) has no
+// package, and names no packageId nor complete.
 type v2Payload struct {
 	Layout         string          `json:"layout"`
 	VersionID      string          `json:"versionId"`
@@ -62,7 +65,21 @@ type v2Payload struct {
 	Package        json.RawMessage `json:"package"`
 	Sidecars       []v2Sidecar     `json:"sidecars"`
 	Source         map[string]any  `json:"source"`
+	Original       *v2Original     `json:"original"`
+	TakenIn        bool            `json:"takenIn"`
 }
+
+// v2Original is the original a run renamed into the version's folder: where
+// it lies now, and its name there.
+type v2Original struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+}
+
+// errNoTakeIn says a version cannot be taken in: the catalog lacks migration
+// 044.
+var errNoTakeIn = errors.New("migration 044 (db/migrations/044_library_takein.sql) is not applied: " +
+	"no version is taken in until it is")
 
 // v2Sidecar maps a subtitle file the scanner paired (its subtitle asset) to
 // the rendition the packager made of it.
@@ -141,20 +158,33 @@ func supersedeEventID(old, next string) string {
 
 // packagingCompleteV2 serves the v2 payload of POST
 // /api/items/{id}/packaging-complete (2.5). It takes the version when:
-//   - versionId is the item's version being built, or its complete one (a
-//     report taken again: the same answer);
+//   - versionId is the item's version being built, its version taken in
+//     when the package is added to it, or its complete one (a report taken
+//     again: the same answer);
 //   - versionDir is VersionDir(the item, versionId);
 //   - .complete holds complete, which is the hash of package.json, whose
 //     packageId is packageId;
 //   - version.json names versionId, and sourceId among its sources, whose
-//     record (sources/<id>/checksums.sha256) is written.
+//     record (sources/<id>/checksums.sha256) is written;
+//   - the original the run renamed into the version's folder, when it names
+//     one, lies there under the name the library gives it, version.json's
+//     originalFiles name it, and it is the source's (its size, its quick
+//     hash).
+//
+// A version taken in (takenIn: true) has no package: what the version and
+// its original are must hold as above, and the folder has no .complete; it
+// is recorded taken, the title playing from its original.
 //
 // A stale run is 409, a chain that does not hold 422; the version's folder is
-// then moved out of the record unless it is a version the catalog keeps. A
-// version taken: the one it supersedes gets its package-superseded event
-// first, then one transaction records the version complete (the other
-// superseded), its source recorded, the packaged asset of package.json, the
-// package's subtitles, the source's tracks and probe, and the item modified.
+// then moved out of the record unless it is a version the catalog keeps, an
+// original the run renamed into it first put back where the catalog says it
+// lies; a version taken in keeps its folder, the package added to it going
+// out. A version taken: the one it supersedes gets its package-superseded
+// event first, then one transaction records the version complete (the other
+// superseded), its source recorded (where its original lies now, when the
+// run renamed it into the folder, and the asset of the title's file with
+// it), the packaged asset of package.json, the package's subtitles, the
+// source's tracks and probe, and the item modified.
 func (h *Handlers) packagingCompleteV2(w http.ResponseWriter, r *http.Request, itemID string, raw map[string]any) {
 	ctx := reqCtx(r)
 	var in v2Payload
@@ -162,22 +192,36 @@ func (h *Handlers) packagingCompleteV2(w http.ResponseWriter, r *http.Request, i
 		writeError(w, http.StatusBadRequest, "the body is no v2 payload")
 		return
 	}
-	for _, f := range [][2]string{{"versionId", in.VersionID}, {"packageId", in.PackageID}, {"versionDir", in.VersionDir},
-		{"complete", in.Complete}, {"sourceId", in.SourceID}} {
+	required := [][2]string{{"versionId", in.VersionID}, {"versionDir", in.VersionDir}, {"sourceId", in.SourceID}}
+	if !in.TakenIn {
+		required = append(required, [2]string{"packageId", in.PackageID}, [2]string{"complete", in.Complete})
+	}
+	for _, f := range required {
 		if strings.TrimSpace(f[1]) == "" {
 			writeError(w, http.StatusBadRequest, "the v2 payload names no "+f[0])
 			return
 		}
 	}
+	if in.TakenIn && (in.Original == nil || strings.TrimSpace(in.Original.Path) == "") {
+		writeError(w, http.StatusBadRequest, "the v2 payload of a version taken in names no original")
+		return
+	}
 	answer, err := h.takeVersion(ctx, itemID, in)
 	var no *refused
 	switch {
 	case errors.As(err, &no):
-		if moved := h.dropRefusedVersion(ctx, itemID, in.VersionID); moved != "" {
-			no.reason += "; the version's folder is moved out of the record, to " + moved
+		named := ""
+		if in.Original != nil {
+			named = in.Original.Path
+		}
+		if moved := h.dropRefusedVersion(ctx, itemID, in.VersionID, named); moved != "" {
+			no.reason += "; " + moved
 		}
 		log.Printf("packagingComplete: %s version %s refused: %s", itemID, in.VersionID, no.reason)
 		writeError(w, no.status, no.reason)
+		return
+	case errors.Is(err, errNoTakeIn):
+		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	case errors.Is(err, library.ErrNoItem):
 		writeError(w, http.StatusNotFound, "unknown item: "+itemID)
@@ -218,31 +262,25 @@ func (h *Handlers) takeVersion(ctx context.Context, itemID string, in v2Payload)
 	if filepath.Clean(in.VersionDir) != want {
 		return nil, stale("versionDir is %s, and the version's folder is %s", in.VersionDir, want)
 	}
+	if in.TakenIn {
+		return h.takeIn(ctx, itemID, itemDir, want, v, in)
+	}
 	pkg, _, err := chainOf(want, in.Complete, in.PackageID)
 	if err != nil {
 		return nil, err
 	}
-	ver, err := readRecord(filepath.Join(want, library.VersionFile))
+	ver, sources, err := versionRecordOf(itemDir, want, in)
 	if err != nil {
 		return nil, err
 	}
-	if id := asString(ver["versionId"]); id == nil || *id != in.VersionID {
-		return nil, brokenChain("version.json names version %s, not %s", deref(id), in.VersionID)
-	}
-	sources := []string{}
-	for _, s := range asList(ver["sourceIds"]) {
-		if id := asString(s); id != nil {
-			sources = append(sources, *id)
-		}
-	}
-	if !contains(sources, in.SourceID) {
-		return nil, brokenChain("version.json's sources %v do not name source %s", sources, in.SourceID)
-	}
-	if _, err := os.Stat(filepath.Join(library.SourceDir(itemDir, in.SourceID), library.SumsFile)); err != nil {
-		return nil, brokenChain("the source's record sources/%s is not written: %v", in.SourceID, err)
-	}
 	if v.State == library.VersionComplete {
 		return h.versionAnswer(ctx, itemID, in.VersionID, pkg)
+	}
+	var orig *movedOriginal
+	if in.Original != nil {
+		if orig, err = h.movedOriginalOf(ctx, itemID, want, ver, in); err != nil {
+			return nil, err
+		}
 	}
 
 	// The version it supersedes gets its event first: the record comes first.
@@ -282,7 +320,7 @@ func (h *Handlers) takeVersion(ctx context.Context, itemID string, in v2Payload)
 	if err != nil {
 		return nil, err
 	}
-	if cur == nil || cur.State != library.VersionBuilding {
+	if cur == nil || (cur.State != library.VersionBuilding && cur.State != library.VersionTaken) {
 		if cur != nil && cur.State == library.VersionComplete {
 			return h.versionAnswer(ctx, itemID, in.VersionID, pkg)
 		}
@@ -313,9 +351,7 @@ func (h *Handlers) takeVersion(ctx context.Context, itemID string, in v2Payload)
 	if in.Sidecars == nil {
 		sidecars = []byte("[]")
 	}
-	if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET recordedat = COALESCE(recordedat, now()), recorddir = $2,
-			sidecars = $3, modifiedat = now()
-		WHERE id = $1`, in.SourceID, library.SourceDir(itemDir, in.SourceID), sidecars); err != nil {
+	if err := recordTheSource(ctx, tx, itemID, itemDir, in.SourceID, sidecars, orig); err != nil {
 		return nil, err
 	}
 	written, err := h.writePackaged(ctx, tx, itemID, itemDir, want, in.VersionID, pkg)
@@ -348,6 +384,195 @@ func (h *Handlers) takeVersion(ctx context.Context, itemID string, in v2Payload)
 		"packagedAssetWritten": true, "subtitlesWritten": written, "audioTracks": len(asListOfMap(asMap(pkg["renditions"])["audio"]))}
 	if prev != nil {
 		answer["superseded"] = prev.ID
+	}
+	return answer, nil
+}
+
+// versionRecordOf reads the version.json of the version folder want, which
+// must name the payload's version and its source among its sources, whose
+// record must be written: it answers the record and its sources.
+func versionRecordOf(itemDir, want string, in v2Payload) (map[string]any, []string, error) {
+	ver, err := readRecord(filepath.Join(want, library.VersionFile))
+	if err != nil {
+		return nil, nil, err
+	}
+	if id := asString(ver["versionId"]); id == nil || *id != in.VersionID {
+		return nil, nil, brokenChain("version.json names version %s, not %s", deref(id), in.VersionID)
+	}
+	sources := []string{}
+	for _, s := range asList(ver["sourceIds"]) {
+		if id := asString(s); id != nil {
+			sources = append(sources, *id)
+		}
+	}
+	if !contains(sources, in.SourceID) {
+		return nil, nil, brokenChain("version.json's sources %v do not name source %s", sources, in.SourceID)
+	}
+	if _, err := os.Stat(filepath.Join(library.SourceDir(itemDir, in.SourceID), library.SumsFile)); err != nil {
+		return nil, nil, brokenChain("the source's record sources/%s is not written: %v", in.SourceID, err)
+	}
+	return ver, sources, nil
+}
+
+// movedOriginal is the original a run renamed into the version's folder:
+// where it lies now and its name there, and where the catalog had it before.
+type movedOriginal struct {
+	path, name, from string
+}
+
+// movedOriginalOf checks the original the payload in names, which the run
+// renamed into the version's folder want: it lies directly in the folder,
+// under the name the library gives an original, version.json's
+// originalFiles (ver's) name it, and it is the file of the payload's source,
+// a source of the item still there (its size, and its quick hash when it was
+// recorded with one).
+func (h *Handlers) movedOriginalOf(ctx context.Context, itemID, want string, ver map[string]any, in v2Payload) (*movedOriginal, error) {
+	o := in.Original
+	path := filepath.Clean(o.Path)
+	if !filepath.IsAbs(o.Path) || filepath.Dir(path) != want {
+		return nil, brokenChain("the original's path %s does not lie in the version's folder %s", o.Path, want)
+	}
+	if o.Name != filepath.Base(path) || !library.IsOriginalName(o.Name) {
+		return nil, brokenChain("the original's name %q is not the one the library gives it in its version's folder (%s)",
+			o.Name, filepath.Base(path))
+	}
+	if files, ok := ver["originalFiles"]; ok {
+		named := false
+		for _, f := range asList(files) {
+			if s := asString(f); s != nil && *s == o.Name {
+				named = true
+			}
+		}
+		if !named {
+			return nil, brokenChain("version.json's originalFiles do not name the original %s", o.Name)
+		}
+	}
+	src, err := library.SourceByID(ctx, h.d.Store.Pool(), in.SourceID)
+	switch {
+	case err != nil:
+		return nil, err
+	case src == nil || src.ItemID != itemID:
+		return nil, stale("source %s is no source of the item", in.SourceID)
+	case src.State != library.SourcePresent:
+		return nil, stale("source %s is %s: its original is no longer the title's", in.SourceID, src.State)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, brokenChain("the original %s: %v", path, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, brokenChain("the original %s is no file", path)
+	}
+	if fi.Size() != src.SizeBytes {
+		return nil, brokenChain("the original %s is %d bytes, and source %s was recorded with %d", path, fi.Size(), src.ID,
+			src.SizeBytes)
+	}
+	if src.QH1 != nil {
+		if _, qh1, err := library.QH1(path); err != nil {
+			return nil, brokenChain("the original %s: %v", path, err)
+		} else if qh1 != *src.QH1 {
+			return nil, brokenChain("the original %s has the quick hash %s, and source %s was recorded with %s", path, qh1,
+				src.ID, *src.QH1)
+		}
+	}
+	return &movedOriginal{path: path, name: o.Name, from: deref(src.ArrivalPath)}, nil
+}
+
+// recordTheSource records, in tx, the source sourceID of the item: its record
+// written (sources/<id>/), how the packager mapped its subtitle files, and,
+// when the run renamed its original into the version's folder (orig), where
+// it lies now and its name there, which the asset of the title's file
+// follows.
+func recordTheSource(ctx context.Context, tx pgx.Tx, itemID, itemDir, sourceID string, sidecars []byte, orig *movedOriginal) error {
+	var path, name *string
+	if orig != nil {
+		path, name = &orig.path, &orig.name
+	}
+	if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET recordedat = COALESCE(recordedat, now()), recorddir = $2,
+			sidecars = $3, arrivalpath = COALESCE($4, arrivalpath), filename = COALESCE($5, filename), modifiedat = now()
+		WHERE id = $1`, sourceID, library.SourceDir(itemDir, sourceID), sidecars, path, name); err != nil {
+		return err
+	}
+	if orig == nil {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET path = $3, sourceid = $2
+		WHERE item_id = $1 AND COALESCE(kind, 'primary') = 'primary' AND (sourceid = $2 OR (sourceid IS NULL AND path = $4))`,
+		itemID, sourceID, orig.path, orig.from)
+	return err
+}
+
+// takeIn records the version taken in of the payload in (takenIn): the run
+// renamed the original into the version's folder want with its version.json,
+// and built no package. It holds when the version is the one the item
+// builds, version.json and the source's record hold as for a package
+// (versionRecordOf), the folder has no .complete, and the original is the
+// source's, in the folder (movedOriginalOf). One transaction records the
+// version taken (its folder, its sources), its source recorded where its
+// original lies now, with the asset of the title's file, and the source's
+// probe. The title plays from its original as one without a package does:
+// nothing is announced. A version taken in already is the same answer; one
+// complete is stale.
+func (h *Handlers) takeIn(ctx context.Context, itemID, itemDir, want string, v *library.Version, in v2Payload) (map[string]any, error) {
+	answer := map[string]any{"itemId": itemID, "versionId": in.VersionID, "takenIn": true, "current": false,
+		"superseded": nil, "packagedAssetWritten": false, "subtitlesWritten": 0, "audioTracks": 0}
+	switch v.State {
+	case library.VersionTaken:
+		return answer, nil
+	case library.VersionComplete:
+		return nil, stale("version %s is complete, with its package: it is taken in no more", in.VersionID)
+	}
+	if _, err := os.Lstat(filepath.Join(want, library.CompleteFile)); err == nil {
+		return nil, brokenChain("a version taken in has no package, and %s holds its %s", want, library.CompleteFile)
+	}
+	ver, sources, err := versionRecordOf(itemDir, want, in)
+	if err != nil {
+		return nil, err
+	}
+	orig, err := h.movedOriginalOf(ctx, itemID, want, ver, in)
+	if err != nil {
+		return nil, err
+	}
+	sidecars, err := json.Marshal(in.Sidecars)
+	if err != nil {
+		return nil, err
+	}
+	if in.Sidecars == nil {
+		sidecars = []byte("[]")
+	}
+	tx, err := h.d.Store.Pool().Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	if err := library.LockItem(ctx, tx, itemID); err != nil {
+		return nil, err
+	}
+	cur, err := library.VersionByID(ctx, tx, in.VersionID)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case cur != nil && cur.State == library.VersionTaken:
+		return answer, nil
+	case cur == nil || cur.State != library.VersionBuilding:
+		return nil, stale("version %s is no longer being built", in.VersionID)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_itemversions SET state = 'taken', dir = $2, sourceids = $3, modifiedat = now()
+		WHERE id = $1 AND state = 'building'`, in.VersionID, want, sources); err != nil {
+		if library.IsTakenRefused(err) {
+			return nil, errNoTakeIn
+		}
+		return nil, err
+	}
+	if err := recordTheSource(ctx, tx, itemID, itemDir, in.SourceID, sidecars, orig); err != nil {
+		return nil, err
+	}
+	if _, err := sourceprobe.Fill(ctx, tx, itemID, sourceFromManifest(in.Source)); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 	return answer, nil
 }
@@ -528,8 +753,14 @@ func tracksManifest(pkg map[string]any, sourceDir string) map[string]any {
 // the record, into the work folder's legacy/, which the sweep empties after
 // its grace: a version folder the catalog does not keep is no record. A
 // version the catalog keeps (complete, superseded, removed) is never moved.
-// It answers where the folder went, "" when nothing moved.
-func (h *Handlers) dropRefusedVersion(ctx context.Context, itemID, versionID string) string {
+// An original never goes with the folder: the one a run renamed into it (or
+// to named, where the payload says it lies in the item's folder) is put back
+// where the catalog says it lies first (returnOriginal), and a folder whose
+// original cannot be put back stays where it is. Of a version taken in, the
+// folder stays with its version.json and its original, and only the package
+// a run added to it goes out (dropRefusedPackage). It says what moved where,
+// "" when nothing did.
+func (h *Handlers) dropRefusedVersion(ctx context.Context, itemID, versionID, named string) string {
 	if !library.ValidID(versionID) {
 		return ""
 	}
@@ -539,24 +770,137 @@ func (h *Handlers) dropRefusedVersion(ctx context.Context, itemID, versionID str
 		return ""
 	}
 	v, err := library.VersionByID(ctx, pool, versionID)
-	if err != nil || (v != nil && (v.ItemID != itemID || v.State != library.VersionBuilding)) {
+	if err != nil || (v != nil && (v.ItemID != itemID || (v.State != library.VersionBuilding && v.State != library.VersionTaken))) {
 		return ""
 	}
 	p := h.paths()
-	dir := library.VersionDir(p.ItemDir(pl), versionID)
-	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
+	itemDir := p.ItemDir(pl)
+	dir := library.VersionDir(itemDir, versionID)
+	to := filepath.Join(p.LegacyDay(time.Now()), "refused", itemID+"-"+versionID+"-"+library.NewID()[:8])
+	if v != nil && v.State == library.VersionTaken {
+		if moved := dropRefusedPackage(dir, to); moved > 0 {
+			return fmt.Sprintf("the package added to the version taken in (%d of its files and folders) is moved out of "+
+				"the record, to %s; the version keeps its original", moved, to)
+		}
 		return ""
 	}
-	to := filepath.Join(p.LegacyDay(time.Now()), "refused", itemID+"-"+versionID+"-"+library.NewID()[:8])
+	back, ok := h.returnOriginal(ctx, itemID, itemDir, dir, named)
+	if !ok {
+		return "the version's folder stays in the record: it holds an original that cannot be put back where the catalog says it lies"
+	}
+	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
+		return back
+	}
+	if back != "" {
+		back += "; "
+	}
 	if err := library.MkdirAll(filepath.Dir(to)); err != nil {
 		log.Printf("packagingComplete: the refused version %s cannot be moved out of the record: %v", dir, err)
-		return ""
+		return strings.TrimSuffix(back, "; ")
 	}
 	if err := os.Rename(dir, to); err != nil {
 		log.Printf("packagingComplete: the refused version %s cannot be moved out of the record: %v", dir, err)
-		return ""
+		return strings.TrimSuffix(back, "; ")
 	}
-	return to
+	return back + "the version's folder is moved out of the record, to " + to
+}
+
+// returnOriginal puts the original a refused run renamed into the version's
+// folder dir (a file there named as the library names an original, or the
+// one the payload names, named, in the item's folder itemDir) back where the
+// catalog says it lies (its arrival, as the asset of the title's file and its
+// source say until a version of it is taken): when it is the source's file
+// (its size, its quick hash), and nothing lies there. It says what it put
+// back, and reports whether the folder holds no original any more: one with
+// several, with one the catalog names no other place for, that is no file of
+// the source, or whose place is taken, keeps it.
+func (h *Handlers) returnOriginal(ctx context.Context, itemID, itemDir, dir, named string) (string, bool) {
+	names, err := library.OriginalsIn(dir)
+	if err != nil {
+		log.Printf("packagingComplete: the refused version %s cannot be read: %v", dir, err)
+		return "", false
+	}
+	found := map[string]bool{}
+	for _, n := range names {
+		found[filepath.Join(dir, n)] = true
+	}
+	if path := filepath.Clean(named); named != "" && filepath.IsAbs(named) && library.Within(itemDir, path) {
+		if fi, err := os.Lstat(path); err == nil && fi.Mode().IsRegular() {
+			found[path] = true
+		}
+	}
+	if len(found) == 0 {
+		return "", true
+	}
+	keep := func(path, why string) (string, bool) {
+		inside := library.Within(dir, path)
+		if inside {
+			log.Printf("packagingComplete: the refused version %s keeps its folder in the record: %s", dir, why)
+		} else {
+			log.Printf("packagingComplete: %s stays where the refused run of version %s put it: %s", path, dir, why)
+		}
+		return "", !inside
+	}
+	if len(found) > 1 {
+		log.Printf("packagingComplete: the refused version %s keeps its folder in the record: it holds %d originals", dir, len(found))
+		return "", false
+	}
+	var path string
+	for f := range found {
+		path = f
+	}
+	src, err := library.PrimarySource(ctx, h.d.Store.Pool(), itemID)
+	switch {
+	case err != nil:
+		return keep(path, err.Error())
+	case src == nil || src.ArrivalPath == nil:
+		return keep(path, "the catalog names no place for its original")
+	case h.paths().InRecord(*src.ArrivalPath):
+		return keep(path, "the catalog has the original in the record, at "+*src.ArrivalPath)
+	}
+	to := filepath.Clean(*src.ArrivalPath)
+	size, qh1, err := library.QH1(path)
+	switch {
+	case err != nil:
+		return keep(path, err.Error())
+	case size != src.SizeBytes || (src.QH1 != nil && qh1 != *src.QH1):
+		return keep(path, fmt.Sprintf("%s is no file of source %s", path, src.ID))
+	}
+	if _, err := os.Lstat(to); err == nil {
+		return keep(path, fmt.Sprintf("a file lies at %s, where the original goes back", to))
+	}
+	if err := library.MkdirAll(filepath.Dir(to)); err != nil {
+		return keep(path, err.Error())
+	}
+	if err := os.Rename(path, to); err != nil {
+		return keep(path, err.Error())
+	}
+	return "its original is put back at " + to, true
+}
+
+// dropRefusedPackage moves the package a refused run added to the folder dir
+// of a version taken in out of the record, to the folder to: the files and
+// folders of a package and its chain (.complete first), the version's
+// record and its original staying, as they were taken in. It answers how
+// many it moved.
+func dropRefusedPackage(dir, to string) int {
+	moved := 0
+	for _, name := range []string{library.CompleteFile, library.PackageFile, library.SumsFile, "hls", "subs", "trickplay", "trailers"} {
+		from := filepath.Join(dir, name)
+		if _, err := os.Lstat(from); err != nil {
+			continue
+		}
+		if err := library.MkdirAll(to); err != nil {
+			log.Printf("packagingComplete: the package added to %s cannot be moved out of the record: %v", dir, err)
+			return moved
+		}
+		if err := os.Rename(from, filepath.Join(to, name)); err != nil {
+			log.Printf("packagingComplete: %s cannot be moved out of the record: %v", from, err)
+			return moved
+		}
+		moved++
+	}
+	return moved
 }
 
 func asList(o any) []any {
