@@ -33,6 +33,10 @@ var (
 // shared folders, which no package holds (as the library's tools read one).
 var osArtefacts = regexp.MustCompile(`^(\.DS_Store|\._.*|Thumbs\.db|desktop\.ini|@eaDir|\.@__thumb|#recycle|\.AppleDouble)$`)
 
+// IsArtefact reports whether name is that of a file operating systems and
+// NAS software drop into shared folders.
+func IsArtefact(name string) bool { return osArtefacts.MatchString(name) }
+
 // Broken says which file of a chain does not hold, and how.
 type Broken struct{ File, Reason string }
 

@@ -805,24 +805,34 @@ func (h *Handlers) dropRefusedVersion(ctx context.Context, itemID, versionID, na
 	return back + "the version's folder is moved out of the record, to " + to
 }
 
+// versionRecords are the files a version's folder holds besides its
+// package's folders: its record and its chain. Any other file in it may be
+// an original.
+var versionRecords = map[string]bool{library.VersionFile: true, library.SumsFile: true, library.PackageFile: true,
+	library.CompleteFile: true}
+
 // returnOriginal puts the original a refused run renamed into the version's
-// folder dir (a file there named as the library names an original, or the
-// one the payload names, named, in the item's folder itemDir) back where the
-// catalog says it lies (its arrival, as the asset of the title's file and its
-// source say until a version of it is taken): when it is the source's file
-// (its size, its quick hash), and nothing lies there. It says what it put
-// back, and reports whether the folder holds no original any more: one with
-// several, with one the catalog names no other place for, that is no file of
-// the source, or whose place is taken, keeps it.
+// folder dir (or to named, where the payload says it lies in the item's
+// folder itemDir) back where the catalog says it lies: its arrival, as the
+// asset of the title's file and its source say until a version of it is
+// taken. The original is the file there, beside the version's record, that
+// is the source's (its size, its quick hash), whatever it is named; it goes
+// back when nothing lies at its place. It says what it put back, and
+// reports whether the folder holds no file that may be an original any
+// more: one with several, with a file that is not the source's, with an
+// original the catalog names no other place for, or whose place is taken,
+// keeps it.
 func (h *Handlers) returnOriginal(ctx context.Context, itemID, itemDir, dir, named string) (string, bool) {
-	names, err := library.OriginalsIn(dir)
-	if err != nil {
+	entries, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Printf("packagingComplete: the refused version %s cannot be read: %v", dir, err)
 		return "", false
 	}
 	found := map[string]bool{}
-	for _, n := range names {
-		found[filepath.Join(dir, n)] = true
+	for _, e := range entries {
+		if !e.IsDir() && !versionRecords[e.Name()] && !library.IsArtefact(e.Name()) {
+			found[filepath.Join(dir, e.Name())] = true
+		}
 	}
 	if path := filepath.Clean(named); named != "" && filepath.IsAbs(named) && library.Within(itemDir, path) {
 		if fi, err := os.Lstat(path); err == nil && fi.Mode().IsRegular() {
@@ -832,48 +842,52 @@ func (h *Handlers) returnOriginal(ctx context.Context, itemID, itemDir, dir, nam
 	if len(found) == 0 {
 		return "", true
 	}
-	keep := func(path, why string) (string, bool) {
-		inside := library.Within(dir, path)
-		if inside {
-			log.Printf("packagingComplete: the refused version %s keeps its folder in the record: %s", dir, why)
-		} else {
-			log.Printf("packagingComplete: %s stays where the refused run of version %s put it: %s", path, dir, why)
-		}
-		return "", !inside
-	}
-	if len(found) > 1 {
-		log.Printf("packagingComplete: the refused version %s keeps its folder in the record: it holds %d originals", dir, len(found))
+	keep := func(why string) (string, bool) {
+		log.Printf("packagingComplete: the refused version %s keeps its folder in the record: %s", dir, why)
 		return "", false
 	}
-	var path string
-	for f := range found {
-		path = f
-	}
 	src, err := library.PrimarySource(ctx, h.d.Store.Pool(), itemID)
+	if err != nil {
+		return keep(err.Error())
+	}
+	var original string
+	for path := range found {
+		ok := false
+		if src != nil {
+			if size, qh1, err := library.QH1(path); err == nil && size == src.SizeBytes && (src.QH1 == nil || qh1 == *src.QH1) {
+				ok = true
+			}
+		}
+		switch {
+		case ok && original == "":
+			original = path
+		case ok:
+			return keep(fmt.Sprintf("it holds more than one file of source %s", src.ID))
+		case library.Within(dir, path):
+			return keep(fmt.Sprintf("%s may be an original, and it is no file of the title's source", path))
+		default:
+			log.Printf("packagingComplete: %s stays where the refused run of version %s put it: it is no file of the title's source",
+				path, dir)
+		}
+	}
+	if original == "" {
+		return "", true // nothing in the folder may be an original
+	}
 	switch {
-	case err != nil:
-		return keep(path, err.Error())
-	case src == nil || src.ArrivalPath == nil:
-		return keep(path, "the catalog names no place for its original")
+	case src.ArrivalPath == nil:
+		return keep("the catalog names no place for its original " + original)
 	case h.paths().InRecord(*src.ArrivalPath):
-		return keep(path, "the catalog has the original in the record, at "+*src.ArrivalPath)
+		return keep("the catalog has the original in the record, at " + *src.ArrivalPath)
 	}
 	to := filepath.Clean(*src.ArrivalPath)
-	size, qh1, err := library.QH1(path)
-	switch {
-	case err != nil:
-		return keep(path, err.Error())
-	case size != src.SizeBytes || (src.QH1 != nil && qh1 != *src.QH1):
-		return keep(path, fmt.Sprintf("%s is no file of source %s", path, src.ID))
-	}
 	if _, err := os.Lstat(to); err == nil {
-		return keep(path, fmt.Sprintf("a file lies at %s, where the original goes back", to))
+		return keep(fmt.Sprintf("a file lies at %s, where its original %s goes back", to, original))
 	}
 	if err := library.MkdirAll(filepath.Dir(to)); err != nil {
-		return keep(path, err.Error())
+		return keep(err.Error())
 	}
-	if err := os.Rename(path, to); err != nil {
-		return keep(path, err.Error())
+	if err := os.Rename(original, to); err != nil {
+		return keep(err.Error())
 	}
 	return "its original is put back at " + to, true
 }

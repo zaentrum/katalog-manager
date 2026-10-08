@@ -299,3 +299,41 @@ func fileNames(t *testing.T, dir string) []string {
 	}
 	return out
 }
+
+// A refused version's folder never takes an original with it, whatever the
+// payload says: the source's file found beside the version's record, under
+// any name and named by no payload, goes back where the catalog says it
+// lies first; a folder holding a file that may be an original and is not the
+// source's stays, and a file operating systems drop there is no original.
+func TestARefusedFolderNeverTakesAnOriginalWithIt(t *testing.T) {
+	f := newV2Film(t)
+	arrival := f.arrived(t)
+	vdir := library.VersionDir(f.itemDir, filmVersion)
+	broken := "sha256:" + strings.Repeat("0", 64)
+
+	f.versionOf(t, filmVersion, filmPackage, originalNamed)
+	if err := os.Rename(arrival, filepath.Join(vdir, "stray.bin")); err != nil {
+		t.Fatal(err)
+	}
+	librarytest.Write(t, filepath.Join(vdir, ".DS_Store"), []byte("an artefact"))
+	code, m := f.complete(t, f.payload(filmVersion, filmPackage, broken))
+	if code != http.StatusUnprocessableEntity || !strings.Contains(fmt.Sprint(m["error"]), "its original is put back at "+arrival) {
+		t.Errorf("a broken chain whose folder holds the original under another name: %d %v", code, m)
+	}
+	if _, err := os.Stat(arrival); err != nil {
+		t.Errorf("the original is not back where it arrived: %v", err)
+	}
+	if _, err := os.Stat(vdir); !os.IsNotExist(err) {
+		t.Errorf("the refused folder stays: %v", err)
+	}
+
+	f.versionOf(t, filmVersion, filmPackage, originalNamed)
+	librarytest.Write(t, filepath.Join(vdir, "notes.txt"), []byte("a file no version holds"))
+	code, m = f.complete(t, f.payload(filmVersion, filmPackage, broken))
+	if code != http.StatusUnprocessableEntity || !strings.Contains(fmt.Sprint(m["error"]), "stays in the record") {
+		t.Errorf("a broken chain whose folder holds a file that may be an original: %d %v", code, m)
+	}
+	if _, err := os.Stat(filepath.Join(vdir, "notes.txt")); err != nil {
+		t.Errorf("the folder holding a file that may be an original was moved: %v", err)
+	}
+}
