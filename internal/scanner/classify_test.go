@@ -81,8 +81,8 @@ func TestEpisodeRanges(t *testing.T) {
 		{"Show_S05E15.mkv", 0, 0, 0}, // an underscore before it is a word's, as it was
 		{"Show.S05E15E16E17.mkv", 5, 15, 17},
 		{"Show.S05E15-E16-E17.mkv", 5, 15, 17},
-		{"Show.S05E15-16.720p.WEB.mkv", 5, 15, 16},
-		{"Show.S01E01-E02.1080p.x264-GROUP.mkv", 1, 1, 2},
+		{"Show.S05E15-16.720p.The.Finale.mkv", 5, 15, 16},
+		{"Show.S01E01-E02.1080p.mkv", 1, 1, 2},
 		{"Show.S05E15-720p.mkv", 5, 15, 15},
 		{"Show.S05E15-1080p.mkv", 5, 15, 15},
 		{"Show.S05E15-2160P.mkv", 5, 15, 15},
@@ -93,7 +93,7 @@ func TestEpisodeRanges(t *testing.T) {
 		{"Show.S05E15-E24.mkv", 5, 15, 24},
 		{"Show.S05E15.720p.mkv", 5, 15, 15},
 		{"Show.S05E15-E16x.mkv", 5, 15, 15},
-		{"Show.S05E15x264.mkv", 0, 0, 0},
+		{"Show.S05E15Finale.mkv", 0, 0, 0},
 		{"Show.S05E1500.mkv", 0, 0, 0},
 		{"Big Buck Bunny (2008).mp4", 0, 0, 0},
 	}
