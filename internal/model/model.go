@@ -355,6 +355,29 @@ type ScanJob struct {
 	FilesSeen     *int32
 	ItemsInserted *int32
 	ItemsUpdated  *int32
+	// Report is what the scan passed over and left alone (migration 045):
+	// none while it runs, and on a catalog without the migration.
+	Report []ScanNote
+}
+
+// What a scan's report says of a file or an episode (ScanNote.Kind).
+const (
+	// ScanNoteUnsupported: a file the scan takes in as nothing, a disc
+	// image; itemId the title whose file it was already, if any.
+	ScanNoteUnsupported = "unsupported"
+	// ScanNoteNotLinked: an episode a file's name covers that the scan left
+	// alone, itemId it (it has a file of its own, which wins, or another
+	// file covers it already).
+	ScanNoteNotLinked = "not-linked"
+)
+
+// ScanNote is one entry of a scan's report: what it is, the file, the item
+// it concerns, and why.
+type ScanNote struct {
+	Kind   string  `json:"kind"`
+	Path   string  `json:"path"`
+	ItemID *string `json:"itemId"`
+	Reason string  `json:"reason"`
 }
 
 type EnrichmentJob struct {

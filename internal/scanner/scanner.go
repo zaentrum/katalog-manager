@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +39,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/library"
+	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
@@ -121,11 +123,31 @@ func (s *Scanner) Trigger(ctx context.Context, source string) (string, error) {
 	return job.ID, nil
 }
 
-// scanResult accumulates the walk counters (mirrors NfsScanner.Result).
+// scanResult accumulates the walk counters (mirrors NfsScanner.Result), and
+// its report: what it passed over and left alone, the first maxReport of it.
 type scanResult struct {
 	filesSeen     int32
 	itemsInserted int32
 	itemsUpdated  int32
+	report        []model.ScanNote
+	unreported    int
+}
+
+// maxReport is the most a scan's report holds; the log says every one.
+const maxReport = 1000
+
+// note adds n to the report, and says it in the log.
+func (r *scanResult) note(n model.ScanNote) {
+	item := ""
+	if n.ItemID != nil {
+		item = " (item " + *n.ItemID + ")"
+	}
+	log.Printf("scanner: %s %s%s: %s", n.Kind, n.Path, item, n.Reason)
+	if len(r.report) >= maxReport {
+		r.unreported++
+		return
+	}
+	r.report = append(r.report, n)
 }
 
 // runScan executes the walk and finalises the scan job. It never panics out: a
@@ -143,11 +165,16 @@ func (s *Scanner) runScan(ctx context.Context, jobID string) {
 		})
 		return
 	}
+	if res.unreported > 0 {
+		log.Printf("scanner: the report of scan %s holds %d entries; %d more are in the log above", jobID, len(res.report),
+			res.unreported)
+	}
 	_ = s.st.FinishScanJob(ctx, jobID, store.ScanJobResult{
 		Status:        "done",
 		FilesSeen:     res.filesSeen,
 		ItemsInserted: res.itemsInserted,
 		ItemsUpdated:  res.itemsUpdated,
+		Report:        res.report,
 	})
 }
 
@@ -192,7 +219,12 @@ func (s *Scanner) walk(ctx context.Context, beat func()) (scanResult, error) {
 		return res, nil
 	}
 
+	covers, err := library.CoversReady(ctx, s.st.Pool())
+	if err != nil {
+		return res, fmt.Errorf("whether the catalog links the episodes a file covers could not be read: %w", err)
+	}
 	xs := newWalkState(s.extrasOn(ctx))
+	xs.covers = covers
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		beat()
 		if err != nil {
@@ -215,10 +247,16 @@ func (s *Scanner) walk(ctx context.Context, beat func()) (scanResult, error) {
 		return nil
 	})
 	// The extras once every title's file is in: a trailer is walked before
-	// the film it names ("Sintel-trailer.mkv" before "Sintel.mkv").
+	// the film it names ("Sintel-trailer.mkv" before "Sintel.mkv"). So are
+	// the episodes a file covers besides its first: an episode's own file may
+	// be walked after the file that covers it ("S05E19-20.mkv" before
+	// "S05E20.mkv"), and wins.
 	if walkErr == nil && xs.on {
 		s.takeExtras(ctx, root, xs.found)
 		s.reconcileExtras(ctx, root)
+	}
+	if walkErr == nil {
+		s.linkCovered(ctx, xs, &res)
 	}
 	return res, walkErr
 }
@@ -240,6 +278,10 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 	ext := strings.ToLower(name[dot:])
 	isVideo := videoExts[ext]
 	isAudio := audioExts[ext]
+	if processing.IsDiscImage(name) {
+		s.passOverDiscImage(ctx, path, res)
+		return
+	}
 	if !isVideo && !isAudio {
 		return
 	}
@@ -275,6 +317,9 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 	var seasonNumber, episodeNumber *int32
 	var parentID *string
 	var newSeriesID string // set when this file created a series parent (emit one discovered)
+	// The episodes the file covers: its first, which it belongs to, and the
+	// others of a range its name numbers (covers.go).
+	numbers, numbered := firstEpisodeToken(name)
 	if typ == "episode" {
 		seasonNumber, episodeNumber = episodeCoords(name)
 		if sid, created := s.resolveSeriesParent(ctx, pool, rel, name); sid != "" {
@@ -375,6 +420,9 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 		}
 	}
 
+	if typ == "episode" && isVideo {
+		s.coverEpisodes(ctx, xs, itemID, absPath, numbers, numbered, title, year)
+	}
 	if isVideo {
 		s.scanSidecars(ctx, pool, path, itemID)
 	}

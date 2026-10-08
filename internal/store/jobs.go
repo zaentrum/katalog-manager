@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -133,29 +134,64 @@ func (s *Store) FailSilentScanJobs(ctx context.Context, timeout time.Duration, r
 	return int(tag.RowsAffected()), nil
 }
 
-// ScanJobResult carries the worker's completion counters.
+// ScanJobResult carries the worker's completion counters, and its report:
+// what it passed over and left alone.
 type ScanJobResult struct {
 	Status        string
 	ErrorMessage  *string
 	FilesSeen     int32
 	ItemsInserted int32
 	ItemsUpdated  int32
+	Report        []model.ScanNote
 }
 
-// FinishScanJob stamps a scan job with its final status + counters. It is the
-// scan's own word on how it ended, so it stands over a failure the service
-// wrote for a scan it took for lost.
+// FinishScanJob stamps a scan job with its final status + counters, and its
+// report (null when it says nothing). It is the scan's own word on how it
+// ended, so it stands over a failure the service wrote for a scan it took for
+// lost. On a catalog without migration 045 the job keeps no report.
 func (s *Store) FinishScanJob(ctx context.Context, id string, r ScanJobResult) error {
+	var report *string
+	if len(r.Report) > 0 {
+		b, err := json.Marshal(r.Report)
+		if err != nil {
+			return err
+		}
+		s := string(b)
+		report = &s
+	}
 	_, err := s.pool.Exec(ctx, `UPDATE com_nalet_katalog_scanjobs SET
 		status = $2, finishedat = now(), errormessage = $3,
-		filesseen = $4, itemsinserted = $5, itemsupdated = $6 WHERE id = $1`,
-		id, r.Status, r.ErrorMessage, r.FilesSeen, r.ItemsInserted, r.ItemsUpdated)
+		filesseen = $4, itemsinserted = $5, itemsupdated = $6, report = $7::jsonb WHERE id = $1`,
+		id, r.Status, r.ErrorMessage, r.FilesSeen, r.ItemsInserted, r.ItemsUpdated, report)
+	if undefinedColumn(err) {
+		_, err = s.pool.Exec(ctx, `UPDATE com_nalet_katalog_scanjobs SET
+			status = $2, finishedat = now(), errormessage = $3,
+			filesseen = $4, itemsinserted = $5, itemsupdated = $6 WHERE id = $1`,
+			id, r.Status, r.ErrorMessage, r.FilesSeen, r.ItemsInserted, r.ItemsUpdated)
+	}
 	return err
+}
+
+// scanJobRead are a scan job's columns with its report, read by name from the
+// row j, so that a catalog without migration 045 reads none.
+const scanJobRead = scanJobCols + `, to_jsonb(j)->'report'`
+
+// scanReportedJob reads a row of scanJobRead.
+func scanReportedJob(row pgx.Row, x *model.ScanJob) error {
+	var report []byte
+	if err := row.Scan(&x.ID, &x.Source, &x.Status, &x.StartedAt, &x.FinishedAt, &x.ErrorMessage,
+		&x.FilesSeen, &x.ItemsInserted, &x.ItemsUpdated, &report); err != nil {
+		return err
+	}
+	if len(report) == 0 || string(report) == "null" {
+		return nil
+	}
+	return json.Unmarshal(report, &x.Report)
 }
 
 func (s *Store) GetScanJob(ctx context.Context, id string) (*model.ScanJob, error) {
 	var x model.ScanJob
-	err := scanScanJob(s.pool.QueryRow(ctx, `SELECT `+scanJobCols+` FROM com_nalet_katalog_scanjobs WHERE id = $1`, id), &x)
+	err := scanReportedJob(s.pool.QueryRow(ctx, `SELECT `+scanJobRead+` FROM com_nalet_katalog_scanjobs j WHERE id = $1`, id), &x)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -169,7 +205,7 @@ func (s *Store) ListScanJobs(ctx context.Context, limit int32) ([]*model.ScanJob
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := s.pool.Query(ctx, `SELECT `+scanJobCols+` FROM com_nalet_katalog_scanjobs
+	rows, err := s.pool.Query(ctx, `SELECT `+scanJobRead+` FROM com_nalet_katalog_scanjobs j
 		ORDER BY startedat DESC NULLS LAST LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -178,7 +214,7 @@ func (s *Store) ListScanJobs(ctx context.Context, limit int32) ([]*model.ScanJob
 	var out []*model.ScanJob
 	for rows.Next() {
 		var x model.ScanJob
-		if err := scanScanJob(rows, &x); err != nil {
+		if err := scanReportedJob(rows, &x); err != nil {
 			return nil, err
 		}
 		out = append(out, &x)

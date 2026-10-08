@@ -98,12 +98,18 @@ type extraFile struct {
 	anchor   string // the folder the title is told by
 }
 
-// walkState is what a walk keeps of the extras it meets.
+// walkState is what a walk keeps of the extras it meets, and whether it links
+// the episodes a file covers besides its first (covers.go).
 type walkState struct {
 	on    bool
 	found []extraFile
 	// videos are the video files of each folder by their stems, read once.
 	videos map[string][]string
+	// covers says the catalog has migration 045; coversSaid that the walk
+	// said once it has not; covering are the files of several episodes it
+	// met, linked once it is through.
+	covers, coversSaid bool
+	covering           []covering
 }
 
 func newWalkState(on bool) *walkState { return &walkState{on: on, videos: map[string][]string{}} }
