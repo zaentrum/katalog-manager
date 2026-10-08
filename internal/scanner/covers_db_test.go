@@ -292,3 +292,22 @@ func TestAScanJobKeepsItsReport(t *testing.T) {
 		}
 	}
 }
+
+// With the v2 layout a file of two episodes is taken in for its first one,
+// with its source; the second, made for it, has none, and names the first.
+func TestAnArrivalOfTwoEpisodesIsItsFirstOnes(t *testing.T) {
+	f := newV2(t)
+	f.write(t, ".work/incoming/series/Show/Show.S02E05E06.mkv", 3000, 'x')
+	if res := f.scan(t); res.itemsInserted != 2 {
+		t.Errorf("%d items made, want both episodes", res.itemsInserted)
+	}
+	if got, want := f.sources(t), "Show present Show.S02E05E06.mkv series/Show/Show.S02E05E06.mkv 3000 true"; got != want {
+		t.Errorf("the sources:\n%s\nwant:\n%s", got, want)
+	}
+	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_items c JOIN com_nalet_katalog_items h ON h.id = c.coveredby
+		WHERE c.seasonnumber = 2 AND c.episodenumber = 6 AND h.seasonnumber = 2 AND h.episodenumber = 5
+		AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemsources s WHERE s.item_id = c.id)
+		AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets a WHERE a.item_id = c.id)`); n != 1 {
+		t.Error("S02E06 is not made covered by S02E05's file, with no file or source of its own")
+	}
+}
