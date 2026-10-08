@@ -97,3 +97,48 @@ func TestPackagingCompleteMarksTheEpisodesItsFileCovers(t *testing.T) {
 		t.Error("an episode the file does not cover is marked changed")
 	}
 }
+
+// The worker record of an episode whose file covers others names them in its
+// library's source (covers): the episode first, then those it covers, in
+// episode order, as its source record lists them; the record of a file of one
+// episode names none. A covered episode has no file, and no worker record.
+func TestTheWorkerRecordNamesTheEpisodesTheFileCovers(t *testing.T) {
+	st := storetest.Open(t)
+	v2Layout(t, st)
+	dir := t.TempDir()
+	cfg := v2Config(dir)
+	h, iss := server(t, st, cfg)
+	svc := iss.Service(t, "zaentrum-manager")
+	const show, e1, e2, e3, e4 = "5e5e0000-0000-4000-8000-000000000001", "e1e10000-0000-4000-8000-000000000001",
+		"e1e10000-0000-4000-8000-000000000002", "e1e10000-0000-4000-8000-000000000003", "e1e10000-0000-4000-8000-000000000004"
+	files(t, dir, map[string]int64{".work/incoming/Show/Show.S01E01E03.mkv": 3000, ".work/incoming/Show/Show.S01E04.mkv": 2000})
+	storetest.AddItem(t, st, show, "series", "Show", "")
+	for i, id := range []string{e1, e2, e3, e4} {
+		storetest.AddItem(t, st, id, "episode", "Show", show)
+		storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET seasonnumber = 1, episodenumber = $2 WHERE id = $1`, id, i+1)
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, sizebytes) VALUES
+		('a1', $1, $3, true, 3000), ('a4', $2, $4, true, 2000)`, e1, e4,
+		cfg.ArrivalsRoot+"/Show/Show.S01E01E03.mkv", cfg.ArrivalsRoot+"/Show/Show.S01E04.mkv")
+	ctx := context.Background()
+	for _, id := range []string{e3, e2} {
+		if _, err := library.Link(ctx, st.Pool(), e1, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src := func(id string) map[string]any {
+		t.Helper()
+		lib, _ := recordOf(t, h, svc, "/api/analyze/items/"+id)["library"].(map[string]any)
+		s, _ := lib["source"].(map[string]any)
+		return s
+	}
+	if got, _ := json.Marshal(src(e1)["covers"]); string(got) != `["`+e1+`","`+e2+`","`+e3+`"]` {
+		t.Errorf("the holder's source covers %s, want it, then S01E02, then S01E03", got)
+	}
+	if covers, ok := src(e4)["covers"]; ok {
+		t.Errorf("a file of one episode covers %v", covers)
+	}
+	if w := do(h, http.MethodGet, "/api/analyze/items/"+e2, "", svc); w.Code != http.StatusNotFound {
+		t.Errorf("a covered episode's worker record: %d, want 404 (no file)", w.Code)
+	}
+}

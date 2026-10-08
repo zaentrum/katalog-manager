@@ -46,14 +46,18 @@ type itemLibrary struct {
 }
 
 // recordSource is the original the run works on: the item's source behind
-// its primary asset.
+// its primary asset. Covers are the episodes the file holds when it holds
+// several (library.CoversOf): the item first, then each episode it covers
+// besides it, in episode order, which the source record's covers lists; left
+// out for a file of one, whose record lists none.
 type recordSource struct {
-	SourceID    string  `json:"sourceId"`
-	Recorded    bool    `json:"recorded"` // sources/<id>/ is written
-	RecordDir   *string `json:"recordDir"`
-	LibraryPath *string `json:"libraryPath"`
-	SizeBytes   int64   `json:"sizeBytes"`
-	QH1         *string `json:"qh1"`
+	SourceID    string   `json:"sourceId"`
+	Recorded    bool     `json:"recorded"` // sources/<id>/ is written
+	RecordDir   *string  `json:"recordDir"`
+	LibraryPath *string  `json:"libraryPath"`
+	SizeBytes   int64    `json:"sizeBytes"`
+	QH1         *string  `json:"qh1"`
+	Covers      []string `json:"covers,omitempty"`
 }
 
 // recordBuild is the version the run builds, and the marks it carries: what
@@ -143,6 +147,9 @@ func (h *Handlers) itemLibraryOf(ctx context.Context, itemID string) (*itemLibra
 		if dir != "" {
 			rd := library.SourceDir(dir, src.ID)
 			lib.Source.RecordDir = &rd
+		}
+		if lib.Source.Covers, err = library.CoversOf(ctx, pool, itemID); err != nil {
+			return nil, err
 		}
 	}
 	cur, err := library.Current(ctx, pool, itemID)
