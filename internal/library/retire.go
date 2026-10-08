@@ -826,8 +826,14 @@ func (r *Retirer) sidecarsOf(ctx context.Context, rt *retirement, strict bool) (
 			byContent[c.sha256] = append(byContent[c.sha256], c.file)
 		}
 	}
+	// copied is the record's copy of the file at path, by its content: read
+	// where it lies, or, once a pass that stopped short moved it, in the
+	// trash.
 	copied := func(path string) string {
 		digest, _, err := SHA256File(path)
+		if err != nil && s.TrashPath != nil {
+			digest, _, err = SHA256File(filepath.Join(*s.TrashPath, filepath.Base(path)))
+		}
 		if err != nil || len(byContent[digest]) == 0 {
 			return ""
 		}

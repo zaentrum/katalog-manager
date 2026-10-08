@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/library/librarytest"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
@@ -197,4 +198,38 @@ func TestAVersionHoldingAnOriginalIsNeverRemoved(t *testing.T) {
 			t.Errorf("the pass once the folder holds no original: %+v", rep)
 		}
 	})
+}
+
+// A retirement from a version's folder that a crash stopped once the files
+// were in the trash goes on: the original and its sidecars are not moved
+// again, and the subtitle row of the file the record keeps a copy of, found
+// by its content in the trash, points at the copy.
+func TestARetirementFromAVersionsFolderResumes(t *testing.T) {
+	f := newRetireFixture(t)
+	ctx := context.Background()
+	moved := f.intoVersion(t, rtVersion)
+	set, _ := ReadSettings(ctx, f.st.Pool())
+	rt := &retirement{src: f.source(t, rtSource), itemDir: f.itemDir}
+	if err := f.r.prepare(ctx, f.p, set, time.Now().UTC(), rt); err != nil || rt.src == nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if err := f.r.deleteFiles(f.p, set, rt); err != nil {
+		t.Fatal(err)
+	}
+	if exists(moved) || exists(f.de) {
+		t.Fatal("the files are not in the trash")
+	}
+	if rep := f.pass(t); rep.Originals != 1 || rep.Failed != 0 {
+		t.Fatalf("the pass after the crash: %+v", rep)
+	}
+	var got string
+	if err := f.st.Pool().QueryRow(ctx, `SELECT path FROM com_nalet_katalog_subtitleassets WHERE id = $1`, "de-"+rtFilm[:8]).
+		Scan(&got); err != nil || got != filepath.Join(f.sourceDir, "subtitle-2.de.srt") {
+		t.Errorf("the subtitle row of the copy: %q, %v", got, err)
+	}
+	s := f.source(t, rtSource)
+	want := []string{"Example Film.de.srt", "Example Film.en.srt", "original.mkv"}
+	if got := files(t, deref(s.TrashPath)); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("the trash holds %v, want %v", got, want)
+	}
 }
