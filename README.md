@@ -18,7 +18,8 @@ The surface is split deliberately:
   in a role with its job, character, order and episode count), `searchItems`
   (a page of matches, and in `total` how many match in all), `catalogStats`
   (how many movies, series, episodes and people the catalog holds, counted
-  rather than paged), `scanJobs`, `settings`, `deletedItems` (the deletion
+  rather than paged), `scanJobs` (each with its `report`, see
+  [Disc images](#disc-images)), `settings`, `deletedItems` (the deletion
   log, read-only), `people` and
   `person` (a person's TMDB details, locks and field origins, and their
   `credits`: every title that credits them, newest first, each with its role,
@@ -77,7 +78,8 @@ The surface is split deliberately:
     its language whitelist from it (`packager.language_whitelist`, comma
     separated) and `packager.keep_original_if_single`. A secret setting is
     left out, set or not.
-  - `POST /api/ingest` — an addon hands a file on disk to the catalog.
+  - `POST /api/ingest` — an addon hands a file on disk to the catalog (a
+    disc image is refused, 400: see [Disc images](#disc-images)).
   - `POST /api/extras` — a file taken in as a title's extra, and
     `GET /api/analyze/extras/{id}`, `PUT /api/analyze/extras/{id}/steps/{step}`,
     `POST /api/extras/{id}/packaging-complete` — an extra's worker protocol
@@ -249,6 +251,18 @@ the base schema in the order of their numbers, and each is idempotent:
   and by whom, when it was sent and ended, and why it waits or failed; one
   row a title while it waits or is sent. A deleted item's rows go with it.
   Applied at startup when missing; katalog-api's read-only role may read it.
+- `044_library_takein.sql` lets a version be `taken`: its folder holds its
+  original and no package (see [The library](#the-library)). Applied at
+  startup when missing.
+- `045_multi_episode_files.sql` gives an episode that another episode's file
+  covers `coveredby`, the id of that episode, its holder (see
+  [One file, several episodes](#one-file-several-episodes)), null on every
+  other item, and `idx_items_coveredby`, the index of a holder's covered
+  episodes; and a scan job its `report`, what its scan passed over and left
+  alone (see [Disc images](#disc-images)). Applied at startup when any of it
+  is missing; without it a file covers the episode its name numbers first
+  and no other, as before, and a scan says what it passed over in the log
+  alone.
 
 ## Track languages
 
@@ -814,6 +828,88 @@ removed, in the deletion log. With the setting off, a file the scanner
 always took for a trailer is skipped and no extra is taken in. Whatever the
 setting, the scanner writes no trailer asset rows (`kind = 'trailer'`) any
 more, and deletes the one a file it meets has.
+
+## One file, several episodes
+
+A file may hold more than one episode, a double-length finale, and it is
+never split: there is no clean boundary to cut at. It is packaged once and
+serves every episode it holds (migration 045, the library's published v2
+model).
+
+- **Its name** numbers them: `S05E15-E16`, `S05E15E16`, `S05E15-16`, also
+  `.E16`, `_E16` or ` E16` after the first, and more than two
+  (`S05E15-E17`, `S05E15E16E17`), letter case aside; the file covers every
+  episode from the first to the last, ten at most. A number after a dash
+  that a digit or a `p` follows is none (`S05E15-720p` is the fifteenth
+  episode in 720p), nor is one that does not come after the one before it:
+  the name then numbers the episodes before it. The token stands apart from
+  the words around it, as a single episode's did.
+- **Its holder** is the first episode it covers, the lowest number: the file
+  is the holder's as any episode's file is its episode's, and its source,
+  its versions, its package, its pipeline run and its retire are the
+  holder's, in the holder's folder. The holder runs the pipeline as any
+  episode does.
+- **The other episodes it covers**, of the holder's series and season, are
+  linked to it once the scan has walked every file (an episode's own file
+  may be walked after the file that covers it): the catalog's episode of
+  that number, or one the scan makes as it makes any episode (its scan step
+  done, its discovered event sent, so that the enricher reads its title,
+  overview and images). Each keeps an item of its own and names its holder
+  (`coveredby`); it has no file of its own and runs nothing, its steps of a
+  file (`tidb` to `package`) not applicable, saying whose file covers it
+  ("covered by the file of episode <holder>, which runs the pipeline for
+  every episode it holds"). An episode of that number with a file of its own
+  is left alone, its own file wins, and one another file covers already
+  stays that file's; the scan's report says so. An episode the file covered
+  that its name numbers no more (the holder given another file) is unlinked,
+  and so has no file. A file the scanner took in before it read its name's
+  numbers (`S01E01E02` was none to it) gets them.
+- **Acting on a covered episode acts on its holder**: `reencodeItem`, the
+  re-encode queue, `packageItem` (`POST /api/items/{id}/package`), the
+  take-in (`POST /api/items/{id}/takein`) and `replaceSource` by its id each
+  act on the holder, the answer the holder's and saying so; the analyzer's
+  reset of a series leaves a covered episode alone.
+- **The library's records**: the worker record of the holder names the
+  episodes its file covers in its `library.source` (`covers`: the holder
+  first, then the others in episode order), which the packager writes in its
+  source record; a file of one episode names none. The holder's
+  `metadata.json` numbers it up to the last episode its file covers
+  (`library.numbering.aired.episodeEnd`), and a covered episode's plays the
+  holder's current version (`library.primaryVersionId`) and names it
+  (`library.coveredBy`); a version taken marks the episodes the holder's file
+  covers changed, so that their projections follow. The migration's adopt
+  links the episodes its plan's sources cover (`db.sources[].covers`, the
+  item first) in the item's transaction, refusing a plan whose covers the
+  catalog cannot link, and a revert puts the links back as they were; the
+  catalog's export names each item's `coveredBy`.
+- **Removing** a covered episode touches no file (it has none), and its
+  holder's file covers one episode fewer. Removing the holder keeps the
+  episodes its file covered, unlinked, with no file now, and the answer
+  names them (`unlinked`); removing their series takes them all.
+
+The console reads an episode's `coveredBy` (the episode whose file covers
+it) and `covers` (the others its file covers, in episode order).
+
+## Disc images
+
+A disc image (an `.iso` or `.img` file) is no file the library holds: it is
+converted to a single file first, or stays out. The scanner passes over one,
+making no title and no asset, and the scan job's `report` (GraphQL
+`scanJobs { report { kind path itemId reason } }`, the first 1000 entries;
+the log says every one) lists it as `unsupported`, "disc image: convert it to
+a single file". A title whose file is one already (taken in before) is named
+in the report, and runs nothing of it: its steps that read its file fail for
+good with that reason (its transcode and package made failed when it has
+none), which the processing overview lists among the failed steps; the
+enrichment sends it no further, and it is not encoded again, queued, packaged
+(409), taken in nor retried. `POST /api/ingest` refuses one (400), and
+`replaceSource` gives no title one. Such a title is given a single file with
+`replaceSource`, or removed.
+
+The report lists, as `not-linked`, the episodes a file's name covers that
+the scan left alone (see
+[One file, several episodes](#one-file-several-episodes)), each with the
+file and the episode.
 
 ## The library
 
