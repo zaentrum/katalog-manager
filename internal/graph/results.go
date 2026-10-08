@@ -176,6 +176,13 @@ func (r *deleteItemResultResolver) Errors() []string {
 	}
 	return r.m.Errors
 }
+func (r *deleteItemResultResolver) Unlinked() []graphql.ID {
+	out := make([]graphql.ID, 0, len(r.m.Unlinked))
+	for _, id := range r.m.Unlinked {
+		out = append(out, gid(id))
+	}
+	return out
+}
 
 type packageResultResolver struct{ m PackageResult }
 

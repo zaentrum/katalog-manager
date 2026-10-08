@@ -978,6 +978,9 @@ type DeleteItemResult {
   filesRemoved: Int!
   packagesRemoved: Int!
   errors: [String!]!
+  # the episodes the file of an item removed covered besides it (see
+  # Item.covers), which stay items of their own, unlinked, with no file now
+  unlinked: [ID!]!
 }
 
 type PackageResult {

@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/zaentrum/katalog-manager/internal/model"
+	"github.com/zaentrum/katalog-manager/internal/processing"
 )
 
 // ItemWrite carries item fields for create/update. Nil = unset (left unchanged
@@ -209,49 +211,117 @@ const deleteAndRecordItems = `
 // Returns the number of items removed; an id that does not exist is skipped
 // and leaves no row.
 func (s *Store) DeleteItems(ctx context.Context, ids []string, d Deletion) (int64, error) {
+	n, _, err := s.DeleteItemsAndUnlink(ctx, ids, d)
+	return n, err
+}
+
+// DeleteItemsAndUnlink is DeleteItems, and it answers the episodes it kept:
+// those the file of an item it removed covered besides it (migration 045),
+// which are no items of ids. Each stays an item of its own, unlinked, with no
+// file now, its steps saying so; one the delete removes takes its link with
+// it, and its holder, kept, is marked changed (its file covers one episode
+// fewer).
+func (s *Store) DeleteItemsAndUnlink(ctx context.Context, ids []string, d Deletion) (int64, []string, error) {
 	if len(ids) == 0 {
-		return 0, nil
+		return 0, nil, nil
 	}
 	by, reason, err := d.values()
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer tx.Rollback(ctx)
 	credited, err := personIDs(ctx, tx, `SELECT DISTINCT person_id FROM com_nalet_katalog_itempeople
 		WHERE item_id = ANY($1)`, ids)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
+	}
+	unlinked, err := uncover(ctx, tx, ids)
+	if err != nil {
+		return 0, nil, err
 	}
 	for _, t := range itemChildTables {
 		if _, err := tx.Exec(ctx, `DELETE FROM `+t+` WHERE item_id = ANY($1)`, ids); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 	}
 	if err := deleteTracksOf(ctx, tx, ids); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if err := deleteExtrasOf(ctx, tx, ids); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if err := deleteLibraryOf(ctx, tx, ids); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	ct, err := tx.Exec(ctx, deleteAndRecordItems, ids, by, reason)
 	if err != nil {
-		return 0, fmt.Errorf("delete items and record them in the deletion log: %w", err)
+		return 0, nil, fmt.Errorf("delete items and record them in the deletion log: %w", err)
 	}
 	if _, err := DeleteUncreditedPeople(ctx, tx, credited, Deletion{By: by,
 		Reason: "no title credits them any more: the title that did was deleted"}); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	return ct.RowsAffected(), nil
+	return ct.RowsAffected(), unlinked, nil
+}
+
+// uncover is what a delete of the items ids does, in tx, to the links of one
+// file of several episodes (migration 045): a holder kept of a covered
+// episode it removes is marked changed, and an episode kept that the file of
+// a holder it removes covers is unlinked, marked changed, its steps saying it
+// has no file now (processing.UncoveredReason). It answers those, by id; none
+// on a catalog without the migration.
+func uncover(ctx context.Context, tx pgx.Tx, ids []string) ([]string, error) {
+	var ready bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'com_nalet_katalog_items'::regclass
+		AND attname = 'coveredby' AND attnum > 0 AND NOT attisdropped)`).Scan(&ready); err != nil || !ready {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_items SET modifiedat = now()
+		WHERE NOT (id = ANY($1)) AND id IN (SELECT coveredby FROM com_nalet_katalog_items WHERE id = ANY($1) AND coveredby IS NOT NULL)`,
+		ids); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `WITH old AS (SELECT id, coveredby FROM com_nalet_katalog_items
+			WHERE coveredby = ANY($1) AND NOT (id = ANY($1)) FOR UPDATE)
+		UPDATE com_nalet_katalog_items i SET coveredby = NULL, modifiedat = now()
+		FROM old WHERE i.id = old.id
+		RETURNING i.id, old.coveredby`, ids)
+	if err != nil {
+		return nil, err
+	}
+	type kept struct{ id, holder string }
+	var all []kept
+	for rows.Next() {
+		var k kept
+		if err := rows.Scan(&k.id, &k.holder); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		all = append(all, k)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].id < all[j].id })
+	var out []string
+	for _, k := range all {
+		if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_itemprocessingsteps SET error = $2, modifiedat = now()
+			WHERE item_id = $1 AND status = 'not_applicable' AND NOT (step = ANY($3))`,
+			k.id, *processing.CleanError(processing.UncoveredReason(k.holder, "that covered it was removed")),
+			processing.OwnSteps); err != nil {
+			return nil, err
+		}
+		out = append(out, k.id)
+	}
+	return out, nil
 }
 
 // personIDs runs a query that selects person ids.

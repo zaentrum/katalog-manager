@@ -51,6 +51,13 @@ import (
 //     (so does one whose original's source keeps no place it arrived at, as
 //     a source keeps none once its record is written).
 //  4. Emit stube.catalog.item.removed so live-refresh surfaces drop the item.
+//
+// One file of several episodes is its holder's (migration 045): an episode
+// it covers has no file of its own, so removing one touches no file, its
+// holder's file and package staying as they are (the holder's file covers
+// one episode fewer); removing the holder keeps the episodes its file
+// covered besides it, unlinked, with no file now, and the result says which
+// (Unlinked).
 func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, deletePackages bool, reason string) (graph.RemoveResult, error) {
 	var res graph.RemoveResult
 
@@ -212,13 +219,20 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 		}
 	}
 
-	// 2. Catalog rows go first, atomically, and are recorded as they go.
-	n, err := s.st.DeleteItems(ctx, ids, store.Deletion{By: auth.Actor(ctx, "katalog-manager"), Reason: reason})
+	// 2. Catalog rows go first, atomically, and are recorded as they go. The
+	// episodes the file of an item removed covered besides it stay, unlinked,
+	// with no file now.
+	n, unlinked, err := s.st.DeleteItemsAndUnlink(ctx, ids, store.Deletion{By: auth.Actor(ctx, "katalog-manager"), Reason: reason})
 	if err != nil {
 		return res, err
 	}
 	res.Deleted = n > 0
 	res.ItemsRemoved = int32(n)
+	res.Unlinked = unlinked
+	if len(unlinked) > 0 {
+		log.Printf("removed item %s: the episodes its file covered besides it stay, unlinked, with no file now: %s", id,
+			strings.Join(unlinked, ", "))
+	}
 
 	// 3. Files — failures are reported, never fatal (the catalog delete stands).
 	for _, f := range mediaFiles {

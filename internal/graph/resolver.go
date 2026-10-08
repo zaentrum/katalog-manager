@@ -109,6 +109,9 @@ type RemoveResult struct {
 	FilesRemoved    int32
 	PackagesRemoved int32
 	Errors          []string
+	// Unlinked are the episodes the file of an item removed covered besides
+	// it, kept with no file now.
+	Unlinked []string
 }
 
 type Validator interface {

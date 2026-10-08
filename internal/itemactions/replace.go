@@ -94,6 +94,10 @@ type source struct {
 // retired after its version as any is. A title whose original was retired
 // (it has no file) may be given one: it gets its file anew. The re-encode is
 // then a new version of the title, which supersedes the one there is.
+//
+// An episode another episode's file covers (migration 045) has that file:
+// named by its id, its holder is given the new one, the answer the holder's
+// and saying so. The episodes the holder's file covers stay covered.
 func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceRequest) (graph.ReplaceSourceResult, error) {
 	var res graph.ReplaceSourceResult
 	path := strings.TrimSpace(in.Path)
@@ -113,6 +117,30 @@ func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	// waiting: no title is given its file without its old file's deletion and
 	// its re-encode.
 	ctx = context.WithoutCancel(ctx)
+	// An episode another episode's file covers has that file: its holder is
+	// given the new one.
+	note := ""
+	if itemID != "" {
+		holder, err := library.HolderOf(ctx, s.st.Pool(), itemID)
+		if err != nil {
+			return res, err
+		}
+		if holder != "" {
+			note, itemID = library.CoveredNote(itemID, holder), holder
+		}
+	}
+	res, err := s.replaceSource(ctx, in, path, itemID, itemPath)
+	if note != "" && err == nil {
+		res.Message = note + res.Message
+	}
+	return res, err
+}
+
+// replaceSource is ReplaceSource of the title named by itemID or itemPath,
+// which no other's file covers, and the new file at path, absolute and clean.
+func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceRequest, path, itemID, itemPath string) (
+	graph.ReplaceSourceResult, error) {
+	var res graph.ReplaceSourceResult
 	set, err := library.ReadSettings(ctx, s.st.Pool())
 	if err != nil {
 		return res, fmt.Errorf("the library's settings could not be read: %w", err)
