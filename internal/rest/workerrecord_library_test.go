@@ -209,8 +209,9 @@ func TestTheExtrasWorkerRecordNamesTheLibrary(t *testing.T) {
 // no version made for it; repackage once a version of it is packaged, a new
 // version, the original read where it is, in the older version's folder.
 // Neither of the last two names the original. An original in its version's
-// folder came with the files beside it where it arrived: its subtitle files
-// are the copies its source's record keeps of them.
+// folder came with the files beside it where it arrived: its subtitle files,
+// for add and for repackage, are the copies its source's record keeps of
+// them, in sources/<sourceId>/.
 func TestTheWorkerRecordSaysWhatTheRunDoes(t *testing.T) {
 	st := storetest.Open(t)
 	v2Layout(t, st)
@@ -301,5 +302,8 @@ func TestTheWorkerRecordSaysWhatTheRunDoes(t *testing.T) {
 	b, _ = lib["build"].(map[string]any)
 	if b["mode"] != "repackage" || b["originalName"] != nil || b["versionId"] == vid || rec["path"] != moved {
 		t.Errorf("a packaged source: path %v, build %v", rec["path"], b)
+	}
+	if s, _ := rec["subtitleFiles"].([]any); len(s) != 1 || s[0].(map[string]any)["path"] != wantCopy {
+		t.Errorf("the subtitle files of a packaged source whose original lies in a version's folder: %v, want the copy", s)
 	}
 }

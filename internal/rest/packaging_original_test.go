@@ -172,9 +172,7 @@ func TestPackagingCompleteTakesAVersionIn(t *testing.T) {
 		"schema": "zaentrum.library.version/2", "versionId": filmVersion, "sourceIds": []string{filmSource},
 		"originalFiles": []string{"original.mkv"}}))
 	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_items SET modifiedat = '2001-01-01'`)
-	body := fmt.Sprintf(`{"layout": "v2", "versionId": %q, "versionDir": %q, "sourceId": %q, "sourceRecorded": true,
-		"takenIn": true, "original": {"path": %q, "name": "original.mkv"}, "source": {"codec": "hevc", "width": 3840, "height": 1600}}`,
-		filmVersion, vdir, filmSource, moved)
+	body := takeInPayload(vdir, moved)
 	code, answer := f.complete(t, body)
 	want := map[string]any{"itemId": filmItem, "versionId": filmVersion, "takenIn": true, "current": false, "superseded": nil,
 		"packagedAssetWritten": false, "subtitlesWritten": 0.0, "audioTracks": 0.0}
@@ -227,6 +225,64 @@ func TestPackagingCompleteTakesAVersionIn(t *testing.T) {
 	}
 	if code, m := f.complete(t, body); code != http.StatusConflict {
 		t.Errorf("taken in once complete: %d %v", code, m)
+	}
+}
+
+// takeInPayload is the packager's payload of the film's version taken in at
+// vdir, its original at moved: no packageId, no complete, no package.
+func takeInPayload(vdir, moved string) string {
+	return fmt.Sprintf(`{"layout": "v2", "versionId": %q, "versionDir": %q, "sourceId": %q, "sourceRecorded": true,
+		"takenIn": true, "sidecars": [], "source": {"codec": "hevc", "width": 3840, "height": 1600},
+		"original": {"path": %q, "name": "original.mkv"}}`, filmVersion, vdir, filmSource, moved)
+}
+
+// A version taken in that is refused (its version.json names another
+// source: 422; a stale run: 409) puts its original back where the catalog
+// says it lies before its folder goes out of the record: nothing of the
+// original is in the folder the sweep deletes after its grace, and the
+// catalog's paths are as they were. The run taken in again from there is
+// taken.
+func TestARefusedTakeInPutsTheOriginalBack(t *testing.T) {
+	f := newV2Film(t)
+	arrival := f.arrived(t)
+	vdir := library.VersionDir(f.itemDir, filmVersion)
+	for _, c := range []struct {
+		name, body string
+		status     int
+	}{
+		{"another source", "", http.StatusUnprocessableEntity},
+		{"another folder", "x", http.StatusConflict},
+	} {
+		moved := f.renameIn(t, arrival, filmVersion)
+		sources := []string{filmSource}
+		if c.name == "another source" {
+			sources = []string{"0b6c0000-0000-4000-8000-0000000000ff"}
+		}
+		librarytest.Write(t, filepath.Join(vdir, "version.json"), librarytest.JSON(t, map[string]any{
+			"schema": "zaentrum.library.version/2", "versionId": filmVersion, "sourceIds": sources,
+			"originalFiles": []string{"original.mkv"}}))
+		body := strings.Replace(takeInPayload(vdir, moved), `"versionDir": "`+vdir+`"`, `"versionDir": "`+vdir+c.body+`"`, 1)
+		code, m := f.complete(t, body)
+		if code != c.status || !strings.Contains(fmt.Sprint(m["error"]), "its original is put back at "+arrival) {
+			t.Errorf("%s: %d %v, want %d putting the original back", c.name, code, m, c.status)
+		}
+		if _, err := os.Stat(arrival); err != nil {
+			t.Errorf("%s: the original is not back where it arrived: %v", c.name, err)
+		}
+		dropped, _ := filepath.Glob(filepath.Join(f.cfg.Roots(true).Work, "legacy", "*", "refused", "*", "original.mkv"))
+		if _, err := os.Stat(vdir); !os.IsNotExist(err) || len(dropped) != 0 {
+			t.Errorf("%s: the refused folder %v, originals in legacy/ %v", c.name, err, dropped)
+		}
+		if got, want := f.sourceRow(t), arrival+" A Film (2024).mkv false "+arrival; got != want {
+			t.Errorf("%s: the source and the title's file: %q, want %q", c.name, got, want)
+		}
+	}
+	moved := f.renameIn(t, arrival, filmVersion)
+	librarytest.Write(t, filepath.Join(vdir, "version.json"), librarytest.JSON(t, map[string]any{
+		"schema": "zaentrum.library.version/2", "versionId": filmVersion, "sourceIds": []string{filmSource},
+		"originalFiles": []string{"original.mkv"}}))
+	if code, m := f.complete(t, takeInPayload(vdir, moved)); code != http.StatusOK || m["takenIn"] != true {
+		t.Errorf("taken in again: %d %v", code, m)
 	}
 }
 

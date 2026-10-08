@@ -151,3 +151,21 @@ func TestAReencodeRepackagesFromTheOriginalWhereItLies(t *testing.T) {
 		t.Errorf("the packager's record: path %v, build %v, current %v", rec["path"], b, cur)
 	}
 }
+
+// The packager reports its take-in at PUT /api/analyze/items/{id}/steps/takein,
+// as any worker reports its step: the step runs, then is done.
+func TestThePackagerReportsItsTakeIn(t *testing.T) {
+	st := storetest.Open(t)
+	h, iss := server(t, st, v2Config(t.TempDir()))
+	svc := iss.Service(t, "zaentrum-manager")
+	storetest.AddItem(t, st, filmItem, "movie", "A Film", "")
+	for _, status := range []string{"in_progress", "done"} {
+		if w := do(h, http.MethodPut, "/api/analyze/items/"+filmItem+"/steps/takein", `{"status": "`+status+`"}`, svc); w.Code != http.StatusOK {
+			t.Fatalf("PUT the take-in %s: %d %s", status, w.Code, w.Body.String())
+		}
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemprocessingsteps WHERE item_id = $1 AND step = 'takein'
+		AND status = 'done' AND attempts = 1`, filmItem); n != 1 {
+		t.Error("the take-in's report is not recorded as its step's")
+	}
+}
