@@ -35,7 +35,10 @@ import (
 //     is what the deletion accepts.
 //  4. Move the original and its sidecars into the trash, .work/trash/<day>/
 //     <sourceId>/ (a trash grace of 0 unlinks them), and prune the arrival
-//     folders left empty.
+//     folders left empty. An original lies in its version's folder
+//     (versions/<versionId>/original.<ext>) from its first version on, its
+//     sidecars where it arrived; one from before, where it arrived, with
+//     them. The folder of its version stays, its version.json naming it.
 //  5. tx B: the source is deleted; its playback row is an original's, which
 //     points at its record; its sidecars' subtitle rows point at the
 //     package's renditions made of them, or at their copies in the record,
@@ -498,7 +501,7 @@ func (r *Retirer) prepare(ctx context.Context, p Paths, set Settings, now time.T
 	if s.ArrivalPath == nil {
 		return r.fail(ctx, rt, "the catalog does not say where the original lies; nothing is deleted")
 	}
-	if _, err := r.rootOf(p, *s.ArrivalPath); err != nil {
+	if _, err := r.originalRootOf(p, rt, *s.ArrivalPath); err != nil {
 		return r.fail(ctx, rt, err.Error()+"; nothing is deleted")
 	}
 	if err := isRecordedOriginal(*s.ArrivalPath, s.SizeBytes, s.QH1); err != nil {
@@ -761,8 +764,10 @@ func VerifySource(dir string) (Doc, error) {
 }
 
 // recordSidecar is a file a source's record lists as copied from beside its
-// original.
-type recordSidecar struct{ file, originalName string }
+// original: its copy, the name it had there (a record from before names it;
+// one now keeps no name of where a file came from), and its content's
+// sha256 (hex).
+type recordSidecar struct{ file, originalName, sha256 string }
 
 // recordSidecars are the sidecars[] of a source's record.
 func recordSidecars(record Doc) []recordSidecar {
@@ -774,7 +779,8 @@ func recordSidecars(record Doc) []recordSidecar {
 		if !ok {
 			continue
 		}
-		out = append(out, recordSidecar{file: str(d, "file"), originalName: str(d, "originalName")})
+		out = append(out, recordSidecar{file: str(d, "file"), originalName: str(d, "originalName"),
+			sha256: strings.TrimPrefix(str(d, "sha256"), "sha256:")})
 	}
 	return out
 }
@@ -790,8 +796,10 @@ type mappedSidecar struct {
 
 // sidecarsOf are the files that go with the original of rt: the subtitle
 // rows of its sidecars (those the packager mapped, and those beside it named
-// as it is), each with what it points at once the original is gone, and the
-// other files its record lists as copied from beside it. A subtitle file
+// as it is, where it arrived), each with what it points at once the original
+// is gone (the copy its record keeps of one the package did not map: by the
+// name it had, as a record from before names it, else by its content), and
+// the other files its record lists as copied from beside it. A subtitle file
 // that neither the package nor the record holds is refused before the event
 // is recorded (strict): deleting it would lose it. Once the event is
 // recorded the deletion goes on, and such a file stays where it is.
@@ -809,12 +817,25 @@ func (r *Retirer) sidecarsOf(ctx context.Context, rt *retirement, strict bool) (
 	}
 	copies := recordSidecars(rt.record)
 	copyOf := map[string]string{}
+	byContent := map[string][]string{}
 	for _, c := range copies {
 		if c.originalName != "" && c.file != "" {
 			copyOf[c.originalName] = c.file
 		}
+		if c.sha256 != "" && c.file != "" {
+			byContent[c.sha256] = append(byContent[c.sha256], c.file)
+		}
 	}
-	original := deref(s.ArrivalPath)
+	copied := func(path string) string {
+		digest, _, err := SHA256File(path)
+		if err != nil || len(byContent[digest]) == 0 {
+			return ""
+		}
+		c := byContent[digest][0]
+		byContent[digest] = byContent[digest][1:]
+		return c
+	}
+	original := PathsOf(r.cfg).ArrivalOf(s)
 	rows, err := r.pool.Query(ctx, `SELECT id, path FROM com_nalet_katalog_subtitleassets WHERE item_id = $1 ORDER BY id`, s.ItemID)
 	if err != nil {
 		return nil, err
@@ -832,14 +853,20 @@ func (r *Retirer) sidecarsOf(ctx context.Context, rt *retirement, strict bool) (
 			continue
 		}
 		sc := sidecar{path: path, asset: id}
+		var kept string // the record's copy of a file the package did not map
+		if !isMapped {
+			if kept = copyOf[filepath.Base(path)]; kept == "" {
+				kept = copied(path)
+			}
+		}
 		switch {
 		case isMapped:
 			if rt.ver == nil || deref(rt.ver.Dir) == "" {
 				return nil, fmt.Errorf("the version of the rendition of the subtitle file %s has no folder", path)
 			}
 			sc.to, sc.webvtt = filepath.Join(deref(rt.ver.Dir), filepath.FromSlash(m.Path)), true
-		case copyOf[filepath.Base(path)] != "":
-			sc.to = filepath.Join(rt.itemDir, filepath.FromSlash(copyOf[filepath.Base(path)]))
+		case kept != "":
+			sc.to = filepath.Join(rt.itemDir, filepath.FromSlash(kept))
 		case !strict:
 			continue
 		default:
@@ -893,7 +920,7 @@ func besideOriginal(original, path string) bool {
 // nothing anywhere else, nor in the record.
 func (r *Retirer) rootOf(p Paths, path string) (string, error) {
 	for _, root := range []string{p.Arrivals, p.Extras, r.cfg.NFSRoot, r.cfg.Roots(false).Extras} {
-		if Within(root, path) && !r.inRecord(p, path) {
+		if Within(root, path) && !p.InRecord(path) {
 			return filepath.Clean(root), nil
 		}
 	}
@@ -901,14 +928,15 @@ func (r *Retirer) rootOf(p Paths, path string) (string, error) {
 		"the retire job deletes nothing there", path)
 }
 
-// inRecord reports whether path lies in the library's record.
-func (r *Retirer) inRecord(p Paths, path string) bool {
-	for _, d := range []string{MoviesDir, SeriesDir, PeopleDir} {
-		if Within(filepath.Join(p.Root, d), path) {
-			return true
-		}
+// originalRootOf is rootOf of a file of the retirement rt, which may also be
+// its original in its version's folder (directly in versions/<versionId>/ of
+// its item's folder, named as the library names an original): that folder
+// is its root, which stays, as nothing is pruned in the record.
+func (r *Retirer) originalRootOf(p Paths, rt *retirement, path string) (string, error) {
+	if _, ok := VersionFolderOf(rt.itemDir, path); ok && IsOriginalName(filepath.Base(path)) {
+		return filepath.Dir(filepath.Clean(path)), nil
 	}
-	return false
+	return r.rootOf(p, path)
 }
 
 // deleteFiles moves the original of rt and its sidecars into its trash, or
@@ -931,7 +959,7 @@ func (r *Retirer) deleteFiles(p Paths, set Settings, rt *retirement) error {
 	}
 	pruned := map[string]string{}
 	for _, f := range files {
-		root, err := r.rootOf(p, f)
+		root, err := r.originalRootOf(p, rt, f)
 		if err != nil {
 			if f == original {
 				return err

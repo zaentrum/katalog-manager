@@ -18,7 +18,9 @@ import (
 //   - a superseded version once library.superseded.grace is over: its
 //     removal is noted first (removedat, the event's id), then the
 //     version-removed event is recorded, its folder deleted, and it is
-//     removed;
+//     removed. A version whose folder still holds an original (one the
+//     catalog has there, present or being retired, or a file named as one)
+//     is never removed: it waits until its original is retired;
 //   - a legacy package folder (PACKAGES_ROOT/<category>/<aa>/<itemId>) of an
 //     item whose v2 version is complete for the same grace: moved to
 //     .work/legacy/<day>/packages/, never in the record, so no event;
@@ -33,15 +35,25 @@ const RemovedBy = "katalog-manager (library.superseded.grace)"
 // package folder.
 const legacyBatch = 500
 
+// errHoldsOriginal says a superseded version is kept: its folder holds an
+// original.
+var errHoldsOriginal = errors.New("its folder holds an original, which is retired first")
+
 // removeVersions removes the superseded versions whose grace is over, and
 // goes on with those whose removal began, at most n: it answers how many
-// were removed and how many failed.
+// were removed and how many failed. A version whose folder holds an
+// original the catalog has there waits, unread, and so does one whose
+// folder holds a file named as an original, said in the log, while others
+// are removed past it.
 func (r *Retirer) removeVersions(ctx context.Context, p Paths, set Settings, now time.Time, n int) (done, failed int, err error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+versionCols+` FROM com_nalet_katalog_itemversions
+	rows, err := r.pool.Query(ctx, `SELECT `+versionCols+` FROM com_nalet_katalog_itemversions v
 		WHERE state = 'superseded'
 		  AND (removedat IS NOT NULL OR supersededat + make_interval(secs => $1::float8) <= $2::timestamptz)
+		  AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemsources s
+			WHERE s.item_id = v.item_id AND s.state IN ('present', 'retiring') AND v.dir IS NOT NULL
+			  AND left(s.arrivalpath, length(v.dir) + 1) = v.dir || '/')
 		ORDER BY removedat NULLS LAST, supersededat, id
-		LIMIT $3`, set.SupersededGrace.Seconds(), now, n)
+		LIMIT $3`, set.SupersededGrace.Seconds(), now, 4*n)
 	if err != nil {
 		return 0, 0, fmt.Errorf("the superseded versions due: %w", err)
 	}
@@ -60,10 +72,13 @@ func (r *Retirer) removeVersions(ctx context.Context, p Paths, set Settings, now
 	}
 	var errs []error
 	for _, v := range due {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || done+failed >= n {
 			break
 		}
-		if err := r.removeVersion(ctx, p, now, v); err != nil {
+		if err := r.removeVersion(ctx, p, now, v); errors.Is(err, errHoldsOriginal) {
+			r.say("version:"+v.ID, fmt.Sprintf("superseded version %s of item %s is kept: %v", v.ID, v.ItemID, err))
+			continue
+		} else if err != nil {
 			failed++
 			r.say("version:"+v.ID, fmt.Sprintf("superseded version %s of item %s is not removed: %v", v.ID, v.ItemID, err))
 			errs = append(errs, fmt.Errorf("version %s: %w", v.ID, err))
@@ -93,6 +108,11 @@ func (r *Retirer) removeVersion(ctx context.Context, p Paths, now time.Time, v *
 	}
 	if filepath.Base(dir) != v.ID || filepath.Base(filepath.Dir(dir)) != "versions" || !Within(p.Root, dir) || Within(p.Work, dir) {
 		return fmt.Errorf("its folder %s is no version folder of the library: nothing is deleted", dir)
+	}
+	if names, err := OriginalsIn(dir); err != nil {
+		return fmt.Errorf("its folder %s cannot be read: %v", dir, err)
+	} else if len(names) > 0 {
+		return fmt.Errorf("%w (%s)", errHoldsOriginal, strings.Join(names, ", "))
 	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
