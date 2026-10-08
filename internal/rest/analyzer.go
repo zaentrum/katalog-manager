@@ -205,6 +205,12 @@ func (h *Handlers) getAnalyzeItem(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "item lookup failed", http.StatusInternalServerError)
 			return
 		}
+		// An original a run renamed into a version's folder whose handover
+		// was lost is read there: none is sent where nothing is.
+		if it.Path != nil {
+			at := h.whereTheOriginalLies(reqCtx(r), it.ID, *it.Path)
+			it.Path = &at
+		}
 	}
 	writeJSON(w, http.StatusOK, it)
 }
@@ -430,7 +436,9 @@ func (h *Handlers) getSiblings(w http.ResponseWriter, r *http.Request) {
 // librarySiblings answers getSiblings with the v2 layout: a sibling whose
 // original was deleted after packaging is one too, its path the playlist of
 // its current version's first audio rendition (the package's stereo AAC),
-// which the analyzer's chromaprint pass reads as it reads an original.
+// which the analyzer's chromaprint pass reads as it reads an original; a
+// sibling's original a run left in a version's folder whose handover was
+// lost is read there.
 func (h *Handlers) librarySiblings(w http.ResponseWriter, r *http.Request, id string, limit int) {
 	rows, err := h.d.Store.Pool().Query(reqCtx(r), `
 		SELECT s.id, s.type, s.title, s.year, s.durationms, p.path, v.dir
@@ -462,6 +470,9 @@ func (h *Handlers) librarySiblings(w http.ResponseWriter, r *http.Request, id st
 			if it.Path = packageAudio(*dir); it.Path == nil {
 				continue
 			}
+		} else {
+			at := h.whereTheOriginalLies(reqCtx(r), it.ID, *it.Path)
+			it.Path = &at
 		}
 		items = append(items, it)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/zaentrum/katalog-manager/internal/library"
@@ -41,16 +42,14 @@ var asTakeIn = send{mark: "takein", what: "the take-in"}
 // takeInBatch is the most titles a pass takes in.
 const takeInBatch = 50
 
-// takeInDue claims the take-in of the titles due, of $1 when it names any:
-// a movie or an episode whose primary asset's source is present and has no
-// version, whose step takein is none or done, nothing reading its original
-// waiting or running ($4), and whose transcode was refused ($3 ends its
-// error) or failed with no attempt left, or whose package did, or any such
-// title when an admin asks ($2), at most $5. Its step takein waits for the
-// packager, the trigger noted as sent; it answers the step's row, the title
-// and its type, and whether its transcode was refused.
-const takeInDue = `WITH due AS (
-		SELECT i.id, i.type,
+// takeInRows are the titles due a take-in, of $1 when it names any: a movie
+// or an episode whose primary asset's source is present and has no version,
+// whose step takein is none or done, nothing reading its original waiting
+// or running ($4), and whose transcode was refused ($3 ends its error) or
+// failed with no attempt left, or whose package did, or any such title when
+// an admin asks ($2), at most $5: each with its type, where the catalog has
+// its original, whether its transcode was refused, and why it is due.
+const takeInRows = `SELECT i.id, i.type, src.arrivalpath,
 			COALESCE(t.status = 'failed' AND COALESCE(t.error, t.lasterror, '') LIKE '%' || $3::text, false) AS refused,
 			CASE WHEN t.status = 'failed' AND COALESCE(t.error, t.lasterror, '') LIKE '%' || $3::text
 				THEN 'the transcode was refused: ' || COALESCE(t.error, t.lasterror)
@@ -78,7 +77,12 @@ const takeInDue = `WITH due AS (
 		  AND NOT EXISTS (SELECT 1 FROM ` + tbl + ` o WHERE o.item_id = i.id AND o.step = ANY($4::text[])
 			AND o.status IN ('pending', 'in_progress'))
 		ORDER BY i.id
-		LIMIT $5),
+		LIMIT $5`
+
+// takeInDue claims the take-in of the titles due (takeInRows): its step
+// takein waits for the packager, the trigger noted as sent. It answers the
+// step's row, the title and its type, and whether its transcode was refused.
+const takeInDue = `WITH due AS (` + takeInRows + `),
 	claimed AS (
 		INSERT INTO ` + tbl + ` (id, createdat, modifiedat, item_id, step, status, attempts, details, failures, dispatchedat)
 		SELECT gen_random_uuid()::varchar, now(), now(), due.id, 'takein', 'pending', 0, due.why, 0, now() FROM due
@@ -140,17 +144,24 @@ func (s *Service) TakeIn(ctx context.Context, ids []string) (int, error) {
 
 // claimTakeIns claims the take-in of the titles due among ids (all of them
 // when admin), and has a refused transcode retried by itself no more, in one
-// transaction.
+// transaction. A title whose original is not where the catalog has it is
+// passed over, said in the log: a take-in takes an original from there, and
+// one a run renamed into a version's folder whose handover was lost is that
+// version's, whose run is reported again.
 func (s *Service) claimTakeIns(ctx context.Context, ids []string, admin bool) ([]claimed, error) {
 	if ids == nil {
 		ids = []string{}
+	}
+	due, err := s.takeInCandidates(ctx, ids, admin)
+	if err != nil || len(due) == 0 {
+		return nil, err
 	}
 	tx, err := s.st.Pool().Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	rows, err := tx.Query(ctx, takeInDue, ids, admin, processing.RefusedMark, processing.OriginalSteps, takeInBatch)
+	rows, err := tx.Query(ctx, takeInDue, due, admin, processing.RefusedMark, processing.OriginalSteps, takeInBatch)
 	if err != nil {
 		return nil, fmt.Errorf("claim the titles to take in: %w", err)
 	}
@@ -212,6 +223,44 @@ func (s *Service) settleTakeIns(ctx context.Context, ids []string) error {
 		return fmt.Errorf("settle the take-ins done: %w", err)
 	}
 	return nil
+}
+
+// takeInCandidates are the titles due a take-in among ids (takeInRows) whose
+// original lies where the catalog has it; the others are said in the log.
+func (s *Service) takeInCandidates(ctx context.Context, ids []string, admin bool) ([]string, error) {
+	rows, err := s.st.Pool().Query(ctx, takeInRows, ids, admin, processing.RefusedMark, processing.OriginalSteps, takeInBatch)
+	if err != nil {
+		return nil, fmt.Errorf("the titles to take in: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id, typ, why string
+		var at *string
+		var refused bool
+		if err := rows.Scan(&id, &typ, &at, &refused, &why); err != nil {
+			return nil, err
+		}
+		if at == nil || !fileAt(*at) {
+			log.Printf("retry: item %s is not taken in: its original is not where the catalog has it (%s)", id, deref(at))
+			continue
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// fileAt reports whether a file is at path.
+func fileAt(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular()
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return "none"
+	}
+	return *s
 }
 
 // sweepTakeIns is TakeIn of every title due, as Run calls it, saying what it
@@ -295,6 +344,14 @@ func (s *Service) whyNoTakeIn(ctx context.Context, id string) (string, error) {
 		return "its take-in is " + *takein + " already", nil
 	case busy:
 		return "the pipeline reads its original now: take it in once its steps are over", nil
+	}
+	var at *string
+	if err := s.st.Pool().QueryRow(ctx, `SELECT src.arrivalpath FROM com_nalet_katalog_playbackassets a
+			JOIN com_nalet_katalog_itemsources src ON src.id = a.sourceid
+		WHERE a.item_id = $1 AND a.isprimary = true AND COALESCE(a.kind, 'primary') = 'primary' LIMIT 1`, id).Scan(&at); err == nil &&
+		(at == nil || !fileAt(*at)) {
+		return fmt.Sprintf("its original is not where the catalog has it (%s): a run that renamed it into a version's folder "+
+			"is reported again by its package step", deref(at)), nil
 	}
 	return "it is not taken in now", nil
 }

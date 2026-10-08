@@ -2,6 +2,8 @@ package retry
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -14,16 +16,22 @@ import (
 const refusal = "Dolby Vision profile 5 needs a tone-mapping encode; kept the original"
 
 // withOriginal gives the catalog's titles their originals where they arrived,
-// each a source present, and the v2 layout.
-func withOriginal(t *testing.T, st *store.Store, items ...string) {
+// each a source present, and the v2 layout: it answers the arrivals' folder.
+func withOriginal(t *testing.T, st *store.Store, items ...string) string {
 	t.Helper()
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('layout', 'library.layout', 'v2')`)
+	arrivals := t.TempDir()
 	for _, item := range items {
+		path := filepath.Join(arrivals, item+".mkv")
+		if err := os.WriteFile(path, []byte("the original of "+item), 0o664); err != nil {
+			t.Fatal(err)
+		}
 		storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state)
-			VALUES ('src-' || $1::text, $1::text, $1::text || '.mkv', '/arrivals/' || $1::text || '.mkv', 10, 'present')`, item)
+			VALUES ('src-' || $1::text, $1::text, $1::text || '.mkv', $2, 10, 'present')`, item, path)
 		storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, sourceid)
-			VALUES ('a-' || $1::text, $1::text, '/arrivals/' || $1::text || '.mkv', true, 'primary', 'src-' || $1::text)`, item)
+			VALUES ('a-' || $1::text, $1::text, $2, true, 'primary', 'src-' || $1::text)`, item, path)
 	}
+	return arrivals
 }
 
 // A title whose transcode was refused is taken in at once: its step takein
@@ -97,7 +105,7 @@ func TestATitleIsTakenInOnlyWhenItGetsNoPackage(t *testing.T) {
 	for _, id := range []string{"m3", "m4", "m5", "m6"} {
 		storetest.AddItem(t, st, id, "movie", "Film "+id, "")
 	}
-	withOriginal(t, st, "m1", "m2", "m3", "m4", "m5", "m6")
+	arrivals := withOriginal(t, st, "m1", "m2", "m3", "m4", "m5", "m6")
 	for _, item := range []string{"m1", "m2", "m3", "m4", "m5", "m6"} {
 		put(t, st, item, "transcode", "failed", `failures = 1, error = '`+refusal+`', lasterror = '`+refusal+`'`)
 	}
@@ -127,9 +135,13 @@ func TestATitleIsTakenInOnlyWhenItGetsNoPackage(t *testing.T) {
 	}
 	// Taken in, then given another file: the new source has no version.
 	put(t, st, "m1", "takein", "done", "")
+	better := filepath.Join(arrivals, "better.mkv")
+	if err := os.WriteFile(better, []byte("a better original"), 0o664); err != nil {
+		t.Fatal(err)
+	}
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state)
-		VALUES ('src-m1b', 'm1', 'better.mkv', '/arrivals/better.mkv', 20, 'present')`)
-	storetest.Exec(t, st, `UPDATE com_nalet_katalog_playbackassets SET sourceid = 'src-m1b', path = '/arrivals/better.mkv' WHERE id = 'a-m1'`)
+		VALUES ('src-m1b', 'm1', 'better.mkv', $1, 20, 'present')`, better)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_playbackassets SET sourceid = 'src-m1b', path = $1 WHERE id = 'a-m1'`, better)
 	if n, err := s.TakeIn(context.Background(), []string{"m1", "m2"}); err != nil || n != 1 {
 		t.Errorf("TakeIn of a title given another file: %d, %v", n, err)
 	}
@@ -193,5 +205,34 @@ func TestATakeInWhoseReportWasLostIsDone(t *testing.T) {
 	if err := st.Pool().QueryRow(context.Background(), `SELECT details FROM com_nalet_katalog_itemprocessingsteps
 		WHERE item_id = 'm1' AND step = 'takein'`).Scan(&details); err != nil || !strings.Contains(details, "version v1 holds its original") {
 		t.Errorf("the take-in taken says %q, %v", details, err)
+	}
+}
+
+// A title whose original is not where the catalog has it is not taken in: a
+// run renamed it into a version's folder and its handover was lost (its
+// package step reports that version again), or it is gone; a take-in would
+// find nothing there. An admin's take-in says why.
+func TestATitleWhoseOriginalIsElsewhereIsNotTakenIn(t *testing.T) {
+	st := catalog(t)
+	arrivals := withOriginal(t, st, "m1", "m2")
+	put(t, st, "m1", "package", "failed", `failures = 3, error = 'packaging-complete: timed out', lasterror = 'timed out'`)
+	put(t, st, "m2", "package", "failed", `failures = 3, error = 'no space left', lasterror = 'no space left'`)
+	if err := os.Remove(filepath.Join(arrivals, "m1.mkv")); err != nil {
+		t.Fatal(err)
+	}
+	b := &bus{}
+	s := newService(t, st, b)
+	if n, err := s.TakeIn(context.Background(), nil); err != nil || n != 1 {
+		t.Fatalf("TakeIn: %d, %v; want the one whose original is where the catalog has it", n, err)
+	}
+	if got := b.take(); len(got) != 1 || !strings.HasPrefix(got[0], "stube.catalog.item.transcoded m2 takein ") {
+		t.Errorf("sent: %v", got)
+	}
+	res, err := s.TakeInItem(context.Background(), "m1")
+	if err != nil || res.Sent || !strings.Contains(res.Message, "its original is not where the catalog has it") {
+		t.Errorf("TakeInItem: %+v, %v", res, err)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemprocessingsteps WHERE item_id = 'm1' AND step = 'takein'`); n != 0 {
+		t.Error("a take-in was claimed for an original that is not where the catalog has it")
 	}
 }

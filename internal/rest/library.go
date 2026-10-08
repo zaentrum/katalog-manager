@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -172,6 +173,13 @@ func (h *Handlers) itemLibraryOf(ctx context.Context, itemID string) (*itemLibra
 		}
 		b = &recordBuild{VersionID: taken.ID, StagingDir: p.StagingDir(taken.ID), VersionDir: vdir}
 	} else {
+		var placed *errPlacedElsewhere
+		if err := placedFor(ctx, pool, itemID, dir, sourceIDs); errors.As(err, &placed) {
+			block(placed.Error())
+			return lib, nil
+		} else if err != nil {
+			return nil, err
+		}
 		v, err := library.EnsureBuilding(ctx, pool, itemID, sourceIDs)
 		if err != nil {
 			return nil, err
@@ -230,6 +238,61 @@ func (h *Handlers) itemLibraryOf(ctx context.Context, itemID string) (*itemLibra
 	}
 	lib.Build = b
 	return lib, nil
+}
+
+// whereTheOriginalLies is where the original the catalog has at path (the
+// asset of the title's file) lies: path, while a file is there; else the
+// place in a version's folder of the title that the catalog has not
+// recorded where a run left it (it renamed the original there, and its
+// handover was not taken: library.UnrecordedOriginal), which a worker is
+// handed instead, so none is sent to a place where nothing is; path when it
+// is in neither.
+func (h *Handlers) whereTheOriginalLies(ctx context.Context, itemID, path string) string {
+	if _, err := os.Lstat(path); err == nil || path == "" {
+		return path
+	}
+	pool := h.d.Store.Pool()
+	pl, err := library.PlaceOf(ctx, pool, itemID)
+	if err != nil {
+		return path
+	}
+	src, err := library.SourceAt(ctx, pool, filepath.Clean(path))
+	if err != nil || src == nil {
+		return path
+	}
+	found, err := library.UnrecordedOriginal(ctx, pool, h.paths().ItemDir(pl), src)
+	if err != nil {
+		log.Printf("the original of %s, gone from %s: %v", itemID, path, err)
+		return path
+	}
+	if found == "" {
+		return path
+	}
+	log.Printf("the original of %s is not at %s, where the catalog has it, and lies at %s, where a run left it: "+
+		"its handover is not recorded yet", itemID, path, found)
+	return found
+}
+
+// errPlacedElsewhere says the version the pipeline builds for the item is
+// in the record for another source: a run placed it, and its handover was
+// not taken.
+type errPlacedElsewhere struct{ versionID string }
+
+func (e *errPlacedElsewhere) Error() string {
+	return fmt.Sprintf("version %s is in the library for another file of the title, and its handover is not recorded: "+
+		"retry its package step, which reports it again, before the title's new file is packaged", e.versionID)
+}
+
+// placedFor refuses, with the v2 layout, to make the version being built of
+// the item, whose folder in the item folder dir is in the record, a version
+// of other sources than its own: a run placed it, its handover was lost,
+// and the run taken again reports it as it is (it must find it the same).
+func placedFor(ctx context.Context, q library.Querier, itemID, dir string, sourceIDs []string) error {
+	v, err := library.Building(ctx, q, itemID)
+	if err != nil || v == nil || len(sourceIDs) == 0 || slices.Equal(v.SourceIDs, sourceIDs) || !library.Placed(dir, v.ID) {
+		return err
+	}
+	return &errPlacedElsewhere{versionID: v.ID}
 }
 
 // takingIn reports whether the item is being taken in: its step takein waits
@@ -445,6 +508,12 @@ func (h *Handlers) mintVersion(ctx context.Context, itemID string) {
 			log.Printf("putStep: the versions of %s: %v", itemID, err)
 		}
 		return
+	}
+	if pl, err := library.PlaceOf(ctx, pool, itemID); err == nil {
+		if err := placedFor(ctx, pool, itemID, h.paths().ItemDir(pl), []string{src.ID}); err != nil {
+			log.Printf("putStep: the version of %s: %v", itemID, err)
+			return
+		}
 	}
 	if _, err := library.EnsureBuilding(ctx, pool, itemID, []string{src.ID}); err != nil {
 		log.Printf("putStep: the version of %s: %v", itemID, err)
