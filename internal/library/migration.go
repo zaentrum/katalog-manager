@@ -44,8 +44,11 @@ type Unit struct {
 
 // The kinds of a unit's moves, in the order a plan makes them: an old
 // package's folders into the staged records, the staged item folder to its
-// place, the original and the files beside it to the arrivals, and what is
-// left of an old package folder to the run's legacy/.
+// place, the original into its version's folder (versions/<versionId>/
+// original.<ext>, the staged one or the item's; a plan of before moved it
+// to the arrivals, as it moves an extra's original), the files beside it to
+// the arrivals, and what is left of an old package folder to the run's
+// legacy/.
 const (
 	MovePackage  = "package"
 	MovePublish  = "publish"
@@ -80,8 +83,9 @@ type UnitDB struct {
 	Extras                     []UnitExtra    `json:"extras"`
 }
 
-// UnitSource is a source of the item: its original at the arrivals, or, gone
-// before the library was recorded, at none.
+// UnitSource is a source of the item: its original in its version's folder
+// (a plan of before: at the arrivals), or, gone before the library was
+// recorded, at none.
 type UnitSource struct {
 	SourceID    string          `json:"sourceId"`
 	Filename    string          `json:"filename"`
@@ -93,7 +97,10 @@ type UnitSource struct {
 	Sidecars    []mappedSidecar `json:"sidecars"`
 }
 
-// UnitVersion is the item's version its old package becomes.
+// UnitVersion is the item's version its old package becomes, or, for an
+// item nothing packaged (no packageId, no completedAt), the version its
+// original is taken in to: taken, its original in its folder and no
+// package.
 type UnitVersion struct {
 	VersionID     string   `json:"versionId"`
 	PackageID     string   `json:"packageId"`

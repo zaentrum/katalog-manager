@@ -37,6 +37,9 @@ type migrationFixture struct {
 	dir    string
 	runDir string
 	units  map[string]*Unit
+	// into has packaged move an original into its version's folder, as
+	// the tool stages it now, not to the arrivals.
+	into bool
 }
 
 // mgPackage is a package's record of the fixture: its renditions, as
@@ -194,12 +197,17 @@ func (f *migrationFixture) packaged(t *testing.T, id, media string, withExtra bo
 		if err != nil {
 			t.Fatal(err)
 		}
-		src.ArrivalPath, src.QH1, src.SizeBytes = &arrival, &qh1, size
+		into := arrival
+		if f.into {
+			into = filepath.Join(fdir, OriginalName(path, 0))
+			src.Filename = OriginalName(path, 0)
+		}
+		src.ArrivalPath, src.QH1, src.SizeBytes = &into, &qh1, size
 		src.LibraryPath = ptr(strings.TrimPrefix(media, "media/"))
-		originals = append(originals, Move{MoveOriginal, path, arrival})
+		originals = append(originals, Move{MoveOriginal, path, into})
 		storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, sizebytes)
 			VALUES ('pa-' || left($1::varchar, 4), $1::varchar, $2, true, 'primary', $3)`, id, path, size)
-		db.Assets = append(db.Assets, UnitAsset{ID: "pa-" + id[:4], Path: arrival, SourceID: &sid})
+		db.Assets = append(db.Assets, UnitAsset{ID: "pa-" + id[:4], Path: into, SourceID: &sid})
 		if withExtra {
 			sub := strings.TrimSuffix(path, ".mkv") + ".en.srt"
 			subArrival := strings.TrimSuffix(arrival, ".mkv") + ".en.srt"

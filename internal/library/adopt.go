@@ -25,7 +25,11 @@ import (
 // original-deleted event, and the database changed in one transaction as
 // packaging-complete leaves it (7.3 db). A failure puts the unit's renames
 // back in reverse. The staged people are put in place after the items.
-// Adopting again skips what is adopted.
+// Adopting again skips what is adopted. A plan moves an original into its
+// version's folder (versions/<versionId>/original.<ext>), the title's first
+// version; a title nothing packaged gets one too, taken in (its original and
+// no package), which the catalog records taken (migration 044). A plan of
+// before moves originals to the arrivals.
 //
 // The revert replays an adoption backwards, the last adopted first: the
 // originals the retire job deleted since come back from the trash, every
@@ -256,7 +260,7 @@ func (m *Migration) adoptUnit(ctx context.Context, j *Journal, ij *itemJournal, 
 	var typ string
 	var complete bool
 	err = tx.QueryRow(ctx, `SELECT i.type, EXISTS (SELECT 1 FROM com_nalet_katalog_itemversions v
-			WHERE v.item_id = i.id AND v.state IN ('complete', 'building'))
+			WHERE v.item_id = i.id AND v.state IN ('complete', 'taken', 'building'))
 		FROM com_nalet_katalog_items i WHERE i.id = $1`, u.ItemID).Scan(&typ, &complete)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -391,8 +395,12 @@ func (m *Migration) undo(j *Journal, itemID string, done []Move) {
 }
 
 // checkPlan refuses a plan the path rules or the share's roots do not
-// allow: the item's folder is not where the rules put it, a series' episode
-// comes before its series, or a move leaves the share's roots.
+// allow: the item's folder is not where the rules put it, a version's
+// folder not where they put it in the item's, a series' episode comes
+// before its series, a move leaves the share's roots, or the plan puts an
+// original in the record where no move of it goes: an original goes into
+// the record only directly into the folder of a version of the plan (the
+// staged one, or the item's), named as the library names an original.
 func (m *Migration) checkPlan(ctx context.Context, u *Unit) error {
 	if u.Run != m.Run {
 		return fmt.Errorf("the plan is of run %s", u.Run)
@@ -439,7 +447,9 @@ func (m *Migration) checkPlan(ctx context.Context, u *Unit) error {
 		case MovePublish:
 			ok = mv.From == staged && mv.To == filepath.Clean(u.ItemDir)
 			publish++
-		case MoveOriginal, MoveSidecar:
+		case MoveOriginal:
+			ok = inShare(mv.From, media...) && (inShare(mv.To, m.p.Arrivals, m.p.Extras) || intoVersion(u, staged, mv.To))
+		case MoveSidecar:
 			ok = inShare(mv.From, media...) && inShare(mv.To, m.p.Arrivals, m.p.Extras)
 		case MoveLegacy:
 			ok = inShare(mv.From, old...) && Within(filepath.Join(m.Dir, "legacy"), mv.To)
@@ -451,7 +461,64 @@ func (m *Migration) checkPlan(ctx context.Context, u *Unit) error {
 	if publish != 1 {
 		return fmt.Errorf("the plan publishes the item %d times", publish)
 	}
+	for _, v := range u.DB.Versions {
+		if !ValidID(v.VersionID) || filepath.Clean(v.Dir) != VersionDir(u.ItemDir, v.VersionID) {
+			return fmt.Errorf("the plan puts version %s at %s, and the path rules at %s", v.VersionID, v.Dir,
+				VersionDir(u.ItemDir, v.VersionID))
+		}
+	}
+	// An original the database is to find in the record is one a move puts
+	// there.
+	moved := map[string]bool{}
+	for _, mv := range u.Moves {
+		if mv.Kind == MoveOriginal && intoVersion(u, staged, mv.To) {
+			moved[published(u, staged, mv.To)] = true
+		}
+	}
+	for _, s := range u.DB.Sources {
+		if s.ArrivalPath != nil && m.p.InRecord(*s.ArrivalPath) && !moved[filepath.Clean(*s.ArrivalPath)] {
+			return fmt.Errorf("the plan has source %s's original at %s, where no move of it goes", s.SourceID, *s.ArrivalPath)
+		}
+	}
+	for _, a := range u.DB.Assets {
+		if a.SourceID != nil && m.p.InRecord(a.Path) && !Within(filepath.Join(u.ItemDir, "sources"), a.Path) &&
+			!moved[filepath.Clean(a.Path)] {
+			return fmt.Errorf("the plan has playback row %s at %s, where no move of an original goes", a.ID, a.Path)
+		}
+	}
 	return nil
+}
+
+// intoVersion reports whether a plan of u may move an original to to: into
+// the folder of one of its versions, the staged one (under staged) or the
+// item's, directly, named as the library names an original.
+func intoVersion(u *Unit, staged, to string) bool {
+	if !IsOriginalName(filepath.Base(to)) {
+		return false
+	}
+	for _, base := range []string{u.ItemDir, staged} {
+		vid, ok := VersionFolderOf(base, to)
+		if !ok {
+			continue
+		}
+		for _, v := range u.DB.Versions {
+			if v.VersionID == vid {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// published is where a file a plan of u moves to to lies once the item is
+// published: in the item's folder for one moved into its staged records,
+// to itself otherwise.
+func published(u *Unit, staged, to string) string {
+	to = filepath.Clean(to)
+	if rel, err := filepath.Rel(staged, to); err == nil && Within(staged, to) {
+		return filepath.Join(filepath.Clean(u.ItemDir), rel)
+	}
+	return to
 }
 
 // stale says which guard of the plan does not hold any more; "" when they
@@ -506,22 +573,25 @@ func (m *Migration) stale(u *Unit) (string, error) {
 
 // busyItem says why the pipeline works on the item, which an adopt must not
 // move under it: its transcode runs, or one finished and its package waits
-// for the packager, which the moves would take its handoff from; or an extra
-// of it is in its packaging. "" when nothing works on it.
+// for the packager, which the moves would take its handoff from; its take-in
+// waits or runs, which moves its original; or an extra of it is in its
+// packaging. "" when nothing works on it.
 func busyItem(ctx context.Context, q Querier, itemID string) (string, error) {
 	var title, extra bool
 	err := q.QueryRow(ctx, `SELECT
 		EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps t WHERE t.item_id = $1 AND t.step = 'transcode'
 			AND (t.status = 'in_progress' OR (t.status IN ('done', 'not_applicable', 'skipped')
 			  AND EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps p WHERE p.item_id = t.item_id AND p.step = 'package'
-			              AND (p.status IN ('pending', 'in_progress') OR (p.status = 'failed' AND p.nextretryat IS NOT NULL)))))),
+			              AND (p.status IN ('pending', 'in_progress') OR (p.status = 'failed' AND p.nextretryat IS NOT NULL))))))
+		OR EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps k WHERE k.item_id = $1 AND k.step = 'takein'
+			AND (k.status IN ('pending', 'in_progress') OR (k.status = 'failed' AND k.nextretryat IS NOT NULL))),
 		EXISTS (SELECT 1 FROM com_nalet_katalog_itemextras x WHERE x.item_id = $1 AND x.removedat IS NULL
 			AND x.state IN ('transcoding', 'transcoded', 'packaging'))`, itemID).Scan(&title, &extra)
 	switch {
 	case err != nil:
 		return "", err
 	case title:
-		return "the pipeline works on it: its transcode runs, or its package waits for the packager; " +
+		return "the pipeline works on it: its transcode runs, or its package or its take-in waits for the packager; " +
 			"pause the transcoder and let the packager finish", nil
 	case extra:
 		return "the pipeline works on one of its extras: pause the transcoder and let the packager finish", nil
@@ -679,6 +749,20 @@ func (m *Migration) apply(ctx context.Context, tx pgx.Tx, u *Unit, gone []goneEv
 		}
 	}
 	for _, v := range u.DB.Versions {
+		if v.PackageID == "" {
+			// Nothing packaged it: taken in, its original in its folder.
+			if _, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, dir,
+					verifiedat, verifiedlevel)
+				VALUES ($1, $2, $3, 'taken', $4, $5::timestamptz, $6)`,
+				v.VersionID, u.ItemID, v.SourceIDs, v.Dir, v.VerifiedAt, v.VerifiedLevel); err != nil {
+				if IsTakenRefused(err) {
+					return fmt.Errorf("version %s is taken in, its original and no package, and migration 044 "+
+						"(db/migrations/044_library_takein.sql) is not applied: adopt it once it is", v.VersionID)
+				}
+				return fmt.Errorf("version %s: %w", v.VersionID, err)
+			}
+			continue
+		}
 		completed, err := time.Parse(time.RFC3339, v.CompletedAt)
 		if err != nil {
 			return fmt.Errorf("version %s's completedAt %q: %w", v.VersionID, v.CompletedAt, err)
@@ -1096,7 +1180,11 @@ func (m *Migration) canRevert(ctx context.Context, tx pgx.Tx, u *Unit, a *attemp
 	}
 	var want []string
 	for _, v := range u.DB.Versions {
-		want = append(want, v.VersionID+":"+VersionComplete)
+		state := VersionComplete
+		if v.PackageID == "" {
+			state = VersionTaken
+		}
+		want = append(want, v.VersionID+":"+state)
 	}
 	sort.Strings(want)
 	if !slices.Equal(versions, want) && !(reverting && len(versions) == 0) {
@@ -1130,27 +1218,39 @@ func (m *Migration) canRevert(ctx context.Context, tx pgx.Tx, u *Unit, a *attemp
 			// gone before the library: the adoption's own event goes
 			event(IDOf("original-deleted:" + s.ID))
 		case s.State == SourceDeleted && p.ArrivalPath != nil:
-			// retired since: its files come back from the trash, and the
-			// event of a deletion undone goes
+			// retired since: its files come back from the trash, where
+			// the adoption put them (its original into its version's
+			// folder, or to the arrivals; the files that came with it
+			// from beside it), and the event of a deletion undone goes
 			if s.RetireEventID != nil {
 				event(*s.RetireEventID)
 			}
 			trash := deref(s.TrashPath)
+			staged := filepath.Join(m.Dir, "staged", u.ItemID, "item")
+			arrival := filepath.Clean(*p.ArrivalPath)
+			beside := ""
 			for _, mv := range a.moves(StateDone) {
-				if (mv.Kind != MoveOriginal && mv.Kind != MoveSidecar) || filepath.Dir(mv.To) != filepath.Dir(*p.ArrivalPath) {
+				if mv.Kind == MoveOriginal && published(u, staged, mv.To) == arrival {
+					beside = filepath.Dir(mv.From)
+				}
+			}
+			for _, mv := range a.moves(StateDone) {
+				to := published(u, staged, mv.To)
+				original := mv.Kind == MoveOriginal && to == arrival
+				if !original && (mv.Kind != MoveSidecar || filepath.Dir(mv.From) != beside) {
 					continue
 				}
-				if _, err := os.Lstat(mv.To); err == nil {
+				if _, err := os.Lstat(to); err == nil {
 					continue
 				}
-				in := filepath.Join(trash, filepath.Base(mv.To))
+				in := filepath.Join(trash, filepath.Base(to))
 				if trash == "" || !statOK(in) {
-					if mv.To == *p.ArrivalPath {
-						return nil, nil, fmt.Sprintf("its original %s was deleted for good: the trash's grace is over", mv.To), nil
+					if original {
+						return nil, nil, fmt.Sprintf("its original %s was deleted for good: the trash's grace is over", to), nil
 					}
 					continue // a sidecar gone with it: its copy is in the record that goes back to staging
 				}
-				restore = append(restore, Move{Kind: mv.Kind, From: in, To: mv.To})
+				restore = append(restore, Move{Kind: mv.Kind, From: in, To: to})
 			}
 		}
 	}
