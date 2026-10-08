@@ -211,3 +211,32 @@ func (s *Store) EnsureReencodeQueue(ctx context.Context) error {
 	_, err = s.pool.Exec(ctx, migrations.ReencodeQueue)
 	return err
 }
+
+// TakeInReady reports whether migration 044 is in place: a version's state
+// may be taken (its folder holds its original and no package). It is not on
+// a catalog without migration 040, which keeps no versions.
+func (s *Store) TakeInReady(ctx context.Context) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_constraint
+		WHERE conrelid = to_regclass($1::text) AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%''taken''%')`,
+		VersionsTable).Scan(&ok)
+	return ok, err
+}
+
+// EnsureTakeIn applies db/migrations/044_library_takein.sql when a version's
+// state may not be taken yet, on a catalog that keeps versions (040). Without
+// it no title is taken in, and a migration's unit of a title staged
+// unpackaged is not adopted.
+func (s *Store) EnsureTakeIn(ctx context.Context) error {
+	var versions bool
+	if err := s.pool.QueryRow(ctx, `SELECT to_regclass($1::text) IS NOT NULL`, VersionsTable).Scan(&versions); err != nil ||
+		!versions {
+		return err
+	}
+	ready, err := s.TakeInReady(ctx)
+	if err != nil || ready {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, migrations.TakeIn)
+	return err
+}

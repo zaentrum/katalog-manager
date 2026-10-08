@@ -350,3 +350,54 @@ func TestADeletedItemLeavesTheReencodeQueue(t *testing.T) {
 		t.Errorf("the queue holds %d titles, want the other item's", n)
 	}
 }
+
+// Migration 044 lets a version be taken, its folder holding its original and
+// no package: applied to a catalog with 040, and again, unchanged, by
+// EnsureTakeIn and by the file itself, whatever 040's check on the state was
+// named; a state there is none of is still refused. A catalog without 040
+// keeps no versions, and EnsureTakeIn leaves it so.
+func TestTheTakeInMigrationIsIdempotent(t *testing.T) {
+	st := storetest.OpenBase(t)
+	ctx := context.Background()
+	ready := func() bool {
+		t.Helper()
+		ok, err := st.TakeInReady(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if err := st.EnsureTakeIn(ctx); err != nil || ready() {
+		t.Fatalf("EnsureTakeIn without 040: ready %v, %v", ready(), err)
+	}
+	for _, ensure := range []func(context.Context) error{st.EnsureDeletionLog, st.EnsurePeople, st.EnsureItemExtras, st.EnsureLibrary} {
+		if err := ensure(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ready() {
+		t.Fatal("a catalog with 040 alone is ready")
+	}
+	// A check named otherwise than Postgres names 040's goes too.
+	storetest.Exec(t, st, `ALTER TABLE com_nalet_katalog_itemversions RENAME CONSTRAINT com_nalet_katalog_itemversions_state_check
+		TO itemversions_state`)
+	for i := 0; i < 2; i++ {
+		if err := st.EnsureTakeIn(ctx); err != nil {
+			t.Fatalf("EnsureTakeIn, %d. time: %v", i+1, err)
+		}
+		storetest.Exec(t, st, migrations.TakeIn)
+		if !ready() {
+			t.Fatalf("after EnsureTakeIn and the file %d times: not ready", i+1)
+		}
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM pg_constraint WHERE conrelid = 'com_nalet_katalog_itemversions'::regclass
+		AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%state%'`); n != 1 {
+		t.Errorf("%d checks on the state, want 1", n)
+	}
+	for _, state := range []string{"building", "taken", "complete", "superseded", "removed"} {
+		storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, state) VALUES ($1, $1, $1)`, state)
+	}
+	if _, err := st.Pool().Exec(ctx, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, state) VALUES ('x', 'x', 'packaged')`); err == nil {
+		t.Error("a version is of a state there is none of")
+	}
+}

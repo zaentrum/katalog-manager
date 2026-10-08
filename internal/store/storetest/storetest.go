@@ -80,6 +80,9 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	if err := st.EnsureReencodeQueue(ctx); err != nil {
 		t.Fatalf("apply the re-encode queue migration: %v", err)
 	}
+	if err := st.EnsureTakeIn(ctx); err != nil {
+		t.Fatalf("apply the take-in migration: %v", err)
+	}
 	return st
 }
 

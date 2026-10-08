@@ -9,7 +9,7 @@
 // store.EnsureStepRetries, store.EnsureScanJobRunner, store.EnsureItemRatings,
 // store.EnsureTrackLanguages, store.EnsureSubtitleForced,
 // store.EnsureItemExtras, store.EnsureLibrary, which applies 040, 041 and
-// 042, and store.EnsureReencodeQueue).
+// 042, store.EnsureReencodeQueue and store.EnsureTakeIn).
 // It applies 035, which drops what is left of a retired integration, at every
 // start when any of that is there (store.DropRetiredJobTables).
 package migrations
@@ -104,3 +104,9 @@ var PlaybackItemIndex string
 //
 //go:embed 043_reencode_queue.sql
 var ReencodeQueue string
+
+// TakeIn is 044_library_takein.sql: a version may be taken, its folder
+// holding its original and no package.
+//
+//go:embed 044_library_takein.sql
+var TakeIn string

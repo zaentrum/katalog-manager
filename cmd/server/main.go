@@ -135,6 +135,11 @@ func run() error {
 	if err := st.EnsureReencodeQueue(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/043_reencode_queue.sql is missing and could not be applied: %v; no title is queued to be encoded again until it is", err)
 	}
+	// A version taken in, its original in its folder and no package
+	// (migration 044).
+	if err := st.EnsureTakeIn(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/044_library_takein.sql is missing and could not be applied: %v; no title is taken in until it is", err)
+	}
 	if set, err := library.ReadSettings(bgCtx, st.Pool()); err != nil {
 		log.Printf("catalog: the library's settings could not be read: %v", err)
 	} else {
