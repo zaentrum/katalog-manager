@@ -53,12 +53,15 @@ func withOriginal(payload, path string) string {
 }
 
 // sourceRow is the source and the asset of the title's file as the catalog
-// holds them: where the original lies, its name, and the asset's path.
+// holds them: where the original lies, its name, whether it is recorded, and
+// the asset's path; and, once it is recorded, "(arrived)" while it keeps its
+// place among the arrivals, which a recorded source never does.
 func (f *v2Film) sourceRow(t *testing.T) string {
 	t.Helper()
 	var out string
 	if err := f.st.Pool().QueryRow(t.Context(), `SELECT s.arrivalpath || ' ' || s.filename || ' ' || (s.recordedat IS NOT NULL) ||
-			' ' || a.path FROM com_nalet_katalog_itemsources s JOIN com_nalet_katalog_playbackassets a ON a.sourceid = s.id
+			' ' || a.path || CASE WHEN s.recordedat IS NOT NULL AND s.librarypath IS NOT NULL THEN ' (arrived)' ELSE '' END
+		FROM com_nalet_katalog_itemsources s JOIN com_nalet_katalog_playbackassets a ON a.sourceid = s.id
 		WHERE s.id = $1`, filmSource).Scan(&out); err != nil {
 		t.Fatal(err)
 	}
