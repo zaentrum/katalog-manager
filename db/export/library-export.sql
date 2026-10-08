@@ -6,6 +6,13 @@
 -- database. Artwork bytes travel base64-encoded; everything else is plain JSON.
 -- Run it as before: psql -Atf - < catalog-export.sql > catalog.json
 --
+-- An item's coveredBy is the episode whose one file covers it besides that
+-- episode (db/migrations/045: a file of several episodes is its first one's,
+-- its holder's): the holder's id on a covered episode, null on every other
+-- item, and on a catalog without 045, whose column is read through to_jsonb
+-- of the row for that reason. The holder's covers are its own id and every
+-- item whose coveredBy names it, in episode order.
+--
 -- An item's people are its credits, in the order a title lists them: by role
 -- (actor, creator, director, writer, producer, composer, cinematographer,
 -- editor, then any other role, by role), then by order (unknown last), then
@@ -95,6 +102,7 @@ select json_build_object(
         'description', i.description, 'tagline', i.tagline, 'rating', i.rating,
         'durationMs', i.durationms, 'parentId', i.parent_id,
         'seasonNumber', i.seasonnumber, 'episodeNumber', i.episodenumber,
+        'coveredBy', to_jsonb(i)->>'coveredby',
         'metadataLocked', i.metadatalocked,
         'createdAt', to_char(i.createdat at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
         'createdBy', i.createdby,

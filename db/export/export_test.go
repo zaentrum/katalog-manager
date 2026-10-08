@@ -631,3 +631,43 @@ func TestExportLibraryTablesAndShards(t *testing.T) {
 		}
 	}
 }
+
+// An item's coveredBy is the episode whose one file covers it besides that
+// episode (migration 045): the holder's id on a covered episode, null on every
+// other item, and on every item of a catalog without the migration.
+func TestExportCoveredBy(t *testing.T) {
+	st := storetest.Open(t)
+	libraryRows(t, st)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET coveredby = 'ef000000-0000-4000-8000-000000000004'
+		WHERE id = '12000000-0000-4000-8000-000000000005'`)
+	coveredBy := func(doc []byte) map[string]any {
+		t.Helper()
+		var items []map[string]any
+		if err := json.Unmarshal(section(t, doc, "items"), &items); err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]any{}
+		for _, it := range items {
+			v, ok := it["coveredBy"]
+			if !ok {
+				t.Errorf("item %v has no coveredBy", it["id"])
+			}
+			out[it["id"].(string)] = v
+		}
+		return out
+	}
+	got := coveredBy(runExport(t, st))
+	if got["12000000-0000-4000-8000-000000000005"] != "ef000000-0000-4000-8000-000000000004" {
+		t.Errorf("the covered episode's coveredBy: %v", got["12000000-0000-4000-8000-000000000005"])
+	}
+	for id, v := range got {
+		if id != "12000000-0000-4000-8000-000000000005" && v != nil {
+			t.Errorf("item %s's coveredBy is %v, want null", id, v)
+		}
+	}
+	base := storetest.OpenBase(t)
+	storetest.AddItem(t, base, "f0000000-0000-4000-8000-000000000001", "movie", "A Film", "")
+	if got := coveredBy(runExport(t, base)); got["f0000000-0000-4000-8000-000000000001"] != nil {
+		t.Errorf("without 045: %v", got)
+	}
+}
