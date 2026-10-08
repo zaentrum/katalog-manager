@@ -68,6 +68,7 @@ var routes = []route{
 		`{"type": "extra", "renditions": {"video": [{"id": "v0", "codec": "avc1.64001f", "width": 1280, "height": 720}]}}`, "worker"},
 	{http.MethodPost, "/api/library/migrations/r1/adopt", "", "worker"},
 	{http.MethodPost, "/api/library/migrations/r1/revert", `{"items": []}`, "worker"},
+	{http.MethodPost, "/api/library/migrations/r1/names", "", "worker"},
 	{http.MethodPost, "/api/library/projections", `{}`, "worker"},
 	{http.MethodPost, "/api/library/reencode", `{"items": ["m1"]}`, "worker"},
 	{http.MethodGet, "/api/library/reencode", "", "worker"},

@@ -1,6 +1,7 @@
 package rest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,11 +27,43 @@ import (
 // why); 400 for a run's name that is none, 404 for a run that is not staged,
 // 409 while another adopt or revert of it runs. A caller that goes away
 // stops it between two units, never within one.
-func (h *Handlers) adoptRun(w http.ResponseWriter, r *http.Request) { h.migrate(w, r, true) }
+func (h *Handlers) adoptRun(w http.ResponseWriter, r *http.Request) {
+	h.migrate(w, r, func(ctx context.Context, m *library.Migration, items []string) (any, error) {
+		return m.Adopt(ctx, items)
+	})
+}
 
-func (h *Handlers) revertRun(w http.ResponseWriter, r *http.Request) { h.migrate(w, r, false) }
+func (h *Handlers) revertRun(w http.ResponseWriter, r *http.Request) {
+	h.migrate(w, r, func(ctx context.Context, m *library.Migration, items []string) (any, error) {
+		return m.Revert(ctx, items)
+	})
+}
 
-func (h *Handlers) migrate(w http.ResponseWriter, r *http.Request, adopt bool) {
+// namesRun serves POST /api/library/migrations/{run}/names, the catalog's
+// side of the schemas' library-v2-neutral-names.py, which gives a tree
+// written before 2026-10-08 the names the library gives its files and
+// changes no database (its run is neutral-names unless it was named
+// another): by the run's journal, every row of an item the run finished
+// that names a file it renamed or took out of the record names it where it
+// is now, and the item's recorded sources have the library's names for
+// their files and no place among the arrivals, one transaction an item
+// (library.Migration.Names). For the workers' service account and admins.
+// The body may name the items, {"items": ["<itemId>", …]}; without it,
+// every item of the journal. It answers {"run", "items", "rows", "skipped":
+// [{"itemId", "reason"}]}: how many items it took, how many rows it changed
+// (none when called again), and the items it left, why; 400 for a run's
+// name that is none, 404 for a run that is not there, 409 while an adopt,
+// a revert or another of these runs on it, 422 for a journal that names a
+// file outside the folder of its item (nothing is changed).
+func (h *Handlers) namesRun(w http.ResponseWriter, r *http.Request) {
+	h.migrate(w, r, func(ctx context.Context, m *library.Migration, items []string) (any, error) {
+		return m.Names(ctx, items)
+	})
+}
+
+// migrate runs act on the run the path names, for the items the body names.
+func (h *Handlers) migrate(w http.ResponseWriter, r *http.Request,
+	act func(context.Context, *library.Migration, []string) (any, error)) {
 	var body struct {
 		Items []string `json:"items"`
 	}
@@ -48,21 +81,18 @@ func (h *Handlers) migrate(w http.ResponseWriter, r *http.Request, adopt bool) {
 	m, err := library.NewMigration(h.d.Store.Pool(), h.d.Cfg, chi.URLParam(r, "run"))
 	switch {
 	case errors.Is(err, library.ErrNoRun):
-		writeError(w, http.StatusNotFound, "no migration run is staged at "+strings.TrimPrefix(err.Error(), library.ErrNoRun.Error()+": "))
+		writeError(w, http.StatusNotFound, "there is no migration run at "+strings.TrimPrefix(err.Error(), library.ErrNoRun.Error()+": "))
 		return
 	case err != nil:
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	var rep library.MigrationReport
-	if adopt {
-		rep, err = m.Adopt(reqCtx(r), body.Items)
-	} else {
-		rep, err = m.Revert(reqCtx(r), body.Items)
-	}
+	rep, err := act(reqCtx(r), m, body.Items)
 	switch {
 	case errors.Is(err, library.ErrMigrationBusy):
 		writeError(w, http.StatusConflict, "run "+m.Run+": "+err.Error())
+	case errors.Is(err, library.ErrNamesRefused):
+		writeError(w, http.StatusUnprocessableEntity, "run "+m.Run+": "+err.Error())
 	case err != nil:
 		writeError(w, http.StatusInternalServerError, "run "+m.Run+": "+err.Error())
 	default:
