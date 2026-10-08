@@ -3,6 +3,7 @@ package library
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zaentrum/katalog-manager/internal/config"
@@ -100,7 +101,8 @@ func TestTheModeOfARun(t *testing.T) {
 }
 
 // Where an original lies: directly in a version's folder of its item, by
-// its name; the originals a folder holds.
+// its name; the files a version's folder holds that may be an original:
+// every file beside its record, its chain and its package's folders.
 func TestAnOriginalInAVersionsFolder(t *testing.T) {
 	itemDir := "/lib/movies/a1/a1a1a1a1-0000-4000-8000-000000000001"
 	const vid = "f1f1f1f1-0000-4000-8000-000000000006"
@@ -117,14 +119,15 @@ func TestAnOriginalInAVersionsFolder(t *testing.T) {
 		}
 	}
 	dir := t.TempDir()
-	for _, name := range []string{"original.mkv", "original-2.ts", "version.json", "Original.mkv"} {
+	for _, name := range []string{"original.mkv", "original-2.ts", "version.json", "checksums.sha256", "package.json",
+		".complete", "A Film.mkv", ".DS_Store"} {
 		librarytest.Write(t, filepath.Join(dir, name), []byte("x"))
 	}
-	librarytest.Write(t, filepath.Join(dir, "original.bin", "a"), []byte("a folder"))
-	if got, err := OriginalsIn(dir); err != nil || len(got) != 2 || got[0] != "original-2.ts" || got[1] != "original.mkv" {
-		t.Errorf("OriginalsIn: %v, %v", got, err)
+	librarytest.Write(t, filepath.Join(dir, "hls", "original.bin"), []byte("in a folder of the package"))
+	if got, err := MayBeOriginals(dir); err != nil || strings.Join(got, "|") != "A Film.mkv|original-2.ts|original.mkv" {
+		t.Errorf("MayBeOriginals: %v, %v", got, err)
 	}
-	if got, err := OriginalsIn(filepath.Join(dir, "none")); err != nil || got != nil {
-		t.Errorf("OriginalsIn a folder that is not there: %v, %v", got, err)
+	if got, err := MayBeOriginals(filepath.Join(dir, "none")); err != nil || got != nil {
+		t.Errorf("MayBeOriginals of a folder that is not there: %v, %v", got, err)
 	}
 }

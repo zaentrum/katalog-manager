@@ -805,12 +805,6 @@ func (h *Handlers) dropRefusedVersion(ctx context.Context, itemID, versionID, na
 	return back + "the version's folder is moved out of the record, to " + to
 }
 
-// versionRecords are the files a version's folder holds besides its
-// package's folders: its record and its chain. Any other file in it may be
-// an original.
-var versionRecords = map[string]bool{library.VersionFile: true, library.SumsFile: true, library.PackageFile: true,
-	library.CompleteFile: true}
-
 // returnOriginal puts the original a refused run renamed into the version's
 // folder dir (or to named, where the payload says it lies in the item's
 // folder itemDir) back where the catalog says it lies: its arrival, as the
@@ -823,16 +817,14 @@ var versionRecords = map[string]bool{library.VersionFile: true, library.SumsFile
 // original the catalog names no other place for, or whose place is taken,
 // keeps it.
 func (h *Handlers) returnOriginal(ctx context.Context, itemID, itemDir, dir, named string) (string, bool) {
-	entries, err := os.ReadDir(dir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	names, err := library.MayBeOriginals(dir)
+	if err != nil {
 		log.Printf("packagingComplete: the refused version %s cannot be read: %v", dir, err)
 		return "", false
 	}
 	found := map[string]bool{}
-	for _, e := range entries {
-		if !e.IsDir() && !versionRecords[e.Name()] && !library.IsArtefact(e.Name()) {
-			found[filepath.Join(dir, e.Name())] = true
-		}
+	for _, n := range names {
+		found[filepath.Join(dir, n)] = true
 	}
 	if path := filepath.Clean(named); named != "" && filepath.IsAbs(named) && library.Within(itemDir, path) {
 		if fi, err := os.Lstat(path); err == nil && fi.Mode().IsRegular() {

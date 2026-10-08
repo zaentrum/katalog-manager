@@ -19,8 +19,9 @@ import (
 //     removal is noted first (removedat, the event's id), then the
 //     version-removed event is recorded, its folder deleted, and it is
 //     removed. A version whose folder still holds an original (one the
-//     catalog has there, present or being retired, or a file named as one)
-//     is never removed: it waits until its original is retired;
+//     catalog has there, present or being retired, or any file beside its
+//     record and its package's folders) is never removed: it waits until
+//     its original is retired;
 //   - a legacy package folder (PACKAGES_ROOT/<category>/<aa>/<itemId>) of an
 //     item whose v2 version is complete for the same grace: moved to
 //     .work/legacy/<day>/packages/, never in the record, so no event;
@@ -43,8 +44,8 @@ var errHoldsOriginal = errors.New("its folder holds an original, which is retire
 // goes on with those whose removal began, at most n: it answers how many
 // were removed and how many failed. A version whose folder holds an
 // original the catalog has there waits, unread, and so does one whose
-// folder holds a file named as an original, said in the log, while others
-// are removed past it.
+// folder holds any other file that may be an original (MayBeOriginals),
+// said in the log, while others are removed past it.
 func (r *Retirer) removeVersions(ctx context.Context, p Paths, set Settings, now time.Time, n int) (done, failed int, err error) {
 	rows, err := r.pool.Query(ctx, `SELECT `+versionCols+` FROM com_nalet_katalog_itemversions v
 		WHERE state = 'superseded'
@@ -109,7 +110,7 @@ func (r *Retirer) removeVersion(ctx context.Context, p Paths, now time.Time, v *
 	if filepath.Base(dir) != v.ID || filepath.Base(filepath.Dir(dir)) != "versions" || !Within(p.Root, dir) || Within(p.Work, dir) {
 		return fmt.Errorf("its folder %s is no version folder of the library: nothing is deleted", dir)
 	}
-	if names, err := OriginalsIn(dir); err != nil {
+	if names, err := MayBeOriginals(dir); err != nil {
 		return fmt.Errorf("its folder %s cannot be read: %v", dir, err)
 	} else if len(names) > 0 {
 		return fmt.Errorf("%w (%s)", errHoldsOriginal, strings.Join(names, ", "))

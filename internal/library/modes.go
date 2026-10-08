@@ -91,9 +91,15 @@ func VersionFolderOf(itemDir, path string) (string, bool) {
 	return filepath.Base(dir), true
 }
 
-// OriginalsIn lists the originals the version folder dir holds, by name: its
-// files named as the library names an original; none when it is not there.
-func OriginalsIn(dir string) ([]string, error) {
+// versionRecords are the files a version's folder holds beside its
+// package's folders: its record and its chain.
+var versionRecords = map[string]bool{VersionFile: true, SumsFile: true, PackageFile: true, CompleteFile: true}
+
+// MayBeOriginals lists the files of the version folder dir that may be an
+// original, by name: those beside its record, its chain and its package's
+// folders, whatever they are named (a file operating systems drop there
+// aside); none when it is not there.
+func MayBeOriginals(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -103,7 +109,7 @@ func OriginalsIn(dir string) ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
-		if !e.IsDir() && IsOriginalName(e.Name()) {
+		if !e.IsDir() && !versionRecords[e.Name()] && !IsArtefact(e.Name()) {
 			out = append(out, e.Name())
 		}
 	}

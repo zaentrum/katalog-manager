@@ -177,7 +177,7 @@ func TestAVersionHoldingAnOriginalIsNeverRemoved(t *testing.T) {
 			t.Errorf("the retire step: %s", got)
 		}
 	})
-	t.Run("a file named as an original", func(t *testing.T) {
+	t.Run("a file that may be an original", func(t *testing.T) {
 		f := newRetireFixture(t)
 		f.newer(t, next, nextPkg, fiveOne)
 		// The catalog has no original there, and the folder holds a file
@@ -190,8 +190,16 @@ func TestAVersionHoldingAnOriginalIsNeverRemoved(t *testing.T) {
 		if !exists(filepath.Join(f.versionDir, "original.mkv")) {
 			t.Error("a version's folder holding a file named as an original was removed")
 		}
+		// Nor one holding any other file beside its record: it may be one.
+		if err := os.Rename(filepath.Join(f.versionDir, "original.mkv"), filepath.Join(f.versionDir, "A Film.mkv")); err != nil {
+			t.Fatal(err)
+		}
+		librarytest.Write(t, filepath.Join(f.versionDir, ".DS_Store"), []byte("an artefact"))
+		if rep := f.pass(t); rep.Versions != 0 || rep.Failed != 0 {
+			t.Errorf("the pass with a file beside the record: %+v", rep)
+		}
 		// Without it, the version goes.
-		if err := os.Remove(filepath.Join(f.versionDir, "original.mkv")); err != nil {
+		if err := os.Remove(filepath.Join(f.versionDir, "A Film.mkv")); err != nil {
 			t.Fatal(err)
 		}
 		if rep := f.pass(t); rep.Versions != 1 {
