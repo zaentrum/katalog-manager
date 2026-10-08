@@ -10,11 +10,14 @@ import (
 )
 
 // Where a version stands (com_nalet_katalog_itemversions.state): the
-// pipeline works on it (building), its package is recorded and plays
-// (complete, one per item at most), a newer one took over (superseded), or it
-// is gone from the item (removed).
+// pipeline works on it (building), its folder holds the original it was
+// taken in from and no package (taken, migration 044: the title plays from
+// that original until a package is added to the folder), its package is
+// recorded and plays (complete, one per item at most), a newer one took over
+// (superseded), or it is gone from the item (removed).
 const (
 	VersionBuilding   = "building"
+	VersionTaken      = "taken"
 	VersionComplete   = "complete"
 	VersionSuperseded = "superseded"
 	VersionRemoved    = "removed"
