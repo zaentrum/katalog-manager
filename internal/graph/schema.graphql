@@ -72,6 +72,16 @@ type Item {
   # what the library holds of it (see ItemLibrary); null on a catalog older
   # than migration 040.
   library: ItemLibrary
+  # One file of several episodes (a double-length finale, named S05E15-E16)
+  # belongs to the first of them, its holder: its source, versions, package,
+  # pipeline run and retire are the holder's. coveredBy is the episode whose
+  # file covers this one, whose version it plays (it has no file of its own,
+  # and its steps of a file do not apply); null when no other's file covers
+  # it, and on a catalog older than migration 045.
+  coveredBy: Item
+  # the other episodes this episode's file covers, in episode order; none for
+  # a file of one episode
+  covers: [Item!]!
 }
 
 # What the library holds of a title: with library.layout=v2 its record on
@@ -648,6 +658,23 @@ type ScanJob {
   filesSeen: Int
   itemsInserted: Int
   itemsUpdated: Int
+  # what the scan passed over and left alone (see ScanNote), the first 1000
+  # (the log says every one); none while it runs, and on a catalog older than
+  # migration 045
+  report: [ScanNote!]!
+}
+
+# One entry of a scan's report. kind is unsupported, a file the scan takes in
+# as nothing (a disc image, its reason "disc image: convert it to a single
+# file"; itemId the title whose file it was already, whose steps that read it
+# fail with that reason), or not-linked, an episode a file's name covers that
+# the scan left alone (itemId it: it has a file of its own, which wins, or
+# another file covers it already). path is the file.
+type ScanNote {
+  kind: String!
+  path: String!
+  itemId: ID
+  reason: String!
 }
 
 type ActivityEvent {

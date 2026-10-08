@@ -305,6 +305,22 @@ func (r *scanJobResolver) FilesSeen() *int32         { return r.m.FilesSeen }
 func (r *scanJobResolver) ItemsInserted() *int32     { return r.m.ItemsInserted }
 func (r *scanJobResolver) ItemsUpdated() *int32      { return r.m.ItemsUpdated }
 
+// Report is what the scan passed over and left alone.
+func (r *scanJobResolver) Report() []*scanNoteResolver {
+	out := make([]*scanNoteResolver, 0, len(r.m.Report))
+	for i := range r.m.Report {
+		out = append(out, &scanNoteResolver{m: r.m.Report[i]})
+	}
+	return out
+}
+
+type scanNoteResolver struct{ m model.ScanNote }
+
+func (r *scanNoteResolver) Kind() string        { return r.m.Kind }
+func (r *scanNoteResolver) Path() string        { return r.m.Path }
+func (r *scanNoteResolver) ItemID() *graphql.ID { return gidptr(r.m.ItemID) }
+func (r *scanNoteResolver) Reason() string      { return r.m.Reason }
+
 // ---- ActivityEvent ----
 
 type activityEventResolver struct{ m *store.ActivityRow }

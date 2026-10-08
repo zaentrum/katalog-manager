@@ -305,6 +305,39 @@ func (r *itemResolver) Tracks(ctx context.Context) ([]*trackResolver, error) {
 	return out, nil
 }
 
+// CoveredBy is the episode whose file covers this one; nil when no other's
+// does.
+func (r *itemResolver) CoveredBy(ctx context.Context) (*itemResolver, error) {
+	holder, err := library.HolderOf(ctx, r.s.Pool(), r.m.ID)
+	if err != nil || holder == "" {
+		return nil, err
+	}
+	h, err := r.s.GetItemBase(ctx, holder)
+	if err != nil || h == nil {
+		return nil, err
+	}
+	return newItemResolver(h, r.s, r.lib), nil
+}
+
+// Covers are the other episodes this episode's file covers, in episode order.
+func (r *itemResolver) Covers(ctx context.Context) ([]*itemResolver, error) {
+	covered, err := library.CoveredOf(ctx, r.s.Pool(), r.m.ID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*itemResolver, 0, len(covered))
+	for _, c := range covered {
+		it, err := r.s.GetItemBase(ctx, c.ID)
+		if err != nil {
+			return nil, err
+		}
+		if it != nil {
+			out = append(out, newItemResolver(it, r.s, r.lib))
+		}
+	}
+	return out, nil
+}
+
 // ---- Track ----
 
 type trackResolver struct{ m *model.Track }
