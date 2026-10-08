@@ -557,8 +557,8 @@ func (m *Migration) checkCovers(ctx context.Context, u *Unit) error {
 			return fmt.Errorf("its file covers %s, which is no episode of its series", id)
 		}
 		var file bool
-		if err := m.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets WHERE item_id = $1)`,
-			id).Scan(&file); err != nil {
+		if err := m.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets WHERE item_id = $1
+			AND COALESCE(kind, 'primary') <> 'trailer')`, id).Scan(&file); err != nil {
 			return err
 		}
 		if file {

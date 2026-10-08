@@ -24,13 +24,13 @@ import (
 // catalog's episode of that number, or, when it has none, one the scan makes
 // as it makes any episode (its scan step done, its discovered event sent, so
 // that the enricher reads its texts and images). Its steps of a file do not
-// apply. An episode of that number with a file of its own (any playback row:
-// its original, its package) is left alone, its own file wins, and one
-// another file covers already stays that file's: the scan's report says so.
-// An episode the file covered that its name covers no more is unlinked. A
-// file the scan took in before it read its name's numbers (S01E01E02 was none
-// to it) gets them. Without migration 045 a file covers its first episode
-// alone, said once in the log.
+// apply. An episode of that number with a file of its own (a playback row but
+// a trailer's: its original, its package) is left alone, its own file wins,
+// and one another file covers already stays that file's: the scan's report
+// says so. An episode the file covered that its name covers no more is
+// unlinked. A file the scan took in before it read its name's numbers
+// (S01E01E02 was none to it) gets them. Without migration 045 a file covers
+// its first episode alone, said once in the log.
 
 // covering is a file of the walk that covers episodes besides its first, or
 // did: its holder, its place, the holder's parent and numbers, how many more
@@ -156,7 +156,8 @@ func (s *Scanner) coverEpisode(ctx context.Context, res *scanResult, holder, pat
 	pool := s.st.Pool()
 	code := fmt.Sprintf("S%02dE%02d", season, n)
 	rows, err := pool.Query(ctx, `SELECT e.id, e.coveredby,
-			EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets a WHERE a.item_id = e.id)
+			EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets a WHERE a.item_id = e.id
+				AND COALESCE(a.kind, 'primary') <> 'trailer')
 		FROM com_nalet_katalog_items e
 		WHERE e.type = 'episode' AND e.seasonnumber = $2 AND e.episodenumber = $3 AND e.id <> $4
 		  AND (e.parent_id = $1 OR e.parent_id IN (SELECT x.id FROM com_nalet_katalog_items x
