@@ -14,18 +14,19 @@ import (
 
 // intoVersion moves the fixture's original into the folder of the version
 // vid as the packager renames it in (original.mkv), as the catalog then
-// holds it (its source and the asset of the title's file), and writes the
-// source's record as it is written now: copies of the subtitle files that
-// came with it under the library's names, by their content, and no name of
-// where they came from. It answers where the original lies.
+// holds it (its source and the asset of the title's file: no name it arrived
+// under, nor where it arrived), and writes the source's record as it is
+// written now: copies of the subtitle files that came with it under the
+// library's names, by their content, and no name of where they came from.
+// It answers where the original lies.
 func (f *retireFixture) intoVersion(t *testing.T, vid string) string {
 	t.Helper()
 	to := filepath.Join(VersionDir(f.itemDir, vid), "original.mkv")
 	if err := os.Rename(f.original, to); err != nil {
 		t.Fatal(err)
 	}
-	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_itemsources SET arrivalpath = $2, filename = 'original.mkv' WHERE id = $1`,
-		rtSource, to)
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_itemsources SET arrivalpath = $2, filename = 'original.mkv', librarypath = NULL
+		WHERE id = $1`, rtSource, to)
 	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_playbackassets SET path = $2 WHERE id = $1`, "orig-"+rtFilm[:8], to)
 	size, qh1, err := QH1(to)
 	if err != nil {

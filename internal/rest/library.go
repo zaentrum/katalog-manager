@@ -315,27 +315,27 @@ func arrivalName(s *library.Source) string {
 }
 
 // sidecarCopies are, for an original that lies in its version's folder, the
-// subtitle files that came with it: the folder it arrived in, whose files
-// named after it are its sidecars (as the scanner paired them, their rows
-// pointing at them until it is retired), and the copies its source's record
-// keeps of them (sources/<sourceId>/<name>), by the content its source.json
-// lists of each.
+// copies its source's record keeps of the subtitle files that came with it
+// (sources/<sourceId>/<name>), by the content its source.json lists of each:
+// the files the catalog's rows point at whose bytes a copy holds are the
+// original's subtitle files (their rows point at them where they arrived
+// until it is retired), wherever they lie, so no name they arrived under is
+// needed to find them.
 type sidecarCopies struct {
-	folder  string
 	itemDir string
 	byHash  map[string][]string // a copy's sha256 (hex): the copies of it, relative to the item's folder
 }
 
 // of is the copy the record keeps of the subtitle file at path, each copy
-// for one file; a file the record keeps no copy of is itself.
+// for one file; "" when the record keeps no copy of it.
 func (c *sidecarCopies) of(path string) string {
 	digest, _, err := library.SHA256File(path)
 	if err != nil {
-		return path
+		return ""
 	}
 	files := c.byHash[digest]
 	if len(files) == 0 {
-		return path
+		return ""
 	}
 	c.byHash[digest] = files[1:]
 	return filepath.Join(c.itemDir, filepath.FromSlash(files[0]))
@@ -343,7 +343,8 @@ func (c *sidecarCopies) of(path string) string {
 
 // sidecarCopiesOf are the sidecar copies of the item's original at source
 // when it lies in its version's folder; nil when it does not (the files
-// beside it are its subtitle files), or when the item has no folder.
+// beside it are its subtitle files), or when the item has no folder. A
+// source without a record keeps no copies.
 func (h *Handlers) sidecarCopiesOf(ctx context.Context, itemID, source string) (*sidecarCopies, error) {
 	pool := h.d.Store.Pool()
 	pl, err := library.PlaceOf(ctx, pool, itemID)
@@ -354,8 +355,7 @@ func (h *Handlers) sidecarCopiesOf(ctx context.Context, itemID, source string) (
 	case err != nil:
 		return nil, err
 	}
-	p := h.paths()
-	itemDir := p.ItemDir(pl)
+	itemDir := h.paths().ItemDir(pl)
 	if _, ok := library.VersionFolderOf(itemDir, source); !ok {
 		return nil, nil
 	}
@@ -364,12 +364,9 @@ func (h *Handlers) sidecarCopiesOf(ctx context.Context, itemID, source string) (
 		return nil, err
 	}
 	c := &sidecarCopies{itemDir: itemDir, byHash: map[string][]string{}}
-	if arrival := p.ArrivalOf(src); arrival != "" {
-		c.folder = filepath.Dir(arrival)
-	}
 	b, err := os.ReadFile(filepath.Join(library.SourceDir(itemDir, src.ID), "source.json"))
 	if err != nil {
-		return c, nil // no record: the files are named as they are
+		return c, nil // no record: no copies
 	}
 	var rec struct {
 		Sidecars []struct {

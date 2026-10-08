@@ -795,14 +795,16 @@ type mappedSidecar struct {
 }
 
 // sidecarsOf are the files that go with the original of rt: the subtitle
-// rows of its sidecars (those the packager mapped, and those beside it named
-// as it is, where it arrived), each with what it points at once the original
-// is gone (the copy its record keeps of one the package did not map: by the
+// rows of its sidecars (those the packager mapped, those beside it named as
+// it is, where it arrived, and those of a file whose bytes its record keeps
+// a copy of, wherever it lies outside the record and beside no other
+// original of the item), each with what it points at once the original is
+// gone (the copy its record keeps of one the package did not map: by the
 // name it had, as a record from before names it, else by its content), and
 // the other files its record lists as copied from beside it. A subtitle file
-// that neither the package nor the record holds is refused before the event
-// is recorded (strict): deleting it would lose it. Once the event is
-// recorded the deletion goes on, and such a file stays where it is.
+// beside it that neither the package nor the record holds is refused before
+// the event is recorded (strict): deleting it would lose it. Once the event
+// is recorded the deletion goes on, and such a file stays where it is.
 func (r *Retirer) sidecarsOf(ctx context.Context, rt *retirement, strict bool) ([]sidecar, error) {
 	s := rt.src
 	mapped := map[string]mappedSidecar{}
@@ -841,7 +843,12 @@ func (r *Retirer) sidecarsOf(ctx context.Context, rt *retirement, strict bool) (
 		byContent[digest] = byContent[digest][1:]
 		return c
 	}
-	original := PathsOf(r.cfg).ArrivalOf(s)
+	p := PathsOf(r.cfg)
+	original := p.ArrivalOf(s)
+	others, err := r.othersArrivals(ctx, s)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.pool.Query(ctx, `SELECT id, path FROM com_nalet_katalog_subtitleassets WHERE item_id = $1 ORDER BY id`, s.ItemID)
 	if err != nil {
 		return nil, err
@@ -855,16 +862,24 @@ func (r *Retirer) sidecarsOf(ctx context.Context, rt *retirement, strict bool) (
 			return nil, err
 		}
 		m, isMapped := mapped[id]
-		if !isMapped && (original == "" || !besideOriginal(original, path)) {
-			continue
-		}
-		sc := sidecar{path: path, asset: id}
+		beside := original != "" && besideOriginal(original, path)
 		var kept string // the record's copy of a file the package did not map
-		if !isMapped {
+		switch {
+		case isMapped:
+		case beside:
 			if kept = copyOf[filepath.Base(path)]; kept == "" {
 				kept = copied(path)
 			}
+		case !p.InRecord(path) && !besideAny(others, path):
+			// One of its files wherever it lies, as its record keeps the
+			// bytes of it: an original that went into its version's
+			// folder left no name to find its files beside.
+			kept = copied(path)
 		}
+		if !isMapped && !beside && kept == "" {
+			continue
+		}
+		sc := sidecar{path: path, asset: id}
 		switch {
 		case isMapped:
 			if rt.ver == nil || deref(rt.ver.Dir) == "" {
@@ -899,6 +914,37 @@ func (r *Retirer) sidecarsOf(ctx context.Context, rt *retirement, strict bool) (
 		}
 	}
 	return out, nil
+}
+
+// othersArrivals are where the item's other originals that are there
+// arrived: the files beside one of them are its own, never the source s's.
+func (r *Retirer) othersArrivals(ctx context.Context, s *Source) ([]string, error) {
+	sources, err := SourcesOf(ctx, r.pool, s.ItemID)
+	if err != nil {
+		return nil, err
+	}
+	p := PathsOf(r.cfg)
+	var out []string
+	for _, o := range sources {
+		if o.ID == s.ID || (o.State != SourcePresent && o.State != SourceRetiring) {
+			continue
+		}
+		if at := p.ArrivalOf(o); at != "" {
+			out = append(out, at)
+		}
+	}
+	return out, nil
+}
+
+// besideAny reports whether the file at path lies beside one of originals,
+// named as it is.
+func besideAny(originals []string, path string) bool {
+	for _, o := range originals {
+		if besideOriginal(o, path) {
+			return true
+		}
+	}
+	return false
 }
 
 func versionIDOf(v *Version) string {

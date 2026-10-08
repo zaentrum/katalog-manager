@@ -250,9 +250,10 @@ const maxSubtitleFileBytes = 50 << 20
 // package's (sidecarSubtitle), each at an absolute path in the source's
 // folder or below it, a .srt, .vtt, .ass or .ssa file of at most 50 MB. A
 // file that is gone, or larger, is left out. With the v2 layout an original
-// in its version's folder came with the files beside it where it arrived
-// (sidecarCopies): those are its subtitle files, each named by the copy its
-// source's record keeps of it, in the order they lay there.
+// in its version's folder has its subtitle files in its source's record:
+// the item's rows of a file a copy there holds the bytes of are its subtitle
+// files (sidecarCopies), each named by that copy, in the order of the files
+// the rows point at.
 func (h *Handlers) subtitleFilesOf(ctx context.Context, itemID, source string, v2 bool) ([]subtitleFile, error) {
 	if strings.TrimSpace(source) == "" {
 		return nil, nil
@@ -263,9 +264,6 @@ func (h *Handlers) subtitleFilesOf(ctx context.Context, itemID, source string, v
 		var err error
 		if copies, err = h.sidecarCopiesOf(ctx, itemID, source); err != nil {
 			return nil, err
-		}
-		if copies != nil {
-			folder = copies.folder
 		}
 	}
 	root, err := h.packageRootFor(ctx, itemID)
@@ -285,9 +283,13 @@ func (h *Handlers) subtitleFilesOf(ctx context.Context, itemID, source string, v
 			return nil, err
 		}
 		path = filepath.Clean(path)
-		if !filepath.IsAbs(path) || !underRoot(folder, path) || !h.sidecarSubtitle(path, root) ||
+		inPlace := copies != nil || underRoot(folder, path)
+		if !filepath.IsAbs(path) || !inPlace || !h.sidecarSubtitle(path, root) ||
 			!subtitleFileSuffixes[strings.ToLower(filepath.Ext(path))] {
 			continue
+		}
+		if copies != nil && h.paths().InRecord(path) {
+			continue // a copy, or a rendition, the row points at once the original is retired
 		}
 		if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() || fi.Size() > maxSubtitleFileBytes {
 			continue
@@ -299,9 +301,14 @@ func (h *Handlers) subtitleFilesOf(ctx context.Context, itemID, source string, v
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	if copies != nil {
-		for i := range out {
-			out[i].Path = copies.of(out[i].Path)
+		kept := out[:0]
+		for _, f := range out {
+			if c := copies.of(f.Path); c != "" {
+				f.Path = c
+				kept = append(kept, f)
+			}
 		}
+		out = kept
 	}
 	return out, nil
 }

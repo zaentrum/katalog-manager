@@ -275,8 +275,8 @@ func TestTheWorkerRecordSaysWhatTheRunDoes(t *testing.T) {
 		"sidecars": []map[string]any{{"file": "sources/" + sid + "/" + copyName, "kind": "subtitle",
 			"sha256": "sha256:" + library.SHA256(content)}}}, map[string]string{copyName: string(content)})
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET state = 'taken', dir = $2 WHERE id = $1`, vid, vdir)
-	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemsources SET arrivalpath = $2, filename = 'original.mkv', recordedat = now()
-		WHERE id = $1`, sid, moved)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemsources SET arrivalpath = $2, filename = 'original.mkv', recordedat = now(),
+		librarypath = NULL WHERE id = $1`, sid, moved)
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_playbackassets SET path = $1 WHERE id = 'src-f1'`, moved)
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemprocessingsteps SET status = 'done' WHERE id = 'k1'`)
 	if b := build(); b["mode"] != "add" || b["originalName"] != nil || b["versionId"] != vid || b["versionDir"] != vdir ||
