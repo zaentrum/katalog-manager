@@ -101,3 +101,42 @@ func TestReplaceSourceWithTheV2Layout(t *testing.T) {
 		t.Error("the deleted old file is still a source")
 	}
 }
+
+// A title whose version being built is in the library (a run placed it, its
+// handover not recorded) is given no other file: the run taken again
+// reports that version as it is. Once it is recorded, it may be.
+func TestReplaceSourceWaitsForALostHandover(t *testing.T) {
+	st := storetest.Open(t)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('l', 'library.layout', 'v2')`)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{NFSRoot: dir + "/media", PackagesRoot: dir + "/packages", LibraryRoot: dir, WorkRoot: dir + "/.work",
+		ArrivalsRoot: dir + "/.work/incoming", ExtrasRoot: dir + "/.work/extras"}
+	f := &replacing{st: st, cfg: cfg, dir: dir, re: &fakeReencoder{}}
+	svc := New(st, cfg, processing.New(st.Pool()), nil)
+	const bunnyID = "b0b0b0b0-0000-4000-8000-000000000001"
+	old := f.write(t, ".work/incoming/Bunny (2008).mkv", 100)
+	storetest.AddItem(t, st, bunnyID, "movie", "Big Buck Bunny", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state)
+		VALUES ('s-old', $1, 'Bunny (2008).mkv', $2, 100, 'present')`, bunnyID, old)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, sizebytes, isprimary, kind, sourceid)
+		VALUES ('a-bunny', $1, $2, 100, true, 'primary', 's-old')`, bunnyID, old)
+	const vid = "9b0b0b0b-0000-4000-8000-000000000002"
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state) VALUES ($1, $2, ARRAY['s-old'], 'building')`,
+		vid, bunnyID)
+	f.write(t, "movies/b0/"+bunnyID+"/versions/"+vid+"/version.json", 10)
+	handed := f.write(t, ".work/replace/Bunny 4K.mkv", 5000)
+	if _, err := svc.ReplaceSource(asOperator, graph.ReplaceSourceRequest{ItemID: bunnyID, Path: handed}); err == nil ||
+		!strings.Contains(err.Error(), "its handover is not recorded yet") {
+		t.Fatalf("ReplaceSource while a placed version waits for its handover: %v", err)
+	}
+	if _, err := os.Stat(handed); err != nil {
+		t.Errorf("the file handed over was taken: %v", err)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET state = 'complete' WHERE id = $1`, vid)
+	if res, err := svc.ReplaceSource(asOperator, graph.ReplaceSourceRequest{ItemID: bunnyID, Path: handed}); err != nil || !res.Replaced {
+		t.Errorf("ReplaceSource once the version is recorded: %+v, %v", res, err)
+	}
+}

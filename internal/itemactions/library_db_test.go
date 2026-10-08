@@ -295,3 +295,51 @@ func TestARemovalKeepsAnOriginalInItsVersionsFolder(t *testing.T) {
 		}
 	}
 }
+
+// An original a run renamed into its version's folder whose handover was
+// not taken (the catalog has it where it arrived, and the version is being
+// built) is kept by a removal that keeps the files: put back where the
+// catalog has it, by its size and quick hash, before the title's folder
+// goes. A folder holding any other file that may be an original stays, said
+// in the errors.
+func TestARemovalKeepsAnOriginalWhoseHandoverWasLost(t *testing.T) {
+	l := newV2Library(t)
+	ctx := context.Background()
+	original, _ := l.title(t, v2Film, "movie", "", false)
+	size, qh1, err := library.QH1(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_itemsources SET sizebytes = $2, qh1 = $3 WHERE item_id = $1`, v2Film, size, qh1)
+	pl, _ := library.PlaceOf(ctx, l.st.Pool(), v2Film)
+	vid := "9" + v2Film[1:]
+	vdir := library.VersionDir(l.p.ItemDir(pl), vid)
+	storetest.Exec(t, l.st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state)
+		VALUES ($1, $2, ARRAY['s-' || left($2::varchar, 8)], 'building')`, vid, v2Film)
+	librarytest.WriteVersion(t, vdir, librarytest.Version{VersionID: vid, PackageID: library.NewID(),
+		SourceIDs: []string{"s-" + v2Film[:8]}, CreatedAt: "2026-10-08T10:00:00Z"})
+	if err := os.Rename(original, filepath.Join(vdir, "original.mkv")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := l.svc.RemoveItem(ctx, v2Film, false, true, "")
+	if err != nil || !res.Deleted || len(res.Errors) != 0 {
+		t.Fatalf("RemoveItem: %+v, %v", res, err)
+	}
+	if _, err := os.Stat(original); err != nil {
+		t.Errorf("the original whose handover was lost is not back where the catalog had it: %v", err)
+	}
+	if _, err := os.Stat(l.p.ItemDir(pl)); !os.IsNotExist(err) {
+		t.Errorf("the title's folder is there: %v", err)
+	}
+
+	// A file no source of the title is: the folder stays.
+	_, version := l.title(t, unrelated, "movie", "", true)
+	librarytest.Write(t, filepath.Join(version, "Unknown.mkv"), []byte("a file the catalog does not know"))
+	res, err = l.svc.RemoveItem(ctx, unrelated, false, true, "")
+	if err != nil || len(res.Errors) != 1 || !strings.Contains(res.Errors[0], "may be an original the catalog does not know") {
+		t.Fatalf("RemoveItem with a file that may be an original: %+v, %v", res, err)
+	}
+	if _, err := os.Stat(filepath.Join(version, "Unknown.mkv")); err != nil {
+		t.Errorf("the file that may be an original is gone: %v", err)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -236,7 +237,7 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 		if _, err := os.Stat(root); err != nil {
 			continue // never packaged / already gone
 		}
-		if why := putBack(root, recorded); why != "" {
+		if why := putBack(root, recorded, deleteFiles); why != "" {
 			res.Errors = append(res.Errors, "package: "+why)
 			continue
 		}
@@ -317,32 +318,86 @@ type recordedOriginal struct{ path, arrival string }
 
 // recordedOriginals are the originals the items still have in their
 // versions' folders (present sources, and those being retired), each with
-// where it arrived ("" when the catalog does not say).
+// where it arrived ("" when the catalog does not say): those the catalog has
+// there, and those a run renamed into a version's folder whose handover was
+// not taken (library.UnrecordedOriginal), which go back where the catalog
+// has them.
 func (s *Service) recordedOriginals(ctx context.Context, ids []string) ([]recordedOriginal, error) {
 	p := library.PathsOf(s.cfg)
+	pool := s.st.Pool()
 	var out []recordedOriginal
 	for _, id := range ids {
-		sources, err := library.SourcesOf(ctx, s.st.Pool(), id)
+		sources, err := library.SourcesOf(ctx, pool, id)
 		if err != nil {
 			return nil, err
 		}
 		for _, src := range sources {
-			if (src.State != library.SourcePresent && src.State != library.SourceRetiring) || src.ArrivalPath == nil ||
-				!inRecord(p, *src.ArrivalPath) || !library.IsOriginalName(filepath.Base(*src.ArrivalPath)) {
+			if (src.State != library.SourcePresent && src.State != library.SourceRetiring) || src.ArrivalPath == nil {
 				continue
 			}
-			out = append(out, recordedOriginal{path: filepath.Clean(*src.ArrivalPath), arrival: p.ArrivalOf(src)})
+			if inRecord(p, *src.ArrivalPath) {
+				if library.IsOriginalName(filepath.Base(*src.ArrivalPath)) {
+					out = append(out, recordedOriginal{path: filepath.Clean(*src.ArrivalPath), arrival: p.ArrivalOf(src)})
+				}
+				continue
+			}
+			if _, err := os.Lstat(*src.ArrivalPath); err == nil {
+				continue // where the catalog has it
+			}
+			pl, err := library.PlaceOf(ctx, pool, id)
+			if err != nil {
+				continue
+			}
+			found, err := library.UnrecordedOriginal(ctx, pool, p.ItemDir(pl), src)
+			if err != nil {
+				return nil, err
+			}
+			if found != "" {
+				out = append(out, recordedOriginal{path: found, arrival: filepath.Clean(*src.ArrivalPath)})
+			}
 		}
 	}
 	return out, nil
 }
 
 // putBack puts each original of recorded that lies under root, a folder a
-// removal deletes, back where it arrived: the title is removed, its file is
-// kept, as a removal without deleteFiles keeps a title's files. It says why
-// root stays, "" when it may go: an original whose place is unknown or taken,
-// or that cannot be moved, keeps its folder.
-func putBack(root string, recorded []recordedOriginal) string {
+// removal deletes, back where it arrived, unless the removal deletes the
+// files: the title is removed, its file is kept, as a removal without
+// deleteFiles keeps a title's files. It says why root stays, "" when it may
+// go: an original whose place is unknown or taken, or that cannot be moved,
+// keeps its folder, and so does any other file in a version's folder under
+// root that may be an original (library.MayBeOriginals).
+func putBack(root string, recorded []recordedOriginal, deleteFiles bool) string {
+	if deleteFiles {
+		return ""
+	}
+	if why := putBackRecorded(root, recorded); why != "" {
+		return why
+	}
+	var kept string
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() || kept != "" {
+			return nil
+		}
+		switch d.Name() {
+		case "hls", "subs", "trickplay", "trailers", "metadata":
+			return fs.SkipDir
+		}
+		if filepath.Base(filepath.Dir(path)) != "versions" || !library.ValidID(d.Name()) {
+			return nil
+		}
+		if names, err := library.MayBeOriginals(path); err != nil || len(names) > 0 {
+			kept = fmt.Sprintf("%s holds %s, which may be an original the catalog does not know: %s stays", path,
+				strings.Join(names, ", "), root)
+		}
+		return fs.SkipDir
+	})
+	return kept
+}
+
+// putBackRecorded puts each original of recorded under root back where it
+// arrived (see putBack).
+func putBackRecorded(root string, recorded []recordedOriginal) string {
 	for _, o := range recorded {
 		if !underRoot(root, o.path) {
 			continue

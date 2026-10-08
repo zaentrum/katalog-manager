@@ -145,6 +145,13 @@ func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceReque
 		res.Message = arrival + " is the title's file already: nothing changed"
 		return res, nil
 	}
+	if v2 {
+		if why, err := s.handoverLost(ctx, tx, src.itemID); err != nil {
+			return res, err
+		} else if why != "" {
+			return res, graph.RefuseSource(codeSourceConflict, "%s", why)
+		}
+	}
 	size, refused := s.sourceFile(path, v2)
 	if refused != nil {
 		return res, refused
@@ -216,6 +223,28 @@ func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	res.Message = replacedMessage(res, said, sidecars)
 	log.Printf("replaced the file of item %s (%q, %s), by %s: %s", src.itemID, src.title, src.typ, by, res.Message)
 	return res, nil
+}
+
+// handoverLost says why, with the v2 layout, the title is given no other
+// file now, "" when it may be: the version the pipeline builds for it is in
+// the library already (a run placed its folder, with the original it
+// renamed into it) and its handover is not recorded. The run taken again
+// reports that version as it is, which another file would make another
+// version's.
+func (s *Service) handoverLost(ctx context.Context, q library.Querier, itemID string) (string, error) {
+	v, err := library.Building(ctx, q, itemID)
+	if err != nil || v == nil {
+		return "", err
+	}
+	pl, err := library.PlaceOf(ctx, q, itemID)
+	if err != nil {
+		return "", nil
+	}
+	if !library.Placed(library.PathsOf(s.cfg).ItemDir(pl), v.ID) {
+		return "", nil
+	}
+	return fmt.Sprintf("the title's version %s is in the library, and its handover is not recorded yet: retry its package "+
+		"(or takein) step, which reports it again, then give it another file", v.ID), nil
 }
 
 // sourceOf finds, in tx, the file the title named one way is given another
