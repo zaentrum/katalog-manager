@@ -40,10 +40,13 @@ import (
 //     EXTRAS_ROOT (never a library record's, which is written once), their
 //     packages in packages/extras/ and the transcoder's handoffs left in the
 //     inbox. With the library's v2 layout the files are the originals the
-//     items still have where they arrived (presentArrivals), and the
-//     packages are the items' folders in the record and their entries in
-//     the work folder (libraryFolders), and the package store's folders of
-//     before.
+//     items still have, where they arrived (presentArrivals) or in their
+//     versions' folders (recordedOriginals), and the packages are the
+//     items' folders in the record and their entries in the work folder
+//     (libraryFolders), and the package store's folders of before. An
+//     original in its version's folder is a file of its title, never a
+//     package's: without deleteFiles it is put back where it arrived before
+//     its folder goes, and a folder whose original cannot be put back stays.
 //  4. Emit stube.catalog.item.removed so live-refresh surfaces drop the item.
 func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, deletePackages bool, reason string) (graph.RemoveResult, error) {
 	var res graph.RemoveResult
@@ -92,9 +95,19 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 	// pruned: the root it lies in.
 	stops := map[string]string{}
 	v2 := s.v2(ctx)
+	var recorded []recordedOriginal
+	if v2 {
+		if recorded, err = s.recordedOriginals(ctx, ids); err != nil {
+			return res, err
+		}
+	}
 	if deleteFiles && v2 {
 		if mediaFiles, err = s.presentArrivals(ctx, ids, extras, stops); err != nil {
 			return res, err
+		}
+		for _, o := range recorded {
+			mediaFiles = append(mediaFiles, o.path)
+			stops[o.path] = filepath.Dir(o.path) // nothing is pruned in the record
 		}
 	} else if deleteFiles {
 		rows, err := s.st.Pool().Query(ctx, `
@@ -223,6 +236,10 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 		if _, err := os.Stat(root); err != nil {
 			continue // never packaged / already gone
 		}
+		if why := putBack(root, recorded); why != "" {
+			res.Errors = append(res.Errors, "package: "+why)
+			continue
+		}
 		if err := os.RemoveAll(root); err != nil {
 			res.Errors = append(res.Errors, "package: "+err.Error())
 			continue
@@ -292,6 +309,62 @@ func (s *Service) presentArrivals(ctx context.Context, ids []string, extras []*m
 		}
 	}
 	return out, nil
+}
+
+// recordedOriginal is an original a title has in its version's folder, and
+// where it arrived, which the library keeps of it.
+type recordedOriginal struct{ path, arrival string }
+
+// recordedOriginals are the originals the items still have in their
+// versions' folders (present sources, and those being retired), each with
+// where it arrived ("" when the catalog does not say).
+func (s *Service) recordedOriginals(ctx context.Context, ids []string) ([]recordedOriginal, error) {
+	p := library.PathsOf(s.cfg)
+	var out []recordedOriginal
+	for _, id := range ids {
+		sources, err := library.SourcesOf(ctx, s.st.Pool(), id)
+		if err != nil {
+			return nil, err
+		}
+		for _, src := range sources {
+			if (src.State != library.SourcePresent && src.State != library.SourceRetiring) || src.ArrivalPath == nil ||
+				!inRecord(p, *src.ArrivalPath) || !library.IsOriginalName(filepath.Base(*src.ArrivalPath)) {
+				continue
+			}
+			out = append(out, recordedOriginal{path: filepath.Clean(*src.ArrivalPath), arrival: p.ArrivalOf(src)})
+		}
+	}
+	return out, nil
+}
+
+// putBack puts each original of recorded that lies under root, a folder a
+// removal deletes, back where it arrived: the title is removed, its file is
+// kept, as a removal without deleteFiles keeps a title's files. It says why
+// root stays, "" when it may go: an original whose place is unknown or taken,
+// or that cannot be moved, keeps its folder.
+func putBack(root string, recorded []recordedOriginal) string {
+	for _, o := range recorded {
+		if !underRoot(root, o.path) {
+			continue
+		}
+		if _, err := os.Lstat(o.path); err != nil {
+			continue // deleted with the files, or gone
+		}
+		switch _, err := os.Lstat(o.arrival); {
+		case o.arrival == "":
+			return fmt.Sprintf("the original %s is kept, the catalog naming no place it arrived at: %s stays", o.path, root)
+		case err == nil:
+			return fmt.Sprintf("the original %s is kept, a file lying where it arrived (%s): %s stays", o.path, o.arrival, root)
+		}
+		if err := library.MkdirAll(filepath.Dir(o.arrival)); err != nil {
+			return fmt.Sprintf("the original %s is kept (%v): %s stays", o.path, err, root)
+		}
+		if err := os.Rename(o.path, o.arrival); err != nil {
+			return fmt.Sprintf("the original %s is kept (%v): %s stays", o.path, err, root)
+		}
+		log.Printf("removed: the original %s is kept, put back where it arrived, %s", o.path, o.arrival)
+	}
+	return ""
 }
 
 // inRecord reports whether path lies in the library's record.

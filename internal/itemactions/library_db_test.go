@@ -231,3 +231,67 @@ func timeOf(t *testing.T, s string) time.Time {
 	}
 	return at
 }
+
+// inVersion moves the title's original into its version's folder, as the
+// packager renames it in, and has the catalog say so: it answers where it
+// lies now.
+func (l *v2Library) inVersion(t *testing.T, id, original, version string) string {
+	t.Helper()
+	to := filepath.Join(version, "original.mkv")
+	if err := os.Rename(original, to); err != nil {
+		t.Fatal(err)
+	}
+	rel, _ := filepath.Rel(l.p.Arrivals, original)
+	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_itemsources SET arrivalpath = $2, librarypath = $3, filename = 'original.mkv'
+		WHERE item_id = $1`, id, to, filepath.ToSlash(rel))
+	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_playbackassets SET path = $2 WHERE item_id = $1 AND kind = 'primary'`, id, to)
+	return to
+}
+
+// An original in its version's folder is a file of its title: a removal
+// that keeps the files puts it back where it arrived before the title's
+// folder goes, and keeps the folder when its place is taken, saying so; one
+// that deletes the files deletes it.
+func TestARemovalKeepsAnOriginalInItsVersionsFolder(t *testing.T) {
+	l := newV2Library(t)
+	ctx := context.Background()
+	original, version := l.title(t, v2Film, "movie", "", true)
+	moved := l.inVersion(t, v2Film, original, version)
+	filmDir := filepath.Dir(filepath.Dir(version))
+	res, err := l.svc.RemoveItem(ctx, v2Film, false, true, "")
+	if err != nil || !res.Deleted || res.FilesRemoved != 0 || len(res.Errors) != 0 {
+		t.Fatalf("RemoveItem keeping the files: %+v, %v", res, err)
+	}
+	if _, err := os.Stat(original); err != nil {
+		t.Errorf("the original is not back where it arrived: %v", err)
+	}
+	if _, err := os.Stat(filmDir); !os.IsNotExist(err) {
+		t.Errorf("the title's folder is there: %v", err)
+	}
+
+	// Its place taken: the folder stays.
+	original, version = l.title(t, unrelated, "movie", "", true)
+	moved = l.inVersion(t, unrelated, original, version)
+	librarytest.Write(t, original, []byte("another file"))
+	res, err = l.svc.RemoveItem(ctx, unrelated, false, true, "")
+	if err != nil || !res.Deleted || len(res.Errors) != 1 || !strings.Contains(res.Errors[0], "is kept, a file lying where it arrived") {
+		t.Fatalf("RemoveItem with the original's place taken: %+v, %v", res, err)
+	}
+	if _, err := os.Stat(moved); err != nil {
+		t.Errorf("the original whose place is taken is gone: %v", err)
+	}
+
+	// Deleting the files deletes it.
+	const third = "f3f3f3f3-0000-4000-8000-000000000003"
+	original, version = l.title(t, third, "movie", "", true)
+	moved = l.inVersion(t, third, original, version)
+	res, err = l.svc.RemoveItem(ctx, third, true, true, "")
+	if err != nil || res.FilesRemoved != 1 || len(res.Errors) != 0 {
+		t.Fatalf("RemoveItem deleting the files: %+v, %v", res, err)
+	}
+	for _, gone := range []string{moved, original, filepath.Dir(filepath.Dir(version))} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s is there: %v", gone, err)
+		}
+	}
+}
