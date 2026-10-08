@@ -6,16 +6,16 @@ import (
 )
 
 // A file is a title's to a scan when it is a video by its extension, not
-// hidden, and no extra by the convention as it reads with extras.scan on: a
-// file named as a title's extra beside it, one in a folder of extras, one
-// named as a kind alone, one the scanner always took for a trailer. A file
-// named as another file beside it, as an upgrade of an episode is, is a
-// title's.
+// hidden, no disc image, and no extra by the convention as it reads with
+// extras.scan on: a file named as a title's extra beside it, one in a folder
+// of extras, one named as a kind alone, one the scanner always took for a
+// trailer. A file named as another file beside it, as an upgrade of an
+// episode is, is a title's.
 func TestNoTitleFile(t *testing.T) {
 	root := media(t, "BigBuckBunny_320x180.mp4", "Big Buck Bunny (2008).mov", "Sintel/Sintel.mkv",
 		"Sintel/Sintel - Behind the Scenes.mkv", "Sintel/Sintel-trailer.mkv", "Sintel/extras/Score.mkv",
 		"trailers/Sintel.mkv", "Making Of.mkv", "Short.mkv", "series/Pioneer One/Pioneer.One.S01E01.mp4",
-		"series/Pioneer One/Pioneer.One.S01E01.mkv", ".Sintel.mkv", "notes.txt", "clip.ts", "song.flac")
+		"series/Pioneer One/Pioneer.One.S01E01.mkv", ".Sintel.mkv", "notes.txt", "clip.ts", "song.flac", "Disc (2001).ISO")
 	for _, c := range []struct{ rel, why string }{
 		{"BigBuckBunny_320x180.mp4", ""},
 		{"Big Buck Bunny (2008).mov", ""},
@@ -31,6 +31,7 @@ func TestNoTitleFile(t *testing.T) {
 		{"notes.txt", "it is no video file a scan takes (.avi, .m4v, .mkv, .mov, .mp4, .webm)"},
 		{"clip.ts", "it is no video file a scan takes (.avi, .m4v, .mkv, .mov, .mp4, .webm)"},
 		{"song.flac", "it is no video file a scan takes (.avi, .m4v, .mkv, .mov, .mp4, .webm)"},
+		{"Disc (2001).ISO", "it is a disc image: convert it to a single file"},
 	} {
 		if got := NoTitleFile(filepath.Join(root, c.rel)); got != c.why {
 			t.Errorf("%s: %q, want %q", c.rel, got, c.why)

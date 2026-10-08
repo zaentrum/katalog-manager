@@ -27,6 +27,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/graph"
 	"github.com/zaentrum/katalog-manager/internal/library"
+	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
@@ -71,10 +72,12 @@ func (s *Service) queueTable(ctx context.Context) string {
 // and episodes of req.Items, a series' episodes (under it or a season of it),
 // with req.Held every title whose retire is held for its surround, with
 // req.All every packaged movie and episode; each title once, in that order.
-// A title with no file to encode, or whose original was deleted after
-// packaging, is skipped, saying why, and so is a name that is no movie,
-// episode or series. A title queued already, waiting or sent, stays as it is
-// (alreadyQueued). The caller's subject is noted as who queued them.
+// An episode another episode's file covers is that episode: its holder is
+// queued. A title with no file to encode, whose original was deleted after
+// packaging, or whose file is a disc image, is skipped, saying why, and so is
+// a name that is no movie, episode or series. A title queued already,
+// waiting or sent, stays as it is (alreadyQueued). The caller's subject is
+// noted as who queued them.
 func (s *Service) EnqueueReencode(ctx context.Context, req graph.ReencodeRequest) (graph.ReencodeEnqueued, error) {
 	out := graph.ReencodeEnqueued{Skipped: []graph.ReencodeSkipped{}}
 	if why := s.queueTable(ctx); why != "" {
@@ -103,7 +106,13 @@ func (s *Service) EnqueueReencode(ctx context.Context, req graph.ReencodeRequest
 	var names []string
 	for _, id := range req.Items {
 		if id = strings.TrimSpace(id); id != "" {
-			names = append(names, id)
+			// An episode another's file covers is encoded with it: its
+			// holder is queued.
+			holder, err := library.HolderOrSelf(ctx, pool, id)
+			if err != nil {
+				return out, err
+			}
+			names = append(names, holder)
 		}
 	}
 	if len(names) > 0 {
@@ -217,7 +226,7 @@ func (s *Service) ids(ctx context.Context, sql string, args ...any) ([]string, e
 
 // unencodable says of each title of ids that has nothing to encode why:
 // gone from the catalog, its original deleted after packaging (or being
-// deleted), or no file (a primary asset).
+// deleted), no file (a primary asset), or a disc image for one.
 func (s *Service) unencodable(ctx context.Context, ids []string) (map[string]string, error) {
 	why := map[string]string{}
 	if len(ids) == 0 {
@@ -225,20 +234,21 @@ func (s *Service) unencodable(ctx context.Context, ids []string) (map[string]str
 	}
 	pool := s.st.Pool()
 	rows, err := pool.Query(ctx, `SELECT x.id, lower(i.type),
-			EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets p WHERE p.item_id = x.id AND p.isprimary = true)
+			EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets p WHERE p.item_id = x.id AND p.isprimary = true),
+			`+processing.DiscImageOf("x.id")+`
 		FROM unnest($1::text[]) AS x(id) LEFT JOIN com_nalet_katalog_items i ON i.id = x.id`, ids)
 	if err != nil {
 		return nil, err
 	}
 	type title struct {
-		typ  *string
-		file bool
+		typ        *string
+		file, disc bool
 	}
 	of := map[string]title{}
 	for rows.Next() {
 		var id string
 		var t title
-		if err := rows.Scan(&id, &t.typ, &t.file); err != nil {
+		if err := rows.Scan(&id, &t.typ, &t.file, &t.disc); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -261,6 +271,8 @@ func (s *Service) unencodable(ctx context.Context, ids []string) (map[string]str
 			why[id] = o.Why() + "; " + newArrival
 		case !t.file:
 			why[id] = "the " + *t.typ + " has no file to encode"
+		case t.disc:
+			why[id] = "its file is a " + processing.DiscImageReason
 		}
 	}
 	return why, nil

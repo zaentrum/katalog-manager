@@ -48,8 +48,10 @@ const takeInBatch = 50
 // or running ($4), and whose transcode was refused ($3 ends its error) or
 // failed with no attempt left, or whose package did, or any such title when
 // an admin asks ($2), at most $5: each with its type, where the catalog has
-// its original, whether its transcode was refused, and why it is due.
-const takeInRows = `SELECT i.id, i.type, src.arrivalpath,
+// its original, whether its transcode was refused, and why it is due. A
+// title whose file is a disc image is never taken in: the library holds no
+// disc image.
+var takeInRows = `SELECT i.id, i.type, src.arrivalpath,
 			COALESCE(t.status = 'failed' AND COALESCE(t.error, t.lasterror, '') LIKE '%' || $3::text, false) AS refused,
 			CASE WHEN t.status = 'failed' AND COALESCE(t.error, t.lasterror, '') LIKE '%' || $3::text
 				THEN 'the transcode was refused: ' || COALESCE(t.error, t.lasterror)
@@ -76,13 +78,17 @@ const takeInRows = `SELECT i.id, i.type, src.arrivalpath,
 			AND v.state IN ('taken', 'complete', 'superseded'))
 		  AND NOT EXISTS (SELECT 1 FROM ` + tbl + ` o WHERE o.item_id = i.id AND o.step = ANY($4::text[])
 			AND o.status IN ('pending', 'in_progress'))
+		  AND NOT ` + discImageOfI + `
 		ORDER BY i.id
 		LIMIT $5`
+
+// discImageOfI is the condition that the title i's file is a disc image.
+var discImageOfI = processing.DiscImageOf("i.id")
 
 // takeInDue claims the take-in of the titles due (takeInRows): its step
 // takein waits for the packager, the trigger noted as sent. It answers the
 // step's row, the title and its type, and whether its transcode was refused.
-const takeInDue = `WITH due AS (` + takeInRows + `),
+var takeInDue = `WITH due AS (` + takeInRows + `),
 	claimed AS (
 		INSERT INTO ` + tbl + ` (id, createdat, modifiedat, item_id, step, status, attempts, details, failures, dispatchedat)
 		SELECT gen_random_uuid()::varchar, now(), now(), due.id, 'takein', 'pending', 0, due.why, 0, now() FROM due
@@ -285,11 +291,27 @@ type TakeInResult struct {
 // TakeInItem takes the title id in now, as an admin asks, whether or not its
 // transcode or package failed: its original goes into a version of its own,
 // with no package, as for a title that gets none (see above). A title whose
-// source has a version, whose original something reads, or whose take-in
-// waits, runs or failed is left as it is, and so is every title while none
-// can be taken in (the legacy layout, migration 044 missing, no event bus):
-// the result says why.
+// source has a version, whose original something reads, whose take-in
+// waits, runs or failed, or whose file is a disc image is left as it is, and
+// so is every title while none can be taken in (the legacy layout, migration
+// 044 missing, no event bus): the result says why. An episode another
+// episode's file covers is taken in with that file: the take-in is its
+// holder's, and the result the holder's, saying so.
 func (s *Service) TakeInItem(ctx context.Context, id string) (TakeInResult, error) {
+	holder, err := library.HolderOf(ctx, s.st.Pool(), id)
+	if err != nil {
+		return TakeInResult{ItemID: id}, err
+	}
+	if holder == "" {
+		return s.takeInItem(ctx, id)
+	}
+	res, err := s.takeInItem(ctx, holder)
+	res.Message = library.CoveredNote(id, holder) + res.Message
+	return res, err
+}
+
+// takeInItem is TakeInItem of the title id, which no other's file covers.
+func (s *Service) takeInItem(ctx context.Context, id string) (TakeInResult, error) {
 	res := TakeInResult{ItemID: id}
 	if why, err := s.takeInReady(ctx); err != nil || why != "" {
 		res.Message = why
@@ -316,7 +338,7 @@ func (s *Service) TakeInItem(ctx context.Context, id string) (TakeInResult, erro
 // whyNoTakeIn says why the title id is not taken in.
 func (s *Service) whyNoTakeIn(ctx context.Context, id string) (string, error) {
 	var typ, takein *string
-	var file, versioned, busy bool
+	var file, versioned, busy, disc bool
 	err := s.st.Pool().QueryRow(ctx, `SELECT
 			(SELECT type FROM com_nalet_katalog_items WHERE id = $1),
 			EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets a JOIN com_nalet_katalog_itemsources src ON src.id = a.sourceid
@@ -325,8 +347,9 @@ func (s *Service) whyNoTakeIn(ctx context.Context, id string) (string, error) {
 				ON v.item_id = a.item_id AND a.sourceid = ANY(v.sourceids)
 				WHERE a.item_id = $1 AND a.isprimary = true AND v.state IN ('taken', 'complete', 'superseded')),
 			EXISTS (SELECT 1 FROM `+tbl+` o WHERE o.item_id = $1 AND o.step = ANY($2::text[]) AND o.status IN ('pending', 'in_progress')),
-			(SELECT status FROM `+tbl+` WHERE item_id = $1 AND step = 'takein')`,
-		id, processing.OriginalSteps).Scan(&typ, &file, &versioned, &busy, &takein)
+			(SELECT status FROM `+tbl+` WHERE item_id = $1 AND step = 'takein'),
+			`+processing.DiscImageOf("$1::varchar"),
+		id, processing.OriginalSteps).Scan(&typ, &file, &versioned, &busy, &takein, &disc)
 	switch {
 	case err != nil:
 		return "", err
@@ -336,6 +359,8 @@ func (s *Service) whyNoTakeIn(ctx context.Context, id string) (string, error) {
 		return fmt.Sprintf("only a movie or an episode is taken in, and %s is a %s", id, *typ), nil
 	case !file:
 		return "the title has no original to take in (none, or one retired)", nil
+	case disc:
+		return "its file is a " + processing.DiscImageReason + ": the library holds no disc image", nil
 	case versioned:
 		return "its original has a version already: a package is added to it, or made anew, by reencodeItem", nil
 	case takein != nil && *takein == processing.StatusFailed:

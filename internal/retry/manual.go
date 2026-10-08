@@ -20,7 +20,7 @@ import (
 // in a row start afresh. A step running or waiting within its timeout is left
 // alone, as is one done, not applicable or skipped; the result says why. A
 // step that reads the title's original is refused once the original was
-// retired.
+// retired, and one that reads its file while that is a disc image.
 func (s *Service) RetryStep(ctx context.Context, itemID, step string) (graph.RetryStepResult, error) {
 	res := graph.RetryStepResult{ItemID: itemID, Step: step}
 	if !processing.ValidStep(step) {
@@ -42,6 +42,13 @@ func (s *Service) RetryStep(ctx context.Context, itemID, step string) (graph.Ret
 		}
 		if o.Gone() {
 			return res, fmt.Errorf("cannot retry %s: it reads the title's original, and %s", step, o.RetiredAt())
+		}
+	}
+	if slices.Contains(processing.FileSteps, step) {
+		if disc, err := library.IsDiscImageTitle(ctx, s.st.Pool(), itemID); err != nil {
+			return res, err
+		} else if disc {
+			return res, fmt.Errorf("cannot retry %s: it reads the title's file, which is a %s", step, processing.DiscImageReason)
 		}
 	}
 	timeout := s.pol.Timeout(step)
@@ -157,8 +164,8 @@ func (s *Service) whyNot(ctx context.Context, res graph.RetryStepResult, timeout
 // not all be sent. It runs on when the caller stops waiting, and one runs in
 // an instance at a time; instances share the work, each step once. The
 // failed retire steps, which delete originals, are retried only when the
-// step is named, and the steps that read an original that was retired are
-// left as they are.
+// step is named, and the steps that read an original that was retired, or a
+// file that is a disc image, are left as they are.
 func (s *Service) RetryFailed(ctx context.Context, step string) (graph.RetryFailedResult, error) {
 	var res graph.RetryFailedResult
 	if step != "" {
@@ -184,7 +191,7 @@ func (s *Service) RetryFailed(ctx context.Context, step string) (graph.RetryFail
 		rows, err := s.claim(ctx, `WITH failed AS (
 				SELECT s.id, s.status FROM `+tbl+` s
 				WHERE s.status = 'failed' AND ($1::text = '' OR s.step = $1::text) AND s.step = ANY($3::text[])
-				  AND EXISTS (SELECT 1 FROM com_nalet_katalog_items i WHERE i.id = s.item_id)`+s.withOriginal(ctx)+`
+				  AND EXISTS (SELECT 1 FROM com_nalet_katalog_items i WHERE i.id = s.item_id)`+s.withOriginal(ctx)+notDiscImage+`
 				ORDER BY s.id
 				LIMIT $2
 				FOR UPDATE SKIP LOCKED)

@@ -50,7 +50,26 @@ const reencodeSet = `status = 'pending', startedat = NULL, finishedat = NULL, er
 // in place, though, clearing the old one as it starts: from then until it is
 // done the title plays by on-demand transcoding, and a viewer watching the
 // old package then loses it.
+//
+// An episode another episode's file covers is encoded with that file: the
+// re-encode is its holder's, and the result the holder's, saying so. A title
+// whose file is a disc image is not encoded (processing.DiscImageReason), and
+// a series' episode whose file is one is no title of its re-encode.
 func (s *Service) ReencodeItem(ctx context.Context, id string) (graph.ReencodeResult, error) {
+	holder, err := library.HolderOf(ctx, s.st.Pool(), id)
+	if err != nil {
+		return graph.ReencodeResult{ItemID: id}, err
+	}
+	if holder == "" {
+		return s.reencodeItem(ctx, id)
+	}
+	res, err := s.reencodeItem(ctx, holder)
+	res.Message = library.CoveredNote(id, holder) + res.Message
+	return res, err
+}
+
+// reencodeItem is ReencodeItem of the title id, which no other's file covers.
+func (s *Service) reencodeItem(ctx context.Context, id string) (graph.ReencodeResult, error) {
 	res := graph.ReencodeResult{ItemID: id}
 	var typ string
 	err := s.st.Pool().QueryRow(ctx, `SELECT type FROM com_nalet_katalog_items WHERE id = $1`, id).Scan(&typ)
@@ -66,6 +85,14 @@ func (s *Service) ReencodeItem(ctx context.Context, id string) (graph.ReencodeRe
 	}
 	if why := s.unavailable(ctx); why != "" {
 		return res, errors.New("cannot re-encode: " + why)
+	}
+	if typ != "series" {
+		if disc, err := library.IsDiscImageTitle(ctx, s.st.Pool(), id); err != nil {
+			return res, err
+		} else if disc {
+			res.Message = "its file is a " + processing.DiscImageReason
+			return res, nil
+		}
 	}
 
 	titles, gone, err := s.titlesOf(ctx, id, typ)
@@ -145,9 +172,10 @@ func retiredEpisodes(r retired) string {
 
 // titlesOf are the titles a re-encode of id encodes: the movie or episode
 // when it has a primary asset, a series' episodes (under it or under a season
-// of it) that have one, by season and episode; of those whose original was
-// deleted after packaging, or is being deleted, none: it answers what became
-// of the movie's or the episode's original, or of the series' episodes'.
+// of it) that have one, which is no disc image, by season and episode; of
+// those whose original was deleted after packaging, or is being deleted,
+// none: it answers what became of the movie's or the episode's original, or
+// of the series' episodes'.
 func (s *Service) titlesOf(ctx context.Context, id, typ string) ([]string, retired, error) {
 	pool := s.st.Pool()
 	if typ != "series" {
@@ -168,6 +196,7 @@ func (s *Service) titlesOf(ctx context.Context, id, typ string) ([]string, retir
 	}
 	rows, err := pool.Query(ctx, `SELECT e.id,
 			EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets p WHERE p.item_id = e.id AND p.isprimary = true)
+				AND NOT `+processing.DiscImageOf("e.id")+`
 		FROM com_nalet_katalog_items e
 		WHERE e.type = 'episode'
 		  AND (e.parent_id = $1 OR e.parent_id IN (SELECT id FROM com_nalet_katalog_items WHERE parent_id = $1))

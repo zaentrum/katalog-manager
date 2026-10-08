@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/zaentrum/katalog-manager/internal/processing"
 )
 
 // What a title has of its original, as the actions that read it ask before
@@ -161,6 +163,15 @@ func OriginalGone(item string) string {
 			WHERE og.item_id = ` + item + ` AND og.isprimary = true AND ogs.state = 'retiring')
 		OR (NOT EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets og WHERE og.item_id = ` + item + ` AND og.isprimary = true)
 			AND EXISTS (SELECT 1 FROM com_nalet_katalog_itemsources ogs WHERE ogs.item_id = ` + item + ` AND ogs.state = 'deleted')))`
+}
+
+// IsDiscImageTitle reports whether the file of the title id (its primary
+// asset) is a disc image, of which the pipeline runs nothing
+// (processing.DiscImageReason).
+func IsDiscImageTitle(ctx context.Context, q Querier, id string) (bool, error) {
+	var disc bool
+	err := q.QueryRow(ctx, `SELECT `+processing.DiscImageOf("$1::varchar"), id).Scan(&disc)
+	return disc, err
 }
 
 // OriginalOf is what the title id has of its original (OriginalsOf).

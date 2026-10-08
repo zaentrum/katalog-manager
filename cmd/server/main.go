@@ -261,6 +261,9 @@ func run() error {
 				// failed|skipped do not advance the pipeline. A series parent is
 				// metadata-only (no primary playback asset) — it enriches but must
 				// NOT enter analyze/transcode/package, so gate on a playable file.
+				// So is an episode another's file covers (that one's run is
+				// its), and a title whose file is a disc image runs nothing of
+				// it: its steps fail, saying why.
 				switch status {
 				case "done", "not_found":
 					// With the library's v2 layout the item's identity is
@@ -268,6 +271,9 @@ func run() error {
 					// pipeline goes on (a series' too, before its first
 					// episode's).
 					recordItem(ctx, st, cfg, ev.ItemID)
+					if discImage(ctx, st, steps, ev.ItemID) {
+						return nil
+					}
 					if hasPrimaryAsset(ctx, st, ev.ItemID) {
 						out := events.NewItemEvent(ev.ItemID)
 						out.Type = ev.Type
@@ -423,6 +429,26 @@ func hasPrimaryAsset(ctx context.Context, st *store.Store, itemID string) bool {
 		log.Printf("catalog: hasPrimaryAsset(%s) errored (%v); advancing to analyze (fail-open)", itemID, err)
 		return true
 	}
+}
+
+// discImage reports whether the file of the item is a disc image, and then
+// fails its steps that read it, for good, saying why
+// (processing.FailDiscImage): the pipeline runs nothing of a disc image. An
+// error reading it is no disc image (fail-open, as hasPrimaryAsset).
+func discImage(ctx context.Context, st *store.Store, steps *processing.Steps, itemID string) bool {
+	disc, err := library.IsDiscImageTitle(ctx, st.Pool(), itemID)
+	if err != nil {
+		log.Printf("catalog: whether the file of %s is a disc image could not be read (%v); advancing", itemID, err)
+		return false
+	}
+	if !disc {
+		return false
+	}
+	if err := steps.FailDiscImage(ctx, itemID); err != nil {
+		log.Printf("catalog: the steps of %s, whose file is a disc image, could not be failed: %v", itemID, err)
+	}
+	log.Printf("catalog: item %s is not analyzed: its file is a %s", itemID, processing.DiscImageReason)
+	return true
 }
 
 func writeText(w http.ResponseWriter, s string) {

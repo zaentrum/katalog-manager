@@ -62,6 +62,13 @@ func HolderOrSelf(ctx context.Context, q Querier, id string) (string, error) {
 	return holder, nil
 }
 
+// CoveredNote begins what an action on the episode id says when it acts on
+// its holder, whose file covers it: re-encoding it, packaging it, taking it
+// in, giving it another file.
+func CoveredNote(id, holder string) string {
+	return "the file of episode " + holder + " covers episode " + id + ", and acts for it: "
+}
+
 // CoveredEpisode is an episode another's file covers: its id and numbers.
 type CoveredEpisode struct {
 	ID              string

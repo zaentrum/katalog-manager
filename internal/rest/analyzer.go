@@ -517,14 +517,16 @@ func packageAudio(dir string) *string {
 // An episode whose original was deleted after packaging, or is being
 // deleted, is left as it is (the analyzer reads the original, and its marks
 // could not be found again): the answer counts those as originalsDeleted,
-// and says why.
+// and says why. An episode another episode's file covers is left as it is
+// too: it runs no pass, its holder's run is its (its column of migration 045
+// is read by name, so that a catalog without it reads none).
 func (h *Handlers) resetSeries(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	ctx := reqCtx(r)
 	pool := h.d.Store.Pool()
 
 	epRows, err := pool.Query(ctx,
-		`SELECT id FROM com_nalet_katalog_items WHERE parent_id = $1 AND type = 'episode'`, id)
+		`SELECT id FROM com_nalet_katalog_items i WHERE parent_id = $1 AND type = 'episode' AND to_jsonb(i)->>'coveredby' IS NULL`, id)
 	if err != nil {
 		http.Error(w, "series reset (episode list) failed", http.StatusInternalServerError)
 		return

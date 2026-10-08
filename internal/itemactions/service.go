@@ -44,6 +44,11 @@ var ErrNotPackageable = errors.New("not packageable")
 // message says when, and the event that records it.
 var ErrRetired = errors.New("packaged; nothing to package from")
 
+// ErrDiscImage is returned when a movie or an episode is packaged whose file
+// is a disc image, of which the pipeline runs nothing. Callers map it to HTTP
+// 409; the wrapped message says what to do (processing.DiscImageReason).
+var ErrDiscImage = errors.New("its file is a " + processing.DiscImageReason)
+
 // Service implements graph.Packager (PackageItem) and graph.Validator
 // (ValidateItem).
 type Service struct {
@@ -92,7 +97,30 @@ func ptrI32(n int32) *int32   { return &n }
 // as the retries do. A step whose event could not be sent is failed with a
 // retry scheduled (the sweep sends it again); without an event bus it waits,
 // and the result says nothing will start it.
+//
+// An episode another episode's file covers is packaged with that file: the
+// packaging is its holder's, and the result the holder's, saying so. A title
+// whose file is a disc image is not packaged (ErrDiscImage), and a series'
+// episode whose file is one is not enqueued.
 func (s *Service) PackageItem(ctx context.Context, id string) (graph.PackageResult, error) {
+	holder, err := library.HolderOf(ctx, s.st.Pool(), id)
+	if err != nil {
+		return graph.PackageResult{}, err
+	}
+	if holder == "" {
+		return s.packageItem(ctx, id)
+	}
+	res, err := s.packageItem(ctx, holder)
+	note := library.CoveredNote(id, holder)
+	if res.Message != nil {
+		note += *res.Message
+	}
+	res.Message = &note
+	return res, err
+}
+
+// packageItem is PackageItem of the title id, which no other's file covers.
+func (s *Service) packageItem(ctx context.Context, id string) (graph.PackageResult, error) {
 	var typ, title string
 	err := s.st.Pool().QueryRow(ctx,
 		`SELECT type, title FROM com_nalet_katalog_items WHERE id = $1`, id).
@@ -117,6 +145,7 @@ func (s *Service) PackageItem(ctx context.Context, id string) (graph.PackageResu
 			WHERE e.parent_id = $1 AND e.type = 'episode'
 			  AND EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets p
 			              WHERE p.item_id = e.id AND p.isprimary = true)
+			  AND NOT `+processing.DiscImageOf("e.id")+`
 			  AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps ps
 			                  WHERE ps.item_id = e.id
 			                    AND ps.step IN ('transcode','package')
@@ -190,6 +219,11 @@ func (s *Service) PackageItem(ctx context.Context, id string) (graph.PackageResu
 	if o.Gone() {
 		return graph.PackageResult{Message: ptrStr(ErrRetired.Error() + ": " + o.Why())},
 			fmt.Errorf("%w: %s", ErrRetired, o.Why())
+	}
+	if disc, err := library.IsDiscImageTitle(ctx, s.st.Pool(), id); err != nil {
+		return graph.PackageResult{}, err
+	} else if disc {
+		return graph.PackageResult{Message: ptrStr(ErrDiscImage.Error())}, ErrDiscImage
 	}
 
 	// Movie / episode — single-item enqueue. Idempotent: refuse if either

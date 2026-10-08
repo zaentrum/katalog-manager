@@ -190,6 +190,12 @@ func (s *Service) withOriginal(ctx context.Context) string {
 		library.OriginalGone("s.item_id") + `)`
 }
 
+// notDiscImage is the condition on a claimed step s that one reading the
+// title's file is not claimed while that file is a disc image: its run would
+// fail again, and the step says why (processing.FailDiscImage).
+var notDiscImage = ` AND NOT (s.step = ANY('{` + strings.Join(processing.FileSteps, ",") + `}'::text[]) AND ` +
+	processing.DiscImageOf("s.item_id") + `)`
+
 // automatic reports whether the sweep sends due retries and reaps by itself.
 func (s *Service) automatic() bool { return s.interval > 0 && s.pol.MaxAttempts > 1 }
 
@@ -352,13 +358,14 @@ func claimSet(manual bool) string {
 
 // claimDue claims the failed steps whose retry is due, oldest first, at most
 // a batch of them; a step whose item is gone is left alone, and so is one no
-// event triggers (retire), and one that reads the original of a title whose
-// original was retired (withOriginal).
+// event triggers (retire), one that reads the original of a title whose
+// original was retired (withOriginal), and one that reads a file that is a
+// disc image (notDiscImage).
 func (s *Service) claimDue(ctx context.Context) ([]claimed, error) {
 	return s.claim(ctx, `WITH due AS (
 			SELECT s.id, s.status FROM `+tbl+` s
 			WHERE s.status = 'failed' AND s.nextretryat <= now() AND s.step = ANY($2::text[])
-			  AND EXISTS (SELECT 1 FROM com_nalet_katalog_items i WHERE i.id = s.item_id)`+s.withOriginal(ctx)+`
+			  AND EXISTS (SELECT 1 FROM com_nalet_katalog_items i WHERE i.id = s.item_id)`+s.withOriginal(ctx)+notDiscImage+`
 			ORDER BY s.nextretryat, s.id
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED)

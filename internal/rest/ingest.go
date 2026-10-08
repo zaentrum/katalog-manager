@@ -59,6 +59,12 @@ func (h *Handlers) ingest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "path, type and title are required")
 		return
 	}
+	// A disc image is no file the library holds, as the scanner passes over
+	// one: refused here, it is no title whose steps would all fail.
+	if processing.IsDiscImage(req.Path) {
+		writeError(w, http.StatusBadRequest, filepath.Base(req.Path)+" is a "+processing.DiscImageReason)
+		return
+	}
 	// An episode without coordinates cannot be linked to its series, and the
 	// pipeline will happily publish it anyway as an orphan. Reject it at the
 	// boundary: a 400 here is the only thing that turns a silent, permanent
