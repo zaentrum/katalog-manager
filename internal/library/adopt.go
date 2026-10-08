@@ -48,8 +48,8 @@ const GoneBefore = "gone before the library was recorded"
 // ErrNoRun says there is no such migration run.
 var ErrNoRun = errors.New("no such migration run")
 
-// ErrMigrationBusy says another adopt or revert of the run runs.
-var ErrMigrationBusy = errors.New("another adopt or revert of the run runs")
+// ErrMigrationBusy says another adopt, revert or names of the run runs.
+var ErrMigrationBusy = errors.New("another adopt, revert or names of the run runs")
 
 // Migration adopts and reverts a run.
 type Migration struct {
@@ -118,7 +118,8 @@ func (r *MigrationReport) add(u UnitResult) {
 	r.Units = append(r.Units, u)
 }
 
-// lock holds the run's lock, one adopt or revert at a time, until release.
+// lock holds the run's lock, one adopt, revert or names at a time, until
+// release.
 func (m *Migration) lock(ctx context.Context) (release func(), err error) {
 	conn, err := m.pool.Acquire(ctx)
 	if err != nil {
