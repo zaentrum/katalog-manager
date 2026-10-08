@@ -241,3 +241,35 @@ func TestARetirementFromAVersionsFolderResumes(t *testing.T) {
 		t.Errorf("the trash holds %v, want %v", got, want)
 	}
 }
+
+// An original a run renamed into the folder of a version it built whose
+// handover was lost (the version is being built, the catalog has the
+// original where it arrived) is not touched by the retire job: its pass
+// finds the original gone from where the catalog has it, fails the retire
+// step saying so, and deletes nothing, and the folder is no version it
+// removes.
+func TestTheRetireJobLeavesAnOriginalWhoseHandoverWasLost(t *testing.T) {
+	f := newRetireFixture(t)
+	const building = "6b0b0b0b-0000-4000-8000-000000000001"
+	dir := VersionDir(f.itemDir, building)
+	librarytest.WriteVersion(t, dir, librarytest.Version{VersionID: building, PackageID: NewID(), SourceIDs: []string{rtSource},
+		CreatedAt: "2026-10-08T10:00:00Z", Version: map[string]any{"originalFiles": []string{"original.mkv"}}})
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state) VALUES ($1, $2, ARRAY[$3::varchar], 'building')`,
+		building, rtFilm, rtSource)
+	moved := filepath.Join(dir, "original.mkv")
+	if err := os.Rename(f.original, moved); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.r.Pass(context.Background()); err == nil || !strings.Contains(err.Error(), "cannot be read") {
+		t.Errorf("the pass: %v; want the original said gone from where the catalog has it", err)
+	}
+	if !exists(moved) || !exists(filepath.Join(dir, VersionFile)) {
+		t.Error("the original whose handover was lost, or its version's folder, is gone")
+	}
+	if got := files(t, filepath.Join(f.p.Work, WorkTrash)); len(got) > 0 {
+		t.Errorf("the trash holds %v", got)
+	}
+	if found, err := UnrecordedOriginal(context.Background(), f.st.Pool(), f.itemDir, f.source(t, rtSource)); err != nil || found != moved {
+		t.Errorf("UnrecordedOriginal: %q, %v; want %s", found, err, moved)
+	}
+}

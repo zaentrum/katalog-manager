@@ -117,6 +117,62 @@ func MayBeOriginals(dir string) ([]string, error) {
 	return out, nil
 }
 
+// UnrecordedOriginal finds the original of the source s where a run left it
+// and the catalog does not know it yet: in a version's folder of the item
+// folder itemDir whose version is not recorded (one being built, or one the
+// catalog does not hold: a run placed it and its handover was not taken), a
+// file there of the source's size and quick hash. It answers its path, ""
+// when there is none, or the source has no quick hash to tell it by.
+func UnrecordedOriginal(ctx context.Context, q Querier, itemDir string, s *Source) (string, error) {
+	if s == nil || s.QH1 == nil || itemDir == "" {
+		return "", nil
+	}
+	entries, err := os.ReadDir(filepath.Join(itemDir, "versions"))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	versions, err := VersionsOf(ctx, q, s.ItemID)
+	if err != nil {
+		return "", err
+	}
+	recorded := map[string]bool{}
+	for _, v := range versions {
+		if v.State != VersionBuilding {
+			recorded[v.ID] = true
+		}
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !ValidID(e.Name()) || recorded[e.Name()] {
+			continue
+		}
+		dir := filepath.Join(itemDir, "versions", e.Name())
+		names, err := MayBeOriginals(dir)
+		if err != nil {
+			return "", err
+		}
+		for _, n := range names {
+			path := filepath.Join(dir, n)
+			if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() || fi.Size() != s.SizeBytes {
+				continue
+			}
+			if _, qh1, err := QH1(path); err == nil && qh1 == *s.QH1 {
+				return path, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+// Placed reports whether the version vid of the item folder itemDir is in
+// the record: its folder holds its version.json, whether or not the catalog
+// recorded it.
+func Placed(itemDir, vid string) bool {
+	return itemDir != "" && statOK(filepath.Join(VersionDir(itemDir, vid), VersionFile))
+}
+
 // ArrivalOf is where the original of the source s arrived: its place while it
 // lies outside the library's record, else (in its version's folder) the
 // arrivals joined with its library path, the place it had among them; ""
