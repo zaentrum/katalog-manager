@@ -263,6 +263,9 @@ func (s *Service) Sweep(ctx context.Context) (reaped, sent int, err error) {
 	if reaped, err = s.reap(ctx); err != nil {
 		return reaped, 0, err
 	}
+	if err := s.settleTakeIns(ctx, nil); err != nil {
+		return reaped, 0, err
+	}
 	for {
 		rows, err := s.claimDue(ctx)
 		if err != nil {

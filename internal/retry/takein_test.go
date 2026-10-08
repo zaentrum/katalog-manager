@@ -167,3 +167,31 @@ func TestAnAdminTakesATitleIn(t *testing.T) {
 		t.Errorf("TakeInItem with the legacy layout: %+v, %v", res, err)
 	}
 }
+
+// A take-in the packager reported failed while the catalog took its version
+// in (its handover was answered, and the answer lost) is done, saying so:
+// the sweep does not send it again, nor does a take-in of the title.
+func TestATakeInWhoseReportWasLostIsDone(t *testing.T) {
+	st := catalog(t)
+	withOriginal(t, st, "m1", "m2")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state) VALUES
+		('v1', 'm1', ARRAY['src-m1'], 'taken')`)
+	put(t, st, "m1", "takein", "failed", `failures = 1, error = 'packaging-complete: timed out', nextretryat = now() - interval '1 second'`)
+	put(t, st, "m2", "takein", "failed", `failures = 1, error = 'no room', nextretryat = now() - interval '1 second'`)
+	b := &bus{}
+	s := newService(t, st, b)
+	if _, sent, err := s.Sweep(context.Background()); err != nil || sent != 1 {
+		t.Fatalf("Sweep: %d sent, %v; want the one not taken in", sent, err)
+	}
+	if got := b.take(); len(got) != 1 || !strings.HasPrefix(got[0], "stube.catalog.item.transcoded m2 takein retry") {
+		t.Errorf("sent: %v", got)
+	}
+	if got := state(t, st, "m1", "takein"); got != "done 0 error=- last=- retry=false sent=false" {
+		t.Errorf("the take-in taken: %s", got)
+	}
+	var details string
+	if err := st.Pool().QueryRow(context.Background(), `SELECT details FROM com_nalet_katalog_itemprocessingsteps
+		WHERE item_id = 'm1' AND step = 'takein'`).Scan(&details); err != nil || !strings.Contains(details, "version v1 holds its original") {
+		t.Errorf("the take-in taken says %q, %v", details, err)
+	}
+}

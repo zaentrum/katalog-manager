@@ -119,10 +119,15 @@ func (s *Service) takeInReady(ctx context.Context) (string, error) {
 // any, at most a batch: their step takein waits for the packager, and its
 // trigger goes; a refused transcode is retried by itself no more. A title
 // whose trigger could not be sent has its step takein failed, as dispatch
-// puts a step back. It answers how many triggers went. With the legacy
-// layout, without migration 044 or without an event bus it does nothing.
+// puts a step back. A take-in reported failed whose version is taken in is
+// done first (settleTakeIns). It answers how many triggers went. With the
+// legacy layout, without migration 044 or without an event bus it does
+// nothing.
 func (s *Service) TakeIn(ctx context.Context, ids []string) (int, error) {
 	if why, err := s.takeInReady(ctx); err != nil || why != "" {
+		return 0, err
+	}
+	if err := s.settleTakeIns(ctx, ids); err != nil {
 		return 0, err
 	}
 	rows, err := s.claimTakeIns(ctx, ids, false)
@@ -175,6 +180,38 @@ func (s *Service) claimTakeIns(ctx context.Context, ids []string, admin bool) ([
 		}
 	}
 	return out, tx.Commit(ctx)
+}
+
+// settleTakeIns has the failed take-in of each title (of ids when it names
+// any) whose source's version is there done, saying which: the packager took
+// the title in, and the catalog took the version, but the packager did not
+// hear the answer (a handover answered and lost), and reported its step
+// failed. Sending it again would run a take-in that is done. It needs
+// migration 044: without it there is no version taken in, and it does
+// nothing.
+func (s *Service) settleTakeIns(ctx context.Context, ids []string) error {
+	if !s.takeInMigrated.Load() {
+		ok, err := s.st.TakeInReady(ctx)
+		if err != nil || !ok {
+			return err
+		}
+		s.takeInMigrated.Store(true)
+	}
+	if ids == nil {
+		ids = []string{}
+	}
+	_, err := s.st.Pool().Exec(ctx, `UPDATE `+tbl+` k SET status = 'done', finishedat = now(), modifiedat = now(), error = NULL,
+			failures = 0, nextretryat = NULL, dispatchedat = NULL,
+			details = 'taken in: version ' || v.id || ' holds its original (its report was lost)'
+		FROM com_nalet_katalog_playbackassets a
+		JOIN com_nalet_katalog_itemversions v ON v.item_id = a.item_id AND a.sourceid = ANY(v.sourceids)
+			AND v.state IN ('taken', 'complete', 'superseded')
+		WHERE k.step = 'takein' AND k.status = 'failed' AND (cardinality($1::text[]) = 0 OR k.item_id = ANY($1::text[]))
+		  AND a.item_id = k.item_id AND a.isprimary = true AND COALESCE(a.kind, 'primary') = 'primary'`, ids)
+	if err != nil {
+		return fmt.Errorf("settle the take-ins done: %w", err)
+	}
+	return nil
 }
 
 // sweepTakeIns is TakeIn of every title due, as Run calls it, saying what it
