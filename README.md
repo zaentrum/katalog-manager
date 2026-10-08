@@ -875,6 +875,17 @@ refused folder goes out of the record only once the original a run renamed
 into it is back where the catalog says it lies, and a version taken in keeps
 its folder, the package added to it going out.
 
+A run whose handover was lost (its version's folder placed, the original
+renamed into it, nothing recorded) is taken again the same: the version
+being built is kept until it is recorded, so the run taken again is handed
+the same version, folder, mode and name for the original, and reports the
+folder it finds there again with the same payload. Its workers are handed
+the original where it lies (found in that unrecorded version's folder by the
+source's size and quick hash), never the arrival it left; that version is
+never made another file's (`replaceSource` waits, `SOURCE_CONFLICT`), no
+title is taken in from where its original is not, and a removal that keeps
+the files puts the original back where the catalog has it.
+
 A title is taken in when it gets no package now and its source has no
 version: its transcode was refused (the transcoder keeps the original of a
 picture no package would show as it is, its error ending "kept the
