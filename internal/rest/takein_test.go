@@ -7,6 +7,9 @@ import (
 	"testing"
 
 	"github.com/zaentrum/katalog-manager/internal/events"
+	"github.com/zaentrum/katalog-manager/internal/library"
+	"github.com/zaentrum/katalog-manager/internal/processing"
+	"github.com/zaentrum/katalog-manager/internal/retry"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
 
@@ -92,5 +95,59 @@ func TestATitleThatGetsNoPackageIsTakenIn(t *testing.T) {
 	lib, _ = recordOf(t, h, svc, "/api/analyze/items/"+other)["library"].(map[string]any)
 	if b, _ := lib["build"].(map[string]any); b["mode"] != "takein" || b["originalName"] != "original.m2ts" {
 		t.Errorf("the worker record of the exhausted title: %v", b)
+	}
+}
+
+// A title encoded again (reencodeItem; the re-encode queue sends a title
+// the same way) whose original lies in the folder of its packaged version is
+// packaged anew: its transcode's end makes a new version, and the worker
+// record's run is repackage, its original read where it lies, in the older
+// version's folder, and renamed nowhere.
+func TestAReencodeRepackagesFromTheOriginalWhereItLies(t *testing.T) {
+	st := storetest.Open(t)
+	v2Layout(t, st)
+	dir := t.TempDir()
+	cfg := v2Config(dir)
+	h, iss := server(t, st, cfg)
+	svc := iss.Service(t, "zaentrum-manager")
+	itemDir := dir + "/movies/f1/" + filmItem
+	const older = "0a0a0a0a-0000-4000-8000-000000000001"
+	original := library.VersionDir(itemDir, older) + "/original.mkv"
+	files(t, dir, map[string]int64{"movies/f1/" + filmItem + "/versions/" + older + "/original.mkv": 500})
+	storetest.AddItem(t, st, filmItem, "movie", "A Film", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state, recordedat)
+		VALUES ('0b0b0b0b-0000-4000-8000-000000000002', $1, 'original.mkv', $2, 500, 'present', now())`, filmItem, original)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, sourceid)
+		VALUES ('src-f1', $1, $2, true, '0b0b0b0b-0000-4000-8000-000000000002')`, filmItem, original)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
+		VALUES ($1, $2, ARRAY['0b0b0b0b-0000-4000-8000-000000000002'], 'complete', $1, $3, now())`, older, filmItem,
+		library.VersionDir(itemDir, older))
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemprocessingsteps (id, item_id, step, status) VALUES
+		('t', $1, 'transcode', 'done'), ('p', $1, 'package', 'done')`, filmItem)
+
+	bus := &sent{}
+	r := retry.New(st, processing.DefaultPolicy(), bus, 0)
+	res, err := r.ReencodeItem(context.Background(), filmItem)
+	if err != nil || res.Reencoded != 1 {
+		t.Fatalf("ReencodeItem: %+v, %v", res, err)
+	}
+	if got := bus.take(); len(got) != 1 || got[0].Topic != events.TopicAnalyzed {
+		t.Errorf("the transcoder's trigger: %+v", got)
+	}
+	rec := recordOf(t, h, svc, "/api/analyze/items/"+filmItem)
+	if rec["path"] != original {
+		t.Errorf("the transcoder reads %v, want the original in the older version's folder %s", rec["path"], original)
+	}
+	if w := do(h, http.MethodPut, "/api/analyze/items/"+filmItem+"/steps/transcode", `{"status": "done"}`, svc); w.Code != http.StatusOK {
+		t.Fatalf("the transcode's end: %d %s", w.Code, w.Body.String())
+	}
+	rec = recordOf(t, h, svc, "/api/analyze/items/"+filmItem)
+	lib, _ := rec["library"].(map[string]any)
+	b, _ := lib["build"].(map[string]any)
+	vid, _ := b["versionId"].(string)
+	cur, _ := lib["current"].(map[string]any)
+	if rec["path"] != original || b["mode"] != "repackage" || b["originalName"] != nil || vid == older ||
+		b["versionDir"] != library.VersionDir(itemDir, vid) || cur["versionId"] != older {
+		t.Errorf("the packager's record: path %v, build %v, current %v", rec["path"], b, cur)
 	}
 }
