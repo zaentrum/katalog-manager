@@ -184,18 +184,18 @@ func (h *Handlers) getAnalyzeItem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "item lookup failed", http.StatusInternalServerError)
 		return
 	}
+	set, err := h.settings(reqCtx(r))
+	if err != nil {
+		log.Printf("getAnalyzeItem: the library's settings: %v", err)
+		http.Error(w, "item lookup failed", http.StatusInternalServerError)
+		return
+	}
 	source := ""
 	if it.Path != nil {
 		source = *it.Path
 	}
-	if it.SubtitleFiles, err = h.subtitleFilesOf(reqCtx(r), it.ID, source); err != nil {
+	if it.SubtitleFiles, err = h.subtitleFilesOf(reqCtx(r), it.ID, source, set.V2()); err != nil {
 		log.Printf("getAnalyzeItem: the subtitle files of %s: %v", it.ID, err)
-		http.Error(w, "item lookup failed", http.StatusInternalServerError)
-		return
-	}
-	set, err := h.settings(reqCtx(r))
-	if err != nil {
-		log.Printf("getAnalyzeItem: the library's settings: %v", err)
 		http.Error(w, "item lookup failed", http.StatusInternalServerError)
 		return
 	}
@@ -243,12 +243,25 @@ const maxSubtitleFileBytes = 50 << 20
 // by path, as the packager takes them: the item's subtitles that are no
 // package's (sidecarSubtitle), each at an absolute path in the source's
 // folder or below it, a .srt, .vtt, .ass or .ssa file of at most 50 MB. A
-// file that is gone, or larger, is left out.
-func (h *Handlers) subtitleFilesOf(ctx context.Context, itemID, source string) ([]subtitleFile, error) {
+// file that is gone, or larger, is left out. With the v2 layout an original
+// in its version's folder came with the files beside it where it arrived
+// (sidecarCopies): those are its subtitle files, each named by the copy its
+// source's record keeps of it, in the order they lay there.
+func (h *Handlers) subtitleFilesOf(ctx context.Context, itemID, source string, v2 bool) ([]subtitleFile, error) {
 	if strings.TrimSpace(source) == "" {
 		return nil, nil
 	}
 	folder := filepath.Dir(filepath.Clean(source))
+	var copies *sidecarCopies
+	if v2 {
+		var err error
+		if copies, err = h.sidecarCopiesOf(ctx, itemID, source); err != nil {
+			return nil, err
+		}
+		if copies != nil {
+			folder = copies.folder
+		}
+	}
 	root, err := h.packageRootFor(ctx, itemID)
 	if err != nil {
 		return nil, err
@@ -279,6 +292,11 @@ func (h *Handlers) subtitleFilesOf(ctx context.Context, itemID, source string) (
 		return nil, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	if copies != nil {
+		for i := range out {
+			out[i].Path = copies.of(out[i].Path)
+		}
+	}
 	return out, nil
 }
 

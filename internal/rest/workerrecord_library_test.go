@@ -3,11 +3,13 @@ package rest
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/zaentrum/katalog-manager/internal/library"
+	"github.com/zaentrum/katalog-manager/internal/library/librarytest"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
 
@@ -195,5 +197,109 @@ func TestTheExtrasWorkerRecordNamesTheLibrary(t *testing.T) {
 	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE id = $1 AND recordedat IS NOT NULL`, filmItem); n != 1 {
 		t.Error("the extra's title was not recorded")
+	}
+}
+
+// The worker record's build says what the run does with the source
+// (library.RunOf), and the name the original gets in the version's folder
+// when the run renames it in: establish while the source has no version, or
+// takein while the title's step takein waits or runs, both naming the
+// original by its extension alone (original.mkv); add while the source's
+// version holds its original alone (taken), that version and its folder,
+// no version made for it; repackage once a version of it is packaged, a new
+// version, the original read where it is, in the older version's folder.
+// Neither of the last two names the original. An original in its version's
+// folder came with the files beside it where it arrived: its subtitle files
+// are the copies its source's record keeps of them.
+func TestTheWorkerRecordSaysWhatTheRunDoes(t *testing.T) {
+	st := storetest.Open(t)
+	v2Layout(t, st)
+	dir := t.TempDir()
+	cfg := v2Config(dir)
+	h, iss := server(t, st, cfg)
+	svc := iss.Service(t, "zaentrum-manager")
+	files(t, dir, map[string]int64{".work/incoming/Sintel (2010)/Sintel (2010) Bluray-1080p.MKV": 3000,
+		".work/incoming/Sintel (2010)/Sintel (2010) Bluray-1080p.en.srt": 0})
+	arrival := cfg.ArrivalsRoot + "/Sintel (2010)/Sintel (2010) Bluray-1080p.MKV"
+	sub := cfg.ArrivalsRoot + "/Sintel (2010)/Sintel (2010) Bluray-1080p.en.srt"
+	storetest.AddItem(t, st, filmItem, "movie", "Sintel", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, sizebytes)
+		VALUES ('src-f1', $1, $2, true, 3000)`, filmItem, arrival)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_subtitleassets (id, item_id, path, format, lang, label)
+		VALUES ('s-en', $1, $2, 'srt', 'en', 'English')`, filmItem, sub)
+	itemDir := dir + "/movies/f1/" + filmItem
+	build := func() map[string]any {
+		t.Helper()
+		lib, _ := recordOf(t, h, svc, "/api/analyze/items/"+filmItem)["library"].(map[string]any)
+		b, _ := lib["build"].(map[string]any)
+		return b
+	}
+	subtitles := func() []any {
+		t.Helper()
+		files, _ := recordOf(t, h, svc, "/api/analyze/items/"+filmItem)["subtitleFiles"].([]any)
+		return files
+	}
+
+	b := build()
+	vid, _ := b["versionId"].(string)
+	if b["mode"] != "establish" || b["originalName"] != "original.mkv" || b["versionDir"] != itemDir+"/versions/"+vid {
+		t.Errorf("a source with no version: %v", b)
+	}
+	if s := subtitles(); len(s) != 1 || s[0].(map[string]any)["path"] != sub {
+		t.Errorf("the subtitle files beside an original where it arrived: %v", s)
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemprocessingsteps (id, item_id, step, status)
+		VALUES ('k1', $1, 'takein', 'pending')`, filmItem)
+	if b := build(); b["mode"] != "takein" || b["originalName"] != "original.mkv" || b["versionId"] != vid {
+		t.Errorf("a source taken in: %v", b)
+	}
+
+	// Taken in: the original in the version's folder, the source recorded
+	// with a copy of its subtitle file.
+	vdir := itemDir + "/versions/" + vid
+	moved := vdir + "/original.mkv"
+	if err := os.MkdirAll(vdir, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(arrival, moved); err != nil {
+		t.Fatal(err)
+	}
+	var sid string
+	if err := st.Pool().QueryRow(t.Context(), `SELECT id FROM com_nalet_katalog_itemsources WHERE item_id = $1`, filmItem).Scan(&sid); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := os.ReadFile(sub)
+	copyName := "subtitle-1.en.srt"
+	librarytest.WriteSource(t, library.SourceDir(itemDir, sid), map[string]any{"sourceId": sid,
+		"sidecars": []map[string]any{{"file": "sources/" + sid + "/" + copyName, "kind": "subtitle",
+			"sha256": "sha256:" + library.SHA256(content)}}}, map[string]string{copyName: string(content)})
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET state = 'taken', dir = $2 WHERE id = $1`, vid, vdir)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemsources SET arrivalpath = $2, filename = 'original.mkv', recordedat = now()
+		WHERE id = $1`, sid, moved)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_playbackassets SET path = $1 WHERE id = 'src-f1'`, moved)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemprocessingsteps SET status = 'done' WHERE id = 'k1'`)
+	if b := build(); b["mode"] != "add" || b["originalName"] != nil || b["versionId"] != vid || b["versionDir"] != vdir ||
+		b["stagingDir"] != dir+"/.work/staging/"+vid {
+		t.Errorf("a source taken in, its package next: %v", b)
+	}
+	if w := do(h, http.MethodPut, "/api/analyze/items/"+filmItem+"/steps/transcode", `{"status": "done"}`, svc); w.Code != http.StatusOK {
+		t.Fatalf("the transcode's end: %d %s", w.Code, w.Body.String())
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemversions WHERE state = 'building'`); n != 0 {
+		t.Errorf("%d versions made for a run that adds its package to the one taken in", n)
+	}
+	wantCopy := library.SourceDir(itemDir, sid) + "/" + copyName
+	if s := subtitles(); len(s) != 1 || s[0].(map[string]any)["path"] != wantCopy || s[0].(map[string]any)["id"] != "s-en" {
+		t.Errorf("the subtitle files of an original in its version's folder: %v, want the copy %s", s, wantCopy)
+	}
+
+	// Packaged: the next run is a new version, the original read in the
+	// folder of the one it was added to.
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET state = 'complete' WHERE id = $1`, vid)
+	rec := recordOf(t, h, svc, "/api/analyze/items/"+filmItem)
+	lib, _ := rec["library"].(map[string]any)
+	b, _ = lib["build"].(map[string]any)
+	if b["mode"] != "repackage" || b["originalName"] != nil || b["versionId"] == vid || rec["path"] != moved {
+		t.Errorf("a packaged source: path %v, build %v", rec["path"], b)
 	}
 }

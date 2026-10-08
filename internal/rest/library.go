@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -54,11 +55,19 @@ type recordSource struct {
 	QH1         *string `json:"qh1"`
 }
 
-// recordBuild is the version the run builds, and the marks it carries.
+// recordBuild is the version the run builds, and the marks it carries: what
+// the run does (mode: establish, takein, add or repackage, library.RunOf),
+// and the name the original gets in the version's folder when the run
+// renames it in (establish, takein; null for add and repackage, whose
+// original is in a version's folder already, or stays where it arrived).
+// For add, versionDir is the folder taken in that holds the original, which
+// the package is added to.
 type recordBuild struct {
 	VersionID    string          `json:"versionId"`
 	StagingDir   string          `json:"stagingDir"`
 	VersionDir   string          `json:"versionDir"`
+	Mode         string          `json:"mode"`
+	OriginalName *string         `json:"originalName"`
 	CreatedBy    string          `json:"createdBy"`
 	Chapters     []recordChapter `json:"chapters"`
 	ChaptersFrom *string         `json:"chaptersFrom"`
@@ -96,7 +105,10 @@ var recordSegmentKinds = map[string]bool{"intro": true, "recap": true, "credits"
 // recorded first when it is not (its folder gets item.json); the source behind
 // its primary asset is made when it has none (a title from before 040); the
 // version the run builds is the one the pipeline builds for the item, made
-// when there is none. An item that cannot be recorded says why in blocked.
+// when there is none, or, when the source's version holds its original
+// alone (taken), that one, which the run adds its package to. The run's mode
+// is the source's (library.RunOf): it takes the title in while its step
+// takein waits or runs. An item that cannot be recorded says why in blocked.
 func (h *Handlers) itemLibraryOf(ctx context.Context, itemID string) (*itemLibrary, error) {
 	p := h.paths()
 	pool := h.d.Store.Pool()
@@ -142,12 +154,35 @@ func (h *Handlers) itemLibraryOf(ctx context.Context, itemID string) (*itemLibra
 	if dir == "" {
 		return lib, nil
 	}
-	v, err := library.EnsureBuilding(ctx, pool, itemID, sourceIDs)
-	if err != nil {
-		return nil, err
+	mode, taken := library.ModeEstablish, (*library.Version)(nil)
+	if src != nil {
+		takeIn, err := takingIn(ctx, pool, itemID)
+		if err != nil {
+			return nil, err
+		}
+		if mode, taken, err = library.RunOf(ctx, pool, src, takeIn); err != nil {
+			return nil, err
+		}
 	}
-	b := &recordBuild{VersionID: v.ID, StagingDir: p.StagingDir(v.ID), VersionDir: library.VersionDir(dir, v.ID),
-		CreatedBy: "katalog-manager", Chapters: []recordChapter{}, Segments: []recordSegment{}}
+	var b *recordBuild
+	if taken != nil {
+		vdir := library.VersionDir(dir, taken.ID)
+		if taken.Dir != nil {
+			vdir = filepath.Clean(*taken.Dir)
+		}
+		b = &recordBuild{VersionID: taken.ID, StagingDir: p.StagingDir(taken.ID), VersionDir: vdir}
+	} else {
+		v, err := library.EnsureBuilding(ctx, pool, itemID, sourceIDs)
+		if err != nil {
+			return nil, err
+		}
+		b = &recordBuild{VersionID: v.ID, StagingDir: p.StagingDir(v.ID), VersionDir: library.VersionDir(dir, v.ID)}
+		if src != nil && (mode == library.ModeEstablish || mode == library.ModeTakeIn) {
+			name := library.OriginalName(arrivalName(src), 0)
+			b.OriginalName = &name
+		}
+	}
+	b.Mode, b.CreatedBy, b.Chapters, b.Segments = mode, "katalog-manager", []recordChapter{}, []recordSegment{}
 	rows, err := pool.Query(ctx, `SELECT startms, COALESCE(NULLIF(endms, 0), startms), title FROM com_nalet_katalog_itemchapters
 		WHERE item_id = $1 ORDER BY COALESCE(ordinal, 0), startms, id`, itemID)
 	if err != nil {
@@ -195,6 +230,103 @@ func (h *Handlers) itemLibraryOf(ctx context.Context, itemID string) (*itemLibra
 	}
 	lib.Build = b
 	return lib, nil
+}
+
+// takingIn reports whether the item is being taken in: its step takein waits
+// for the packager, or runs.
+func takingIn(ctx context.Context, q library.Querier, itemID string) (bool, error) {
+	var ok bool
+	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps
+		WHERE item_id = $1 AND step = 'takein' AND status IN ('pending', 'in_progress'))`, itemID).Scan(&ok)
+	return ok, err
+}
+
+// arrivalName is the name the source's original arrived with, whose
+// extension its name in the library keeps: its file's where it lies, else
+// the one the catalog keeps.
+func arrivalName(s *library.Source) string {
+	if s.ArrivalPath != nil && *s.ArrivalPath != "" {
+		return filepath.Base(*s.ArrivalPath)
+	}
+	return s.Filename
+}
+
+// sidecarCopies are, for an original that lies in its version's folder, the
+// subtitle files that came with it: the folder it arrived in, whose files
+// named after it are its sidecars (as the scanner paired them, their rows
+// pointing at them until it is retired), and the copies its source's record
+// keeps of them (sources/<sourceId>/<name>), by the content its source.json
+// lists of each.
+type sidecarCopies struct {
+	folder  string
+	itemDir string
+	byHash  map[string][]string // a copy's sha256 (hex): the copies of it, relative to the item's folder
+}
+
+// of is the copy the record keeps of the subtitle file at path, each copy
+// for one file; a file the record keeps no copy of is itself.
+func (c *sidecarCopies) of(path string) string {
+	digest, _, err := library.SHA256File(path)
+	if err != nil {
+		return path
+	}
+	files := c.byHash[digest]
+	if len(files) == 0 {
+		return path
+	}
+	c.byHash[digest] = files[1:]
+	return filepath.Join(c.itemDir, filepath.FromSlash(files[0]))
+}
+
+// sidecarCopiesOf are the sidecar copies of the item's original at source
+// when it lies in its version's folder; nil when it does not (the files
+// beside it are its subtitle files), or when the item has no folder.
+func (h *Handlers) sidecarCopiesOf(ctx context.Context, itemID, source string) (*sidecarCopies, error) {
+	pool := h.d.Store.Pool()
+	pl, err := library.PlaceOf(ctx, pool, itemID)
+	var unplaced *library.Unplaced
+	switch {
+	case errors.As(err, &unplaced) || errors.Is(err, library.ErrNoItem):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	p := h.paths()
+	itemDir := p.ItemDir(pl)
+	if _, ok := library.VersionFolderOf(itemDir, source); !ok {
+		return nil, nil
+	}
+	src, err := library.SourceAt(ctx, pool, filepath.Clean(source))
+	if err != nil || src == nil {
+		return nil, err
+	}
+	c := &sidecarCopies{itemDir: itemDir, byHash: map[string][]string{}}
+	if arrival := p.ArrivalOf(src); arrival != "" {
+		c.folder = filepath.Dir(arrival)
+	}
+	b, err := os.ReadFile(filepath.Join(library.SourceDir(itemDir, src.ID), "source.json"))
+	if err != nil {
+		return c, nil // no record: the files are named as they are
+	}
+	var rec struct {
+		Sidecars []struct {
+			File   string `json:"file"`
+			Kind   string `json:"kind"`
+			SHA256 string `json:"sha256"`
+		} `json:"sidecars"`
+	}
+	if json.Unmarshal(b, &rec) != nil {
+		return c, nil
+	}
+	prefix := "sources/" + src.ID + "/"
+	for _, s := range rec.Sidecars {
+		if s.Kind != "subtitle" || !strings.HasPrefix(s.File, prefix) || strings.Contains(s.File, "..") {
+			continue
+		}
+		digest := strings.TrimPrefix(s.SHA256, "sha256:")
+		c.byHash[digest] = append(c.byHash[digest], s.File)
+	}
+	return c, nil
 }
 
 // oneLine is a record's one-line text, nil when there is none.
@@ -292,8 +424,9 @@ func (h *Handlers) extraLibraryOf(ctx context.Context, id, itemID string) (*extr
 
 // mintVersion makes, with the v2 layout, the version the package's run of the
 // item builds, of the source behind its primary asset: when its transcode is
-// done and its package is next. Best-effort, as the promotion: the worker
-// record makes it when it is missing.
+// done and its package is next. A source whose version holds its original
+// alone (taken) gets none: the run adds its package to that one. Best-effort,
+// as the promotion: the worker record makes it when it is missing.
 func (h *Handlers) mintVersion(ctx context.Context, itemID string) {
 	set, err := h.settings(ctx)
 	if err != nil || !set.V2() {
@@ -304,6 +437,12 @@ func (h *Handlers) mintVersion(ctx context.Context, itemID string) {
 	if err != nil || src == nil {
 		if err != nil {
 			log.Printf("putStep: the source of %s: %v", itemID, err)
+		}
+		return
+	}
+	if taken, err := library.TakenOf(ctx, pool, src); err != nil || taken != nil {
+		if err != nil {
+			log.Printf("putStep: the versions of %s: %v", itemID, err)
 		}
 		return
 	}
