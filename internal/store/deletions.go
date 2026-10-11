@@ -120,6 +120,39 @@ func DeleteUncreditedPeople(ctx context.Context, tx pgx.Tx, ids []string, d Dele
 	return n, nil
 }
 
+// DeleteAllUncreditedPeople deletes every person no title credits, as
+// DeleteUncreditedPeople deletes those it is given, in one transaction: a
+// catalog from before a person left with their last credit still holds them,
+// and the library holds a folder for a person a title credits and no other.
+// It returns how many it deleted; none on a catalog that keeps no people.
+func (s *Store) DeleteAllUncreditedPeople(ctx context.Context, d Deletion) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // nothing to undo once committed
+	var people bool
+	if err := tx.QueryRow(ctx, `SELECT to_regclass('com_nalet_katalog_people') IS NOT NULL
+		AND to_regclass('com_nalet_katalog_itempeople') IS NOT NULL`).Scan(&people); err != nil || !people {
+		return 0, err
+	}
+	rows, err := tx.Query(ctx, `SELECT p.id FROM com_nalet_katalog_people p
+		WHERE NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itempeople ip WHERE ip.person_id = p.id)
+		ORDER BY p.id`)
+	if err != nil {
+		return 0, err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return 0, err
+	}
+	n, err := DeleteUncreditedPeople(ctx, tx, ids, d)
+	if err != nil {
+		return 0, err
+	}
+	return n, tx.Commit(ctx)
+}
+
 func uniqueSorted(ids []string) []string {
 	seen := map[string]bool{}
 	var out []string

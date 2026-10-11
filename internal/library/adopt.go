@@ -88,17 +88,20 @@ type UnitResult struct {
 
 // MigrationReport is what an adopt or a revert did.
 type MigrationReport struct {
-	Run      string       `json:"run"`
-	Adopted  int          `json:"adopted"`
-	Reverted int          `json:"reverted"`
-	Skipped  int          `json:"skipped"`
-	Stale    int          `json:"stale"`
-	Busy     int          `json:"busy"`
-	Refused  int          `json:"refused"`
-	Failed   int          `json:"failed"`
-	People   int          `json:"people"`
-	Stopped  string       `json:"stopped,omitempty"`
-	Units    []UnitResult `json:"units"`
+	Run      string `json:"run"`
+	Adopted  int    `json:"adopted"`
+	Reverted int    `json:"reverted"`
+	Skipped  int    `json:"skipped"`
+	Stale    int    `json:"stale"`
+	Busy     int    `json:"busy"`
+	Refused  int    `json:"refused"`
+	Failed   int    `json:"failed"`
+	People   int    `json:"people"`
+	// the people no title credits, deleted once every unit of the run is
+	// adopted (the handler's, after an adopt of the whole run)
+	PeopleDeleted int          `json:"peopleDeleted"`
+	Stopped       string       `json:"stopped,omitempty"`
+	Units         []UnitResult `json:"units"`
 }
 
 func (r *MigrationReport) add(u UnitResult) {

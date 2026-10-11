@@ -272,3 +272,30 @@ func TestAPersonRecreatedWithTheSameIDCanBeDeletedAgain(t *testing.T) {
 		t.Fatalf("%d rows for one id", n)
 	}
 }
+
+// A catalog from before a person left with their last credit still holds
+// people no title credits: all of them go at once, each in the log, and a
+// person a title credits stays.
+func TestEveryPersonNoTitleCreditsIsDeleted(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	storetest.AddItem(t, st, movieA, "movie", "Movie A", "")
+	people(t, st, []string{"ada", "Ada", movieA}, []string{"bo", "Bo", movieA}, []string{"cy", "Cy", movieA})
+	storetest.Exec(t, st, `DELETE FROM com_nalet_katalog_itempeople WHERE person_id IN ('bo', 'cy')`)
+	n, err := st.DeleteAllUncreditedPeople(ctx, store.Deletion{By: "katalog-manager/migration", Reason: "no title credits them"})
+	if err != nil || n != 2 {
+		t.Fatalf("deleted %d, %v; want the two no title credits", n, err)
+	}
+	if storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_people`) != 1 ||
+		storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_people WHERE id = 'ada'`) != 1 {
+		t.Fatal("the person a title credits must stay, and no other")
+	}
+	for _, id := range []string{"bo", "cy"} {
+		if d, ok := storetest.Deleted(t, st, id); !ok || d.DeletedBy != "katalog-manager/migration" {
+			t.Fatalf("%s is not in the deletion log as the migration's: %+v", id, d)
+		}
+	}
+	if n, err := st.DeleteAllUncreditedPeople(ctx, store.Deletion{By: "katalog-manager/migration"}); err != nil || n != 0 {
+		t.Fatalf("again: deleted %d, %v; want none", n, err)
+	}
+}

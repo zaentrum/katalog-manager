@@ -11,13 +11,15 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/zaentrum/katalog-manager/internal/library"
+	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
 // adoptRun serves POST /api/library/migrations/{run}/adopt, the flip of a
 // migration run library-v2-from-catalog.py --platform staged under
 // .work/migration/<run>/ (platform-library/1, 7.1-7.3): katalog-manager
 // adopts its units, the renames and the database of each item at once, and
-// then its staged people. revertRun serves …/revert, which replays the
+// then its staged people; an adopt of the whole run then deletes the people
+// no title credits (peopleDeleted, each in the deletion log). revertRun serves …/revert, which replays the
 // adoption backwards while the originals are not purged from the trash.
 //
 // Both are for the workers' service account and admins. The body may name
@@ -29,7 +31,18 @@ import (
 // stops it between two units, never within one.
 func (h *Handlers) adoptRun(w http.ResponseWriter, r *http.Request) {
 	h.migrate(w, r, func(ctx context.Context, m *library.Migration, items []string) (any, error) {
-		return m.Adopt(ctx, items)
+		rep, err := m.Adopt(ctx, items)
+		if err != nil || len(items) > 0 || rep.Stopped != "" {
+			return rep, err
+		}
+		// The library holds a folder for each person a title credits and
+		// for no other, so once the whole run is adopted the catalog lets
+		// go of the people no title credits (one from before a person left
+		// with their last credit still holds them), each in the deletion
+		// log: the tree and the database then hold the same people.
+		rep.PeopleDeleted, err = h.d.Store.DeleteAllUncreditedPeople(context.WithoutCancel(ctx),
+			store.Deletion{By: "katalog-manager/migration", Reason: "no title credits them (adopt of run " + m.Run + ")"})
+		return rep, err
 	})
 }
 
