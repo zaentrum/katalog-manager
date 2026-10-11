@@ -167,3 +167,42 @@ func TestWhatCannotBeRecorded(t *testing.T) {
 		t.Errorf("%d blocked items recorded", n)
 	}
 }
+
+// An item the scanner made before it named itself in the row has its name in
+// the record alone: the row takes it from the record. A record that names no
+// creator (an adopted item's) leaves its row as it is, and a second pass sets
+// nothing.
+func TestTheCatalogTakesTheCreatorARecordNames(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	p := PathsOf(config.Config{LibraryRoot: t.TempDir()})
+	const made, adopted = "c0c0c0c0-0000-4000-8000-000000000001", "c0c0c0c0-0000-4000-8000-000000000002"
+	storetest.AddItem(t, st, made, "movie", "Made By The Scanner", "")
+	storetest.AddItem(t, st, adopted, "movie", "Adopted", "")
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET createdby = NULL WHERE id IN ($1, $2)`, made, adopted)
+	if _, err := p.EnsureItemRecord(ctx, st.Pool(), made); err != nil { // names the scanner, the catalog saying no one
+		t.Fatal(err)
+	}
+	dir := p.MovieDir(adopted)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ItemFile), []byte(`{"schema":"zaentrum.library.item/2","itemId":"`+adopted+`"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET recordedat = now() WHERE id = $1`, adopted)
+
+	if n, err := p.ReconcileCreators(ctx, st.Pool()); err != nil || n != 1 {
+		t.Fatalf("set %d rows, %v; want the one whose record names a creator", n, err)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE id = $1
+		AND createdby = 'katalog-manager/scanner'`, made); n != 1 {
+		t.Error("the row does not name the creator its record names")
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE id = $1 AND createdby IS NULL`, adopted); n != 1 {
+		t.Error("a record that names no creator must leave its row as it is")
+	}
+	if n, err := p.ReconcileCreators(ctx, st.Pool()); err != nil || n != 0 {
+		t.Fatalf("again: set %d rows, %v; want none", n, err)
+	}
+}

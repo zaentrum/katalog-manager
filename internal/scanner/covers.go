@@ -220,8 +220,8 @@ func (s *Scanner) coverEpisode(ctx context.Context, res *scanResult, holder, pat
 	// makes any episode.
 	var id string
 	if err := pool.QueryRow(ctx, `INSERT INTO com_nalet_katalog_items
-			(id, type, title, sorttitle, year, parent_id, seasonnumber, episodenumber, createdat, modifiedat)
-		VALUES (gen_random_uuid()::varchar, 'episode', $1, $2, $3, $4, $5, $6, now(), now())
+			(id, type, title, sorttitle, year, parent_id, seasonnumber, episodenumber, createdby, createdat, modifiedat)
+		VALUES (gen_random_uuid()::varchar, 'episode', $1, $2, $3, $4, $5, $6, '`+createdByScanner+`', now(), now())
 		RETURNING id`, title, strings.ToLower(title), year, parent, season, n).Scan(&id); err != nil {
 		log.Printf("scanner: episode %s, which %s covers, could not be made: %v", code, path, err)
 		return

@@ -2,12 +2,16 @@ package library
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ItemFile is an item's identity record, written once.
@@ -145,6 +149,54 @@ func (r ItemRecord) Doc() (Doc, error) {
 			Field{"episodeCode", fmt.Sprintf("S%02dE%02d", *r.SeasonNumber, *r.EpisodeNumber)})
 	}
 	return doc, nil
+}
+
+// ReconcileCreators gives the catalog the creator an item's record names
+// where the catalog names none. An item the scanner made before it wrote its
+// own name into the row (createdby) was recorded with the scanner's name
+// (creatorOf) and has none in the catalog, which a compare of the tree with
+// the catalog reads as a difference; the record is written once, so the row
+// follows it. An adopted item's record names no creator, and its row stays as
+// it is. Only the items recorded in the last 30 days are read (the scanner
+// names itself since), one small file each. It answers how many rows it set.
+func (p Paths) ReconcileCreators(ctx context.Context, pool *pgxpool.Pool) (int, error) {
+	rows, err := pool.Query(ctx, `SELECT id FROM com_nalet_katalog_items
+		WHERE createdby IS NULL AND recordedat IS NOT NULL AND recordedat > now() - interval '30 days'
+		ORDER BY id`)
+	if err != nil {
+		return 0, err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return 0, err
+	}
+	set := 0
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return set, ctx.Err()
+		}
+		pl, err := PlaceOf(ctx, pool, id)
+		if err != nil {
+			continue // no folder in the tree: nothing to read
+		}
+		raw, err := os.ReadFile(filepath.Join(p.ItemDir(pl), ItemFile))
+		if err != nil {
+			continue
+		}
+		var doc struct {
+			CreatedBy string `json:"createdBy"`
+		}
+		if json.Unmarshal(raw, &doc) != nil || strings.TrimSpace(doc.CreatedBy) == "" {
+			continue
+		}
+		tag, err := pool.Exec(ctx, `UPDATE com_nalet_katalog_items SET createdby = $2 WHERE id = $1 AND createdby IS NULL`,
+			id, doc.CreatedBy)
+		if err != nil {
+			return set, err
+		}
+		set += int(tag.RowsAffected())
+	}
+	return set, nil
 }
 
 // ReadItemRecord reads what the item id's record says from the catalog. An

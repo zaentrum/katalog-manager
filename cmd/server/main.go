@@ -151,6 +151,16 @@ func run() error {
 	if err := st.EnsureSeriesScanTitle(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/046_series_scan_title.sql is missing and could not be applied: %v; the scanner finds a series by its sort title alone, and makes another once enrichment renamed it, until it is", err)
 	}
+	// An item the scanner made before it wrote its own name into the row has
+	// it in its record alone: the row follows the record (bounded, in the
+	// background).
+	go func() {
+		if n, err := library.PathsOf(cfg).ReconcileCreators(bgCtx, st.Pool()); err != nil {
+			log.Printf("catalog: the creators the records name could not all be taken into the catalog: %v", err)
+		} else if n > 0 {
+			log.Printf("catalog: %d items have the creator their record names", n)
+		}
+	}()
 	if set, err := library.ReadSettings(bgCtx, st.Pool()); err != nil {
 		log.Printf("catalog: the library's settings could not be read: %v", err)
 	} else {

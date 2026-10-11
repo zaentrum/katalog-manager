@@ -333,3 +333,16 @@ func TestAShowEnrichmentRenamedStaysOneSeries(t *testing.T) {
 		t.Fatalf("%d episodes under the series, want both", n)
 	}
 }
+
+// The items the scanner makes say so in the catalog, as their records do:
+// the series, the episode of a file, and an episode a file covers.
+func TestTheScannerNamesItselfAsTheCreator(t *testing.T) {
+	st := storetest.Open(t)
+	f := newLegacy(t, st)
+	f.write(t, "series/Show/Show.S01E01-E02.mkv")
+	f.scan(t)
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items
+		WHERE createdby = 'katalog-manager/scanner'`); n != 3 {
+		t.Fatalf("%d items name the scanner as their creator, want the series and both episodes", n)
+	}
+}

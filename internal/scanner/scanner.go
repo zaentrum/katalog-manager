@@ -48,6 +48,11 @@ import (
 // item on its own.
 const deletedByScanner = "katalog-manager/scanner"
 
+// createdByScanner is who the catalog says made an item the scanner made: the
+// name an item's record gives its creator (library.creatorOf), so the row and
+// the record agree.
+const createdByScanner = deletedByScanner
+
 // InterruptedReason is what a scan job a previous process left running says
 // once it is failed at startup.
 const InterruptedReason = "interrupted: the service restarted while the scan ran"
@@ -353,8 +358,8 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 		// New item: INSERT items + primary asset + seed the 'scan' step.
 		if err := pool.QueryRow(ctx,
 			`INSERT INTO com_nalet_katalog_items
-			   (id, type, title, sorttitle, year, parent_id, seasonnumber, episodenumber, createdat, modifiedat)
-			 VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, $5, $6, $7, now(), now())
+			   (id, type, title, sorttitle, year, parent_id, seasonnumber, episodenumber, createdby, createdat, modifiedat)
+			 VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, $5, $6, $7, '`+createdByScanner+`', now(), now())
 			 RETURNING id`,
 			typ, title, strings.ToLower(title), year, parentID, seasonNumber, episodeNumber).Scan(&itemID); err != nil {
 			return
@@ -475,12 +480,12 @@ func (s *Scanner) resolveSeriesParent(ctx context.Context, pool *pgxpool.Pool, r
 	if y := seriesYearFor(rel, filename); y > 0 {
 		year = &y
 	}
-	insert := `INSERT INTO com_nalet_katalog_items (id, type, title, sorttitle, year, createdat, modifiedat)
-		 VALUES (gen_random_uuid()::varchar, 'series', $1, $2, $3, now(), now())
+	insert := `INSERT INTO com_nalet_katalog_items (id, type, title, sorttitle, year, createdby, createdat, modifiedat)
+		 VALUES (gen_random_uuid()::varchar, 'series', $1, $2, $3, '` + createdByScanner + `', now(), now())
 		 RETURNING id`
 	if byScanTitle {
-		insert = `INSERT INTO com_nalet_katalog_items (id, type, title, sorttitle, scantitle, year, createdat, modifiedat)
-		 VALUES (gen_random_uuid()::varchar, 'series', $1, $2, $2, $3, now(), now())
+		insert = `INSERT INTO com_nalet_katalog_items (id, type, title, sorttitle, scantitle, year, createdby, createdat, modifiedat)
+		 VALUES (gen_random_uuid()::varchar, 'series', $1, $2, $2, $3, '` + createdByScanner + `', now(), now())
 		 RETURNING id`
 	}
 	if err := pool.QueryRow(ctx, insert, title, sort, year).Scan(&id); err != nil {
