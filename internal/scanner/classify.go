@@ -182,6 +182,34 @@ func seriesTitleFor(rel, filename string) string {
 	return showTitle(base)
 }
 
+// seriesYearFor is the year the show's folder carries in brackets ("Example
+// Show (2005)"), or, without such a folder, the file's name before its first
+// episode token; 0 when neither says one. The series is made with it, so the
+// reference database is asked for the show of that year and not a namesake.
+func seriesYearFor(rel, filename string) int {
+	year := func(raw string) int {
+		m := parenYearPattern.FindStringSubmatch(raw)
+		if m == nil {
+			return 0
+		}
+		y, _ := strconv.Atoi(m[1])
+		return y
+	}
+	parts := strings.Split(rel, "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if seriesFolderNames[strings.ToLower(parts[i])] {
+			if showTitle(parts[i+1]) != "" {
+				return year(parts[i+1])
+			}
+		}
+	}
+	base := stripExt(filename)
+	if tok, ok := firstEpisodeToken(base); ok {
+		base = base[:tok.start]
+	}
+	return year(base)
+}
+
 // showTitle normalises a raw folder/filename fragment into a clean show title:
 // separators to spaces, a (year) or trailing bare year stripped, then cleanTitle.
 func showTitle(raw string) string {

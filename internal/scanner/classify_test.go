@@ -129,3 +129,21 @@ func TestEpisodeRanges(t *testing.T) {
 		t.Errorf("a file of two episodes is a %s", got)
 	}
 }
+
+// The year a show's folder names goes with the series the scanner makes.
+func TestSeriesYearFor(t *testing.T) {
+	cases := []struct {
+		rel, name string
+		want      int
+	}{
+		{"shows/Example Show (2005)/Season 3/Example Show - S03E01.mkv", "Example Show - S03E01.mkv", 2005},
+		{"shows/Example Show/Season 3/Example Show - S03E01.mkv", "Example Show - S03E01.mkv", 0},
+		{"Example.Show.(2019).S01E02.mkv", "Example.Show.(2019).S01E02.mkv", 2019},
+		{"series/Example Show (2005)/Example Show (2024) S01E01.mkv", "Example Show (2024) S01E01.mkv", 2005}, // the folder decides
+	}
+	for _, c := range cases {
+		if got := seriesYearFor(c.rel, c.name); got != c.want {
+			t.Errorf("seriesYearFor(%q) = %d, want %d", c.rel, got, c.want)
+		}
+	}
+}

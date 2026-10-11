@@ -469,15 +469,21 @@ func (s *Scanner) resolveSeriesParent(ctx context.Context, pool *pgxpool.Pool, r
 		return "", false
 	}
 
-	insert := `INSERT INTO com_nalet_katalog_items (id, type, title, sorttitle, createdat, modifiedat)
-		 VALUES (gen_random_uuid()::varchar, 'series', $1, $2, now(), now())
+	// The year its folder names goes with the series, so enrichment asks the
+	// reference database for the show of that year, not a namesake.
+	var year *int
+	if y := seriesYearFor(rel, filename); y > 0 {
+		year = &y
+	}
+	insert := `INSERT INTO com_nalet_katalog_items (id, type, title, sorttitle, year, createdat, modifiedat)
+		 VALUES (gen_random_uuid()::varchar, 'series', $1, $2, $3, now(), now())
 		 RETURNING id`
 	if byScanTitle {
-		insert = `INSERT INTO com_nalet_katalog_items (id, type, title, sorttitle, scantitle, createdat, modifiedat)
-		 VALUES (gen_random_uuid()::varchar, 'series', $1, $2, $2, now(), now())
+		insert = `INSERT INTO com_nalet_katalog_items (id, type, title, sorttitle, scantitle, year, createdat, modifiedat)
+		 VALUES (gen_random_uuid()::varchar, 'series', $1, $2, $2, $3, now(), now())
 		 RETURNING id`
 	}
-	if err := pool.QueryRow(ctx, insert, title, sort).Scan(&id); err != nil {
+	if err := pool.QueryRow(ctx, insert, title, sort, year).Scan(&id); err != nil {
 		return "", false
 	}
 	// The series parent is "scanned" the moment its first episode is seen — record
