@@ -12,6 +12,15 @@ func TestExtractTitle(t *testing.T) {
 		{"Blade Runner 2049.mkv", "movie", "Blade Runner"},       // faithful to Java even when the year is part of the title
 		{"1917 (2019).mkv", "movie", "1917"},                     // paren-year removed, numeric title kept
 		{"Tears of Steel.mov", "movie", "Tears of Steel"},        // no year, case preserved
+		// an episode: what follows the token that numbers it, and nothing else of the name
+		{"Example Show - S03E04 - The Master Bluray-1080p Remux.mkv", "episode", "The Master"},
+		{"Example.Show.S03E04.The.Master.1080p.WEB-DL.x265.mkv", "episode", "The Master"},
+		{"Example Show - S03E14-15 - The Rock Bluray-1080p Remux.mkv", "episode", "The Rock"},
+		{"Example Show - S03E18-19-20-21 - The Comet - Part 1 + The Comet - Part 2 Remux-1080p.mkv", "episode",
+			"The Comet - Part 1 + The Comet - Part 2"},
+		{"Example.Show.S01E02.1080p.WEB-DL.mkv", "episode", "Example Show"}, // nothing of its own: the name without its numbers
+		{"example show s02e10e11 720p.mkv", "episode", "example show"},      // a file of two, nothing of its own
+		{"Some Film Bluray-1080p Remux.mkv", "movie", "Some Film"},          // a bare Remux is a release's word too
 	}
 	for _, c := range cases {
 		if got := extractTitle(c.in, c.typ); got != c.want {
@@ -110,8 +119,8 @@ func TestEpisodeRanges(t *testing.T) {
 	if s, e := episodeCoords("Show.S05E15E16.mkv"); s == nil || e == nil || *s != 5 || *e != 15 {
 		t.Errorf("episodeCoords of a file of two episodes: %v %v, want its first, 5 and 15", s, e)
 	}
-	if got := extractTitle("Show S05E15-E16 The Finale.mkv", "episode"); got != "Show The Finale" {
-		t.Errorf("the title of a file of two episodes is %q, want the name without its numbers", got)
+	if got := extractTitle("Show S05E15-E16 The Finale.mkv", "episode"); got != "The Finale" {
+		t.Errorf("the title of a file of two episodes is %q, want what its name says after its numbers", got)
 	}
 	if got := seriesTitleFor("Show.S05E15E16.Finale.mkv", "Show.S05E15E16.Finale.mkv"); got != "Show" {
 		t.Errorf("the show of a file of two episodes is %q, want Show", got)

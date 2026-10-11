@@ -209,10 +209,37 @@ func extractTitle(filename, typ string) string {
 	replacer := strings.NewReplacer("(", " ", ")", " ", "[", " ", "]", " ")
 	name = replacer.Replace(name)
 	if typ == "episode" {
-		name = withoutEpisodeTokens(name)
+		return episodeTitle(name)
 	}
 	name = collapseWS(name)
 	return cleanTitle(name)
+}
+
+// episodeTitle is the title an episode has until the reference database
+// names it: what its file's name says after the token that numbers it — the
+// episode's own title, without the show's name before the token or the
+// words of a release after it. A name that says nothing after the token
+// gives what it always gave, the name without its numbers.
+func episodeTitle(name string) string {
+	toks := episodeTokens(name)
+	if len(toks) > 0 {
+		own := strings.Trim(cleanTitleOrNone(name[toks[len(toks)-1].end:]), " -–—:+")
+		if own != "" {
+			return collapseWS(own)
+		}
+	}
+	return cleanTitle(collapseWS(withoutEpisodeTokens(name)))
+}
+
+// cleanTitleOrNone is cleanTitle, but "" when nothing is left of raw.
+func cleanTitleOrNone(raw string) string {
+	s := raw
+	for _, re := range cleanTokenPatterns {
+		s = re.ReplaceAllString(s, " ")
+	}
+	s = cleanBrackets.ReplaceAllString(s, " ")
+	s = cleanTrailingSep.ReplaceAllString(s, " ")
+	return collapseWS(s)
 }
 
 // extractYear reproduces NfsScanner.extractYear(s): prefer the parenthesised
@@ -330,7 +357,7 @@ func languageLabel(lang string) string {
 // composite tokens (WEBDL-1080p) before single tokens. The (?i) flag is baked in
 // at compile time.
 var cleanTokenPatterns = compileCleanTokens([]string{
-	`\bRemux-?\d+p?\b`, `\bWEB[ -]?DL[ -]?\d+p?\b`,
+	`\bRemux-?\d+p?\b`, `\bRemux\b`, `\bWEB[ -]?DL[ -]?\d+p?\b`,
 	`\bWEB[ -]?Rip[ -]?\d+p?\b`, `\bBluray-?\d+p?\b`,
 	`\bHDTV-?\d+p?\b`, `\bBDRip-?\d+p?\b`,
 	`\bDVDRip\b`, `\bDVDScr\b`, `\bBRRip\b`,
