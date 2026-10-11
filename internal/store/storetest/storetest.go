@@ -86,6 +86,9 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	if err := st.EnsureMultiEpisodeFiles(ctx); err != nil {
 		t.Fatalf("apply the multi-episode files migration: %v", err)
 	}
+	if err := st.EnsureSeriesScanTitle(ctx); err != nil {
+		t.Fatalf("apply the series scan title migration: %v", err)
+	}
 	return st
 }
 

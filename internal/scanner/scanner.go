@@ -449,10 +449,19 @@ func (s *Scanner) resolveSeriesParent(ctx context.Context, pool *pgxpool.Pool, r
 	}
 	sort := strings.ToLower(title)
 
+	// A series is found by the name the scanner made it under (scantitle,
+	// migration 046) before its sort title: enrichment gives a series the
+	// reference database's title, and a file of the same folder scanned
+	// after that would otherwise make the show another series. The series
+	// made under the name comes first; without 046, the sort title alone.
+	byScanTitle, _ := s.st.SeriesScanTitleReady(ctx)
+	find := `SELECT id FROM com_nalet_katalog_items WHERE type = 'series' AND sorttitle = $1 LIMIT 1`
+	if byScanTitle {
+		find = `SELECT id FROM com_nalet_katalog_items WHERE type = 'series' AND (scantitle = $1 OR sorttitle = $1)
+			ORDER BY (scantitle = $1) DESC NULLS LAST, createdat, id LIMIT 1`
+	}
 	var id string
-	err := pool.QueryRow(ctx,
-		`SELECT id FROM com_nalet_katalog_items WHERE type = 'series' AND sorttitle = $1 LIMIT 1`,
-		sort).Scan(&id)
+	err := pool.QueryRow(ctx, find, sort).Scan(&id)
 	if err == nil {
 		return id, false
 	}
@@ -460,11 +469,15 @@ func (s *Scanner) resolveSeriesParent(ctx context.Context, pool *pgxpool.Pool, r
 		return "", false
 	}
 
-	if err := pool.QueryRow(ctx,
-		`INSERT INTO com_nalet_katalog_items (id, type, title, sorttitle, createdat, modifiedat)
+	insert := `INSERT INTO com_nalet_katalog_items (id, type, title, sorttitle, createdat, modifiedat)
 		 VALUES (gen_random_uuid()::varchar, 'series', $1, $2, now(), now())
-		 RETURNING id`,
-		title, sort).Scan(&id); err != nil {
+		 RETURNING id`
+	if byScanTitle {
+		insert = `INSERT INTO com_nalet_katalog_items (id, type, title, sorttitle, scantitle, createdat, modifiedat)
+		 VALUES (gen_random_uuid()::varchar, 'series', $1, $2, $2, now(), now())
+		 RETURNING id`
+	}
+	if err := pool.QueryRow(ctx, insert, title, sort).Scan(&id); err != nil {
 		return "", false
 	}
 	// The series parent is "scanned" the moment its first episode is seen — record

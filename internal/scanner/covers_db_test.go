@@ -311,3 +311,25 @@ func TestAnArrivalOfTwoEpisodesIsItsFirstOnes(t *testing.T) {
 		t.Error("S02E06 is not made covered by S02E05's file, with no file or source of its own")
 	}
 }
+
+// A series the reference database renamed is still the series of the next
+// file of its folder, in the same scan or a later one: the scanner finds it
+// by the name it made it under, not by the sort title enrichment changed.
+func TestAShowEnrichmentRenamedStaysOneSeries(t *testing.T) {
+	st := storetest.Open(t)
+	f := newLegacy(t, st)
+	f.write(t, "series/Example- The Show/Example- The Show - S01E01.mkv")
+	f.scan(t)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET title = 'Example: The Show', sorttitle = 'example: the show'
+		WHERE type = 'series'`)
+	f.write(t, "series/Example- The Show/Example- The Show - S01E02.mkv")
+	f.scan(t)
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE type = 'series'`); n != 1 {
+		t.Fatalf("%d series, want the one the first file made", n)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items e
+		JOIN com_nalet_katalog_items s ON s.id = e.parent_id
+		WHERE e.type = 'episode' AND s.title = 'Example: The Show'`); n != 2 {
+		t.Fatalf("%d episodes under the series, want both", n)
+	}
+}

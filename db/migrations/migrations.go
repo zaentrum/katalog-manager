@@ -9,8 +9,8 @@
 // store.EnsureStepRetries, store.EnsureScanJobRunner, store.EnsureItemRatings,
 // store.EnsureTrackLanguages, store.EnsureSubtitleForced,
 // store.EnsureItemExtras, store.EnsureLibrary, which applies 040, 041 and
-// 042, store.EnsureReencodeQueue, store.EnsureTakeIn and
-// store.EnsureMultiEpisodeFiles).
+// 042, store.EnsureReencodeQueue, store.EnsureTakeIn,
+// store.EnsureMultiEpisodeFiles and store.EnsureSeriesScanTitle).
 // It applies 035, which drops what is left of a retired integration, at every
 // start when any of that is there (store.DropRetiredJobTables).
 package migrations
@@ -118,3 +118,9 @@ var TakeIn string
 //
 //go:embed 045_multi_episode_files.sql
 var MultiEpisodeFiles string
+
+// SeriesScanTitle is 046_series_scan_title.sql: a series keeps the name the
+// scanner made it under, and is found by it after enrichment renamed it.
+//
+//go:embed 046_series_scan_title.sql
+var SeriesScanTitle string

@@ -272,3 +272,26 @@ func (s *Store) EnsureMultiEpisodeFiles(ctx context.Context) error {
 	_, err = s.pool.Exec(ctx, migrations.MultiEpisodeFiles)
 	return err
 }
+
+// SeriesScanTitleReady reports whether migration 046 is in place: a series
+// keeps the name the scanner made it under (scantitle), with the index that
+// finds it.
+func (s *Store) SeriesScanTitleReady(ctx context.Context) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `SELECT to_regclass('idx_items_series_scantitle') IS NOT NULL
+		AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = to_regclass('com_nalet_katalog_items')
+		            AND a.attname = 'scantitle' AND a.attnum > 0 AND NOT a.attisdropped)`).Scan(&ok)
+	return ok, err
+}
+
+// EnsureSeriesScanTitle applies db/migrations/046_series_scan_title.sql when
+// any of its objects is missing. Without it the scanner finds a series by its
+// sort title alone, as before, and makes another once enrichment renamed it.
+func (s *Store) EnsureSeriesScanTitle(ctx context.Context) error {
+	ready, err := s.SeriesScanTitleReady(ctx)
+	if err != nil || ready {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, migrations.SeriesScanTitle)
+	return err
+}
