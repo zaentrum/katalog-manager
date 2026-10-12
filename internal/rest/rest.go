@@ -117,10 +117,12 @@ func (h *Handlers) Register(r chi.Router) {
 		r.Get("/api/settings", h.getSettings)
 
 		// The library's migration: the flip of a staged run, and its
-		// reversal; the catalog's side of a run of the neutral names.
+		// reversal; the catalog's side of a run of the neutral names, and of
+		// one that filled the checksums an adoption left pending.
 		r.Post("/api/library/migrations/{run}/adopt", h.adoptRun)
 		r.Post("/api/library/migrations/{run}/revert", h.revertRun)
 		r.Post("/api/library/migrations/{run}/names", h.namesRun)
+		r.Post("/api/library/migrations/{run}/checksums", h.checksumsRun)
 		// The items' projections written now, as the migration's verify
 		// needs them.
 		r.Post("/api/library/projections", h.refreshProjections)

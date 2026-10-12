@@ -74,6 +74,28 @@ func (h *Handlers) namesRun(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// checksumsRun serves POST /api/library/migrations/{run}/checksums, the
+// catalog's side of the schemas' library-v2-fill-checksums.py, which closes
+// the chains of the packages a migration adopted with their checksums
+// pending and changes no database: by the run's checksums journal
+// (checksums.jsonl), every version it filled is noted verified in full at
+// the moment it was, while it is what the tool left — the catalog keeps it,
+// complete and of that package, in the folder the journal names, and its
+// chain holds from the package.json the tool wrote (library.Migration.Filled).
+// For the workers' service account and admins. The body may name the items,
+// {"items": ["<itemId>", …]}; without it, every version of the journal. It
+// answers {"run", "versions", "unchanged", "skipped": [{"itemId",
+// "versionId", "reason"}]}: how many versions it noted (none when called
+// again), how many were noted already or verified since, and those it left,
+// why (a run with no such journal notes none); 400 for a run's name that is
+// none, 404 for a run that is not there, 409 while an adopt, a revert or
+// another of these runs on it.
+func (h *Handlers) checksumsRun(w http.ResponseWriter, r *http.Request) {
+	h.migrate(w, r, func(ctx context.Context, m *library.Migration, items []string) (any, error) {
+		return m.Filled(ctx, items)
+	})
+}
+
 // migrate runs act on the run the path names, for the items the body names.
 func (h *Handlers) migrate(w http.ResponseWriter, r *http.Request,
 	act func(context.Context, *library.Migration, []string) (any, error)) {

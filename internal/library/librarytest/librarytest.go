@@ -35,6 +35,10 @@ type Version struct {
 	Files                map[string]string // the package's files by path in the folder; DefaultFiles when nil
 	Package              map[string]any    // package.json's fields besides those WriteVersion sets
 	Version              map[string]any    // version.json's fields besides those WriteVersion sets
+	// Pending writes the version as a migration stages one whose files it
+	// did not read: no checksums.sha256, and a package.json that counts
+	// the files and says its checksums are pending. Fill closes its chain.
+	Pending bool
 }
 
 func sum(b []byte) string {
@@ -104,15 +108,65 @@ func WriteVersion(t testing.TB, dir string, v Version) string {
 	Write(t, filepath.Join(dir, "version.json"), vb)
 	digests["version.json"] = sum(vb)
 	total = size + int64(len(vb))
-	cs := checksums(digests)
-	Write(t, filepath.Join(dir, "checksums.sha256"), cs)
+	sums := map[string]any{"file": "checksums.sha256", "algorithm": "sha256", "pending": true,
+		"files": len(digests), "bytes": total}
+	if !v.Pending {
+		cs := checksums(digests)
+		Write(t, filepath.Join(dir, "checksums.sha256"), cs)
+		delete(sums, "pending")
+		sums["sha256"] = "sha256:" + sum(cs)
+	}
 	pkg := map[string]any{"schema": "zaentrum.library.package/2", "packageId": v.PackageID, "createdAt": v.CreatedAt,
-		"packagedBy": "packager", "state": "complete", "role": "canonical", "sizeBytes": size,
-		"checksums": map[string]any{"file": "checksums.sha256", "algorithm": "sha256", "sha256": "sha256:" + sum(cs),
-			"files": len(digests), "bytes": total}}
+		"packagedBy": "packager", "state": "complete", "role": "canonical", "sizeBytes": size, "checksums": sums}
 	for k, x := range v.Package {
 		pkg[k] = x
 	}
+	pb := JSON(t, pkg)
+	Write(t, filepath.Join(dir, "package.json"), pb)
+	complete := "sha256:" + sum(pb)
+	Write(t, filepath.Join(dir, ".complete"), []byte(complete+"\n"))
+	return complete
+}
+
+// Fill closes the chain of the version folder dir, written with its
+// checksums pending, as the schemas' library-v2-fill-checksums.py does: the
+// checksums over version.json and every file of the package, package.json
+// again with their hash in place of pending, and .complete over that, whose
+// hash it answers.
+func Fill(t testing.TB, dir string) string {
+	t.Helper()
+	digests := map[string]string{}
+	var total int64
+	add := func(rel string) {
+		b, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		digests[filepath.ToSlash(rel)] = sum(b)
+		total += int64(len(b))
+	}
+	add("version.json")
+	for _, sub := range []string{"hls", "subs", "trickplay", "trailers"} {
+		_ = filepath.WalkDir(filepath.Join(dir, sub), func(path string, d os.DirEntry, err error) error {
+			if err == nil && !d.IsDir() {
+				rel, _ := filepath.Rel(dir, path)
+				add(rel)
+			}
+			return nil
+		})
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pkg map[string]any
+	if err := json.Unmarshal(raw, &pkg); err != nil {
+		t.Fatal(err)
+	}
+	cs := checksums(digests)
+	Write(t, filepath.Join(dir, "checksums.sha256"), cs)
+	pkg["checksums"] = map[string]any{"file": "checksums.sha256", "algorithm": "sha256", "sha256": "sha256:" + sum(cs),
+		"files": len(digests), "bytes": total}
 	pb := JSON(t, pkg)
 	Write(t, filepath.Join(dir, "package.json"), pb)
 	complete := "sha256:" + sum(pb)

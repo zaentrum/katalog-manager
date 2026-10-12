@@ -1084,6 +1084,28 @@ has it, one a row of which would name a file that is not there). A journal
 that names a file outside the folder of its item is refused whole (422), and
 nothing changes; 409 while an adopt or a revert of the run runs.
 
+A run staged beside the store before it (the schemas' `--originals link
+--checksums pending`) is adopted the same way. A move of kind `link` gives
+the file a second name where an original's move or a sidecar's would have
+put it — a hard link, so the store before keeps playing its file and nothing
+is copied; it needs both names on one filesystem, one mount of the share, and
+says so when they are not. A failure, and a revert, take the second name away
+and never the first; a first name removed since gets its file back. A version
+whose package's checksums are pending is adopted complete and not verified:
+its chain is held to the files and the bytes its `package.json` counted, and
+since that proves no byte the retire job deletes no original on it (the
+retirement fails saying so, and the original is kept). Once the schemas'
+`library-v2-fill-checksums.py` has closed the chains, `POST
+/api/library/migrations/<run>/checksums` (the service account and admins)
+notes them by the run's `checksums.jsonl`: every version the tool filled is
+verified in full at the moment it was, while it is what the tool left — the
+catalog keeps it, complete and of that package, in the folder the journal
+names, and its chain holds from the `package.json` the tool wrote. It takes
+`{"items": ["<itemId>", …]}` to work on some items only, and answers `{"run",
+"versions", "unchanged", "skipped": [{"itemId", "versionId", "reason"}]}`;
+calling it again changes nothing. An original retired while the store before
+still names it frees no space until that name is removed too.
+
 `POST /api/library/projections` writes the items' projections now, in
 either layout (the migration's verify runs before the layout is v2, which
 the projector waits for): of those named, `{"items": ["<itemId>", …]}`, or

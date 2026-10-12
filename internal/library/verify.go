@@ -52,13 +52,29 @@ type Chain struct {
 	Complete  string            // "sha256:<hex>" of package.json
 	Listed    map[string]string // what checksums.sha256 lists: path → hex sha256
 	SizeBytes int64             // the listed files' bytes, as found
+	// Pending is a version a migration adopted before anything hashed its
+	// package's files: package.json counts them and says its checksums are
+	// pending, and there is no checksums.sha256 yet. Such a chain holds as
+	// far as it goes, and proves no byte: Listed is nil.
+	Pending bool
 }
+
+// ErrChecksumsPending is why a version whose chain is pending is not
+// verified: the files of its package were never hashed.
+var ErrChecksumsPending = errors.New("its package's checksums are pending: no file of it was hashed yet " +
+	"(library-v2-fill-checksums.py closes the chain)")
 
 // VerifyVersion checks the chain of the version folder dir: .complete is the
 // hash of package.json, package.json's checksums the hash of
 // checksums.sha256, which lists exactly version.json and the files under
 // hls/, subs/ and trickplay/, as many as it says and of the bytes it says,
 // and version.json's digest. full hashes every listed file too.
+//
+// A version adopted with its checksums pending has no checksums.sha256 to
+// hold its files against: its chain is checked as far as it goes (.complete,
+// package.json, and the files and the bytes package.json counted) and
+// answered with Pending set, whatever full asks. A caller that needs the
+// bytes proven refuses such a chain (ErrChecksumsPending).
 func VerifyVersion(dir string, full bool) (*Chain, error) {
 	return verifyChain(dir, VersionFile, versionPackageDirs, full)
 }
@@ -93,15 +109,25 @@ func verifyChain(dir, record string, dirs []string, full bool) (*Chain, error) {
 	if file != SumsFile {
 		return nil, broken(at(PackageFile), "its checksums name the file %q, not %s", file, SumsFile)
 	}
-	listing, err := os.ReadFile(at(SumsFile))
-	if err != nil {
-		return nil, broken(at(SumsFile), "%v", err)
-	}
-	if want := str(sums, "sha256"); want != "sha256:"+SHA256(listing) {
-		return nil, broken(at(SumsFile), "package.json says its hash is %s, and it is sha256:%s", want, SHA256(listing))
-	}
-	if c.Listed, err = ReadChecksums(at(SumsFile)); err != nil {
-		return nil, broken(at(SumsFile), "%v", err)
+	if p, _ := sums.Get("pending"); p == true {
+		c.Pending = true
+		switch {
+		case record != VersionFile:
+			return nil, broken(at(PackageFile), "its checksums are pending, which only a version's are")
+		case statOK(at(SumsFile)):
+			return nil, broken(at(SumsFile), "it is there while package.json says its checksums are pending")
+		}
+	} else {
+		listing, err := os.ReadFile(at(SumsFile))
+		if err != nil {
+			return nil, broken(at(SumsFile), "%v", err)
+		}
+		if want := str(sums, "sha256"); want != "sha256:"+SHA256(listing) {
+			return nil, broken(at(SumsFile), "package.json says its hash is %s, and it is sha256:%s", want, SHA256(listing))
+		}
+		if c.Listed, err = ReadChecksums(at(SumsFile)); err != nil {
+			return nil, broken(at(SumsFile), "%v", err)
+		}
 	}
 	present := map[string]bool{}
 	if _, err := os.Stat(at(record)); err == nil {
@@ -134,6 +160,23 @@ func verifyChain(dir, record string, dirs []string, full bool) (*Chain, error) {
 		if err != nil {
 			return nil, broken(root, "%v", err)
 		}
+	}
+	if c.Pending {
+		// what can be held against the record is what it counted
+		for name := range present {
+			fi, err := os.Stat(at(name))
+			if err != nil {
+				return nil, broken(at(name), "%v", err)
+			}
+			c.SizeBytes += fi.Size()
+		}
+		if n, ok := number(sums, "files"); !ok || n != float64(len(present)) {
+			return nil, broken(at(PackageFile), "the folder holds %d files, and package.json counted %v", len(present), n)
+		}
+		if n, ok := number(sums, "bytes"); !ok || n != float64(c.SizeBytes) {
+			return nil, broken(at(PackageFile), "the folder's files hold %d bytes, and package.json counted %v", c.SizeBytes, n)
+		}
+		return c, nil
 	}
 	var missing, unlisted []string
 	for name := range c.Listed {

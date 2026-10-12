@@ -672,11 +672,17 @@ func (r *Retirer) verify(ctx context.Context, set Settings, now time.Time, v *Ve
 	if dir == "" {
 		return level, errors.New("the catalog does not say where its folder is")
 	}
-	if _, err := VerifyVersion(dir, level == VerifyFull); err != nil {
+	c, err := VerifyVersion(dir, level == VerifyFull)
+	if err != nil {
 		return level, err
 	}
+	if c.Pending {
+		// nothing proves a byte of the package yet: the original is what
+		// would tell a damaged one, and it is not deleted on a count
+		return level, ErrChecksumsPending
+	}
 	// A chain verified keeps a full verification within its age as it is.
-	_, err := r.pool.Exec(ctx, `UPDATE com_nalet_katalog_itemversions SET verifiedat = $2::timestamptz, verifiedlevel = $3::text,
+	_, err = r.pool.Exec(ctx, `UPDATE com_nalet_katalog_itemversions SET verifiedat = $2::timestamptz, verifiedlevel = $3::text,
 			modifiedat = now()
 		WHERE id = $1 AND NOT ($3::text = 'chain' AND verifiedlevel = 'full'
 			AND verifiedat >= $2::timestamptz - make_interval(secs => $4::float8))`,

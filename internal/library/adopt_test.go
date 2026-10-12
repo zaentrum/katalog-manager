@@ -40,6 +40,11 @@ type migrationFixture struct {
 	// into has packaged move an original into its version's folder, as
 	// the tool stages it now, not to the arrivals.
 	into bool
+	// beside has packaged stage as the tool does beside the store before
+	// (--originals link --checksums pending): a link in place of the
+	// original's move and of its sidecar's, which it then has without an
+	// extra, and a package whose checksums are pending, not verified.
+	beside bool
 }
 
 // mgPackage is a package's record of the fixture: its renditions, as
@@ -152,9 +157,12 @@ func (f *migrationFixture) packaged(t *testing.T, id, media string, withExtra bo
 	f.record(t, id, staged)
 	build := t.TempDir()
 	librarytest.WriteVersion(t, build, librarytest.Version{VersionID: vid, PackageID: pid, SourceIDs: []string{sid},
-		CreatedAt: "2026-09-01T10:00:00Z", Package: mgPackage})
+		CreatedAt: "2026-09-01T10:00:00Z", Package: mgPackage, Pending: f.beside})
 	vdir := filepath.Join(staged, "versions", vid)
 	for _, rec := range []string{VersionFile, SumsFile, PackageFile, CompleteFile} {
+		if rec == SumsFile && f.beside {
+			continue // pending: there is none yet
+		}
 		move(t, filepath.Join(build, rec), filepath.Join(vdir, rec))
 	}
 	var packages []Move
@@ -169,6 +177,11 @@ func (f *migrationFixture) packaged(t *testing.T, id, media string, withExtra bo
 	db := UnitDB{RecordedAt: "2026-10-07T10:00:00Z", Versions: []UnitVersion{{VersionID: vid, PackageID: pid, Dir: fdir,
 		CompletedAt: "2026-09-01T10:00:00Z", SourceIDs: []string{sid}, VerifiedAt: ptr("2026-10-07T09:00:00Z"),
 		VerifiedLevel: ptr(VerifyFull)}}}
+	original, sidecar := MoveOriginal, MoveSidecar
+	if f.beside {
+		db.Versions[0].VerifiedAt, db.Versions[0].VerifiedLevel = nil, nil
+		original, sidecar = MoveLink, MoveLink
+	}
 	updated := f.updatedAt(t, "items", id)
 	db.ProjectedDatabaseUpdatedAt = &updated
 	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, codec, sizebytes) VALUES
@@ -204,23 +217,25 @@ func (f *migrationFixture) packaged(t *testing.T, id, media string, withExtra bo
 		}
 		src.ArrivalPath, src.QH1, src.SizeBytes = &into, &qh1, size
 		src.LibraryPath = ptr(strings.TrimPrefix(media, "media/"))
-		originals = append(originals, Move{MoveOriginal, path, into})
+		originals = append(originals, Move{original, path, into})
 		storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, sizebytes)
 			VALUES ('pa-' || left($1::varchar, 4), $1::varchar, $2, true, 'primary', $3)`, id, path, size)
 		db.Assets = append(db.Assets, UnitAsset{ID: "pa-" + id[:4], Path: into, SourceID: &sid})
-		if withExtra {
+		if withExtra || f.beside {
 			sub := strings.TrimSuffix(path, ".mkv") + ".en.srt"
 			subArrival := strings.TrimSuffix(arrival, ".mkv") + ".en.srt"
 			librarytest.Write(t, sub, []byte("1\n00:00:01,000 --> 00:00:02,000\nHello\n"))
 			storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_subtitleassets (id, item_id, path, format, lang, isdefault)
 				VALUES ('se-' || left($1::varchar, 4), $1::varchar, $2, 'srt', 'en', false)`, id, sub)
-			originals = append(originals, Move{MoveSidecar, sub, subArrival})
+			originals = append(originals, Move{sidecar, sub, subArrival})
 			db.Subtitles = append(db.Subtitles, UnitSubtitle{ID: "se-" + id[:4], Path: subArrival})
 			src.Sidecars = []mappedSidecar{{SubtitleAssetID: "se-" + id[:4], Rendition: "s1", Path: "subs/1.vtt"}}
 			record["sidecars"] = []any{map[string]any{"file": "sources/" + sid + "/" + filepath.Base(sub),
 				"originalName": filepath.Base(sub), "kind": "subtitle"}}
 			copies[filepath.Base(sub)] = "1\n00:00:01,000 --> 00:00:02,000\nHello\n"
-			packages, originals, legacy, db = f.extra(t, id, staged, final, packages, originals, legacy, db)
+			if withExtra {
+				packages, originals, legacy, db = f.extra(t, id, staged, final, packages, originals, legacy, db)
+			}
 		}
 	}
 	librarytest.WriteSource(t, filepath.Join(staged, "sources", sid), record, copies)

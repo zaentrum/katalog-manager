@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -308,7 +309,7 @@ func (m *Migration) adoptUnit(ctx context.Context, j *Journal, ij *itemJournal, 
 		return end(StateFailed, why)
 	}
 	for _, mv := range u.Moves {
-		if err := renameInto(mv.From, mv.To); err != nil {
+		if err := moveInto(mv); err != nil {
 			return fail(fmt.Sprintf("the %s move of %s to %s: %v; its renames are put back", mv.Kind, mv.From, mv.To, err))
 		}
 		done = append(done, mv)
@@ -384,11 +385,76 @@ func renameInto(from, to string) error {
 	return os.Rename(from, to)
 }
 
+// linkInto gives the file from a second name, to, the folder to goes in
+// made first: a hard link, so both names are the one file and nothing is
+// copied. It needs both on one filesystem, and says so when they are not.
+func linkInto(from, to string) error {
+	if _, err := os.Lstat(to); err == nil {
+		return fmt.Errorf("%s is there already", to)
+	}
+	fi, err := os.Lstat(from)
+	if err != nil {
+		return err
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s is no file: only a file is linked", from)
+	}
+	if err := MkdirAll(filepath.Dir(to)); err != nil {
+		return err
+	}
+	if err := os.Link(from, to); err != nil {
+		if errors.Is(err, syscall.EXDEV) {
+			return fmt.Errorf("%w: a link needs both on one filesystem, as one mount of the share", err)
+		}
+		return err
+	}
+	return nil
+}
+
+// moveInto makes one move of a plan: a hard link for a link, a rename for
+// every other.
+func moveInto(mv Move) error {
+	if mv.Kind == MoveLink {
+		return linkInto(mv.From, mv.To)
+	}
+	return renameInto(mv.From, mv.To)
+}
+
+// unlinked takes a link's second name away again when both names are there
+// and are the one file, and says whether it did: the name it was linked
+// from is never touched, and a name that is another file's is left.
+func unlinked(mv Move) (bool, error) {
+	if mv.Kind != MoveLink {
+		return false, nil
+	}
+	to, err := os.Lstat(mv.To)
+	if err != nil {
+		return false, nil
+	}
+	from, err := os.Lstat(mv.From)
+	if err != nil {
+		return false, nil // its first name is gone: the rename back puts the file there again
+	}
+	if !os.SameFile(from, to) {
+		return false, fmt.Errorf("%s and %s are not one file any more", mv.From, mv.To)
+	}
+	return true, os.Remove(mv.To)
+}
+
 // undo puts the renames done back, the last first, journaled: each whose
-// target is there and whose origin is not.
+// target is there and whose origin is not; a link's second name is taken
+// away.
 func (m *Migration) undo(j *Journal, itemID string, done []Move) {
 	for i := len(done) - 1; i >= 0; i-- {
 		mv := done[i]
+		if ok, err := unlinked(mv); err != nil {
+			_ = j.Add(JournalEntry{ItemID: itemID, Op: OpMove, Kind: mv.Kind, From: mv.To, To: mv.From, State: StateFailed,
+				Reason: err.Error()})
+			continue
+		} else if ok {
+			_ = j.Add(JournalEntry{ItemID: itemID, Op: OpMove, Kind: mv.Kind, From: mv.To, To: mv.From, State: StateUndone})
+			continue
+		}
 		if _, err := os.Lstat(mv.To); err != nil {
 			continue
 		}
@@ -461,6 +527,11 @@ func (m *Migration) checkPlan(ctx context.Context, u *Unit) error {
 			ok = inShare(mv.From, media...) && (inShare(mv.To, m.p.Arrivals, m.p.Extras) || intoVersion(u, staged, mv.To))
 		case MoveSidecar:
 			ok = inShare(mv.From, media...) && inShare(mv.To, m.p.Arrivals, m.p.Extras)
+		case MoveLink:
+			// in place of an original's move or of a sidecar's: to where
+			// either may go, from the store before the library alone
+			ok = inShare(mv.From, m.cfg.NFSRoot, m.cfg.Roots(false).Extras) &&
+				(inShare(mv.To, m.p.Arrivals, m.p.Extras) || intoVersion(u, staged, mv.To))
 		case MoveLegacy:
 			ok = inShare(mv.From, old...) && Within(filepath.Join(m.Dir, "legacy"), mv.To)
 		}
@@ -481,7 +552,7 @@ func (m *Migration) checkPlan(ctx context.Context, u *Unit) error {
 	// there.
 	moved := map[string]bool{}
 	for _, mv := range u.Moves {
-		if mv.Kind == MoveOriginal && intoVersion(u, staged, mv.To) {
+		if (mv.Kind == MoveOriginal || mv.Kind == MoveLink) && intoVersion(u, staged, mv.To) {
 			moved[published(u, staged, mv.To)] = true
 		}
 	}
@@ -1240,6 +1311,17 @@ func (m *Migration) revertUnit(ctx context.Context, j *Journal, ij *itemJournal,
 		if toErr != nil && fromErr == nil {
 			continue // reverted by a revert a crash stopped
 		}
+		// a link's second name goes; its first, were it removed since, gets
+		// the file back by the rename below
+		if ok, err := unlinked(Move{Kind: mv.Kind, From: mv.From, To: mv.To}); err != nil {
+			return end(StateFailed, fmt.Sprintf("the %s move of %s back to %s: %v; revert again once it is put right",
+				mv.Kind, mv.To, mv.From, err))
+		} else if ok {
+			if err := j.Add(JournalEntry{ItemID: u.ItemID, Op: OpMove, Kind: mv.Kind, From: mv.To, To: mv.From, State: StateReverted}); err != nil {
+				return end(StateFailed, err.Error())
+			}
+			continue
+		}
 		if err := renameInto(mv.To, mv.From); err != nil {
 			return end(StateFailed, fmt.Sprintf("the %s move of %s back to %s: %v; revert again once it is put right",
 				mv.Kind, mv.To, mv.From, err))
@@ -1338,15 +1420,16 @@ func (m *Migration) canRevert(ctx context.Context, tx pgx.Tx, u *Unit, a *attemp
 			staged := filepath.Join(m.Dir, "staged", u.ItemID, "item")
 			arrival := filepath.Clean(*p.ArrivalPath)
 			beside := ""
+			// a link is the original's move or a sidecar's, by where it goes
 			for _, mv := range a.moves(StateDone) {
-				if mv.Kind == MoveOriginal && published(u, staged, mv.To) == arrival {
+				if (mv.Kind == MoveOriginal || mv.Kind == MoveLink) && published(u, staged, mv.To) == arrival {
 					beside = filepath.Dir(mv.From)
 				}
 			}
 			for _, mv := range a.moves(StateDone) {
 				to := published(u, staged, mv.To)
-				original := mv.Kind == MoveOriginal && to == arrival
-				if !original && (mv.Kind != MoveSidecar || filepath.Dir(mv.From) != beside) {
+				original := (mv.Kind == MoveOriginal || mv.Kind == MoveLink) && to == arrival
+				if !original && ((mv.Kind != MoveSidecar && mv.Kind != MoveLink) || filepath.Dir(mv.From) != beside) {
 					continue
 				}
 				if _, err := os.Lstat(to); err == nil {

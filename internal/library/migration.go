@@ -49,15 +49,21 @@ type Unit struct {
 // to the arrivals, as it moves an extra's original), the files beside it to
 // the arrivals, and what is left of an old package folder to the run's
 // legacy/.
+//
+// A link stands in place of an original's move and of a sidecar's in a plan
+// staged beside the library before it (--originals link): the file stays
+// where it is and gets a second name, a hard link, where the move would
+// have put it. The library before keeps playing it, and nothing is copied.
 const (
 	MovePackage  = "package"
 	MovePublish  = "publish"
 	MoveOriginal = "original"
 	MoveSidecar  = "sidecar"
 	MoveLegacy   = "legacy"
+	MoveLink     = "link"
 )
 
-// Move is one rename of a plan.
+// Move is one rename of a plan, or, of kind link, one hard link.
 type Move struct {
 	Kind string `json:"kind"`
 	From string `json:"from"`
