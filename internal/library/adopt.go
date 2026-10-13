@@ -978,6 +978,13 @@ func (m *Migration) apply(ctx context.Context, tx pgx.Tx, u *Unit, gone []goneEv
 			// the original gone before: its row is a retired one
 			tag, err = tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET path = $3, sourceid = $4, kind = 'original',
 					isprimary = false WHERE id = $1 AND item_id = $2`, a.ID, u.ItemID, a.Path, a.SourceID)
+		case a.Probed != nil:
+			// the original in its version's folder, and what its source's
+			// record probed of it: the row says what a rebuild would
+			tag, err = tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET path = $3, sourceid = $4, codec = $5,
+					resolution = $6, bitratekbps = $7, durationms = $8
+				WHERE id = $1 AND item_id = $2`, a.ID, u.ItemID, a.Path, a.SourceID, a.Probed.Codec, a.Probed.Resolution,
+				a.Probed.BitrateKbps, a.Probed.DurationMs)
 		default:
 			tag, err = tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET path = $3, sourceid = $4
 				WHERE id = $1 AND item_id = $2`, a.ID, u.ItemID, a.Path, a.SourceID)

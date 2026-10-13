@@ -67,6 +67,9 @@ func TestAnAdoptBesideTheStoreBeforeLinksItsOriginals(t *testing.T) {
 		`SELECT state || ' ' || (verifiedat IS NULL) || ' ' || (verifiedlevel IS NULL)
 			FROM com_nalet_katalog_itemversions WHERE item_id = '` + mgBeside + `'`: "complete true true",
 		`SELECT path FROM com_nalet_katalog_subtitleassets WHERE id = 'se-` + mgBeside[:4] + `'`: sub,
+		// what the plan says the record probed of the original, which the catalog before never knew
+		`SELECT codec || ' ' || resolution || ' ' || bitratekbps || ' ' || durationms FROM com_nalet_katalog_playbackassets
+			WHERE id = 'pa-` + mgBeside[:4] + `'`: "hevc 3840x2160 6053 475057",
 	} {
 		var got string
 		if err := f.st.Pool().QueryRow(ctx, sql).Scan(&got); err != nil || got != want {

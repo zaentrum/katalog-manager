@@ -221,6 +221,11 @@ func (f *migrationFixture) packaged(t *testing.T, id, media string, withExtra bo
 		storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, sizebytes)
 			VALUES ('pa-' || left($1::varchar, 4), $1::varchar, $2, true, 'primary', $3)`, id, path, size)
 		db.Assets = append(db.Assets, UnitAsset{ID: "pa-" + id[:4], Path: into, SourceID: &sid})
+		if f.beside {
+			// a catalog that never probed its originals: the plan says what the record did
+			codec, resolution, kbps, ms := "hevc", "3840x2160", int64(6053), int64(475057)
+			db.Assets[len(db.Assets)-1].Probed = &UnitProbe{Codec: &codec, Resolution: &resolution, BitrateKbps: &kbps, DurationMs: &ms}
+		}
 		if withExtra || f.beside {
 			sub := strings.TrimSuffix(path, ".mkv") + ".en.srt"
 			subArrival := strings.TrimSuffix(arrival, ".mkv") + ".en.srt"

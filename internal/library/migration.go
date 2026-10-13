@@ -122,12 +122,26 @@ type UnitVersion struct {
 }
 
 // UnitAsset is a playback row of the item, where it points once adopted: the
-// original's (of a source) or the packaged one (of a version).
+// original's (of a source) or the packaged one (of a version). Probed is
+// what the source's record probed of an original, which its row then says
+// too; a plan of before says none, and the row keeps what it had.
 type UnitAsset struct {
-	ID        string  `json:"id"`
-	Path      string  `json:"path"`
-	SourceID  *string `json:"sourceId"`
-	VersionID *string `json:"versionId"`
+	ID        string     `json:"id"`
+	Path      string     `json:"path"`
+	SourceID  *string    `json:"sourceId"`
+	VersionID *string    `json:"versionId"`
+	Probed    *UnitProbe `json:"probed,omitempty"`
+}
+
+// UnitProbe is what a source's record says of its original in the fields the
+// original's playback row says it in: the first video stream's codec and
+// size, the container's bitrate and duration, as a rebuild from the record
+// gives them. A catalog that never probed its originals holds none of them.
+type UnitProbe struct {
+	Codec       *string `json:"codec"`
+	Resolution  *string `json:"resolution"`
+	BitrateKbps *int64  `json:"bitrateKbps"`
+	DurationMs  *int64  `json:"durationMs"`
 }
 
 // UnitSubtitle is a subtitle row of the item, where it points once adopted.
