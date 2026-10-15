@@ -78,7 +78,8 @@ The surface is split deliberately:
     its language whitelist from it (`packager.language_whitelist`, comma
     separated) and `packager.keep_original_if_single`. A secret setting is
     left out, set or not.
-  - `POST /api/ingest` — an addon hands a file on disk to the catalog (a
+  - `POST /api/ingest` — an addon hands a file on disk to the catalog, a
+    title by its catalog ids or by its identity (see [Ingest](#ingest); a
     disc image is refused, 400: see [Disc images](#disc-images)).
   - `POST /api/extras` — a file taken in as a title's extra, and
     `GET /api/analyze/extras/{id}`, `PUT /api/analyze/extras/{id}/steps/{step}`,
@@ -263,6 +264,17 @@ the base schema in the order of their numbers, and each is idempotent:
   is missing; without it a file covers the episode its name numbers first
   and no other, as before, and a scan says what it passed over in the log
   alone.
+- `046_series_scan_title.sql` gives a series `scantitle`, the name the
+  scanner made it under, in lower case, and `idx_items_series_scantitle`, the
+  index of it: the scanner finds a series by it before its sort title, so a
+  show enrichment renamed stays one series. Applied at startup when any of
+  it is missing; without it the scanner finds a series by its sort title
+  alone, as before.
+- `047_identity_indexes.sql` indexes what a title is found by its identity
+  by (`idx_itemexternalids_identity`, a source and its id), an item's ids
+  (`idx_itemexternalids_item`) and an item's children (`idx_items_parent`),
+  which [ingest by identity](#by-identity) and katalog-api's holdings read.
+  Applied at startup when any of them is missing.
 
 ## Track languages
 
@@ -630,6 +642,127 @@ resolution the transcoder reports in its step's details, the duration the
 packager gives in its manifest, the bit rate from size and duration.
 `backfillSourceProbes` fills what the sources probed before lack, from the
 catalog's records.
+
+## Ingest
+
+`POST /api/ingest` (an admin, the service account, an addon) takes a file
+on disk in as a title, as the scanner takes in one it finds: the item, the
+file as its primary asset (with the v2 layout from the arrivals alone, with
+its source), its scan done and its `discovered` event sent, so that the
+pipeline runs. It knows nothing of how the file got there.
+
+```json
+{"path": "/var/lib/katalog/media/Big Buck Bunny (2008).mkv", "type": "movie",
+ "title": "Big Buck Bunny", "year": 2008, "identity": {"tmdb": "10378", "imdb": "tt1254207"}}
+```
+
+- **`path`, `type` and `title`** are required; `year`, `description`,
+  `sortTitle`, `sizeBytes` and `metadataLocked` (enrichment leaves the
+  metadata given alone) go with the title. A disc image is refused (see
+  [Disc images](#disc-images)).
+- **An episode names its series one way**, with its `seasonNumber` and
+  `episodeNumber`: by its catalog id (`parentId`, a series or a season of
+  one) or by its identity (`series`). One with neither, or with both, is
+  refused (400): an episode with no series would play as an orphan.
+- **An identity** is an object of ids by reference database, one or more of
+  `tmdb`, `tvdb` and `imdb`, each a string of its form (digits; `tt` and
+  digits); any other key or form is refused (400). `series` is the series'
+  of an episode, `identity` the title's own: a movie's, or an episode's,
+  whose TMDB id is kept where the catalog keeps an episode's, under
+  `tmdb-episode`.
+- **Idempotent on the path:** the same file again is its title, `created:
+  false`, and nothing happens.
+
+The answer is the catalog's ids. `seriesId` answers an episode handed over
+by its series' identity, `covered` one whose body says where its file ends:
+
+```json
+{"itemId": "8c1cee73-…", "created": true, "seriesId": "f3ab0c45-…", "covered": ["43afc194-…"]}
+```
+
+### By identity
+
+An addon holds no catalog ids: it hands a title over by the identity it has
+outside any one library, and the catalog, its sole writer, finds or makes
+the rows:
+
+```json
+{"path": "/var/lib/katalog/media/Example Show/Example Show - S04E07E08.mkv", "type": "episode",
+ "title": "Example Show", "year": 2020, "series": {"tmdb": "97546", "tvdb": "371572"},
+ "seasonNumber": 4, "episodeNumber": 7, "episodeEnd": 8}
+```
+
+- **The series** is found by its ids (`com_nalet_katalog_itemexternalids`):
+  by the first of `tmdb`, `tvdb` and `imdb` the body names that finds a
+  series, and of a show the library holds twice the series made first, the
+  one katalog-api's holdings answer for. A series found keeps its ids as
+  they are. When none holds any of them, the series is made as the scanner
+  makes one it finds: the body's title and year, the title in lower case as
+  its sort title and the name the scanner finds it by (`scantitle`), a row
+  for each of its ids, its scan done and its `discovered` event sent, so
+  that enrichment matches it by its TMDB id and, with the v2 layout, records
+  it (`item.json`, with its ids) before its first episode.
+- **The episode** is made under the series, its numbers the body's.
+- **One file of several episodes in a row** says its last in `episodeEnd`,
+  ten at most from `episodeNumber`. Its first episode holds the file, and
+  each other is linked to it as the scanner links the episodes a file's name
+  numbers (see [One file, several episodes](#one-file-several-episodes)):
+  the series' episode of that number, or one made for it when the series has
+  none, its scan done and its `discovered` event sent; one with a file of its
+  own is left alone (its own file wins), and so is one another's file covers
+  already. `covered` lists the episodes the file covers besides its first,
+  in episode order. An episode handed over by its `parentId` takes
+  `episodeEnd` too, and covers the episodes of its parent's series.
+- **A movie** gets a row for each of its ids: it arrives matched, not found
+  by its title.
+- **Refused (409)**, with `{"error", "itemId"}` naming the item that holds
+  it, and nothing written:
+  - an identity that contradicts what the catalog holds of the path: a title
+    there of another type; an episode of other numbers, or of another series
+    than the identity's; a movie other than the identity's; an episode's own
+    id of a source another. A series or a movie is the identity's when the
+    first source that finds one finds it, or, when the identity finds none,
+    when it holds no other id of a source the identity names. A title is
+    never relinked to an identity;
+  - a title the library holds already as another item: an episode of that
+    series, season and number with a file of its own (a playback row but a
+    trailer's), or one another's file covers; a movie the identity finds,
+    with a file. Replacing a held title's file is another decision
+    (`replaceSource`), never an ingest's. An episode of those numbers with no
+    file holds none: the file becomes an episode of its own, as a scanned
+    one does.
+
+Ingests are taken in one at a time, each in one transaction, and one onto a
+file at a time, as `replaceSource` takes one: a series is made once, however
+many of its episodes arrive together. Re-ingesting a path with the identity
+it was taken in with answers it again, `created: false`, with its series and
+the episodes its file covers.
+
+## Item events
+
+The catalog's item events (`<KAFKA_TOPIC_PREFIX>catalog.item.*`, keyed by
+the item) carry its id, its type, the step they unblock, a status and where
+they come from. `discovered` (the scanner's, the ingest's and a retry's),
+`packaged` (packaging-complete's) and `removed` (a removal's, of the item as
+it was) also name its identities as the catalog holds them, so that a
+consumer reconciles what it knows of a title without a lookup:
+
+```json
+{"eventId": "9f2b…", "itemId": "8c1cee73-…", "type": "episode", "step": "tmdb",
+ "occurredAt": "2026-10-15T08:00:00Z", "source": "ingest",
+ "externalIds": {"tmdb-episode": "937631"}, "seriesExternalIds": {"tmdb": "97546", "tvdb": "371572"},
+ "seasonNumber": 4, "episodeNumber": 7}
+```
+
+- `externalIds` are the item's own, each source to its id as the catalog
+  keeps them: a movie's and a series' TMDB id under `tmdb`, an episode's
+  under `tmdb-episode`, IMDb's and TheTVDB's under `imdb` and `tvdb`;
+- of an episode, `seriesExternalIds` are its series' (its parent's, or its
+  season's series'), and `seasonNumber` and `episodeNumber` its numbers.
+
+Each is left out when the catalog knows none, so the event of a title not
+matched yet is the envelope it always was; identities that cannot be read
+are left out too, said in the log, and the event goes.
 
 ## Extras
 
