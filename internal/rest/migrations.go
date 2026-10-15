@@ -96,6 +96,25 @@ func (h *Handlers) checksumsRun(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// subtitlesRun serves POST /api/library/migrations/{run}/subtitles: the rows
+// of the run's subtitles plan (subtitles-plan.json, which the migration's
+// subtitles phase makes from the compare of the library record with the
+// catalog) the catalog still lacks are written, each as a package's when the
+// catalog takes it, after it is looked at again in its item's transaction
+// under the item's lock (library.Migration.Subtitles). For the workers'
+// service account and admins. The body may name the items, {"items":
+// ["<itemId>", …]}; without it, every item of the plan. It answers {"run",
+// "rows", "unchanged", "skipped": [{"itemId", "path", "reason"}]}: how many
+// rows it wrote (none when called again), how many the catalog held already,
+// and the rows it left, why (a run with no plan writes none); 400 for a
+// run's name that is none, 404 for a run that is not there, 409 while an
+// adopt, a revert or another of these runs on it.
+func (h *Handlers) subtitlesRun(w http.ResponseWriter, r *http.Request) {
+	h.migrate(w, r, func(ctx context.Context, m *library.Migration, items []string) (any, error) {
+		return m.Subtitles(ctx, items)
+	})
+}
+
 // migrate runs act on the run the path names, for the items the body names.
 func (h *Handlers) migrate(w http.ResponseWriter, r *http.Request,
 	act func(context.Context, *library.Migration, []string) (any, error)) {

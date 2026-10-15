@@ -1103,7 +1103,22 @@ catalog keeps it, complete and of that package, in the folder the journal
 names, and its chain holds from the `package.json` the tool wrote. It takes
 `{"items": ["<itemId>", …]}` to work on some items only, and answers `{"run",
 "versions", "unchanged", "skipped": [{"itemId", "versionId", "reason"}]}`;
-calling it again changes nothing. An original retired while the store before
+calling it again changes nothing. Where the library record holds subtitles the catalog
+has no rows for — the migration's subtitles phase finds them with the
+schemas' `library-v2-rebuild.py --compare --differences` and plans them in
+the run's `subtitles-plan.json` — `POST /api/library/migrations/<run>/subtitles`
+(the service account and admins) writes each planned row the catalog still
+lacks, as it writes a package's: the path in the version's folder, the format
+and language the package gives, its name or else its title as the label,
+never the default, forced as the package says. Each row is looked at again in
+its item's transaction, under the lock every writer of the item's versions
+takes: the catalog keeps that version complete in that folder, the package
+lists the subtitle there and says what the plan says of it, the file is there,
+and no row of the item names that file or one of that language and file name;
+any other row is left, with why. It takes `{"items": [...]}`, answers
+`{"run", "rows", "unchanged", "skipped": [{"itemId", "path", "reason"}]}`,
+journals each row in the run's `subtitles.jsonl`, and writes nothing when
+called again. An original retired while the store before
 still names it frees no space until that name is removed too.
 
 `POST /api/library/projections` writes the items' projections now, in

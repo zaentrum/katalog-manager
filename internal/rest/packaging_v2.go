@@ -682,6 +682,7 @@ func (h *Handlers) writePackaged(ctx context.Context, tx pgx.Tx, itemID, itemDir
 		if label == nil || strings.TrimSpace(*label) == "" {
 			label = asString(s["title"])
 		}
+		label = library.FitLabel(label) // the column's width: a long title is cut, not the package refused
 		forced, _ := s["forced"].(bool)
 		if _, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_subtitleassets
 			(id, item_id, path, format, lang, label, isdefault, isforced)
