@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/zaentrum/katalog-manager/db/migrations"
@@ -442,5 +443,69 @@ func TestTheMultiEpisodeMigrationIsIdempotent(t *testing.T) {
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_scanjobs (id, source, report) VALUES ('j', 'nfs', '[]')`)
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE coveredby = 'h'`); n != 1 {
 		t.Errorf("%d items name the holder, want the covered one", n)
+	}
+}
+
+// Migration 047 applies to a catalog without it, and again, unchanged, by
+// EnsureIdentityIndexes and by the file itself; a catalog missing any of its
+// indexes is not ready, and gets it back. A title is found by its identity
+// through the first: the lookup by identity reads it.
+func TestTheIdentityIndexesMigrationIsIdempotent(t *testing.T) {
+	st := storetest.OpenBase(t)
+	ctx := context.Background()
+	ready := func() bool {
+		t.Helper()
+		ok, err := st.IdentityIndexesReady(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if ready() {
+		t.Fatal("a catalog without 047 is ready")
+	}
+	for i := 0; i < 2; i++ {
+		if err := st.EnsureIdentityIndexes(ctx); err != nil {
+			t.Fatalf("EnsureIdentityIndexes, %d. time: %v", i+1, err)
+		}
+		storetest.Exec(t, st, migrations.IdentityIndexes)
+		if !ready() {
+			t.Fatalf("after EnsureIdentityIndexes and the file %d times: not ready", i+1)
+		}
+	}
+	for _, index := range []string{"idx_itemexternalids_identity", "idx_itemexternalids_item", "idx_items_parent"} {
+		storetest.Exec(t, st, `DROP INDEX `+index)
+		if ready() {
+			t.Fatalf("a catalog without %s is ready", index)
+		}
+		if err := st.EnsureIdentityIndexes(ctx); err != nil || !ready() {
+			t.Fatalf("EnsureIdentityIndexes puts %s back: ready %v, %v", index, ready(), err)
+		}
+	}
+	conn, err := st.Pool().Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET enable_seqscan = off`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = conn.Exec(context.Background(), `RESET enable_seqscan`) }()
+	rows, err := conn.Query(ctx, `EXPLAIN SELECT i.id FROM com_nalet_katalog_items i
+		WHERE i.type = 'series' AND EXISTS (SELECT 1 FROM com_nalet_katalog_itemexternalids e
+			WHERE e.item_id = i.id AND e.source = 'tmdb' AND e.externalid = '97546')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := ""
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		plan += line + "\n"
+	}
+	if rows.Close(); !strings.Contains(plan, "idx_itemexternalids_identity") {
+		t.Errorf("the lookup by identity does not read the index:\n%s", plan)
 	}
 }

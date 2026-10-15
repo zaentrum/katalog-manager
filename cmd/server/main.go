@@ -151,6 +151,11 @@ func run() error {
 	if err := st.EnsureSeriesScanTitle(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/046_series_scan_title.sql is missing and could not be applied: %v; the scanner finds a series by its sort title alone, and makes another once enrichment renamed it, until it is", err)
 	}
+	// A title is found by its identity, and an item's ids and its children
+	// by the item, through an index (migration 047).
+	if err := st.EnsureIdentityIndexes(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/047_identity_indexes.sql is missing and could not be applied: %v; a read by identity, or of an item's ids or children, goes through the whole of its table until it is", err)
+	}
 	// An item the scanner made before it wrote its own name into the row has
 	// it in its record alone: the row follows the record (bounded, in the
 	// background).

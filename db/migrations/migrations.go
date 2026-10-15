@@ -10,7 +10,8 @@
 // store.EnsureTrackLanguages, store.EnsureSubtitleForced,
 // store.EnsureItemExtras, store.EnsureLibrary, which applies 040, 041 and
 // 042, store.EnsureReencodeQueue, store.EnsureTakeIn,
-// store.EnsureMultiEpisodeFiles and store.EnsureSeriesScanTitle).
+// store.EnsureMultiEpisodeFiles, store.EnsureSeriesScanTitle and
+// store.EnsureIdentityIndexes).
 // It applies 035, which drops what is left of a retired integration, at every
 // start when any of that is there (store.DropRetiredJobTables).
 package migrations
@@ -124,3 +125,9 @@ var MultiEpisodeFiles string
 //
 //go:embed 046_series_scan_title.sql
 var SeriesScanTitle string
+
+// IdentityIndexes is 047_identity_indexes.sql: a title found by its
+// identity, and an item's ids and its children found by the item.
+//
+//go:embed 047_identity_indexes.sql
+var IdentityIndexes string

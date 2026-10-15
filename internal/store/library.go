@@ -295,3 +295,28 @@ func (s *Store) EnsureSeriesScanTitle(ctx context.Context) error {
 	_, err = s.pool.Exec(ctx, migrations.SeriesScanTitle)
 	return err
 }
+
+// identityIndexes are the indexes of migration 047.
+var identityIndexes = []string{"idx_itemexternalids_identity", "idx_itemexternalids_item", "idx_items_parent"}
+
+// IdentityIndexesReady reports whether migration 047 is in place: the
+// indexes a title is found by its identity by, and an item's ids and its
+// children by the item.
+func (s *Store) IdentityIndexesReady(ctx context.Context) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM unnest($1::text[]) AS r(name)
+		WHERE to_regclass(r.name) IS NOT NULL) = cardinality($1::text[])`, identityIndexes).Scan(&ok)
+	return ok, err
+}
+
+// EnsureIdentityIndexes applies db/migrations/047_identity_indexes.sql when
+// any of its indexes is missing. Without it a read by identity, or of an
+// item's ids or children, goes through the whole of its table, as before.
+func (s *Store) EnsureIdentityIndexes(ctx context.Context) error {
+	ready, err := s.IdentityIndexesReady(ctx)
+	if err != nil || ready {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, migrations.IdentityIndexes)
+	return err
+}
