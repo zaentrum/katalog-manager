@@ -136,9 +136,8 @@ func (s *Scanner) linkCovering(ctx context.Context, res *scanResult, c covering)
 	if len(want) == 0 {
 		return
 	}
-	var series string
-	if err := pool.QueryRow(ctx, `SELECT CASE WHEN p.type = 'season' THEN COALESCE(p.parent_id, p.id) ELSE p.id END
-		FROM com_nalet_katalog_items p WHERE p.id = $1`, c.parent).Scan(&series); err != nil {
+	series, err := library.ParentSeries(ctx, pool, c.parent)
+	if err != nil {
 		log.Printf("scanner: the series of episode %s could not be read: %v", c.holder, err)
 		return
 	}
@@ -154,64 +153,37 @@ func (s *Scanner) coverEpisode(ctx context.Context, res *scanResult, holder, pat
 	title string, year *int32) {
 	pool := s.st.Pool()
 	code := fmt.Sprintf("S%02dE%02d", season, n)
-	rows, err := pool.Query(ctx, `SELECT e.id, e.coveredby,
-			EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets a WHERE a.item_id = e.id
-				AND COALESCE(a.kind, 'primary') <> 'trailer')
-		FROM com_nalet_katalog_items e
-		WHERE e.type = 'episode' AND e.seasonnumber = $2 AND e.episodenumber = $3 AND e.id <> $4
-		  AND (e.parent_id = $1 OR e.parent_id IN (SELECT x.id FROM com_nalet_katalog_items x
-		                                           WHERE x.parent_id = $1 AND x.type = 'season'))
-		ORDER BY e.createdat NULLS LAST, e.id`, series, season, n, holder)
+	eps, err := library.EpisodesNumbered(ctx, pool, series, season, n, holder)
 	if err != nil {
 		log.Printf("scanner: episode %s of the series of %s could not be read: %v", code, path, err)
 		return
 	}
-	type episode struct {
-		id   string
-		by   *string
-		file bool
-	}
-	var eps []episode
-	for rows.Next() {
-		var e episode
-		if err := rows.Scan(&e.id, &e.by, &e.file); err != nil {
-			rows.Close()
-			log.Printf("scanner: episode %s of the series of %s could not be read: %v", code, path, err)
-			return
-		}
-		eps = append(eps, e)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		log.Printf("scanner: episode %s of the series of %s could not be read: %v", code, path, err)
-		return
-	}
 	for _, e := range eps {
-		if !e.file {
+		if !e.OwnFile {
 			continue
 		}
-		if e.by != nil && *e.by == holder {
-			if _, err := library.Unlink(ctx, pool, []string{e.id}, "covers it no more: it has a file of its own, which wins"); err != nil {
-				log.Printf("scanner: episode %s could not be unlinked from %s: %v", e.id, path, err)
+		if e.By != nil && *e.By == holder {
+			if _, err := library.Unlink(ctx, pool, []string{e.ID}, "covers it no more: it has a file of its own, which wins"); err != nil {
+				log.Printf("scanner: episode %s could not be unlinked from %s: %v", e.ID, path, err)
 			}
 		}
-		id := e.id
+		id := e.ID
 		res.note(model.ScanNote{Kind: model.ScanNoteNotLinked, Path: path, ItemID: &id,
 			Reason: fmt.Sprintf("%s has a file of its own, which wins: the file of episode %s does not cover it", code, holder)})
 		return
 	}
 	if len(eps) > 0 {
 		e := eps[0]
-		if e.by != nil && *e.by != holder {
-			id := e.id
+		if e.By != nil && *e.By != holder {
+			id := e.ID
 			res.note(model.ScanNote{Kind: model.ScanNoteNotLinked, Path: path, ItemID: &id,
-				Reason: fmt.Sprintf("%s is covered by the file of episode %s already", code, *e.by)})
+				Reason: fmt.Sprintf("%s is covered by the file of episode %s already", code, *e.By)})
 			return
 		}
-		if linked, err := library.Link(ctx, pool, holder, e.id); err != nil {
-			log.Printf("scanner: episode %s could not be linked to %s: %v", e.id, path, err)
+		if linked, err := library.Link(ctx, pool, holder, e.ID); err != nil {
+			log.Printf("scanner: episode %s could not be linked to %s: %v", e.ID, path, err)
 		} else if linked {
-			log.Printf("scanner: %s covers episode %s (%s) too", path, code, e.id)
+			log.Printf("scanner: %s covers episode %s (%s) too", path, code, e.ID)
 		}
 		return
 	}

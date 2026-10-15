@@ -32,6 +32,19 @@ var (
 	imdbRE   = regexp.MustCompile(`^tt[0-9]+$`)
 )
 
+// ValidReference reports whether id has the form a record keeps an id of the
+// reference database src in (ExternalIDs): digits for tmdb and tvdb, tt and
+// digits for imdb. Any other source has none.
+func ValidReference(src, id string) bool {
+	switch src {
+	case "tmdb", "tvdb":
+		return tmdbIDRE.MatchString(id)
+	case "imdb":
+		return imdbRE.MatchString(id)
+	}
+	return false
+}
+
 // ItemRecord is what an item's record says, read from the catalog.
 type ItemRecord struct {
 	Place

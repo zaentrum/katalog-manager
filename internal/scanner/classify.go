@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/zaentrum/katalog-manager/internal/library"
 )
 
 // Extension sets (lowercased, with leading dot) — mirror NfsScanner.VIDEO_EXTS /
@@ -58,8 +60,8 @@ var (
 	episodeMore = regexp.MustCompile(`(?i)^(?:[ ._-]?E|-)(\d{1,3})`)
 )
 
-// maxCovered is the most episodes one file covers.
-const maxCovered = 10
+// maxCovered is the most episodes one file covers (library.MaxCovered).
+const maxCovered = library.MaxCovered
 
 // episodeToken is where a name numbers its episodes: the token's bytes in the
 // name, its season, and the first and the last episode the file covers (the

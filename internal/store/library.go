@@ -277,8 +277,13 @@ func (s *Store) EnsureMultiEpisodeFiles(ctx context.Context) error {
 // keeps the name the scanner made it under (scantitle), with the index that
 // finds it.
 func (s *Store) SeriesScanTitleReady(ctx context.Context) (bool, error) {
+	return seriesScanTitleReady(ctx, s.pool)
+}
+
+// seriesScanTitleReady is SeriesScanTitleReady as q reads the catalog.
+func seriesScanTitleReady(ctx context.Context, q querier) (bool, error) {
 	var ok bool
-	err := s.pool.QueryRow(ctx, `SELECT to_regclass('idx_items_series_scantitle') IS NOT NULL
+	err := q.QueryRow(ctx, `SELECT to_regclass('idx_items_series_scantitle') IS NOT NULL
 		AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = to_regclass('com_nalet_katalog_items')
 		            AND a.attname = 'scantitle' AND a.attnum > 0 AND NOT a.attisdropped)`).Scan(&ok)
 	return ok, err

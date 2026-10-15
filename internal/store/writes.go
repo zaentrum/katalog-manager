@@ -59,6 +59,12 @@ func (s *Store) CreateItem(ctx context.Context, w ItemWrite) (*model.Item, error
 // what the scanner does for the media root — it knows nothing of where the file
 // came from.
 func (s *Store) IngestExternalFile(ctx context.Context, w ItemWrite, absPath string, sizeBytes int64) (itemID string, created bool, err error) {
+	return IngestFile(ctx, s.pool, w, absPath, sizeBytes)
+}
+
+// IngestFile is IngestExternalFile in q: a transaction takes the file in with
+// whatever else the ingest writes, all or nothing.
+func IngestFile(ctx context.Context, q Querier, w ItemWrite, absPath string, sizeBytes int64) (itemID string, created bool, err error) {
 	if w.Type == nil || *w.Type == "" || w.Title == nil || *w.Title == "" {
 		return "", false, errors.New("type and title are required")
 	}
@@ -67,7 +73,7 @@ func (s *Store) IngestExternalFile(ctx context.Context, w ItemWrite, absPath str
 	}
 	// Already ingested at this path? Return the existing item (idempotent).
 	var existing *string
-	if err := s.pool.QueryRow(ctx,
+	if err := q.QueryRow(ctx,
 		`SELECT item_id FROM com_nalet_katalog_playbackassets WHERE path = $1 LIMIT 1`, absPath).
 		Scan(&existing); err != nil && err != pgx.ErrNoRows {
 		return "", false, err
@@ -75,7 +81,25 @@ func (s *Store) IngestExternalFile(ctx context.Context, w ItemWrite, absPath str
 	if existing != nil {
 		return *existing, false, nil
 	}
+	if itemID, err = InsertIngested(ctx, q, w); err != nil {
+		return "", false, err
+	}
+	if _, err = q.Exec(ctx,
+		`INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, sizebytes, isprimary)
+		 VALUES (gen_random_uuid()::varchar, $1, $2, $3, true)`,
+		itemID, absPath, sizeBytes); err != nil {
+		return "", false, err
+	}
+	return itemID, true, nil
+}
 
+// InsertIngested inserts the item w, in q, as an ingest makes one: its sort
+// title the one given or its title, its metadata unlocked unless w locks it,
+// and no file; IngestFile gives it its file. It answers its id.
+func InsertIngested(ctx context.Context, q Querier, w ItemWrite) (string, error) {
+	if w.Type == nil || *w.Type == "" || w.Title == nil || *w.Title == "" {
+		return "", errors.New("type and title are required")
+	}
 	sort := ""
 	if w.SortTitle != nil {
 		sort = *w.SortTitle
@@ -88,23 +112,15 @@ func (s *Store) IngestExternalFile(ctx context.Context, w ItemWrite, absPath str
 	if w.MetadataLocked != nil {
 		locked = *w.MetadataLocked
 	}
-	err = s.pool.QueryRow(ctx, `INSERT INTO com_nalet_katalog_items
+	var itemID string
+	err := q.QueryRow(ctx, `INSERT INTO com_nalet_katalog_items
 		(id, createdat, modifiedat, type, title, sorttitle, year, description, rating, durationms,
 		 parent_id, seasonnumber, episodenumber, tagline, metadatalocked)
 		VALUES (gen_random_uuid()::varchar, now(), now(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id`,
 		*w.Type, *w.Title, sort, w.Year, w.Description, w.Rating, w.DurationMs,
 		w.ParentID, w.SeasonNumber, w.EpisodeNumber, w.Tagline, locked).Scan(&itemID)
-	if err != nil {
-		return "", false, err
-	}
-	if _, err = s.pool.Exec(ctx,
-		`INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, sizebytes, isprimary)
-		 VALUES (gen_random_uuid()::varchar, $1, $2, $3, true)`,
-		itemID, absPath, sizeBytes); err != nil {
-		return "", false, err
-	}
-	return itemID, true, nil
+	return itemID, err
 }
 
 // ErrRecordedIdentity refuses a change of a recorded item's type or parent

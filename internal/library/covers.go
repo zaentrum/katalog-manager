@@ -28,6 +28,62 @@ import (
 // holder.
 const coversColumn = "coveredby"
 
+// MaxCovered is the most episodes one file covers, its holder among them, as
+// the published v2 model has it: each episode after the one before, ten at
+// most.
+const MaxCovered = 10
+
+// Numbered is an episode as a file that covers it finds it by its number:
+// its id, the episode whose file covers it (By, nil when none does), and
+// whether it has a file of its own (a playback row but a trailer's: its
+// original, its package), which wins over any file that would cover it.
+type Numbered struct {
+	ID      string
+	By      *string
+	OwnFile bool
+}
+
+// EpisodesNumbered are the episodes of season, number n, of the series,
+// under it or under a season of it, but the episode except, the one made
+// first first. It reads the column of migration 045 by name, so that a
+// catalog without it has no episode covered.
+func EpisodesNumbered(ctx context.Context, q Querier, series string, season, n int32, except string) ([]Numbered, error) {
+	rows, err := q.Query(ctx, `SELECT e.id, to_jsonb(e)->>'coveredby',
+			EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets a WHERE a.item_id = e.id
+				AND COALESCE(a.kind, 'primary') <> 'trailer')
+		FROM com_nalet_katalog_items e
+		WHERE e.type = 'episode' AND e.seasonnumber = $2 AND e.episodenumber = $3 AND e.id <> $4
+		  AND (e.parent_id = $1 OR e.parent_id IN (SELECT x.id FROM com_nalet_katalog_items x
+		                                           WHERE x.parent_id = $1 AND x.type = 'season'))
+		ORDER BY e.createdat NULLS LAST, e.id`, series, season, n, except)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Numbered
+	for rows.Next() {
+		var e Numbered
+		if err := rows.Scan(&e.ID, &e.By, &e.OwnFile); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ParentSeries is the series of an episode under the item parent: parent
+// itself, or the series of a season (itself when it names none). ErrNoItem
+// when parent is no item.
+func ParentSeries(ctx context.Context, q Querier, parent string) (string, error) {
+	var series string
+	err := q.QueryRow(ctx, `SELECT CASE WHEN p.type = 'season' THEN COALESCE(p.parent_id, p.id) ELSE p.id END
+		FROM com_nalet_katalog_items p WHERE p.id = $1`, parent).Scan(&series)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("%w: %s", ErrNoItem, parent)
+	}
+	return series, err
+}
+
 // CoversReady reports whether migration 045 is in place in the catalog q
 // reads: an item may name the episode whose file covers it. Without it a
 // file covers the episode its name numbers first and no other.

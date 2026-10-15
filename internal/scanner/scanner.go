@@ -481,20 +481,17 @@ func (s *Scanner) resolveSeriesParent(ctx context.Context, pool *pgxpool.Pool, r
 	}
 
 	// The year its folder names goes with the series, so enrichment asks the
-	// reference database for the show of that year, not a namesake.
-	var year *int
+	// reference database for the show of that year, not a namesake. The
+	// series is made as POST /api/ingest makes one it is handed by its
+	// identity (store.MakeSeries).
+	var year *int32
 	if y := seriesYearFor(rel, filename); y > 0 {
-		year = &y
+		v := int32(y)
+		year = &v
 	}
-	insert := `INSERT INTO com_nalet_katalog_items (id, type, title, sorttitle, year, createdby, createdat, modifiedat)
-		 VALUES (gen_random_uuid()::varchar, 'series', $1, $2, $3, '` + createdByScanner + `', now(), now())
-		 RETURNING id`
-	if byScanTitle {
-		insert = `INSERT INTO com_nalet_katalog_items (id, type, title, sorttitle, scantitle, year, createdby, createdat, modifiedat)
-		 VALUES (gen_random_uuid()::varchar, 'series', $1, $2, $2, $3, '` + createdByScanner + `', now(), now())
-		 RETURNING id`
-	}
-	if err := pool.QueryRow(ctx, insert, title, sort, year).Scan(&id); err != nil {
+	by := createdByScanner
+	id, err = store.MakeSeries(ctx, pool, title, year, &by)
+	if err != nil {
 		return "", false
 	}
 	// The series parent is "scanned" the moment its first episode is seen — record
