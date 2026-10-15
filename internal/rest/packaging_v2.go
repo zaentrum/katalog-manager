@@ -384,6 +384,9 @@ func (h *Handlers) takeVersion(ctx context.Context, itemID string, in v2Payload)
 
 	ev2 := events.NewItemEvent(itemID)
 	ev2.Type, ev2.Status, ev2.Source = pl.Type, "done", "katalog-manager"
+	if h.d.Events.Enabled() {
+		ev2.Identity = h.d.Store.EventIdentity(ctx, itemID)
+	}
 	h.d.Events.EmitItem(ctx, events.TopicPackaged, ev2)
 	answer := map[string]any{"itemId": itemID, "versionId": in.VersionID, "current": true, "superseded": nil,
 		"packagedAssetWritten": true, "subtitlesWritten": written, "audioTracks": len(asListOfMap(asMap(pkg["renditions"])["audio"]))}

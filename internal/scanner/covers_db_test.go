@@ -2,12 +2,17 @@ package scanner
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	kafka "github.com/segmentio/kafka-go"
+
 	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store"
@@ -331,6 +336,50 @@ func TestAShowEnrichmentRenamedStaysOneSeries(t *testing.T) {
 		JOIN com_nalet_katalog_items s ON s.id = e.parent_id
 		WHERE e.type = 'episode' AND s.title = 'Example: The Show'`); n != 2 {
 		t.Fatalf("%d episodes under the series, want both", n)
+	}
+}
+
+// kafkaWriter records what the scanner's producer writes.
+type kafkaWriter struct{ msgs []kafka.Message }
+
+func (w *kafkaWriter) WriteMessages(_ context.Context, msgs ...kafka.Message) error {
+	w.msgs = append(w.msgs, msgs...)
+	return nil
+}
+
+func (w *kafkaWriter) Close() error { return nil }
+
+// The discovered events of what a scan makes name the identities the catalog
+// holds of it: an episode's numbers and its series' ids, the episodes a file
+// covers too; a series the scan makes holds none yet.
+func TestTheScansDiscoveredEventsNameTheIdentities(t *testing.T) {
+	events.Configure("stube.")
+	st := storetest.Open(t)
+	w := &kafkaWriter{}
+	f := newLegacy(t, st)
+	f.s = New(st, config.Config{NFSRoot: f.root}, processing.New(st.Pool()), events.ProducerOn(w))
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_items (id, type, title, sorttitle, createdat, modifiedat)
+		VALUES ('show', 'series', 'Show', 'show', now(), now())`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemexternalids (id, item_id, source, externalid) VALUES ('x', 'show', 'tmdb', '97546')`)
+	f.write(t, "series/Show/Show.S02E03-E04.mkv")
+	f.write(t, "series/New Show/New Show.S01E01.mkv")
+	f.scan(t)
+	got := map[string]string{}
+	for _, m := range w.msgs {
+		var ev events.ItemEvent
+		if err := json.Unmarshal(m.Value, &ev); err != nil || m.Topic != events.TopicDiscovered || ev.Source != "scan" {
+			t.Fatalf("sent %s %s, %v", m.Topic, m.Value, err)
+		}
+		key := ev.Type
+		if ev.SeasonNumber != nil && ev.EpisodeNumber != nil {
+			key += fmt.Sprintf(" S%02dE%02d", *ev.SeasonNumber, *ev.EpisodeNumber)
+		}
+		got[key] = fmt.Sprint(ev.ExternalIDs, ev.SeriesExternalIDs)
+	}
+	want := map[string]string{"episode S02E03": "map[] map[tmdb:97546]", "episode S02E04": "map[] map[tmdb:97546]",
+		"series": "map[] map[]", "episode S01E01": "map[] map[]"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("the scan's discovered events: %v, want %v", got, want)
 	}
 }
 

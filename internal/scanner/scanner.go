@@ -385,21 +385,13 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 		// Event-driven trigger: a brand-new item enters the pipeline. Emit
 		// discovered -> the enricher consumes it (replaces the old poll ticker).
 		// Only on INSERT — a re-scan of an existing file must not re-fire.
-		ev := events.NewItemEvent(itemID)
-		ev.Type = typ
-		ev.Step = "tmdb"
-		ev.Source = "scan"
-		s.prod.EmitItem(ctx, events.TopicDiscovered, ev)
+		s.discovered(ctx, itemID, typ)
 
 		// A brand-new series parent (created by this episode) also enters the
 		// pipeline: its discovered event drives enrichSeries (TMDB TV match +
 		// child-episode backfill). Emitted once, only when newly created.
 		if newSeriesID != "" {
-			sev := events.NewItemEvent(newSeriesID)
-			sev.Type = "series"
-			sev.Step = "tmdb"
-			sev.Source = "scan"
-			s.prod.EmitItem(ctx, events.TopicDiscovered, sev)
+			s.discovered(ctx, newSeriesID, "series")
 		}
 	} else {
 		// Existing item: bump modifiedat ONLY (never clobber TMDB-owned fields),
@@ -431,6 +423,20 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 	if isVideo {
 		s.scanSidecars(ctx, pool, path, itemID)
 	}
+}
+
+// discovered sends the discovered event of the item id, of the type typ, the
+// scan made: it enters the pipeline, and the event names its identities (an
+// episode's numbers and its series' reference ids, as the catalog holds them).
+func (s *Scanner) discovered(ctx context.Context, id, typ string) {
+	ev := events.NewItemEvent(id)
+	ev.Type = typ
+	ev.Step = "tmdb"
+	ev.Source = "scan"
+	if s.prod.Enabled() {
+		ev.Identity = s.st.EventIdentity(ctx, id)
+	}
+	s.prod.EmitItem(ctx, events.TopicDiscovered, ev)
 }
 
 // resolveSeriesParent finds (or creates) the series parent item for an episode

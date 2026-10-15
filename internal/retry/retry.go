@@ -431,6 +431,7 @@ func (s *Service) dispatch(ctx context.Context, rows []claimed, automatic bool, 
 		}
 		of[i] = append(of[i], c)
 	}
+	s.identify(ctx, msgs)
 	errs := s.pub.Publish(ctx, msgs)
 	seen := map[string]bool{}
 	var back []string
@@ -468,6 +469,31 @@ func (s *Service) dispatch(ctx context.Context, rows []claimed, automatic bool, 
 		}
 	}
 	return sent, items, notSent, first
+}
+
+// identify has each discovered event of msgs name its item's identities, as
+// every discovered event does, read in one go. It is best-effort: when they
+// cannot be read, the events go naming none, said in the log.
+func (s *Service) identify(ctx context.Context, msgs []events.Message) {
+	var ids []string
+	for _, m := range msgs {
+		if m.Topic == events.TopicDiscovered {
+			ids = append(ids, m.Event.ItemID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	known, err := store.IdentitiesOf(ctx, s.st.Pool(), ids)
+	if err != nil {
+		log.Printf("retry: the identities of %d items could not be read, and their discovered events name none: %v", len(ids), err)
+		return
+	}
+	for i, m := range msgs {
+		if m.Topic == events.TopicDiscovered {
+			msgs[i].Event.Identity = known[m.Event.ItemID].Event()
+		}
+	}
 }
 
 // delays are the policy's delays after a step's 1st, 2nd, ... failure in a

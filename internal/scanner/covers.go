@@ -10,7 +10,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/processing"
@@ -231,11 +230,7 @@ func (s *Scanner) coverEpisode(ctx context.Context, res *scanResult, holder, pat
 	if _, err := library.Link(ctx, pool, holder, id); err != nil {
 		log.Printf("scanner: episode %s could not be linked to %s: %v", id, path, err)
 	}
-	ev := events.NewItemEvent(id)
-	ev.Type = "episode"
-	ev.Step = "tmdb"
-	ev.Source = "scan"
-	s.prod.EmitItem(ctx, events.TopicDiscovered, ev)
+	s.discovered(ctx, id, "episode")
 	log.Printf("scanner: %s covers episode %s too, made for it (item %s)", path, code, id)
 }
 

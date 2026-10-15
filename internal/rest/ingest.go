@@ -129,12 +129,14 @@ func (h *Handlers) ingest(w http.ResponseWriter, r *http.Request) {
 	if created {
 		// Seed the scan step done + emit discovered, exactly as the scanner does
 		// on a fresh insert. Best-effort on the step (never abort the ingest).
+		// The event names the item's identities.
 		_ = h.d.Steps.Upsert(r.Context(), itemID, "scan", processing.StatusDone, nil, nil)
-		if h.d.Events != nil {
+		if h.d.Events.Enabled() {
 			ev := events.NewItemEvent(itemID)
 			ev.Type = req.Type
 			ev.Step = "tmdb"
 			ev.Source = "ingest"
+			ev.Identity = h.d.Store.EventIdentity(r.Context(), itemID)
 			h.d.Events.EmitItem(r.Context(), events.TopicDiscovered, ev)
 		}
 	}

@@ -2,11 +2,16 @@ package itemactions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
+
+	kafka "github.com/segmentio/kafka-go"
 
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
@@ -69,6 +74,55 @@ func TestRemoveItemRecordsTheSeriesAndItsEpisodes(t *testing.T) {
 	if d, _ := storetest.Deleted(t, st, unrelated); d.DeletedBy != "katalog-manager" || d.Reason != nil {
 		t.Errorf("a removal without a principal or reason is logged by %q with reason %v, want katalog-manager and none",
 			d.DeletedBy, d.Reason)
+	}
+}
+
+// kafkaWriter records what the service's producer writes.
+type kafkaWriter struct{ msgs []kafka.Message }
+
+func (w *kafkaWriter) WriteMessages(_ context.Context, msgs ...kafka.Message) error {
+	w.msgs = append(w.msgs, msgs...)
+	return nil
+}
+
+func (w *kafkaWriter) Close() error { return nil }
+
+// The removal's event names the identities the item had, read before its
+// rows went: an episode's own ids, its series' and its numbers; a series'
+// its own.
+func TestTheRemovalEventNamesTheIdentitiesTheItemHad(t *testing.T) {
+	events.Configure("stube.")
+	st := storetest.Open(t)
+	storetest.AddItem(t, st, series, "series", "A Series", "")
+	storetest.AddItem(t, st, episode1, "episode", "Pilot", series)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET seasonnumber = 1, episodenumber = 3 WHERE id = $1`, episode1)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemexternalids (id, item_id, source, externalid) VALUES
+		('x1', $1, 'tmdb', '97546'), ('x2', $2, 'tmdb-episode', '937631')`, series, episode1)
+	w := &kafkaWriter{}
+	svc := New(st, config.Config{}, processing.New(st.Pool()), events.ProducerOn(w))
+	removed := func(id string) events.ItemEvent {
+		t.Helper()
+		w.msgs = nil
+		if res, err := svc.RemoveItem(context.Background(), id, false, false, ""); err != nil || !res.Deleted {
+			t.Fatalf("RemoveItem %s: %+v, %v", id, res, err)
+		}
+		if len(w.msgs) != 1 || w.msgs[0].Topic != events.TopicRemoved {
+			t.Fatalf("removing %s sent %v, want its removal", id, w.msgs)
+		}
+		var ev events.ItemEvent
+		if err := json.Unmarshal(w.msgs[0].Value, &ev); err != nil {
+			t.Fatal(err)
+		}
+		return ev
+	}
+	if ev := removed(episode1); ev.ItemID != episode1 || ev.Type != "episode" || ev.Status != "removed" ||
+		fmt.Sprint(ev.ExternalIDs) != "map[tmdb-episode:937631]" || fmt.Sprint(ev.SeriesExternalIDs) != "map[tmdb:97546]" ||
+		*ev.SeasonNumber != 1 || *ev.EpisodeNumber != 3 {
+		t.Errorf("the episode's removal: %+v", ev)
+	}
+	if ev := removed(series); ev.ItemID != series || fmt.Sprint(ev.ExternalIDs) != "map[tmdb:97546]" ||
+		ev.SeriesExternalIDs != nil || ev.SeasonNumber != nil {
+		t.Errorf("the series' removal: %+v", ev)
 	}
 }
 

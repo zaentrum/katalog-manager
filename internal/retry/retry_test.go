@@ -174,6 +174,36 @@ func TestASweepSendsTheRetriesThatAreDue(t *testing.T) {
 	}
 }
 
+// A discovered event the sweep sends again names the item's identities, as
+// every discovered event does: an episode's numbers and its series' ids, a
+// series' own; an event of another topic names none.
+func TestARetriedDiscoveredEventNamesTheIdentities(t *testing.T) {
+	st := catalog(t)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemexternalids (id, item_id, source, externalid) VALUES
+		('x1', 's1', 'tmdb', '97546'), ('x2', 'm1', 'tmdb', '45745')`)
+	b := &bus{}
+	s := newService(t, st, b)
+	put(t, st, "e1", "scan", "failed", due)
+	put(t, st, "s1", "tmdb", "failed", due)
+	put(t, st, "m1", "transcode", "failed", due)
+	if _, sent, err := s.Sweep(context.Background()); err != nil || sent != 3 {
+		t.Fatalf("Sweep: sent %d, %v; want the 3 retries", sent, err)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	got := map[string]string{}
+	for _, m := range b.sent {
+		e := m.Event
+		got[e.ItemID] = fmt.Sprint(e.ExternalIDs, e.SeriesExternalIDs, e.SeasonNumber != nil && *e.SeasonNumber == 1,
+			e.EpisodeNumber != nil && *e.EpisodeNumber == 2)
+	}
+	want := map[string]string{"e1": "map[] map[tmdb:97546] true true", "s1": "map[tmdb:97546] map[] false false",
+		"m1": "map[] map[] false false"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("the identities the retries name: %v, want %v", got, want)
+	}
+}
+
 // The reaper takes a step for a failed run when its worker has been silent
 // for longer than the step's timeout, and one sent again that no worker
 // started within it, and schedules its retry like any failure's; a step

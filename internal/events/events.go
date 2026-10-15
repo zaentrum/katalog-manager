@@ -8,7 +8,9 @@
 //	transcode    -> stube.catalog.item.transcoded  -> packager
 //
 // katalog-manager PRODUCES discovered + enriched and CONSUMES discovered (the
-// enricher). The Python workers consume/produce the rest.
+// enricher). The Python workers consume/produce the rest. discovered, packaged
+// and removed name the item's identities beside its id (Identity), for a
+// consumer outside the core to reconcile by.
 //
 // An extra of a title (a trailer, a featurette) has a chain of its own, keyed
 // by its extraId, on topics under the same prefix:
@@ -101,6 +103,7 @@ func Configure(prefix string) {
 // ItemEvent is the minimal envelope carried on the catalog topics: identity +
 // the step this event unblocks + provenance. Consumers that need the media path
 // or details read the DB by ItemID (notification-plus-identity, not full state).
+// discovered, packaged and removed also name the item's identities (Identity).
 type ItemEvent struct {
 	EventID    string `json:"eventId"`
 	ItemID     string `json:"itemId"`
@@ -109,6 +112,22 @@ type ItemEvent struct {
 	Status     string `json:"status,omitempty"`
 	OccurredAt string `json:"occurredAt"`
 	Source     string `json:"source,omitempty"`
+	Identity
+}
+
+// Identity is what an item event names of the item's identities outside any
+// one library (ADR-0012), so that a consumer reconciles what it knows of a
+// title without a lookup: the item's own reference ids, each source to its id
+// as the catalog keeps them (externalIds: tmdb, tvdb, imdb, and an episode's
+// own TMDB id under tmdb-episode), and of an episode its series' ids
+// (seriesExternalIds) and its numbers. Each field is optional, left out when
+// the catalog knows none. catalog.item.discovered, .packaged and .removed
+// carry them.
+type Identity struct {
+	ExternalIDs       map[string]string `json:"externalIds,omitempty"`
+	SeriesExternalIDs map[string]string `json:"seriesExternalIds,omitempty"`
+	SeasonNumber      *int32            `json:"seasonNumber,omitempty"`
+	EpisodeNumber     *int32            `json:"episodeNumber,omitempty"`
 }
 
 // NewItemEvent stamps a fresh event (random id + now()).

@@ -50,7 +50,8 @@ import (
 //     its folder goes, and a folder whose original cannot be put back stays
 //     (so does one whose original's source keeps no place it arrived at, as
 //     a source keeps none once its record is written).
-//  4. Emit stube.catalog.item.removed so live-refresh surfaces drop the item.
+//  4. Emit stube.catalog.item.removed so live-refresh surfaces drop the item,
+//     naming its identities, read before its rows went.
 //
 // One file of several episodes is its holder's (migration 045): an episode
 // it covers has no file of its own, so removing one touches no file, its
@@ -219,6 +220,13 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 		}
 	}
 
+	// What the removal's event names of the item's identities is read while
+	// its rows are there.
+	var identity events.Identity
+	if s.events.Enabled() {
+		identity = s.st.EventIdentity(ctx, id)
+	}
+
 	// 2. Catalog rows go first, atomically, and are recorded as they go. The
 	// episodes the file of an item removed covered besides it stay, unlinked,
 	// with no file now.
@@ -265,12 +273,14 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 		pruneEmptyDirs(filepath.Dir(root), pkgStops[root])
 	}
 
-	// 4. Announce the removal (one event for the whole cascade).
+	// 4. Announce the removal (one event for the whole cascade), naming the
+	// item's identities as they were.
 	if res.Deleted {
 		ev := events.NewItemEvent(id)
 		ev.Type = typ
 		ev.Status = "removed"
 		ev.Source = "katalog-manager"
+		ev.Identity = identity
 		s.events.EmitItem(ctx, events.TopicRemoved, ev)
 		log.Printf("removed item %s (%q, %s): items=%d files=%d packages=%d errors=%d",
 			id, title, typ, res.ItemsRemoved, res.FilesRemoved, res.PackagesRemoved, len(res.Errors))

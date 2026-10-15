@@ -162,6 +162,39 @@ func TestAnExtrasTriggerIsKeyedByItsExtraAndNamesNoItem(t *testing.T) {
 	}
 }
 
+// An item event names the item's identities beside its id as optional
+// fields: its ids, and an episode's series' ids and numbers, each left out
+// when there is none, so that an event of an item the catalog knows no
+// identity of is the envelope it always was.
+func TestAnItemEventNamesTheIdentitiesItKnows(t *testing.T) {
+	season, episode := int32(4), int32(7)
+	ev := NewItemEvent("e1")
+	ev.Type, ev.Step, ev.Source = "episode", "tmdb", "ingest"
+	ev.Identity = Identity{ExternalIDs: map[string]string{"tmdb-episode": "937631"},
+		SeriesExternalIDs: map[string]string{"tmdb": "97546", "tvdb": "371572"}, SeasonNumber: &season, EpisodeNumber: &episode}
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := keys(t, raw); got != "episodeNumber eventId externalIds itemId occurredAt seasonNumber seriesExternalIds source step type" {
+		t.Errorf("an episode's event: %s", got)
+	}
+	if !strings.Contains(string(raw), `"externalIds":{"tmdb-episode":"937631"},"seriesExternalIds":{"tmdb":"97546","tvdb":"371572"},`+
+		`"seasonNumber":4,"episodeNumber":7`) {
+		t.Errorf("an episode's event: %s", raw)
+	}
+	var back ItemEvent
+	if err := json.Unmarshal(raw, &back); err != nil || back.SeriesExternalIDs["tvdb"] != "371572" || *back.EpisodeNumber != 7 {
+		t.Errorf("read back: %+v, %v", back, err)
+	}
+	plain := NewItemEvent("m1")
+	plain.Identity = Identity{ExternalIDs: map[string]string{}}
+	raw, _ = json.Marshal(plain)
+	if got := keys(t, raw); got != "eventId itemId occurredAt" {
+		t.Errorf("an event naming no identity: %s", got)
+	}
+}
+
 // An extra's package recorded is announced as an item event of its title,
 // with the extra named beside it.
 func TestTheExtraPackagedEventIsAnEventOfItsTitle(t *testing.T) {

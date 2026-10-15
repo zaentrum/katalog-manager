@@ -213,7 +213,8 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 
 	// The pipeline's end: the packaged (playable) asset is now in the catalog —
 	// announce it so live-refresh surfaces update at the exact became-watchable
-	// moment. Emitted only on a real packaged write (nil-safe without a bus).
+	// moment. Emitted only on a real packaged write (nil-safe without a bus),
+	// naming the item's identities.
 	if packagedWritten {
 		var typ *string
 		_ = pool.QueryRow(ctx, `SELECT type FROM com_nalet_katalog_items WHERE id = $1`, itemID).Scan(&typ)
@@ -223,6 +224,9 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 		}
 		ev.Status = "done"
 		ev.Source = "katalog-manager"
+		if h.d.Events.Enabled() {
+			ev.Identity = h.d.Store.EventIdentity(ctx, itemID)
+		}
 		h.d.Events.EmitItem(ctx, events.TopicPackaged, ev)
 	}
 
