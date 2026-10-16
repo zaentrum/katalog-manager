@@ -271,7 +271,7 @@ func run() error {
 	// This replaces the old 60s enrichment poll ticker (pure-Kafka triggers).
 	if cfg.CatalogEventsEnabled && cfg.TMDBEnabled() {
 		go events.Consume(bgCtx, events.SplitBrokers(cfg.KafkaBrokers), cfg.KafkaCertDir,
-			"katalog-enricher", []string{events.TopicDiscovered},
+			cfg.KafkaEnricherGroup, []string{events.TopicDiscovered},
 			func(ctx context.Context, _ string, ev events.ItemEvent) error {
 				status, _, err := enricher.EnrichOne(ctx, ev.ItemID)
 				if err != nil {

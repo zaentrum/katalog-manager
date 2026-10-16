@@ -93,6 +93,11 @@ type Config struct {
 	KafkaBrokers     string // KAFKA_BROKERS
 	KafkaTopicPrefix string // KAFKA_TOPIC_PREFIX (default "stube." — per-tenant on a shared cluster)
 	KafkaCertDir     string // dir holding user.crt/user.key/ca.crt (default /etc/kafka-cert)
+	// KafkaEnricherGroup is the consumer group the enricher reads discovered
+	// events in. Instances that share a broker each need their own: a group
+	// shared by two instances is led by one, which cannot see the other's
+	// topics, so the other's enricher is given no partition and reads nothing.
+	KafkaEnricherGroup string // KAFKA_ENRICHER_GROUP (default "katalog-enricher")
 
 	// catalog pipeline events (Kafka producer + the discovered->enrich consumer).
 	// This is the event-driven trigger spine: scan emits stube.catalog.item.discovered,
@@ -443,6 +448,7 @@ func Load() (Config, error) {
 		KafkaBrokers:         env("KAFKA_BROKERS"),
 		KafkaTopicPrefix:     envDefault("stube.", "KAFKA_TOPIC_PREFIX"),
 		KafkaCertDir:         envDefault("/etc/kafka-cert", "KAFKA_CERT_DIR"),
+		KafkaEnricherGroup:   envDefault("katalog-enricher", "KAFKA_ENRICHER_GROUP"),
 		CatalogEventsEnabled: envBool(env("KAFKA_BROKERS") != "", "CATALOG_EVENTS_ENABLED"),
 	}
 	if err := retryConfig(&c); err != nil {

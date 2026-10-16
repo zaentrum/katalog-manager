@@ -1283,6 +1283,12 @@ environment sets wins in either layout, and the layout is read where a root
 is used, so switching it needs no restart. The extras' topics are `<KAFKA_TOPIC_PREFIX>catalog.extra.queued`,
 `.transcoded` and `.packaged`; where the broker creates no topic by itself
 they must be provisioned.
+The enricher reads `<KAFKA_TOPIC_PREFIX>catalog.item.discovered` in the
+consumer group `KAFKA_ENRICHER_GROUP` (default `katalog-enricher`). Two
+instances that share a broker each need a group of their own: a group two
+instances share is led by one of them, which cannot see the other's topics
+where the broker's ACLs keep them apart, and the other's enricher is given
+no partition and enriches nothing.
 `AUTH_DISABLED=true` turns off auth for local dev: every caller may then do
 anything.
 
