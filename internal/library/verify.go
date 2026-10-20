@@ -70,6 +70,12 @@ var ErrChecksumsPending = errors.New("its package's checksums are pending: no fi
 // hls/, subs/ and trickplay/, as many as it says and of the bytes it says,
 // and version.json's digest. full hashes every listed file too.
 //
+// A subtitle attached to the version after its package completed
+// (attached.go) is no file of the package, and its chain does not cover it:
+// its file in subs/, unless checksums.sha256 lists it, counts neither as a
+// file of the package nor as one unlisted, and full checks its bytes against
+// the hash its name gives them.
+//
 // A version adopted with its checksums pending has no checksums.sha256 to
 // hold its files against: its chain is checked as far as it goes (.complete,
 // package.json, and the files and the bytes package.json counted) and
@@ -133,6 +139,7 @@ func verifyChain(dir, record string, dirs []string, full bool) (*Chain, error) {
 	if _, err := os.Stat(at(record)); err == nil {
 		present[record] = true
 	}
+	var attached []string // the files of the version's attached subtitles the chain does not list
 	for _, d := range dirs {
 		root := at(d)
 		err := filepath.WalkDir(root, func(path string, e fs.DirEntry, err error) error {
@@ -153,12 +160,29 @@ func verifyChain(dir, record string, dirs []string, full bool) (*Chain, error) {
 				if err != nil {
 					return err
 				}
-				present[filepath.ToSlash(rel)] = true
+				rel = filepath.ToSlash(rel)
+				if _, listed := c.Listed[rel]; record == VersionFile && !listed && isAttachedFile(rel) {
+					attached = append(attached, rel)
+					return nil
+				}
+				present[rel] = true
 			}
 			return nil
 		})
 		if err != nil {
 			return nil, broken(root, "%v", err)
+		}
+	}
+	if full {
+		for _, rel := range attached {
+			sum, _ := AttachedSum(filepath.Base(rel))
+			digest, _, err := SHA256File(at(rel))
+			if err != nil {
+				return nil, broken(at(rel), "%v", err)
+			}
+			if digest != sum {
+				return nil, broken(at(rel), "an attached subtitle whose hash is sha256:%s, and its name says %s", digest, sum)
+			}
 		}
 	}
 	if c.Pending {

@@ -156,6 +156,11 @@ func run() error {
 	if err := st.EnsureIdentityIndexes(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/047_identity_indexes.sql is missing and could not be applied: %v; a read by identity, or of an item's ids or children, goes through the whole of its table until it is", err)
 	}
+	// A subtitle attached to a title after its package completed: its origin,
+	// the version it follows, who attached it (migration 048).
+	if err := st.EnsureAttachedSubtitles(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/048_attached_subtitles.sql is missing and could not be applied: %v; no subtitle can be attached to a title until it is", err)
+	}
 	// An item the scanner made before it wrote its own name into the row has
 	// it in its record alone: the row follows the record (bounded, in the
 	// background).

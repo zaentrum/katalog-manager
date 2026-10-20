@@ -27,6 +27,29 @@ func (s *Store) EnsureSubtitleForced(ctx context.Context) error {
 	return err
 }
 
+// AttachedSubtitlesReady reports whether migration 048 is in place: what the
+// catalog keeps of a subtitle attached to a title after its package
+// completed (its origin, the version it follows, who attached it).
+func (s *Store) AttachedSubtitlesReady(ctx context.Context) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `SELECT count(*) = 6 FROM pg_attribute
+		WHERE attrelid = to_regclass('com_nalet_katalog_subtitleassets') AND NOT attisdropped
+		  AND attname IN ('origin', 'issdh', 'versionid', 'sha256', 'attachedby', 'attachedat')`).Scan(&ok)
+	return ok, err
+}
+
+// EnsureAttachedSubtitles applies db/migrations/048_attached_subtitles.sql
+// when any of its columns is missing. Without it no subtitle can be
+// attached to a title.
+func (s *Store) EnsureAttachedSubtitles(ctx context.Context) error {
+	ready, err := s.AttachedSubtitlesReady(ctx)
+	if err != nil || ready {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, migrations.AttachedSubtitles)
+	return err
+}
+
 // SubtitlesByItem lists the item's subtitles, the default first, then by
 // language; on a catalog without migration 038 none is forced.
 func (s *Store) SubtitlesByItem(ctx context.Context, id string) ([]*model.SubtitleAsset, error) {

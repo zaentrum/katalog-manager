@@ -1525,8 +1525,11 @@ func (m *Migration) restore(ctx context.Context, tx pgx.Tx, u *Unit, before *uni
 		if _, err := tx.Exec(ctx, `DELETE FROM com_nalet_katalog_subtitleassets WHERE id = ($1::jsonb)->>'id'`, string(s)); err != nil {
 			return err
 		}
+		// A row recorded before migration 048 has no issdh, which may not be
+		// NULL: it is not SDH, as the migration says of every row before it.
 		if _, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_subtitleassets
-			SELECT * FROM jsonb_populate_record(NULL::com_nalet_katalog_subtitleassets, $1::jsonb)`, string(s)); err != nil {
+			SELECT * FROM jsonb_populate_record(NULL::com_nalet_katalog_subtitleassets, '{"issdh": false}'::jsonb || $1::jsonb)`,
+			string(s)); err != nil {
 			return err
 		}
 	}

@@ -541,6 +541,33 @@ func TestARevertBringsTheRunBack(t *testing.T) {
 	}
 }
 
+// A revert of an adoption whose journal kept the subtitle rows as they were
+// before migration 048, without an issdh, puts them back as not SDH.
+func TestARevertOfAnAdoptionBeforeTheAttachedSubtitles(t *testing.T) {
+	f := newMigrationFixture(t)
+	ctx := context.Background()
+	before := f.state(t)
+	if rep, err := f.migration(t).Adopt(ctx, nil); err != nil || rep.Adopted != 4 {
+		t.Fatalf("Adopt: %+v, %v", rep, err)
+	}
+	path := filepath.Join(f.runDir, "journal.jsonl")
+	journal, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := strings.ReplaceAll(strings.ReplaceAll(string(journal), `"issdh":false,`, ""), `,"issdh":false`, "")
+	if older == string(journal) || strings.Contains(older, "issdh") {
+		t.Fatal("the journal keeps no subtitle row's issdh")
+	}
+	librarytest.Write(t, path, []byte(older))
+	if rep, err := f.migration(t).Revert(ctx, nil); err != nil || rep.Reverted != 4 || rep.Refused+rep.Failed != 0 {
+		t.Fatalf("Revert: %+v, %v", rep, err)
+	}
+	if got := f.state(t); got != before {
+		t.Errorf("the database after the revert:\n%s\nbefore the adopt:\n%s", got, before)
+	}
+}
+
 // A unit whose old package changed since it was staged is stale and left;
 // one the pipeline works on is busy and left; one whose rename fails puts
 // back what it renamed, and the database stays as it was. An episode whose

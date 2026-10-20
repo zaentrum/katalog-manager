@@ -10,8 +10,8 @@
 // store.EnsureTrackLanguages, store.EnsureSubtitleForced,
 // store.EnsureItemExtras, store.EnsureLibrary, which applies 040, 041 and
 // 042, store.EnsureReencodeQueue, store.EnsureTakeIn,
-// store.EnsureMultiEpisodeFiles, store.EnsureSeriesScanTitle and
-// store.EnsureIdentityIndexes).
+// store.EnsureMultiEpisodeFiles, store.EnsureSeriesScanTitle,
+// store.EnsureIdentityIndexes and store.EnsureAttachedSubtitles).
 // It applies 035, which drops what is left of a retired integration, at every
 // start when any of that is there (store.DropRetiredJobTables).
 package migrations
@@ -131,3 +131,10 @@ var SeriesScanTitle string
 //
 //go:embed 047_identity_indexes.sql
 var IdentityIndexes string
+
+// AttachedSubtitles is 048_attached_subtitles.sql: a subtitle attached to a
+// title after its package completed, how it was made, the version it follows
+// and who attached it.
+//
+//go:embed 048_attached_subtitles.sql
+var AttachedSubtitles string

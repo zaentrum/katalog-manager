@@ -92,6 +92,9 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	if err := st.EnsureIdentityIndexes(ctx); err != nil {
 		t.Fatalf("apply the identity indexes migration: %v", err)
 	}
+	if err := st.EnsureAttachedSubtitles(ctx); err != nil {
+		t.Fatalf("apply the attached subtitles migration: %v", err)
+	}
 	return st
 }
 
