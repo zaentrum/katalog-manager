@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zaentrum/katalog-manager/internal/auth/authtest"
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/library/librarytest"
@@ -25,6 +26,7 @@ type v2Film struct {
 	st          *store.Store
 	cfg         config.Config
 	h           http.Handler
+	iss         *authtest.Issuer
 	svc         string
 	itemDir     string
 	source, ver string
@@ -43,7 +45,7 @@ func newV2Film(t *testing.T) *v2Film {
 	dir := t.TempDir()
 	cfg := v2Config(dir)
 	h, iss := server(t, st, cfg)
-	f := &v2Film{st: st, cfg: cfg, h: h, svc: iss.Service(t, "zaentrum-manager"), itemDir: dir + "/movies/f1/" + filmItem,
+	f := &v2Film{st: st, cfg: cfg, h: h, iss: iss, svc: iss.Service(t, "zaentrum-manager"), itemDir: dir + "/movies/f1/" + filmItem,
 		source: filmSource, ver: filmVersion}
 	original := cfg.Roots(true).Arrivals + "/A Film (2024)/A Film (2024).mkv"
 	storetest.AddItem(t, st, filmItem, "movie", "A Film", "")

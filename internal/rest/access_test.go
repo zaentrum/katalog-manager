@@ -77,6 +77,12 @@ var routes = []route{
 
 	{http.MethodPost, "/api/ingest", `{"path": "MEDIA/new.mkv", "type": "movie", "title": "New"}`, "ingest"},
 	{http.MethodPost, "/api/extras", `{"itemId": "m1", "path": "MEDIA/m1-trailer.mkv", "kind": "trailer"}`, "ingest"},
+	// The attach seam: m1 takes no subtitle (it has no version in the
+	// library), m2 does; its removal of one not there is done as well.
+	{http.MethodGet, "/api/library/items/m1/subtitles", "", "ingest"},
+	{http.MethodPost, "/api/library/items/m2/subtitles",
+		`{"language": "de", "origin": "provider", "content": "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHallo\n"}`, "ingest"},
+	{http.MethodDelete, "/api/library/items/m2/subtitles/sub-gone", "", "ingest"},
 
 	{http.MethodPost, "/api/items/m1/package", "", "admin"},
 	{http.MethodPost, "/api/items/m1/takein", "", "admin"},
@@ -104,6 +110,9 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 		}
 	}
 	storetest.AddItem(t, st, "m1", "movie", "A Film", "")
+	storetest.AddItem(t, st, "m2", "movie", "A Packaged Film", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, state, dir) VALUES ('v2', 'm2', 'complete', $1)`,
+		dir+"/movies/m2/versions/v2")
 	storetest.AddItem(t, st, "s1", "series", "A Show", "")
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary) VALUES ('a1', 'm1', $1, true)`, media)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_subtitleassets (id, item_id, path, format) VALUES ('sub1', 'm1', $1, 'vtt')`, sub)
@@ -164,6 +173,8 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 		"the extra's report": storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemextras
 			WHERE state <> 'queued' OR heartbeatat IS NOT NULL`),
 		"a title queued to be encoded again": storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue`),
+		"a subtitle attached": storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_subtitleassets
+			WHERE origin IS NOT NULL`),
 	} {
 		if n != 0 {
 			t.Errorf("a refused caller left %s behind (%d rows)", what, n)
@@ -186,6 +197,10 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE title = 'New'`); n != 1 {
 		t.Errorf("ingest by the addon, the service account and the admins: %d items, want the one", n)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_subtitleassets WHERE item_id = 'm2'
+		AND origin = 'provider' AND attachedby = 'example-addon'`); n != 1 {
+		t.Errorf("the subtitle the addon, the service account and the admins attached: %d rows, want the one", n)
 	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemartworkdata WHERE kind = 'backdrop'`); n != 1 {
 		t.Errorf("the backdrop the workers uploaded: %d rows, want 1", n)

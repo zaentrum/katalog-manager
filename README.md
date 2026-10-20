@@ -117,6 +117,7 @@ account, whose token carries the addon role. Everyone else signed in is a
 | `POST /api/library/migrations/{run}/adopt`, `…/revert` (the library's migration), `POST /api/library/projections` | admin, service account |
 | `POST /api/library/reencode`, `GET /api/library/reencode` (the re-encode queue) | admin, service account |
 | `POST /api/ingest`, `POST /api/extras` | admin, service account, addon |
+| `GET`, `POST /api/library/items/{id}/subtitles`, `DELETE …/subtitles/{subtitleId}` (attached subtitles) | admin, service account, addon; a removal the caller's own attach, an admin any |
 | `POST /api/items/{id}/package`, `POST /api/items/{id}/takein` | admin |
 
 A refused GraphQL field answers with an error whose `extensions.code` is
@@ -275,6 +276,13 @@ the base schema in the order of their numbers, and each is idempotent:
   (`idx_itemexternalids_item`) and an item's children (`idx_items_parent`),
   which [ingest by identity](#by-identity) and katalog-api's holdings read.
   Applied at startup when any of them is missing.
+- `048_attached_subtitles.sql` gives a subtitle what the catalog keeps of
+  one [attached to a title](#attached-subtitles) after its package
+  completed: `origin` (how it was made; null for the title's own), `issdh`,
+  `versionid` (the version it follows), `sha256` (its file's hash, which
+  names the file), `attachedby` and `attachedat`. Applied at startup when
+  any of them is missing; without it no subtitle can be attached, and a
+  package is taken in as before.
 
 ## Track languages
 
@@ -738,6 +746,84 @@ many of its episodes arrive together. Re-ingesting a path with the identity
 it was taken in with answers it again, `created: false`, with its series and
 the episodes its file covers.
 
+## Attached subtitles
+
+A title plays the subtitles its package made of its source and the subtitle
+files beside its source. A subtitle can also be **attached** to it after its
+package completed — made from its audio or from another of its subtitles, or
+found elsewhere — by an admin, the service account or an addon, and every
+player lists and plays it as any other: nothing is encoded or packaged again.
+
+`POST /api/library/items/{id}/subtitles` attaches one:
+
+```json
+{"language": "de", "label": null, "forced": false, "sdh": false, "origin": "provider",
+ "format": "srt", "content": "1\n00:00:01,000 --> 00:00:02,500\nGuten Tag\n"}
+```
+
+- **`language`, `origin` and `content` are required.** `language` is a BCP 47
+  tag (`de`, `en`, `zh-Hans`, `pt-BR`), kept as people's software spells one:
+  the ISO 639-1 code where the language has one (`deu` and `ger` are `de`),
+  its script and region after it; `und`, `zxx`, `mul` and `mis` name no
+  language a subtitle is in. `origin` says how it came to be: `source` (it
+  came with the title's file and was not taken in with it), `provider`
+  (found elsewhere), `transcribed` (from the title's audio), `translated`
+  (from another of its subtitles) or `converted` (another script of one).
+- **`content`** is WebVTT or SubRip text in UTF-8, `format` (`webvtt`, `srt`)
+  saying which; without it the text does. It is kept as WebVTT: SubRip is
+  converted (its numbers go, its times are WebVTT's, the styling of other
+  formats it carries goes), a WebVTT file keeps its blocks with its times
+  spelled as WebVTT spells them. Text that is not UTF-8, or holds U+FFFD (what
+  is left of text that was not), one with no cue, and a cue that ends before
+  it starts are refused (422), saying why; a body of more than 8 MiB is 413.
+- **`label`** is what a player says of it besides its language. Without
+  one, it is `SDH` for one for deaf and hard-of-hearing viewers, `AI` for one
+  a model made (`transcribed`, `translated`), both `SDH · AI`, else none: a
+  player names it "German", "German · SDH", "German · AI". `forced` is a
+  subtitle a player shows by itself (signs, a line in another language).
+
+The file is written into the `subs/` folder of the version that plays, as
+`attached-<sha256>.<language>[.forced][.sdh].vtt`, `<sha256>` its bytes'
+hash, and its row is the title's subtitle (`com_nalet_katalog_subtitleassets`),
+never the default, with its origin, the version it follows, its hash and the
+client of the caller's token that attached it (`attachedby`). The answer is
+`201 {"itemId", "created": true, "subtitle": {…}}`; the same file of the same
+language and flags attached again is the subtitle there is, `200` with
+`created: false`. A title with no version in the library — not packaged yet,
+packaged before the library, a series — is `409`, saying so; an episode
+another's file covers answers for its holder, whose file it is (`itemId`).
+
+Players reach it as they reach every subtitle of a title: katalog-api lists
+the title's rows (`include=subtitles`), chino-api gives each its URL, and
+chino-stream serves the file from the library. The package's records stay as
+they were written: `package.json` and `checksums.sha256` do not list an
+attached subtitle, its name being its check instead — a version's chain
+holds with it, and a full verification holds its bytes to its name (see
+[The library](#the-library)).
+
+`GET /api/library/items/{id}/subtitles` lists the title's subtitles, its own
+first (`origin: null`, `attached: false`) and then those attached to it,
+each with its language, label, format, forced, SDH, origin, the version it
+follows and who attached it when; and the version a subtitle is attached to
+now (`versionId`, `attachable`), or why there is none (`reason`). With
+`?fingerprint=true` it reads 128 KiB of the original and says what subtitle
+sources match a file by — `original: {sizeBytes, sum64, labels}`: its size,
+the 16 hex digits of its size plus its first and last 64 KiB summed as
+little-endian 64-bit words, and what its name claimed (its source record's
+`labels`) — or `original: null` and why (`originalNote`: deleted after
+packaging, unreadable).
+
+`DELETE /api/library/items/{id}/subtitles/{subtitleId}` removes a subtitle
+attached to the title: one the caller attached (its token's client), or, for
+an admin, any; its row and its file go. It is `204`, also for a subtitle the
+title has not (removed already); one of the title's own is `409`, one another
+client attached `403`.
+
+**A new version** of the title made of the same sources carries the attached
+subtitles over: their files are copied into its `subs/` and their rows follow
+it. A version of another file — the title given a new file — does not, as
+its timing may be another's: their rows go with the package's.
+
 ## Item events
 
 The catalog's item events (`<KAFKA_TOPIC_PREFIX>catalog.item.*`, keyed by
@@ -1137,7 +1223,9 @@ With `delete-after-package` it deletes a title's original once a complete
 version of it is as old as the delay, the title is not held, and every step
 that reads the original is over: claimed (the step `retire` runs), the
 original checked against its size and quick hash, the version verified (in
-full, unless the migration's stage did that within `library.verify.maxAge`),
+full, unless the migration's stage did that within `library.verify.maxAge`;
+an [attached subtitle](#attached-subtitles) in its `subs/` is no file of the
+package the chain covers, and in full its bytes are held to its name),
 its `original-deleted` event recorded with what the package does not carry
 of it, the original moved to `.work/trash/<day>/<sourceId>/` from its
 version's folder (or from where it arrived, one from before), the files

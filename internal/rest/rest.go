@@ -46,8 +46,10 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 //     transcoder and packager mint tokens with): the worker protocol, which
 //     hands out paths on disk and writes the pipeline's results, and the
 //     settings that are no secret;
-//   - ingest (a worker, or an addon's service account): POST /api/ingest, and
-//     POST /api/extras, which takes a file in as a title's extra;
+//   - ingest (a worker, or an addon's service account): POST /api/ingest,
+//     POST /api/extras, which takes a file in as a title's extra, and the
+//     attach seam, /api/library/items/{itemId}/subtitles, a subtitle attached
+//     to a title;
 //   - admins: POST /api/items/{id}/package, the packaging action an admin's
 //     client forwards (chino-api's admin route), and POST
 //     /api/items/{id}/takein, a title's take-in without a package.
@@ -150,4 +152,14 @@ func (h *Handlers) Register(r chi.Router) {
 	// A file taken in as a title's extra (what GraphQL's addExtra does), for
 	// an operator's tool, a deployment's Job or an addon.
 	r.With(pol.Require(auth.Ingest)).Post("/api/extras", h.postExtra)
+
+	// A subtitle attached to a title after its package completed (the attach
+	// seam, attached.go): the title's subtitles and what its original is
+	// matched by, an attach, and the removal of one attached.
+	r.Group(func(r chi.Router) {
+		r.Use(pol.Require(auth.Ingest))
+		r.Get("/api/library/items/{itemId}/subtitles", h.getItemSubtitles)
+		r.Post("/api/library/items/{itemId}/subtitles", h.attachSubtitle)
+		r.Delete("/api/library/items/{itemId}/subtitles/{subtitleId}", h.detachSubtitle)
+	})
 }
