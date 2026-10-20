@@ -14,16 +14,17 @@ func TestSubRipBecomesWebVTT(t *testing.T) {
 	srt := "\xef\xbb\xbf1\r\n00:00:01,000 --> 00:00:02,500\r\n{\\an8}<font color=\"#ffff00\">Hello</font>\r\n<i>there</i>\r\n\r\n" +
 		"2\r\n00:00:03,000 --> 00:00:04,000\r\nA --> B\r\n3\r\n00:01:05,250 --> 00:01:06,000\r\nNo blank line\r\n\r\n" +
 		"4\r\n00:01:07,000 --> 00:01:08,000\r\n\r\n" +
-		"5\r\n1:00:00,5 --> 1:00:01,25\r\n1984\r\n\r\n"
+		"5\r\n1:00:00,5 --> 1:00:01,25\r\n1984\r\n\r\n" +
+		"6\r\n01:00:02,000 --> 01:00:03,000\r\n{\\c&b0f0f0&} {\\fs16}两行\r\n{\\c&ffffff&} {\\fs14}Two lines \r\n"
 	vtt, cues, err := Normalize([]byte(srt), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := "WEBVTT\n\n00:00:01.000 --> 00:00:02.500\nHello\n<i>there</i>\n\n" +
 		"00:00:03.000 --> 00:00:04.000\nA -> B\n\n00:01:05.250 --> 00:01:06.000\nNo blank line\n\n" +
-		"01:00:00.500 --> 01:00:01.250\n1984\n"
-	if string(vtt) != want || cues != 4 {
-		t.Errorf("%d cues:\n%s\nwant 4:\n%s", cues, vtt, want)
+		"01:00:00.500 --> 01:00:01.250\n1984\n\n01:00:02.000 --> 01:00:03.000\n两行\nTwo lines\n"
+	if string(vtt) != want || cues != 5 {
+		t.Errorf("%d cues:\n%s\nwant 5:\n%s", cues, vtt, want)
 	}
 }
 

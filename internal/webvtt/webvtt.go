@@ -55,8 +55,8 @@ var (
 // say: WebVTT when it starts with the header, SubRip otherwise), and how many
 // cues it holds. A byte order mark goes, CR LF and CR become LF. SubRip is
 // converted: each block's number goes, its times are WebVTT's, the styling
-// of other formats it carries ({\an8}, <font>) goes, and "-->" in a line of
-// text becomes "->". Refused (Invalid): text that is not UTF-8 — or that
+// of other formats it carries ({\an8}, <font>) goes with the spaces around a
+// line, and "-->" in a line of text becomes "->". Refused (Invalid): text that is not UTF-8 — or that
 // holds U+FFFD, the character a reader puts for bytes it could not read, as
 // JSON carries text that was not UTF-8 —, WebVTT without its header, and a
 // text with no cue, or a cue that ends before it starts.
@@ -157,7 +157,7 @@ func fromSRT(text string) ([]byte, int, error) {
 				i--
 				break
 			}
-			line := strings.TrimRight(fontTagRE.ReplaceAllString(braceTagRE.ReplaceAllString(lines[i], ""), ""), " \t")
+			line := strings.TrimSpace(fontTagRE.ReplaceAllString(braceTagRE.ReplaceAllString(lines[i], ""), ""))
 			if strings.TrimSpace(line) == "" {
 				continue
 			}
