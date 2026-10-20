@@ -261,6 +261,44 @@ func (h *Handlers) detachSubtitle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// The settings that name the instance's subtitle languages, the first one
+// set deciding: its own (ADR-0014), else the languages its players show.
+var languageSettings = []string{"subtitles.languages", "packager.language_whitelist"}
+
+// getSubtitleLanguages answers GET /api/library/subtitles/languages: the
+// languages every title of the instance is to have a subtitle in, each as
+// languages.Tag spells it, in the order the setting names them, and the
+// setting they come from — subtitles.languages, else the packager's language
+// whitelist, the languages a player shows. None when neither is set.
+func (h *Handlers) getSubtitleLanguages(w http.ResponseWriter, r *http.Request) {
+	ss, err := h.d.Store.ListSettings(reqCtx(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "the settings could not be read: "+err.Error())
+		return
+	}
+	values := map[string]string{}
+	for _, s := range ss { // ListSettings orders by key; the first row of a key wins
+		key := strings.TrimSpace(s.Key)
+		if _, twin := values[key]; !twin {
+			values[key] = s.ValueText
+		}
+	}
+	out := map[string]any{"languages": []string{}, "from": nil}
+	for _, key := range languageSettings {
+		var langs []string
+		for _, part := range strings.Split(values[key], ",") {
+			if tag, ok := languages.Tag(part); ok && !slices.Contains(langs, tag) {
+				langs = append(langs, tag)
+			}
+		}
+		if len(langs) > 0 {
+			out["languages"], out["from"] = langs, key
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // attacher is who attaches a subtitle, as its row keeps it: the client of
 // the caller's token (an addon's service account), else its subject.
 func attacher(p *auth.Principal) string {

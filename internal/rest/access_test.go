@@ -79,6 +79,7 @@ var routes = []route{
 	{http.MethodPost, "/api/extras", `{"itemId": "m1", "path": "MEDIA/m1-trailer.mkv", "kind": "trailer"}`, "ingest"},
 	// The attach seam: m1 takes no subtitle (it has no version in the
 	// library), m2 does; its removal of one not there is done as well.
+	{http.MethodGet, "/api/library/subtitles/languages", "", "ingest"},
 	{http.MethodGet, "/api/library/items/m1/subtitles", "", "ingest"},
 	{http.MethodPost, "/api/library/items/m2/subtitles",
 		`{"language": "de", "origin": "provider", "content": "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHallo\n"}`, "ingest"},

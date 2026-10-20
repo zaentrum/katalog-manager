@@ -117,7 +117,7 @@ account, whose token carries the addon role. Everyone else signed in is a
 | `POST /api/library/migrations/{run}/adopt`, `…/revert` (the library's migration), `POST /api/library/projections` | admin, service account |
 | `POST /api/library/reencode`, `GET /api/library/reencode` (the re-encode queue) | admin, service account |
 | `POST /api/ingest`, `POST /api/extras` | admin, service account, addon |
-| `GET`, `POST /api/library/items/{id}/subtitles`, `DELETE …/subtitles/{subtitleId}` (attached subtitles) | admin, service account, addon; a removal the caller's own attach, an admin any |
+| `GET`, `POST /api/library/items/{id}/subtitles`, `DELETE …/subtitles/{subtitleId}`, `GET /api/library/subtitles/languages` (attached subtitles) | admin, service account, addon; a removal the caller's own attach, an admin any |
 | `POST /api/items/{id}/package`, `POST /api/items/{id}/takein` | admin |
 
 A refused GraphQL field answers with an error whose `extensions.code` is
@@ -812,6 +812,12 @@ the 16 hex digits of its size plus its first and last 64 KiB summed as
 little-endian 64-bit words, and what its name claimed (its source record's
 `labels`) — or `original: null` and why (`originalNote`: deleted after
 packaging, unreadable).
+
+`GET /api/library/subtitles/languages` names the languages every title is
+to have a subtitle in, as tags, in the order the setting names them:
+`{"languages": ["en", "de", "zh"], "from": "packager.language_whitelist"}` —
+`subtitles.languages` when it is set, else the packager's language
+whitelist, the languages a player shows; none when neither is.
 
 `DELETE /api/library/items/{id}/subtitles/{subtitleId}` removes a subtitle
 attached to the title: one the caller attached (its token's client), or, for

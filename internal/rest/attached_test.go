@@ -359,6 +359,35 @@ func TestAVersionOfTheSameFileCarriesTheAttachedSubtitles(t *testing.T) {
 	}
 }
 
+// The instance's subtitle languages are its own setting's, else the
+// languages its players show, the packager's whitelist; each spelled as a
+// language tag, once, in the setting's order. None without either.
+func TestTheInstancesSubtitleLanguages(t *testing.T) {
+	st := storetest.Open(t)
+	h, iss := server(t, st, testConfig(t.TempDir()))
+	addon := iss.Addon(t)
+	get := func() string {
+		t.Helper()
+		w := do(h, http.MethodGet, "/api/library/subtitles/languages", "", addon)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%d %s", w.Code, w.Body)
+		}
+		return strings.TrimSpace(w.Body.String())
+	}
+	if got := get(); got != `{"from":null,"languages":[]}` {
+		t.Errorf("no setting: %s", got)
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES
+		('w', 'packager.language_whitelist', 'eng, ger,  , zh, de')`)
+	if got := get(); got != `{"from":"packager.language_whitelist","languages":["en","de","zh"]}` {
+		t.Errorf("the packager's whitelist: %s", got)
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('s', 'subtitles.languages', 'en,de,zh-Hans')`)
+	if got := get(); got != `{"from":"subtitles.languages","languages":["en","de","zh-Hans"]}` {
+		t.Errorf("the subtitles' own setting: %s", got)
+	}
+}
+
 // An episode another's file covers has the subtitles of that file: the
 // seam answers, and attaches, for the episode whose file it is.
 func TestACoveredEpisodeAttachesToItsHolder(t *testing.T) {
