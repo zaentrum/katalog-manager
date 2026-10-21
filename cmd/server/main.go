@@ -185,6 +185,11 @@ func run() error {
 		log.Printf("catalog: the library layout is %s, originals: %s", set.Layout, set.Originals)
 	}
 	dropRetiredJobTables(bgCtx, st)
+	// The catalog's search (migration 049): the functions and indexes
+	// katalog-api ranks a search by. It searches as before until they are
+	// all there, so they are built in the background, with the service up:
+	// a build CONCURRENTLY waits for the transactions that began before it.
+	go ensureCatalogSearch(bgCtx, st)
 
 	steps := processing.New(st.Pool()).WithPolicy(cfg.RetryPolicy())
 
@@ -414,6 +419,29 @@ func dropRetiredJobTables(ctx context.Context, st *store.Store) {
 		}
 		log.Printf("catalog: kept the job tables of a retired integration that hold rows: %s; nothing reads or writes them, "+
 			"and migration 035 drops a table only once it is empty", strings.Join(held, ", "))
+	}
+}
+
+// catalogSearchRetry is how long a build of migration 049 that failed waits
+// before it is tried again.
+const catalogSearchRetry = 10 * time.Minute
+
+// ensureCatalogSearch applies migration 049 (store.EnsureCatalogSearch) and,
+// when it fails, tries again every catalogSearchRetry until it is in place or
+// the service stops. Until then katalog-api searches as before.
+func ensureCatalogSearch(ctx context.Context, st *store.Store) {
+	for {
+		err := st.EnsureCatalogSearch(ctx, log.Printf)
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		log.Printf("catalog: migration db/migrations/049_catalog_search.sql could not be applied: %v; "+
+			"katalog-api searches as before until it is, tried again in %s", err, catalogSearchRetry)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(catalogSearchRetry):
+		}
 	}
 }
 

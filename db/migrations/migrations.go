@@ -13,7 +13,10 @@
 // store.EnsureMultiEpisodeFiles, store.EnsureSeriesScanTitle,
 // store.EnsureIdentityIndexes and store.EnsureAttachedSubtitles).
 // It applies 035, which drops what is left of a retired integration, at every
-// start when any of that is there (store.DropRetiredJobTables).
+// start when any of that is there (store.DropRetiredJobTables), and 049, the
+// catalog search, in the background after startup, one statement at a time:
+// its indexes are built CONCURRENTLY, which no transaction may hold
+// (store.EnsureCatalogSearch).
 package migrations
 
 import _ "embed"
@@ -138,3 +141,10 @@ var IdentityIndexes string
 //
 //go:embed 048_attached_subtitles.sql
 var AttachedSubtitles string
+
+// CatalogSearch is 049_catalog_search.sql: the functions that normalize a
+// title, a name or a plot for katalog-api's ranked search, and the indexes it
+// reads them by, each built CONCURRENTLY on its own.
+//
+//go:embed 049_catalog_search.sql
+var CatalogSearch string
