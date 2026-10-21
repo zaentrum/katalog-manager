@@ -283,6 +283,32 @@ the base schema in the order of their numbers, and each is idempotent:
   names the file), `attachedby` and `attachedat`. Applied at startup when
   any of them is missing; without it no subtitle can be attached, and a
   package is taken in as before.
+- `049_catalog_search.sql` is what katalog-api's ranked search finds titles
+  and people by. Four functions normalize a title, a name or a plot as a
+  search reads it: lower case, accents off (unaccent's rules), apostrophes
+  dropped ("Widow's" is "widows"), every other mark a space
+  (`com_nalet_katalog_search_text`); the same with the marks inside a word
+  dropped too, so "Spider-Man" is also "spiderman" and "S.W.A.T." "swat"
+  (`com_nalet_katalog_search_joined`); the words of both
+  (`com_nalet_katalog_search_words`) and the words of a plot
+  (`com_nalet_katalog_search_plot`). They are immutable, and a change of
+  what one returns makes new functions and new indexes, never an edit of
+  these. Ten indexes hold them: a title's words, its text by type (for "the
+  title is the query" and "begins with it"), its trigrams (a title close to
+  the query), a series' `scantitle` (046), a plot's words, a person's name
+  the same three ways and their other names (030), and a person's credits
+  (`idx_itempeople_person`). It needs the `unaccent` and `pg_trgm`
+  extensions, which it creates when they are missing and the role may.
+  Applied in the background after startup, each index on its own and
+  CONCURRENTLY: a build blocks neither the catalog's reads nor its writes and
+  rewrites nothing, but waits for the transactions that began before it. A
+  build that was cut short (a restart in the middle) leaves an invalid index,
+  which the next start drops and builds again; one instance builds at a time
+  (an advisory lock); a build that failed is tried again every ten minutes.
+  A catalog of 78,000 items and 16,000 people builds them in seconds.
+  katalog-api searches as before until all of them are valid. Where the role
+  may not create them, run the file by hand with psql, each statement after
+  a `--@index` line on its own, outside a transaction.
 
 ## Track languages
 
