@@ -66,7 +66,10 @@
 
 DO $migration$
 DECLARE
-  catalog text := current_schema();
+  -- The functions go where the catalog's items are, which every reader
+  -- finds through its search_path.
+  catalog text := (SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                   WHERE c.oid = to_regclass('com_nalet_katalog_items'));
   accents text;
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'unaccent') THEN
