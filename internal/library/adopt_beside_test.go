@@ -48,6 +48,8 @@ func TestAnAdoptBesideTheStoreBeforeLinksItsOriginals(t *testing.T) {
 	f := newBesideFixture(t)
 	ctx := context.Background()
 	ids := []string{mgBeside}
+	// the size the catalog before had of another file once at the original's path
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_playbackassets SET sizebytes = 1 WHERE id = 'pa-`+mgBeside[:4]+`'`)
 	before, tree := f.stateOf(t, ids...), f.tree(t)
 	rep, err := f.migration(t).Adopt(ctx, ids)
 	if err != nil || rep.Adopted != 1 {
@@ -70,6 +72,9 @@ func TestAnAdoptBesideTheStoreBeforeLinksItsOriginals(t *testing.T) {
 		// what the plan says the record probed of the original, which the catalog before never knew
 		`SELECT codec || ' ' || resolution || ' ' || bitratekbps || ' ' || durationms FROM com_nalet_katalog_playbackassets
 			WHERE id = 'pa-` + mgBeside[:4] + `'`: "hevc 3840x2160 6053 475057",
+		// and its size, the one its source records
+		`SELECT (a.sizebytes = s.sizebytes AND s.sizebytes > 1)::text FROM com_nalet_katalog_playbackassets a
+			JOIN com_nalet_katalog_itemsources s ON s.id = a.sourceid WHERE a.id = 'pa-` + mgBeside[:4] + `'`: "true",
 	} {
 		var got string
 		if err := f.st.Pool().QueryRow(ctx, sql).Scan(&got); err != nil || got != want {

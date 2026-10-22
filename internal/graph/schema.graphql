@@ -1155,6 +1155,12 @@ type Mutation {
   # size over the duration. A value a source has stays; running it again
   # changes nothing.
   backfillSourceProbes: SourceProbeBackfillResult!
+  # Gives every title's source asset whose original is recorded and there
+  # the size its source records, in place of another or none (a scan's of
+  # the file before it was all there, or of another file once at its path),
+  # and answers how many it gave one. A source not recorded yet, or whose
+  # original was retired, is left alone; running it again changes nothing.
+  backfillSourceSizes: Int!
   # Records the tracks of every packaged title's source (see Track) from its
   # package's manifest on disk, as packaging-complete records them from the
   # manifest it is sent: for the packages written before the catalog kept

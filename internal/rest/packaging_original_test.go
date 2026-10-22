@@ -71,10 +71,12 @@ func (f *v2Film) sourceRow(t *testing.T) string {
 // A run that renamed the original into the version's folder names it in
 // its payload: the transaction that records the version records the source
 // where its original lies now, under its name there, and the asset of the
-// title's file follows it.
+// title's file follows it, with the size its source records — the asset
+// had none here, as one a scan saw before its file was all there.
 func TestPackagingCompleteRecordsTheOriginalWithItsVersion(t *testing.T) {
 	f := newV2Film(t)
 	moved := f.renameIn(t, f.arrived(t), filmVersion)
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_playbackassets SET sizebytes = NULL WHERE sourceid = $1`, filmSource)
 	complete := f.versionOf(t, filmVersion, filmPackage, originalNamed)
 	code, answer := f.complete(t, withOriginal(f.payload(filmVersion, filmPackage, complete), moved))
 	if code != http.StatusOK || answer["current"] != true {
@@ -82,6 +84,10 @@ func TestPackagingCompleteRecordsTheOriginalWithItsVersion(t *testing.T) {
 	}
 	if got, want := f.sourceRow(t), moved+" original.mkv true "+moved; got != want {
 		t.Errorf("the source and the title's file: %q, want %q", got, want)
+	}
+	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets a JOIN com_nalet_katalog_itemsources s
+		ON s.id = a.sourceid WHERE s.id = $1 AND a.sizebytes = s.sizebytes AND s.sizebytes > 0`, filmSource); n != 1 {
+		t.Error("the title's file has not the size its source records")
 	}
 	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_itemversions WHERE id = $1 AND state = 'complete'`,
 		filmVersion); n != 1 {

@@ -2,8 +2,10 @@ package sourceprobe
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -116,6 +118,29 @@ func Backfill(ctx context.Context, pool *pgxpool.Pool) (BackfillResult, error) {
 			return res, nil
 		}
 	}
+}
+
+// FillSizes gives every source asset whose original is recorded and there
+// the size its source records, where the asset has another or none, and
+// answers how many it gave one: the file in the version's folder is the one
+// the source's record describes, and a size the catalog had of it before (a
+// scan's, of the file before it was all there, or of another file once at
+// its path) gives way. A source not recorded yet, or whose original was
+// retired, is left alone. Running it again changes nothing; on a catalog
+// without migration 040, which keeps no source, there is nothing to give.
+func FillSizes(ctx context.Context, pool *pgxpool.Pool) (int32, error) {
+	tag, err := pool.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets a SET sizebytes = s.sizebytes
+		FROM com_nalet_katalog_itemsources s
+		WHERE s.id = a.sourceid AND s.item_id = a.item_id AND s.state = 'present' AND s.recordedat IS NOT NULL
+		  AND a.isprimary = true AND COALESCE(a.kind, 'primary') = 'primary' AND a.sizebytes IS DISTINCT FROM s.sizebytes`)
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) && pe.Code == "42P01" {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("give the sources their recorded sizes: %w", err)
+	}
+	return int32(tag.RowsAffected()), nil
 }
 
 func first(a, b *string) *string {

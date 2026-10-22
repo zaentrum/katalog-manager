@@ -34,7 +34,7 @@ The surface is split deliberately:
   (see [Encoding a title again](#encoding-a-title-again)),
   `clearReencodeQueue` (see [The re-encode queue](#the-re-encode-queue)),
   `replaceSource` (see [Replacing a title's file](#replacing-a-titles-file)),
-  `backfillSourceProbes`, `backfillRatings` and `setMinAgeOverride` (see
+  `backfillSourceProbes`, `backfillSourceSizes`, `backfillRatings` and `setMinAgeOverride` (see
   [Ratings](#ratings); an item's `ageRating` says what it is rated),
   `setTrackLanguage` and `backfillSourceTracks` (see
   [Track languages](#track-languages); an item's `tracks` are its source's
@@ -687,9 +687,14 @@ A scan that ends after all, late, writes its end over the failure.
 
 A title's source asset keeps what the workers probed it as: the codec and
 resolution the transcoder reports in its step's details, the duration the
-packager gives in its manifest, the bit rate from size and duration.
+packager gives in its manifest, the bit rate from size and duration; and the
+size its source records once the original is recorded (packaging-complete,
+the adopt), which the scanner takes from the file when it measures its quick
+hash. A probe that says nothing of a value leaves the value the asset had.
 `backfillSourceProbes` fills what the sources probed before lack, from the
-catalog's records.
+catalog's records; `backfillSourceSizes` gives every source asset whose
+original is recorded and there the size its source records, where it has
+another or none, and answers how many.
 
 ## Ingest
 

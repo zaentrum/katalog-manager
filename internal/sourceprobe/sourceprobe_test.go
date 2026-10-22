@@ -207,3 +207,69 @@ func TestBackfillOfMoreThanABatch(t *testing.T) {
 		t.Errorf("%d sources filled", n)
 	}
 }
+
+// FillEmpty fills what is empty and forgets nothing: a source whose size a
+// scan could not read (0), and whose packaging says only its duration, keeps
+// the size it had, where it was made none before; an empty codec that the
+// probe does not say stays as it was too.
+func TestFillEmptyForgetsNothing(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	addSource(t, st, "m1", `sizebytes = 0, codec = ''`)
+	if err := FillEmpty(ctx, st.Pool(), "m1", Probe{DurationMs: n(1329495)}); err != nil {
+		t.Fatal(err)
+	}
+	var size *int64
+	var codec *string
+	if err := st.Pool().QueryRow(ctx, `SELECT sizebytes, codec FROM com_nalet_katalog_playbackassets WHERE id = 'src-m1'`).
+		Scan(&size, &codec); err != nil {
+		t.Fatal(err)
+	}
+	if size == nil || *size != 0 || codec == nil || *codec != "" {
+		t.Errorf("after a probe of the duration alone: size %v, codec %v; want 0 and the empty codec kept", size, codec)
+	}
+	if err := FillEmpty(ctx, st.Pool(), "m1", Probe{SizeBytes: n(884410294), Codec: s("h264")}); err != nil {
+		t.Fatal(err)
+	}
+	if got := asset(t, st, "m1"); got != "h264 - 1329495 5321 884410294" {
+		t.Errorf("after a probe of the size and the codec: %s", got)
+	}
+}
+
+// FillSizes gives a source asset whose original is recorded and there the
+// size its source records, in place of another or none: a scan's of the file
+// before it was all there, or one of an earlier file at its path. An
+// original not recorded yet, or retired, keeps the size it has; a second run
+// changes nothing.
+func TestFillSizesGivesASourceItsRecordedSize(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		item, asset, recorded, state string
+		size                         int64
+	}{
+		{"stale", "765321764", "now()", "present", 884410294},
+		{"none", "NULL", "now()", "present", 2373582243},
+		{"same", "100", "now()", "present", 100},
+		{"unrecorded", "100", "NULL", "present", 200},
+		{"retired", "100", "now()", "deleted", 300},
+	} {
+		addSource(t, st, tc.item, "sizebytes = "+tc.asset+", sourceid = 's-'||item_id")
+		storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state, recordedat)
+			VALUES ('s-'||$1::varchar, $1::varchar, 'original.mkv', $2, $3, `+tc.recorded+`)`, tc.item, tc.size, tc.state)
+	}
+	if n, err := FillSizes(ctx, st.Pool()); err != nil || n != 2 {
+		t.Fatalf("FillSizes: %d, %v; want 2", n, err)
+	}
+	for item, want := range map[string]string{"stale": "884410294", "none": "2373582243", "same": "100", "unrecorded": "100",
+		"retired": "100"} {
+		var got string
+		if err := st.Pool().QueryRow(ctx, `SELECT COALESCE(sizebytes::text, '-') FROM com_nalet_katalog_playbackassets
+			WHERE id = 'src-'||$1::varchar`, item).Scan(&got); err != nil || got != want {
+			t.Errorf("%s: size %s, %v; want %s", item, got, err, want)
+		}
+	}
+	if n, err := FillSizes(ctx, st.Pool()); err != nil || n != 0 {
+		t.Errorf("a second run: %d, %v; want none", n, err)
+	}
+}

@@ -654,6 +654,15 @@ func (r *Resolver) BackfillSourceProbes(ctx context.Context) (*sourceProbeBackfi
 	return &sourceProbeBackfillResultResolver{m: res}, nil
 }
 
+// BackfillSourceSizes gives the recorded sources' assets the sizes their
+// sources record (sourceprobe.FillSizes).
+func (r *Resolver) BackfillSourceSizes(ctx context.Context) (int32, error) {
+	if err := r.allow(ctx, "Mutation.backfillSourceSizes"); err != nil {
+		return 0, err
+	}
+	return sourceprobe.FillSizes(ctx, r.store.Pool())
+}
+
 // BackfillSourceTracks records the tracks of the packaged titles' sources
 // from their packages' manifests on disk (sourcetracks.Backfill).
 func (r *Resolver) BackfillSourceTracks(ctx context.Context) (*sourceTrackBackfillResultResolver, error) {

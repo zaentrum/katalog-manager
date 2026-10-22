@@ -518,8 +518,12 @@ func recordTheSource(ctx context.Context, tx pgx.Tx, itemID, itemDir, sourceID s
 	if orig == nil {
 		return nil
 	}
-	_, err = tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET path = $3, sourceid = $2
-		WHERE item_id = $1 AND COALESCE(kind, 'primary') = 'primary' AND (sourceid = $2 OR (sourceid IS NULL AND path = $4))`,
+	// The asset of the title's file is of the original the source records,
+	// and has its size: the size a scan once saw may be of the file before it
+	// was all there, or none.
+	_, err = tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets a SET path = $3, sourceid = $2::varchar,
+			sizebytes = COALESCE((SELECT s.sizebytes FROM com_nalet_katalog_itemsources s WHERE s.id = $2::varchar), a.sizebytes)
+		WHERE a.item_id = $1 AND COALESCE(a.kind, 'primary') = 'primary' AND (a.sourceid = $2::varchar OR (a.sourceid IS NULL AND a.path = $4))`,
 		itemID, sourceID, orig.path, orig.from)
 	return err
 }

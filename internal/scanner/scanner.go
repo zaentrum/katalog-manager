@@ -366,6 +366,12 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 		}
 		res.itemsInserted++
 
+		// The size the file has when its quick hash was taken, which its
+		// source records too: the directory entry's may be from before the
+		// file was all there, or none (0) when it could not be read.
+		if fixity != nil {
+			size = fixity.size
+		}
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO com_nalet_katalog_playbackassets
 			   (id, item_id, path, sizebytes, isprimary)
@@ -410,8 +416,10 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 		}
 		res.itemsUpdated++
 
+		// An entry that could not be read says nothing of the size (0).
 		if _, err := pool.Exec(ctx,
-			`UPDATE com_nalet_katalog_playbackassets SET sizebytes = $1, isprimary = true WHERE path = $2`,
+			`UPDATE com_nalet_katalog_playbackassets SET sizebytes = COALESCE(NULLIF($1::bigint, 0), sizebytes), isprimary = true
+			 WHERE path = $2`,
 			size, absPath); err != nil {
 			return
 		}

@@ -143,19 +143,21 @@ func Fill(ctx context.Context, pool Execer, itemID string, p Probe) (bool, error
 }
 
 // FillEmpty is Fill for what item's source does not hold yet: a value it has
-// stays (an estimate never replaces what a probe said).
+// stays (an estimate never replaces what a probe said), and so does an empty
+// one, a 0 or an empty text, that the probe says nothing of: what the probe
+// does not say is no reason to forget what the row held.
 func FillEmpty(ctx context.Context, pool Execer, itemID string, p Probe) error {
 	if p.Empty() {
 		return nil
 	}
 	_, err := pool.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET
-			codec       = COALESCE(NULLIF(codec, ''), $2),
-			resolution  = COALESCE(NULLIF(resolution, ''), $3),
-			durationms  = COALESCE(NULLIF(durationms, 0), $4),
-			sizebytes   = COALESCE(NULLIF(sizebytes, 0), $6),
+			codec       = COALESCE(NULLIF(codec, ''), $2, codec),
+			resolution  = COALESCE(NULLIF(resolution, ''), $3, resolution),
+			durationms  = COALESCE(NULLIF(durationms, 0), $4, durationms),
+			sizebytes   = COALESCE(NULLIF(sizebytes, 0), $6, sizebytes),
 			bitratekbps = COALESCE(NULLIF(bitratekbps, 0), $5::bigint,
 				CASE WHEN COALESCE(NULLIF(durationms, 0), $4) > 0 AND COALESCE(NULLIF(sizebytes, 0), $6) > 0
-				     THEN COALESCE(NULLIF(sizebytes, 0), $6) * 8 / COALESCE(NULLIF(durationms, 0), $4) END)
+				     THEN COALESCE(NULLIF(sizebytes, 0), $6) * 8 / COALESCE(NULLIF(durationms, 0), $4) END, bitratekbps)
 		WHERE `+source+` AND item_id = $1`,
 		itemID, p.Codec, p.Resolution, p.DurationMs, p.BitrateKbps, p.SizeBytes)
 	if err != nil {
