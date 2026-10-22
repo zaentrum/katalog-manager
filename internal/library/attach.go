@@ -132,27 +132,55 @@ func SubtitlesOf(ctx context.Context, q Querier, id string) ([]Subtitle, error) 
 	return out, rows.Err()
 }
 
-// AttachableVersion is the version of the item id a subtitle is attached to:
-// the complete one, the one that plays, in its folder. NotAttachable when it
-// has none: a title not packaged yet, or packaged before the library.
+// notAttachable is why a title takes no attached subtitle: it has no version
+// in the library whose timing one follows.
+const notAttachable = "the title has no version in the library to attach a subtitle to, packaged or taken in: the file it plays " +
+	"is not in the library yet, or it was packaged before the library"
+
+// AttachableVersion is the version of the item id a subtitle is attached to,
+// in its folder: its complete one, whose package plays; else, for a title
+// that has none, the version its file is taken in to (migration 044: its
+// folder holds the original the title plays from, and no package), the one
+// a package is added to later (TakenOf), which keeps its id, and the
+// subtitle, when it is complete. A version being built (its folder not
+// written yet), superseded or removed is none, nor is one taken in of a
+// file the title does not play any more (it was given another since).
+// NotAttachable when it has none: a title not in the library yet, or
+// packaged before it.
 func AttachableVersion(ctx context.Context, q Querier, id string) (*Version, error) {
 	v, err := Current(ctx, q, id)
 	if err != nil {
 		return nil, err
 	}
+	if v == nil {
+		if v, err = takenFor(ctx, q, id); err != nil {
+			return nil, err
+		}
+	}
 	if v == nil || v.Dir == nil || *v.Dir == "" {
-		return nil, &NotAttachable{Reason: "the title has no package in the library to attach a subtitle to: it is not packaged yet, or was packaged before the library"}
+		return nil, &NotAttachable{Reason: notAttachable}
 	}
 	return v, nil
 }
 
+// takenFor is the version taken in of the item id's file, the source its
+// primary asset names; nil when it has none.
+func takenFor(ctx context.Context, q Querier, id string) (*Version, error) {
+	s, err := PrimarySource(ctx, q, id)
+	if err != nil || s == nil || s.ItemID != id {
+		return nil, err
+	}
+	return TakenOf(ctx, q, s)
+}
+
 // Attach attaches a to the item id: its file written into the subs/ folder
-// of the version that plays, named by its bytes (AttachedName), and its row
-// recorded with how it was made, the version it follows and who attached it,
-// not default; under the item's lock, in one transaction. The same file of
-// the same language, forced and SDH, attached again is the subtitle there is
-// (created false), its file written again when it is gone. NotAttachable
-// when the item has no version to attach it to.
+// of the version it follows (AttachableVersion), named by its bytes
+// (AttachedName), and its row recorded with how it was made, that version
+// and who attached it, not default; under the item's lock, in one
+// transaction. The same file of the same language, forced and SDH, attached
+// again is the subtitle there is (created false), its file written again
+// when it is gone. NotAttachable when the item has no version to attach it
+// to.
 func Attach(ctx context.Context, pool *pgxpool.Pool, id string, a Attachment, now time.Time) (Subtitle, bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -210,7 +238,9 @@ func writeAttached(path string, vtt []byte) error {
 // Detach removes the subtitle sub attached to the item id, for by (the client
 // of the caller's token; admin: any attached subtitle): its row, and its file
 // once no row names it, unless the version's checksums list the file (a
-// migration's fill hashed it into the chain, which must keep holding).
+// migration's fill hashed it into the chain, which must keep holding), and
+// the version's subs/ with the last file in it: a version taken in had none
+// before, and a package is added to a folder without one.
 // ErrNoSuchSubtitle, ErrNotAttached and ErrAttachedByOther refuse it.
 func Detach(ctx context.Context, pool *pgxpool.Pool, id, sub, by string, admin bool) error {
 	tx, err := pool.Begin(ctx)
@@ -244,6 +274,8 @@ func Detach(ctx context.Context, pool *pgxpool.Pool, id, sub, by string, admin b
 	if others == 0 && !listedInChain(s.Path) {
 		if err := os.Remove(s.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Printf("subtitles: the file of the subtitle %s removed from %s stays: %v", sub, id, err)
+		} else if subs := filepath.Dir(s.Path); filepath.Base(subs) == "subs" {
+			_ = os.Remove(subs) // once empty: one that holds a file stays
 		}
 	}
 	return tx.Commit(ctx)
@@ -263,10 +295,12 @@ func listedInChain(path string) bool {
 
 // CarryAttached carries, in tx, the subtitles attached to the item id over to
 // its version versionID, whose package completes in versionDir: one attached
-// to a version made of the same sources is timed to this one too, so its
-// file is copied into this version's subs/ under its name and its row points
-// there; one attached to a version of another file is not. It answers the
-// ids of the subtitles it carried; the others' rows go with the package's.
+// to this version (taken in, the package added to its folder now) is in its
+// subs/ already, and stays as it is; one attached to a version made of the
+// same sources is timed to this one too, so its file is copied into this
+// version's subs/ under its name and its row points there; one attached to a
+// version of another file is not. It answers the ids of the subtitles it
+// carried; the others' rows go with the package's.
 // A file that cannot be copied is not carried, and said in the log: a
 // package is never refused for an attached subtitle. A catalog without
 // migration 048 has none: its columns are looked for first, since a query

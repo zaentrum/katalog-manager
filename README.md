@@ -277,8 +277,8 @@ the base schema in the order of their numbers, and each is idempotent:
   which [ingest by identity](#by-identity) and katalog-api's holdings read.
   Applied at startup when any of them is missing.
 - `048_attached_subtitles.sql` gives a subtitle what the catalog keeps of
-  one [attached to a title](#attached-subtitles) after its package
-  completed: `origin` (how it was made; null for the title's own), `issdh`,
+  one [attached to a title](#attached-subtitles) once its version is in the
+  library: `origin` (how it was made; null for the title's own), `issdh`,
   `versionid` (the version it follows), `sha256` (its file's hash, which
   names the file), `attachedby` and `attachedat`. Applied at startup when
   any of them is missing; without it no subtitle can be attached, and a
@@ -794,10 +794,11 @@ the episodes its file covers.
 ## Attached subtitles
 
 A title plays the subtitles its package made of its source and the subtitle
-files beside its source. A subtitle can also be **attached** to it after its
-package completed — made from its audio or from another of its subtitles, or
-found elsewhere — by an admin, the service account or an addon, and every
-player lists and plays it as any other: nothing is encoded or packaged again.
+files beside its source. A subtitle can also be **attached** to it once its
+version is in the library — its package completed, or its original taken in
+without one — made from its audio or from another of its subtitles, or found
+elsewhere, by an admin, the service account or an addon, and every player
+lists and plays it as any other: nothing is encoded or packaged again.
 
 `POST /api/library/items/{id}/subtitles` attaches one:
 
@@ -827,16 +828,19 @@ player lists and plays it as any other: nothing is encoded or packaged again.
   player names it "German", "German · SDH", "German · AI". `forced` is a
   subtitle a player shows by itself (signs, a line in another language).
 
-The file is written into the `subs/` folder of the version that plays, as
+The file is written into the `subs/` folder of the version it follows — the
+title's complete version, whose package plays, else the version its file is
+taken in to (its original and no package, which the title plays from) — as
 `attached-<sha256>.<language>[.forced][.sdh].vtt`, `<sha256>` its bytes'
 hash, and its row is the title's subtitle (`com_nalet_katalog_subtitleassets`),
 never the default, with its origin, the version it follows, its hash and the
 client of the caller's token that attached it (`attachedby`). The answer is
 `201 {"itemId", "created": true, "subtitle": {…}}`; the same file of the same
 language and flags attached again is the subtitle there is, `200` with
-`created: false`. A title with no version in the library — not packaged yet,
-packaged before the library, a series — is `409`, saying so; an episode
-another's file covers answers for its holder, whose file it is (`itemId`).
+`created: false`. A title with no such version — neither packaged nor taken
+in (its file not in the library yet, or a new one since), packaged before the
+library, a series — is `409`, saying so; an episode another's file covers
+answers for its holder, whose file it is (`itemId`).
 
 Players reach it as they reach every subtitle of a title: katalog-api lists
 the title's rows (`include=subtitles`), chino-api gives each its URL, and
@@ -844,19 +848,21 @@ chino-stream serves the file from the library. The package's records stay as
 they were written: `package.json` and `checksums.sha256` do not list an
 attached subtitle, its name being its check instead — a version's chain
 holds with it, and a full verification holds its bytes to its name (see
-[The library](#the-library)).
+[The library](#the-library)). When a package is added to a version taken in,
+packaging-complete keeps the version, its id and its folder, and the
+subtitles attached to it stay with it.
 
 `GET /api/library/items/{id}/subtitles` lists the title's subtitles, its own
 first (`origin: null`, `attached: false`) and then those attached to it,
 each with its language, label, format, forced, SDH, origin, the version it
 follows and who attached it when; and the version a subtitle is attached to
-now (`versionId`, `attachable`), or why there is none (`reason`). With
-`?fingerprint=true` it reads 128 KiB of the original and says what subtitle
-sources match a file by — `original: {sizeBytes, sum64, labels}`: its size,
-the 16 hex digits of its size plus its first and last 64 KiB summed as
-little-endian 64-bit words, and what its name claimed (its source record's
-`labels`) — or `original: null` and why (`originalNote`: deleted after
-packaging, unreadable).
+now (`versionId`, `attachable`: complete, or taken in), or why there is none
+(`reason`). With `?fingerprint=true` it reads 128 KiB of the original and
+says what subtitle sources match a file by — `original: {sizeBytes, sum64,
+labels}`: its size, the 16 hex digits of its size plus its first and last
+64 KiB summed as little-endian 64-bit words, and what its name claimed (its
+source record's `labels`) — or `original: null` and why (`originalNote`:
+deleted after packaging, unreadable).
 
 `GET /api/library/subtitles/languages` names the languages every title is
 to have a subtitle in, as tags, in the order the setting names them:
@@ -866,9 +872,9 @@ whitelist, the languages a player shows; none when neither is.
 
 `DELETE /api/library/items/{id}/subtitles/{subtitleId}` removes a subtitle
 attached to the title: one the caller attached (its token's client), or, for
-an admin, any; its row and its file go. It is `204`, also for a subtitle the
-title has not (removed already); one of the title's own is `409`, one another
-client attached `403`.
+an admin, any; its row and its file go, and the version's `subs/` with the
+last file in it. It is `204`, also for a subtitle the title has not (removed
+already); one of the title's own is `409`, one another client attached `403`.
 
 **A new version** of the title made of the same sources carries the attached
 subtitles over: their files are copied into its `subs/` and their rows follow

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -185,8 +186,8 @@ func TestAnAttachIsRefused(t *testing.T) {
 		return w.Code, w.Body.String()
 	}
 	ok := map[string]any{"language": "de", "origin": "provider", "content": germanSRT}
-	if code, body := post(filmItem, attachBody(t, ok)); code != http.StatusConflict || !strings.Contains(body, "no package in the library") {
-		t.Errorf("a title not packaged: %d %s", code, body)
+	if code, body := post(filmItem, attachBody(t, ok)); code != http.StatusConflict || !strings.Contains(body, "no version in the library") {
+		t.Errorf("a title not packaged nor taken in: %d %s", code, body)
 	}
 	if code, body := post("00000000-0000-4000-8000-00000000dead", attachBody(t, ok)); code != http.StatusNotFound {
 		t.Errorf("no such title: %d %s", code, body)
@@ -356,6 +357,271 @@ func TestAVersionOfTheSameFileCarriesTheAttachedSubtitles(t *testing.T) {
 	}
 	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_subtitleassets WHERE origin IS NOT NULL`); n != 0 {
 		t.Errorf("%d attached subtitles follow a version of another file", n)
+	}
+}
+
+// takenFilm is the v2 film taken in: its version taken, its folder holding
+// its version.json and the original the title plays from, and no package.
+// It answers the film.
+func takenFilm(t *testing.T) *v2Film {
+	t.Helper()
+	f := newV2Film(t)
+	moved := f.renameIn(t, f.arrived(t), filmVersion)
+	vdir := library.VersionDir(f.itemDir, filmVersion)
+	librarytest.Write(t, filepath.Join(vdir, library.VersionFile), librarytest.JSON(t, map[string]any{
+		"schema": "zaentrum.library.version/2", "versionId": filmVersion, "sourceIds": []string{filmSource},
+		"originalFiles": []string{"original.mkv"}}))
+	if code, answer := f.complete(t, takeInPayload(vdir, moved)); code != http.StatusOK || answer["takenIn"] != true {
+		t.Fatalf("the take-in: %d %v", code, answer)
+	}
+	return f
+}
+
+// attachTo attaches the German subtitle, made from the title's audio, to the
+// item for the token, and answers it.
+func (f *v2Film) attachTo(t *testing.T, item, token string) library.Subtitle {
+	t.Helper()
+	w := do(f.h, http.MethodPost, "/api/library/items/"+item+"/subtitles",
+		attachBody(t, map[string]any{"language": "ger", "origin": "transcribed", "content": germanSRT}), token)
+	var answer struct {
+		Sub library.Subtitle `json:"subtitle"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &answer); err != nil || w.Code != http.StatusCreated {
+		t.Fatalf("attach: %d %s", w.Code, w.Body)
+	}
+	return answer.Sub
+}
+
+// germanFile is where the German subtitle attached to the version vid of the
+// film lies: in its subs/, named by its bytes.
+func (f *v2Film) germanFile(vid string) string {
+	sum := sha256.Sum256([]byte(germanVTT))
+	return library.AttachedPath(library.VersionDir(f.itemDir, vid), library.AttachedName(hex.EncodeToString(sum[:]), "de", false, false))
+}
+
+// attachable is what the seam says of the film's version a subtitle is
+// attached to: its id, whether it is, why not, and the ids of the subtitles
+// attached to it, with the version each follows.
+func (f *v2Film) attachable(t *testing.T, token string) (string, bool, string, []string) {
+	t.Helper()
+	w := do(f.h, http.MethodGet, "/api/library/items/"+filmItem+"/subtitles", "", token)
+	var answer struct {
+		VersionID  *string            `json:"versionId"`
+		Attachable bool               `json:"attachable"`
+		Reason     string             `json:"reason"`
+		Subtitles  []library.Subtitle `json:"subtitles"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &answer); err != nil || w.Code != http.StatusOK {
+		t.Fatalf("the title's subtitles: %d %s", w.Code, w.Body)
+	}
+	id := func(s *string) string {
+		if s == nil {
+			return ""
+		}
+		return *s
+	}
+	var attached []string
+	for _, s := range answer.Subtitles {
+		if s.Attached {
+			attached = append(attached, s.ID+"@"+id(s.VersionID))
+		}
+	}
+	return id(answer.VersionID), answer.Attachable, answer.Reason, attached
+}
+
+// A title taken in, its original in its version's folder and no package,
+// plays from that original, and takes a subtitle as a packaged one does: the
+// seam says so, its version the one taken in. The file goes into the subs/
+// of that version, beside its record and its original, named by its bytes,
+// and its row follows the version, labelled by how it was made, not default.
+// A player lists it and plays it, and the title still plays its original.
+// Removed, the subtitle takes its file with it, and the folder it made: the
+// version is as it was taken in.
+func TestASubtitleIsAttachedToAVersionTakenIn(t *testing.T) {
+	f := takenFilm(t)
+	addon := f.iss.Addon(t)
+	if v, ok, why, attached := f.attachable(t, addon); v != filmVersion || !ok || why != "" || len(attached) != 0 {
+		t.Fatalf("taken in: %s %v %q %v", v, ok, why, attached)
+	}
+	s := f.attachTo(t, filmItem, addon)
+	path := f.germanFile(filmVersion)
+	if b, err := os.ReadFile(path); err != nil || string(b) != germanVTT {
+		t.Fatalf("the file at %s: %q %v", path, b, err)
+	}
+	if s.Language != "de" || s.Format != "webvtt" || s.Label == nil || *s.Label != "AI" || s.Origin == nil ||
+		*s.Origin != "transcribed" || !s.Attached || s.VersionID == nil || *s.VersionID != filmVersion {
+		t.Errorf("the subtitle: %+v", s)
+	}
+	sum := sha256.Sum256([]byte(germanVTT))
+	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_subtitleassets WHERE id = $1 AND item_id = $2
+		AND path = $3 AND versionid = $4 AND origin = 'transcribed' AND label = 'AI' AND NOT isdefault AND NOT isforced
+		AND NOT issdh AND sha256 = $5 AND attachedby = 'example-addon' AND attachedat IS NOT NULL`,
+		s.ID, filmItem, path, filmVersion, hex.EncodeToString(sum[:])); n != 1 {
+		t.Error("the row is not the subtitle attached to the version taken in")
+	}
+	vdir := library.VersionDir(f.itemDir, filmVersion)
+	if got := strings.Join(fileNames(t, vdir), " "); got != "original.mkv subs version.json" {
+		t.Errorf("the version taken in holds %s", got)
+	}
+	if got := strings.Join(fileNames(t, filepath.Join(vdir, "subs")), " "); got != filepath.Base(path) {
+		t.Errorf("its subs/ holds %s", got)
+	}
+	if v, ok, _, attached := f.attachable(t, addon); v != filmVersion || !ok || strings.Join(attached, ",") != s.ID+"@"+filmVersion {
+		t.Errorf("attached: %s %v %v", v, ok, attached)
+	}
+
+	viewer := f.iss.Viewer(t)
+	if w := do(f.h, http.MethodGet, "/api/subtitles/items/"+filmItem, "", viewer); !strings.Contains(w.Body.String(), `"id":"`+s.ID+`"`) {
+		t.Errorf("the title's subtitles: %s", w.Body)
+	}
+	if w := do(f.h, http.MethodGet, "/api/subtitles/"+s.ID, "", viewer); w.Code != http.StatusOK || w.Body.String() != germanVTT {
+		t.Errorf("the subtitle served: %d %q", w.Code, w.Body)
+	}
+	original := filepath.Join(vdir, "original.mkv")
+	if w := do(f.h, http.MethodGet, "/api/play/"+filmItem, "", viewer); w.Code != http.StatusOK ||
+		w.Header().Get("Content-Disposition") != `inline; filename="original.mkv"` {
+		t.Errorf("the title plays %d %q, want its original %s", w.Code, w.Header().Get("Content-Disposition"), original)
+	}
+
+	if w := do(f.h, http.MethodDelete, "/api/library/items/"+filmItem+"/subtitles/"+s.ID, "", addon); w.Code != http.StatusNoContent {
+		t.Fatalf("remove: %d %s", w.Code, w.Body)
+	}
+	if got := strings.Join(fileNames(t, vdir), " "); got != "original.mkv version.json" {
+		t.Errorf("the version taken in holds %s once the subtitle is removed", got)
+	}
+	if v, ok, _, attached := f.attachable(t, addon); v != filmVersion || !ok || len(attached) != 0 {
+		t.Errorf("removed: %s %v %v", v, ok, attached)
+	}
+}
+
+// The package added to a version taken in keeps the version, its id and its
+// folder, and with them a subtitle attached to it meanwhile: the package's
+// files go in beside it, and packaging-complete leaves its row as it is
+// (CarryAttached), the version it follows now complete, while the
+// package's own subtitles are recorded. The chain the package closes does
+// not list it, and holds with it, in full too.
+func TestASubtitleAttachedWhileTakenInStaysWithItsVersion(t *testing.T) {
+	f := takenFilm(t)
+	addon := f.iss.Addon(t)
+	s := f.attachTo(t, filmItem, addon)
+	path, vdir := f.germanFile(filmVersion), library.VersionDir(f.itemDir, filmVersion)
+	follows := func(what string) {
+		t.Helper()
+		if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_subtitleassets WHERE id = $1 AND path = $2
+			AND versionid = $3 AND origin = 'transcribed'`, s.ID, path, filmVersion); n != 1 {
+			t.Errorf("%s: the subtitle does not follow the version", what)
+		}
+		if b, err := os.ReadFile(path); err != nil || string(b) != germanVTT {
+			t.Errorf("%s: its file %q %v", what, b, err)
+		}
+		if v, ok, _, attached := f.attachable(t, addon); v != filmVersion || !ok || strings.Join(attached, ",") != s.ID+"@"+filmVersion {
+			t.Errorf("%s: %s %v %v", what, v, ok, attached)
+		}
+	}
+
+	// The package added: the version is complete, with the subtitle.
+	complete := f.versionOf(t, filmVersion, filmPackage, originalNamed)
+	if code, m := f.complete(t, f.payload(filmVersion, filmPackage, complete)); code != http.StatusOK || m["current"] != true {
+		t.Fatalf("the package added: %d %v", code, m)
+	}
+	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_itemversions WHERE id = $1 AND state = 'complete'
+		AND packageid = $2 AND dir = $3`, filmVersion, filmPackage, vdir); n != 1 {
+		t.Error("the version is not complete with its package")
+	}
+	follows("the package added")
+	if got, want := subtitleRows(t, f.st, filmItem), fmt.Sprintf(`s-de %[1]s/A Film (2024)/A Film (2024).de.srt de false false
+%%s %[2]s/subs/0.vtt ger false false
+%%s %[2]s/subs/1.vtt spa false true
+%[3]s %[4]s de false false`, f.cfg.Roots(true).Arrivals, vdir, s.ID, path); !sameIgnoringIDs(got, want) {
+		t.Errorf("the subtitles:\n%s\nwant:\n%s", got, want)
+	}
+	c, err := library.VerifyVersion(vdir, true)
+	if err != nil {
+		t.Fatalf("the version's chain: %v", err)
+	}
+	if _, listed := c.Listed["subs/"+filepath.Base(path)]; listed {
+		t.Error("the chain lists the subtitle attached to the version")
+	}
+	if _, err := os.Stat(filepath.Join(vdir, "original.mkv")); err != nil {
+		t.Errorf("the original: %v", err)
+	}
+	viewer := f.iss.Viewer(t)
+	if w := do(f.h, http.MethodGet, "/api/subtitles/"+s.ID, "", viewer); w.Code != http.StatusOK || w.Body.String() != germanVTT {
+		t.Errorf("the subtitle served: %d %q", w.Code, w.Body)
+	}
+}
+
+// A subtitle attached while the title was taken in goes on as any other
+// once its version is complete: a new version of the same file carries it
+// over (its file copied into the new version's subs/, its row following
+// it), and the version it was attached to is superseded.
+func TestANewVersionOfTheSameFileCarriesWhatWasAttachedWhileTakenIn(t *testing.T) {
+	f := takenFilm(t)
+	addon := f.iss.Addon(t)
+	s := f.attachTo(t, filmItem, addon)
+	if code, m := f.complete(t, f.payload(filmVersion, filmPackage, f.versionOf(t, filmVersion, filmPackage, originalNamed))); code != http.StatusOK {
+		t.Fatalf("the package added: %d %v", code, m)
+	}
+	const next, nextPkg = "77c10000-0000-4000-8000-000000000006", "88c10000-0000-4000-8000-000000000007"
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state) VALUES ($1, $2, $3, 'building')`,
+		next, filmItem, []string{filmSource})
+	if code, m := f.complete(t, f.payload(next, nextPkg, f.version(t, next, nextPkg))); code != http.StatusOK || m["superseded"] != filmVersion {
+		t.Fatalf("the next version: %d %v", code, m)
+	}
+	moved := f.germanFile(next)
+	if b, err := os.ReadFile(moved); err != nil || string(b) != germanVTT {
+		t.Fatalf("the file in the new version: %q %v", b, err)
+	}
+	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_subtitleassets WHERE id = $1 AND path = $2
+		AND versionid = $3 AND label = 'AI'`, s.ID, moved, next); n != 1 {
+		t.Error("the attached subtitle does not follow the new version")
+	}
+	if v, ok, _, attached := f.attachable(t, addon); v != next || !ok || strings.Join(attached, ",") != s.ID+"@"+next {
+		t.Errorf("the new version: %s %v %v", v, ok, attached)
+	}
+	if _, err := library.VerifyVersion(library.VersionDir(f.itemDir, next), true); err != nil {
+		t.Errorf("the new version's chain: %v", err)
+	}
+}
+
+// The version taken in of a file the title plays no more (it was given
+// another, which has no version yet) takes no subtitle: the seam says why,
+// an attach is 409, and nothing is written into its folder. An episode
+// another's file covers attaches to its holder's version taken in.
+func TestOnlyTheVersionTakenInOfTheFileThatPlaysTakesASubtitle(t *testing.T) {
+	f := takenFilm(t)
+	addon := f.iss.Addon(t)
+	const covered = "e2e2e2e2-0000-4000-8000-000000000002"
+	storetest.AddItem(t, f.st, covered, "episode", "The Second Half", "")
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_items SET coveredby = $1 WHERE id = $2`, filmItem, covered)
+	s := f.attachTo(t, covered, addon)
+	if s.VersionID == nil || *s.VersionID != filmVersion {
+		t.Errorf("a covered episode's subtitle: %+v", s)
+	}
+	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_subtitleassets WHERE item_id = $1 AND versionid = $2
+		AND origin IS NOT NULL`, filmItem, filmVersion); n != 1 {
+		t.Error("the subtitle is not the holder's")
+	}
+
+	// Given another file.
+	const other = "0b6c0000-0000-4000-8000-000000000013"
+	arrival := f.cfg.Roots(true).Arrivals + "/A Film (2024)/A Film (2024) Remastered.mkv"
+	librarytest.Write(t, arrival, []byte("another file"))
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, librarypath, sizebytes, state)
+		VALUES ($1, $2, 'A Film (2024) Remastered.mkv', $3, 'A Film (2024)/A Film (2024) Remastered.mkv', 12, 'present')`,
+		other, filmItem, arrival)
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_playbackassets SET path = $2, sourceid = $3 WHERE id = 'src-f1' AND item_id = $1`,
+		filmItem, arrival, other)
+	if v, ok, why, _ := f.attachable(t, addon); v != "" || ok || !strings.Contains(why, "no version in the library") {
+		t.Errorf("given another file: %q %v %q", v, ok, why)
+	}
+	w := do(f.h, http.MethodPost, "/api/library/items/"+filmItem+"/subtitles",
+		attachBody(t, map[string]any{"language": "en", "origin": "provider", "content": germanVTT}), addon)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "no version in the library") {
+		t.Errorf("an attach to it: %d %s", w.Code, w.Body)
+	}
+	if got := strings.Join(fileNames(t, filepath.Join(library.VersionDir(f.itemDir, filmVersion), "subs")), " "); got != filepath.Base(f.germanFile(filmVersion)) {
+		t.Errorf("the old file's version holds %s", got)
 	}
 }
 

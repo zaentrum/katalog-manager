@@ -153,10 +153,10 @@ func (h *Handlers) Register(r chi.Router) {
 	// an operator's tool, a deployment's Job or an addon.
 	r.With(pol.Require(auth.Ingest)).Post("/api/extras", h.postExtra)
 
-	// A subtitle attached to a title after its package completed (the attach
-	// seam, attached.go): the languages every title is to have one in, the
-	// title's subtitles and what its original is matched by, an attach, and
-	// the removal of one attached.
+	// A subtitle attached to a title once its version is in the library,
+	// packaged or taken in (the attach seam, attached.go): the languages
+	// every title is to have one in, the title's subtitles and what its
+	// original is matched by, an attach, and the removal of one attached.
 	r.Group(func(r chi.Router) {
 		r.Use(pol.Require(auth.Ingest))
 		r.Get("/api/library/subtitles/languages", h.getSubtitleLanguages)

@@ -19,12 +19,14 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/webvtt"
 )
 
-// The attach seam: a subtitle attached to a title after its package
-// completed, from whoever makes or finds one (an addon, the platform's
-// subtitle step of ADR-0014, an admin). Its file goes beside the package, in
-// the subs/ folder of the version that plays, and its row makes every player
-// list it and play it, through the catalog's subtitles as any other: nothing
-// is packaged again.
+// The attach seam: a subtitle attached to a title once its version is in the
+// library — its package completed, or its original taken in without one —
+// from whoever makes or finds one (an addon, the platform's subtitle step of
+// ADR-0014, an admin). Its file goes into the subs/ folder of the version it
+// follows (library.AttachableVersion), beside the package or where the
+// package of a version taken in is added later, and its row makes every
+// player list it and play it, through the catalog's subtitles as any other:
+// nothing is packaged again.
 
 // maxAttachBody is the most a POST of the attach seam may send: a subtitle's
 // text, as JSON, of a long film with every line twice.
@@ -58,7 +60,8 @@ func (h *Handlers) attachedItem(w http.ResponseWriter, r *http.Request) (string,
 
 // getItemSubtitles answers GET /api/library/items/{itemId}/subtitles: the
 // title's subtitles, its own and the ones attached to it, the version a
-// subtitle is attached to now (attachable, else why not), and with
+// subtitle is attached to now (attachable: complete, or taken in; else why
+// not), and with
 // ?fingerprint=true what subtitle sources match its original by: its size,
 // its Sum64 and what its name claimed (the source record's labels), or why
 // there is none.
@@ -170,7 +173,8 @@ type attachRequest struct {
 // text does), kept as WebVTT. 201 with the subtitle, 200 with the one there
 // is for the same file of the same language and flags; 400 for a body that
 // does not say what the subtitle is, 409 for a title with no version to
-// attach to, 413 for one too large, 422 for content that is no subtitle.
+// attach to (neither packaged nor taken in), 413 for one too large, 422 for
+// content that is no subtitle.
 func (h *Handlers) attachSubtitle(w http.ResponseWriter, r *http.Request) {
 	id, _, ok := h.attachedItem(w, r)
 	if !ok {

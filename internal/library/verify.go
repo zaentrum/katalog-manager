@@ -70,8 +70,9 @@ var ErrChecksumsPending = errors.New("its package's checksums are pending: no fi
 // hls/, subs/ and trickplay/, as many as it says and of the bytes it says,
 // and version.json's digest. full hashes every listed file too.
 //
-// A subtitle attached to the version after its package completed
-// (attached.go) is no file of the package, and its chain does not cover it:
+// A subtitle attached to the version (attached.go), after its package
+// completed or before, while the version was taken in, is no file of the
+// package, and its chain does not cover it:
 // its file in subs/, unless checksums.sha256 lists it, counts neither as a
 // file of the package nor as one unlisted, and full checks its bytes against
 // the hash its name gives them.

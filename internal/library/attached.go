@@ -11,18 +11,20 @@ import (
 	"strings"
 )
 
-// An attached subtitle is one attached to a title after its package
-// completed (migration 048, POST /api/library/items/{itemId}/subtitles). Its
-// file lies in the subs/ folder of the version it was attached to, beside the
-// package's, as
+// An attached subtitle is one attached to a title once its version is in the
+// library (migration 048, POST /api/library/items/{itemId}/subtitles): after
+// its package completed, or while the version is taken in, its original and
+// no package (migration 044). Its file lies in the subs/ folder of the
+// version it was attached to, beside the package's (a version taken in gets
+// its package beside it), as
 //
 //	subs/attached-<sha256>.<language>[.forced][.sdh].vtt
 //
 // <sha256> the hex sha256 of the file's bytes, <language> its language tag
 // in lower case. The package's chain does not cover it: package.json and its
-// checksums are written once, when the package completes, and a subtitle
-// attached later changes neither. Its name is its check instead, as a
-// projected image's is (VerifyVersion).
+// checksums are written once, when the package completes, of the package's
+// files alone, and a subtitle attached before or after changes neither. Its
+// name is its check instead, as a projected image's is (VerifyVersion).
 const AttachedPrefix = "attached-"
 
 var attachedRE = regexp.MustCompile(`^attached-([0-9a-f]{64})\.[a-z0-9]+(-[a-z0-9]+)*(\.forced)?(\.sdh)?\.vtt$`)
