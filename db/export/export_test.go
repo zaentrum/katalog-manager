@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -628,6 +629,72 @@ func TestExportLibraryTablesAndShards(t *testing.T) {
 	for _, key := range []string{"extras", "versions", "sources"} {
 		if s := string(section(t, old, key)); s != "null" {
 			t.Errorf("a catalog without 039 and 040 exports %s as %s, want null", key, s)
+		}
+	}
+}
+
+// A shard's people come with their images, byte for byte, and with nobody
+// else's: the query that reads the images asks for the shard's people alone,
+// as those reading the extras, versions and sources ask for the shard's
+// titles, so no shard's export holds a whole table at once. A shard that holds
+// no title exports none of them, and the whole catalog everyone's images.
+func TestExportAShardReadsItsPeoplesImagesAlone(t *testing.T) {
+	st := storetest.Open(t)
+	libraryRows(t, st)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_people (id, name) VALUES ('p-3', 'Cy')`)
+	ada, ben, cy := pattern(200, 5, 1), pattern(120, 11, 7), pattern(90, 3, 2)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_personartwork (id, person_id, kind, contenttype, bytes, sha256, isprimary) VALUES
+		('art-1', 'p-1', 'profile', 'image/jpeg', $1, $2, true),
+		('art-2', 'p-2', 'profile', 'image/jpeg', $3, $4, true),
+		('art-3', 'p-3', 'profile', 'image/jpeg', $5, $6, true)`,
+		ada, hexSHA(ada), ben, hexSHA(ben), cy, hexSHA(cy))
+
+	// images maps each person of a document's people to the bytes of their images.
+	images := func(doc []byte) map[string][][]byte {
+		var people []struct {
+			ID      string `json:"id"`
+			Artwork []struct {
+				Base64 string `json:"base64"`
+				SHA256 string `json:"sha256"`
+			} `json:"artwork"`
+		}
+		if err := json.Unmarshal(section(t, doc, "people"), &people); err != nil {
+			t.Fatal(err)
+		}
+		out := map[string][][]byte{}
+		for _, p := range people {
+			out[p.ID] = [][]byte{}
+			for _, a := range p.Artwork {
+				b, err := base64.StdEncoding.DecodeString(a.Base64)
+				if err != nil {
+					t.Fatalf("%s's image is no base64: %v", p.ID, err)
+				}
+				if a.SHA256 != "sha256:"+hexSHA(b) {
+					t.Errorf("%s's image says %s, its bytes are sha256:%s", p.ID, a.SHA256, hexSHA(b))
+				}
+				out[p.ID] = append(out[p.ID], b)
+			}
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		shard string
+		want  map[string][][]byte
+	}{
+		{"f0", map[string][][]byte{"p-1": {ada}}},
+		{"ab", map[string][][]byte{"p-2": {ben}}},
+		{"00", map[string][][]byte{}},
+		{"", map[string][][]byte{"p-1": {ada}, "p-2": {ben}, "p-3": {cy}}},
+	} {
+		doc := runExportShard(t, st, tc.shard)
+		if got := images(doc); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("shard %q: the people's images %v, want %v", tc.shard, got, tc.want)
+		}
+	}
+	empty := runExportShard(t, st, "00")
+	for _, key := range []string{"items", "people", "extras", "versions", "sources"} {
+		if s := string(section(t, empty, key)); s != "[]" {
+			t.Errorf("a shard without titles exports %s as %s, want []", key, s)
 		}
 	}
 }

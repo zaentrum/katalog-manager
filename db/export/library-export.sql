@@ -92,6 +92,18 @@ with shard as (
   where :'shard' = ''
      or left(coalesce(case when i.type = 'episode' then case when p.type = 'season' then p.parent_id else p.id end
                            when i.type = 'season' then i.parent_id end, i.id), 2) = :'shard'
+),
+-- The shard's items as a list that a query handed to table_to_xml's kin can
+-- name, as it sees no CTE of this one: ('<id>', …), '(null)' for a shard that
+-- holds no item, and null when no shard was asked for (the whole catalog).
+-- Those queries take only the shard's rows with it: each of them once turned
+-- its whole table into one XML document for every shard, and the portraits'
+-- table so made a document of about a gigabyte in one backend on a catalog
+-- with 710 MB of them, which ran a server with 2 GiB out of memory.
+shard_list as (
+  select case when :'shard' = '' then null
+              else (select coalesce('(' || string_agg(quote_literal(id::text), ', ' order by id) || ')', '(null)') from shard)
+         end as ids
 )
 select json_build_object(
     'exportedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
@@ -140,7 +152,8 @@ select json_build_object(
     -- The query is planned even where it does not run, so it may not name what
     -- a catalog older than 030 lacks: a person is read through to_jsonb of their
     -- row, which carries the columns the table has, and their images through
-    -- table_to_xml, like the log.
+    -- query_to_xml, which plans the query it is given only when it runs: the
+    -- images of the shard's people alone (shard_list).
     'people', case when to_regclass('com_nalet_katalog_personartwork') is null then null else (
       with art as (
         select a.person_id, json_agg(json_build_object(
@@ -155,7 +168,10 @@ select json_build_object(
                  'fetchedAt', to_char(a.fetchedat at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
                order by a.isprimary desc nulls last, a.fetchedat desc nulls last, a.id) as list
         from xmltable('//row'
-               passing table_to_xml(to_regclass('com_nalet_katalog_personartwork'), false, false, '')
+               passing query_to_xml('select * from com_nalet_katalog_personartwork a where a.bytes is not null'
+                                    || coalesce(' and a.person_id in (select ip.person_id from com_nalet_katalog_itempeople ip'
+                                                || ' where ip.item_id in ' || (select ids from shard_list) || ')', ''),
+                                    false, false, '')
                columns id text path 'id', person_id text path 'person_id', kind text path 'kind',
                        contenttype text path 'contenttype', b64 text path 'bytes', sha256 text path 'sha256',
                        width integer path 'width', height integer path 'height',
@@ -190,7 +206,8 @@ select json_build_object(
     -- 039 and 040 are read through query_to_xml, which plans the query it is
     -- given only when it runs: naming their tables directly would fail the
     -- whole export wherever they do not exist yet. Each row comes as its
-    -- row_to_json, so arrays, objects and timestamps keep their types.
+    -- row_to_json, so arrays, objects and timestamps keep their types, and
+    -- only the shard's rows are asked for (shard_list).
     'extras', case when to_regclass('com_nalet_katalog_itemextras') is null then null else (
       select coalesce(json_agg(json_build_object(
           'id', x.r->>'id', 'itemId', x.r->>'item_id', 'kind', x.r->>'kind', 'title', x.r->>'title',
@@ -209,7 +226,8 @@ select json_build_object(
           'modifiedAt', to_char((x.r->>'modifiedat')::timestamptz at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
         order by x.r->>'item_id', x.r->>'id'), '[]')
       from (select j::jsonb as r from xmltable('//row'
-              passing query_to_xml('select row_to_json(t)::text as j from com_nalet_katalog_itemextras t', false, false, '')
+              passing query_to_xml('select row_to_json(t)::text as j from com_nalet_katalog_itemextras t'
+                                   || coalesce(' where t.item_id in ' || (select ids from shard_list), ''), false, false, '')
               columns j text path 'j')) x
       where x.r->>'removedat' is null and x.r->>'item_id' in (select id from shard)
     ) end,
@@ -223,7 +241,8 @@ select json_build_object(
           'supersededAt', to_char((v.r->>'supersededat')::timestamptz at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
         order by v.r->>'item_id', v.r->>'id'), '[]')
       from (select j::jsonb as r from xmltable('//row'
-              passing query_to_xml('select row_to_json(t)::text as j from com_nalet_katalog_itemversions t', false, false, '')
+              passing query_to_xml('select row_to_json(t)::text as j from com_nalet_katalog_itemversions t'
+                                   || coalesce(' where t.item_id in ' || (select ids from shard_list), ''), false, false, '')
               columns j text path 'j')) v
       where v.r->>'state' <> 'removed' and v.r->>'item_id' in (select id from shard)
     ) end,
@@ -237,7 +256,8 @@ select json_build_object(
           'deletedAt', to_char((o.r->>'deletedat')::timestamptz at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
         order by o.r->>'item_id', o.r->>'id'), '[]')
       from (select j::jsonb as r from xmltable('//row'
-              passing query_to_xml('select row_to_json(t)::text as j from com_nalet_katalog_itemsources t', false, false, '')
+              passing query_to_xml('select row_to_json(t)::text as j from com_nalet_katalog_itemsources t'
+                                   || coalesce(' where t.item_id in ' || (select ids from shard_list), ''), false, false, '')
               columns j text path 'j')) o
       where o.r->>'item_id' in (select id from shard)
     ) end
