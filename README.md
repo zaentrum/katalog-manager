@@ -892,8 +892,11 @@ file's order:
   `zh-Hant`) and the region it names cleanly (`Latin American`: `419`,
   `Brazilian`: `BR`, `Canadian`: `CA`), where the tag has none of its own.
   `label` is the stream's title, `format` its codec (`subrip`, `ass`,
-  `hdmv_pgs_subtitle`, …) and `form` whether it is text or pictures
-  (`image`: PGS, VobSub).
+  `mov_text`, …) and `form` `text`. A stream of pictures (PGS, VobSub, DVB:
+  `form` `image` in the record, else by its codec) is left out: an original's
+  subtitle streams are served as text, which a picture is not, so a viewer
+  has no such subtitle, and a client counting the title's languages must not
+  count it.
 - **`forced`** is the file's flag, or the record's `purpose` `forced` or
   `signs-songs`; **`sdh`** the file's hearing-impaired flag, or the purpose
   `sdh`. A stream of a commentary or of song lyrics alone (its purpose, or

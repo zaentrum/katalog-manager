@@ -703,13 +703,13 @@ func (f *v2Film) writeManyStreams(t *testing.T) {
 
 // manyStreamsListed are the film's own subtitles of the streams
 // writeManyStreams records, as the seam lists them: each subtitle stream
-// but the commentary and the lyrics, in the file's order.
+// but the commentary, the lyrics and the German in pictures, in the file's
+// order.
 const manyStreamsListed = `2 en - subrip text dialogue
 3 en SDH subrip sdh text sdh
 4 zh-Hans Chinese (Simplified) subrip text dialogue
 5 zh-Hant Chinese (Traditional) subrip text dialogue
 6 en Forced subrip forced text forced
-8 de - hdmv_pgs_subtitle image dialogue
 9 es-419 Latin American ass text dialogue
 10 es Signs & Songs subrip forced text signs-songs
 12  - mov_text text dialogue`

@@ -1,6 +1,11 @@
 package library
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // A stream embedded in an original is in its language as a language tag
 // spells it, else in the code its file carried, else in none: Chinese with
@@ -58,5 +63,60 @@ func TestTheIDOfAStreamEmbeddedInAnOriginal(t *testing.T) {
 		if s, n, ok := ParseEmbeddedID(id); ok {
 			t.Errorf("%q: %s %d, want no stream's", id, s, n)
 		}
+	}
+}
+
+// A stream of pictures embedded in an original (PGS, VobSub, DVB, XSUB) is
+// none of the title's subtitles: its form the record's, else its codec's;
+// the record's form wins over the codec's, and a stream the record gives
+// neither is none either. A record of pictures alone lists none, and says
+// no error: the title has no subtitle of its own there.
+func TestAStreamOfPicturesEmbeddedInAnOriginalIsNoSubtitleOfTheTitle(t *testing.T) {
+	const source = "0b6c0000-0000-4000-8000-000000000003"
+	stream := func(index int, codec, form string) map[string]any {
+		s := map[string]any{"index": index, "type": "subtitle", "language": "de", "languageRaw": "ger", "purpose": "dialogue"}
+		if codec != "" {
+			s["codec"] = codec
+		}
+		if form != "" {
+			s["form"] = form
+		}
+		return s
+	}
+	write := func(streams ...map[string]any) string {
+		item := t.TempDir()
+		dir := SourceDir(item, source)
+		b, err := json.Marshal(map[string]any{"schema": "zaentrum.library.source/2", "sourceId": source, "streams": streams})
+		if err == nil {
+			err = os.MkdirAll(dir, 0o755)
+		}
+		if err == nil {
+			err = os.WriteFile(filepath.Join(dir, "source.json"), b, 0o644)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return item
+	}
+	item := write(stream(2, "subrip", "text"), stream(3, "hdmv_pgs_subtitle", "image"), stream(4, "dvd_subtitle", ""),
+		stream(5, "dvb_subtitle", "image"), stream(6, "xsub", ""), stream(7, "subrip", "image"), stream(8, "ass", ""),
+		stream(9, "", ""))
+	subs, err := EmbeddedSubtitles(item, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []int
+	for _, s := range subs {
+		got = append(got, *s.Stream)
+		if s.Form != "text" {
+			t.Errorf("stream %d listed as %q", *s.Stream, s.Form)
+		}
+	}
+	if len(got) != 2 || got[0] != 2 || got[1] != 8 {
+		t.Errorf("listed the streams %v, want [2 8]: the text ones", got)
+	}
+	subs, err = EmbeddedSubtitles(write(stream(3, "hdmv_pgs_subtitle", "image"), stream(4, "dvd_subtitle", "")), source)
+	if err != nil || len(subs) != 0 {
+		t.Errorf("an original of pictures alone: %v %v, want none and no error", subs, err)
 	}
 }

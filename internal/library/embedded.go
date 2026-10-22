@@ -95,8 +95,11 @@ type recordedStream struct {
 // flags it or its purpose is (forced, signs and songs), for the deaf and
 // hard of hearing as the file flags it or its purpose is (sdh); no origin,
 // not attached, embedded, with its index in the file (stream), its form
-// (text, image) and its purpose. A stream of a commentary or of song lyrics
-// alone is left out: it is no subtitle of the dialogue. An error says why
+// (text) and its purpose. A stream of a commentary or of song lyrics alone
+// is left out: it is no subtitle of the dialogue. So is a stream of pictures
+// (PGS, VobSub, DVB, XSUB): an original's subtitle streams are served as
+// text, which a picture is not without OCR, so no player is served it and it
+// is no subtitle the title has. An error says why
 // the record tells nothing of them: it is not there, it cannot be read, it
 // is no source record, or it lists none of the original's streams (the
 // original was never probed).
@@ -133,7 +136,8 @@ func EmbeddedSubtitles(itemDir, sourceID string) ([]Subtitle, error) {
 // subtitle is the stream s of the original of the source sourceID as one of
 // the title's own subtitles (EmbeddedSubtitles); false for a stream that is
 // none: no subtitle stream, one without an index, one of a commentary or of
-// lyrics alone.
+// lyrics alone, and one that is no text — its form the record's, else its
+// codec's, and a stream the record gives neither is none either.
 func (s recordedStream) subtitle(sourceID string) (Subtitle, bool) {
 	purpose := strings.ToLower(strings.TrimSpace(deref(s.Purpose)))
 	if s.Type != "subtitle" || s.Index == nil || *s.Index < 0 || purpose == purposeCommentary ||
@@ -148,6 +152,9 @@ func (s recordedStream) subtitle(sourceID string) (Subtitle, bool) {
 		if imageSubtitleCodecs[codec] {
 			form = "image"
 		}
+	}
+	if form != "text" {
+		return Subtitle{}, false
 	}
 	var label *string
 	if t := strings.TrimSpace(deref(s.Title)); t != "" {
