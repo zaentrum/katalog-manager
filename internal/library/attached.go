@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -64,6 +65,45 @@ func isAttachedFile(rel string) bool {
 	dir, name := filepath.Split(filepath.ToSlash(rel))
 	_, ok := AttachedSum(name)
 	return ok && dir == "subs/"
+}
+
+// MovePackageSubs moves a package's subtitles out of the subs/ folder of a
+// version, to the folder to: the folder as a whole, or, when it holds the
+// files of subtitles attached to the version (no files of a package), all
+// else it holds, the folder staying with them. It answers how many entries
+// it moved (the folder is one), and stops at the first it cannot move.
+func MovePackageSubs(subs, to string) (int, error) {
+	entries, err := os.ReadDir(subs)
+	if err != nil {
+		return 0, err
+	}
+	attached := func(e os.DirEntry) bool {
+		_, ok := AttachedSum(e.Name())
+		return ok && e.Type().IsRegular()
+	}
+	if !slices.ContainsFunc(entries, attached) {
+		if err := MkdirAll(filepath.Dir(to)); err != nil {
+			return 0, err
+		}
+		if err := os.Rename(subs, to); err != nil {
+			return 0, err
+		}
+		return 1, nil
+	}
+	moved := 0
+	for _, e := range entries {
+		if attached(e) {
+			continue
+		}
+		if err := MkdirAll(to); err != nil {
+			return moved, err
+		}
+		if err := os.Rename(filepath.Join(subs, e.Name()), filepath.Join(to, e.Name())); err != nil {
+			return moved, err
+		}
+		moved++
+	}
+	return moved, nil
 }
 
 // sum64Chunk is how much of each end of a file Sum64 reads.

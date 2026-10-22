@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zaentrum/katalog-manager/internal/library"
@@ -131,5 +132,45 @@ func TestAnAttachedSubtitleLeavesTheChainWhole(t *testing.T) {
 	librarytest.Write(t, library.AttachedPath(pending, name), vtt)
 	if c, err := library.VerifyVersion(pending, false); err != nil || !c.Pending {
 		t.Errorf("a pending version with an attached subtitle: %+v %v", c, err)
+	}
+}
+
+// A package's subtitles moved out of a version's subs/ go as the folder
+// itself while nothing is attached to the version; beside an attached
+// subtitle they go one by one, a folder of them too, and the attached one
+// stays where it is, as does a subs/ that holds attached ones alone.
+func TestAPackagesSubtitlesGoAndTheAttachedOnesStay(t *testing.T) {
+	vtt := []byte("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nGuten Tag\n")
+	s := sha256.Sum256(vtt)
+	name := library.AttachedName(hex.EncodeToString(s[:]), "de", false, false)
+	names := func(dir string) string {
+		entries, _ := os.ReadDir(dir)
+		var out []string
+		for _, e := range entries {
+			out = append(out, e.Name())
+		}
+		return strings.Join(out, " ")
+	}
+
+	dir := t.TempDir()
+	subs, to := filepath.Join(dir, "v", "subs"), filepath.Join(dir, "out", "subs")
+	librarytest.Write(t, filepath.Join(subs, "0.vtt"), vtt)
+	if n, err := library.MovePackageSubs(subs, to); n != 1 || err != nil || names(to) != "0.vtt" {
+		t.Errorf("nothing attached: %d %v, moved %q", n, err, names(to))
+	}
+	if _, err := os.Stat(subs); !os.IsNotExist(err) {
+		t.Errorf("the folder stays: %v", err)
+	}
+
+	dir = t.TempDir()
+	subs, to = filepath.Join(dir, "v", "subs"), filepath.Join(dir, "out", "subs")
+	for _, rel := range []string{"0.vtt", "1.vtt", "more/2.vtt", name} {
+		librarytest.Write(t, filepath.Join(subs, rel), vtt)
+	}
+	if n, err := library.MovePackageSubs(subs, to); n != 3 || err != nil || names(to) != "0.vtt 1.vtt more" || names(subs) != name {
+		t.Errorf("beside an attached subtitle: %d %v, moved %q, left %q", n, err, names(to), names(subs))
+	}
+	if n, err := library.MovePackageSubs(subs, filepath.Join(dir, "again", "subs")); n != 0 || err != nil || names(subs) != name {
+		t.Errorf("attached ones alone: %d %v, left %q", n, err, names(subs))
 	}
 }

@@ -499,7 +499,9 @@ func TestASubtitleIsAttachedToAVersionTakenIn(t *testing.T) {
 // files go in beside it, and packaging-complete leaves its row as it is
 // (CarryAttached), the version it follows now complete, while the
 // package's own subtitles are recorded. The chain the package closes does
-// not list it, and holds with it, in full too.
+// not list it, and holds with it, in full too. A package added and refused
+// goes out of the record without it: the version keeps its original and the
+// subtitle, as it was before the package came.
 func TestASubtitleAttachedWhileTakenInStaysWithItsVersion(t *testing.T) {
 	f := takenFilm(t)
 	addon := f.iss.Addon(t)
@@ -519,8 +521,34 @@ func TestASubtitleAttachedWhileTakenInStaysWithItsVersion(t *testing.T) {
 		}
 	}
 
-	// The package added: the version is complete, with the subtitle.
+	// A package added to it, refused: it goes, the subtitle stays.
 	complete := f.versionOf(t, filmVersion, filmPackage, originalNamed)
+	code, m := f.complete(t, f.payload(filmVersion, "5a5a0000-0000-4000-8000-000000000009", complete))
+	if code != http.StatusUnprocessableEntity || !strings.Contains(fmt.Sprint(m["error"]), "the version keeps its original") {
+		t.Fatalf("a package added and refused: %d %v", code, m)
+	}
+	if got := strings.Join(fileNames(t, vdir), " "); got != "original.mkv subs version.json" {
+		t.Errorf("the version taken in holds %s after the refusal", got)
+	}
+	if got := strings.Join(fileNames(t, filepath.Join(vdir, "subs")), " "); got != filepath.Base(path) {
+		t.Errorf("its subs/ holds %s after the refusal", got)
+	}
+	dropped, _ := filepath.Glob(filepath.Join(f.cfg.Roots(true).Work, "legacy", "*", "refused", "*", "subs", "*"))
+	var names []string
+	for _, d := range dropped {
+		names = append(names, filepath.Base(d))
+	}
+	if strings.Join(names, " ") != "0.vtt 1.vtt" {
+		t.Errorf("the refused package's subtitles out of the record: %v", names)
+	}
+	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_itemversions WHERE id = $1 AND state = 'taken'`,
+		filmVersion); n != 1 {
+		t.Error("the version is not taken in any more")
+	}
+	follows("refused")
+
+	// Added again, whole: the version is complete, with the subtitle.
+	complete = f.versionOf(t, filmVersion, filmPackage, originalNamed)
 	if code, m := f.complete(t, f.payload(filmVersion, filmPackage, complete)); code != http.StatusOK || m["current"] != true {
 		t.Fatalf("the package added: %d %v", code, m)
 	}

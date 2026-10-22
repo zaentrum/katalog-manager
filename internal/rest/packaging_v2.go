@@ -794,9 +794,9 @@ func tracksManifest(pkg map[string]any, sourceDir string) map[string]any {
 // to named, where the payload says it lies in the item's folder) is put back
 // where the catalog says it lies first (returnOriginal), and a folder whose
 // original cannot be put back stays where it is. Of a version taken in, the
-// folder stays with its version.json and its original, and only the package
-// a run added to it goes out (dropRefusedPackage). It says what moved where,
-// "" when nothing did.
+// folder stays with its version.json, its original and the subtitles
+// attached to it, and only the package a run added to it goes out
+// (dropRefusedPackage). It says what moved where, "" when nothing did.
 func (h *Handlers) dropRefusedVersion(ctx context.Context, itemID, versionID, named string) string {
 	if !library.ValidID(versionID) {
 		return ""
@@ -924,8 +924,9 @@ func (h *Handlers) returnOriginal(ctx context.Context, itemID, itemDir, dir, nam
 // dropRefusedPackage moves the package a refused run added to the folder dir
 // of a version taken in out of the record, to the folder to: the files and
 // folders of a package and its chain (.complete first), the version's
-// record and its original staying, as they were taken in. It answers how
-// many it moved.
+// record, its original and the subtitles attached to it (in its subs/, no
+// files of a package: library.MovePackageSubs) staying, as they were before
+// the package came. It answers how many it moved.
 func dropRefusedPackage(dir, to string) int {
 	moved := 0
 	for _, name := range []string{library.CompleteFile, library.PackageFile, library.SumsFile, "hls", "subs", "trickplay", "trailers"} {
@@ -936,6 +937,15 @@ func dropRefusedPackage(dir, to string) int {
 		if err := library.MkdirAll(to); err != nil {
 			log.Printf("packagingComplete: the package added to %s cannot be moved out of the record: %v", dir, err)
 			return moved
+		}
+		if name == "subs" {
+			n, err := library.MovePackageSubs(from, filepath.Join(to, name))
+			moved += n
+			if err != nil {
+				log.Printf("packagingComplete: %s cannot be moved out of the record: %v", from, err)
+				return moved
+			}
+			continue
 		}
 		if err := os.Rename(from, filepath.Join(to, name)); err != nil {
 			log.Printf("packagingComplete: %s cannot be moved out of the record: %v", from, err)

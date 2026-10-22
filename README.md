@@ -850,7 +850,8 @@ attached subtitle, its name being its check instead — a version's chain
 holds with it, and a full verification holds its bytes to its name (see
 [The library](#the-library)). When a package is added to a version taken in,
 packaging-complete keeps the version, its id and its folder, and the
-subtitles attached to it stay with it.
+subtitles attached to it stay with it; a package added and refused goes out
+of the record without them.
 
 `GET /api/library/items/{id}/subtitles` lists the title's subtitles, its own
 first (`origin: null`, `attached: false`) and then those attached to it,
@@ -1250,7 +1251,8 @@ the version's folder, a name the library does not give one, one
 044): the title plays from its original as one without a package does. A
 refused folder goes out of the record only once the original a run renamed
 into it is back where the catalog says it lies, and a version taken in keeps
-its folder, the package added to it going out.
+its folder, its original and the subtitles attached to it, the package added
+to it going out.
 
 A run whose handover was lost (its version's folder placed, the original
 renamed into it, nothing recorded) is taken again the same: the version
