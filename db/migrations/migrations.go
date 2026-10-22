@@ -11,7 +11,8 @@
 // store.EnsureItemExtras, store.EnsureLibrary, which applies 040, 041 and
 // 042, store.EnsureReencodeQueue, store.EnsureTakeIn,
 // store.EnsureMultiEpisodeFiles, store.EnsureSeriesScanTitle,
-// store.EnsureIdentityIndexes and store.EnsureAttachedSubtitles).
+// store.EnsureIdentityIndexes, store.EnsureAttachedSubtitles and
+// store.EnsureLibraryWriteThrough, which applies 050 after 041).
 // It applies 035, which drops what is left of a retired integration, at every
 // start when any of that is there (store.DropRetiredJobTables), and 049, the
 // catalog search, in the background after startup, one statement at a time:
@@ -148,3 +149,10 @@ var AttachedSubtitles string
 //
 //go:embed 049_catalog_search.sql
 var CatalogSearch string
+
+// LibraryWriteThrough is 050_library_write_through.sql: the triggers that
+// mark an item, or a person, for what else its projection shows: its marks,
+// an extra inserted or deleted, a genre's name, a person's columns.
+//
+//go:embed 050_library_write_through.sql
+var LibraryWriteThrough string

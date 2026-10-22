@@ -309,6 +309,20 @@ the base schema in the order of their numbers, and each is idempotent:
   katalog-api searches as before until all of them are valid. Where the role
   may not create them, run the file by hand with psql, each statement after
   a `--@index` line on its own, outside a transaction.
+- `050_library_write_through.sql` marks a title changed when its marks
+  change, its chapters (`com_nalet_katalog_itemchapters`) or its intro,
+  recap and credits ranges (`com_nalet_katalog_mediasegments`), which its
+  projection shows (`metadata.json` `marks`), whoever writes them: the
+  analyzer's `PUT` and `DELETE` of them, a series' reset, the chapter
+  database's; as 041 does, a statement marks a title once. It also marks a
+  title when one of its extras is inserted or deleted recorded and not
+  removed, the items of a genre renamed, and a person whose projected
+  columns change unless the statement sets `modifiedat` itself (when the
+  catalog last asked TMDB about them moves nothing). The version that plays
+  and the file that covers an episode are marked by their writers
+  (packaging-complete, the links of covered episodes), not by a trigger: an
+  adopt writes the versions and links its staged projections show already.
+  Applied at startup after 041 when any of it is missing.
 
 ## Track languages
 
@@ -1386,6 +1400,16 @@ a projected item's reason is `behind` when its time marks said so too (its
 `databaseUpdatedAt`, its `libraryprojectedat`) and `shape` when they did not
 (a projection of a shape from before). An item not recorded fails. 409 while
 another projection runs.
+
+A movie's or an episode's projection carries its marks as the catalog holds
+them (`marks`): its chapters, each with its ordinal, and its intro, recap and
+credits ranges, each with its detector, in the order of the timeline. A
+version's `version.json` keeps the marks the version was made with, written
+once; the analyzer, run again, or a person changes them later, and the
+projection follows (migration 050 marks the title). A rebuild restores the
+catalog's marks from the projection, and from the version that plays for a
+projection written before it carried them. One written before is of another
+shape: a refresh writes it again (`shape`).
 
 ## Configuration
 

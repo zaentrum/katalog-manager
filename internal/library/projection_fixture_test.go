@@ -15,8 +15,8 @@ import (
 
 // The projection's fixture: two films, a series with three episodes, and
 // three people, with what the tool's port has to get right (among it a
-// thumb that is the poster's bytes, and a series' second poster whose hash
-// sorts before the first's).
+// thumb that is the poster's bytes, a series' second poster whose hash
+// sorts before the first's, and the film's marks out of order).
 const (
 	fxFilm    = "f001aeff-9c18-4183-b51b-51403af2515e"
 	fxPlain   = "f2f2f2f2-0000-4000-8000-000000000002"
@@ -118,6 +118,24 @@ for her dragon.  ', '   ', 7.5, 888000, NULL, NULL, NULL, false, '2026-09-01 10:
 		('pa1', $1, 'profile', 'image/png', $2, encode(sha256($2), 'hex'), NULL, NULL, false, NULL, '2026-09-01 02:00:00+02'),
 		('pa2', $1, 'profile', 'image/jpeg', $3, encode(sha256($3), 'hex'), 421, 999, true, '/ada.jpg', '2026-10-01 06:00:00+00')`,
 		fxAda, pngOf(185, 278, "an older portrait"), jpegOf(421, 632, "the portrait"))
+	// The marks: the film's chapters out of order, with a gap in their
+	// ordinals, one without an ordinal or a title, one with no end and a
+	// title around whitespace and a line break; its ranges with a label
+	// around whitespace, a kind in capitals, a kind no record knows, two that
+	// start together, a confidence the column writes with two places. The
+	// first episode's range has no confidence and no label; the second
+	// episode, the plain film and the series have none.
+	ex(`INSERT INTO com_nalet_katalog_itemchapters (id, item_id, startms, endms, title, ordinal) VALUES
+		('ch3', $1, 1200000, 1800000, NULL, NULL),
+		('ch2', $1, 600000, 0, ' Middle
+', 2),
+		('ch4', $1, 900000, 1200000, 'Gap', 4),
+		('ch1', $1, 0, 600000, 'Opening', 1)`, fxFilm)
+	ex(`INSERT INTO com_nalet_katalog_mediasegments (id, item_id, kind, startms, endms, source, confidence, label) VALUES
+		('s2', $1, 'Credits', 850000, 888000, 'blackframe', 0.70, 'black 2.5s'),
+		('s1', $1, 'intro', 0, 30000, 'chromaprint', 0.99, ' chromaprint x4 '),
+		('s3', $1, 'chaptersdb', 0, 30000, 'chapter', 1.00, 'Opening Titles'),
+		('s4', $2, 'recap', 0, 5000, 'subtitle', NULL, NULL)`, fxFilm, fxEp1)
 	// Every row as modified at a moment of its own: what the triggers set
 	// while the rows went in is the fixture's no more.
 	ex(`UPDATE com_nalet_katalog_items SET modifiedat = $1::timestamp + (createdat - '2026-09-01')`, fxItemsAt)

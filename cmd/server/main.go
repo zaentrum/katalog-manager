@@ -161,6 +161,12 @@ func run() error {
 	if err := st.EnsureAttachedSubtitles(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/048_attached_subtitles.sql is missing and could not be applied: %v; no subtitle can be attached to a title until it is", err)
 	}
+	// What else a projection shows marks it, whoever writes it: an item's
+	// marks, an extra inserted or deleted, a genre's name, a person's
+	// columns (migration 050).
+	if err := st.EnsureLibraryWriteThrough(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/050_library_write_through.sql is missing and could not be applied: %v; a change of an item's marks reaches its projection only when its writer marks the item itself, until it is", err)
+	}
 	// An item the scanner made before it wrote its own name into the row has
 	// it in its record alone: the row follows the record (bounded, in the
 	// background).

@@ -166,6 +166,60 @@
       "origin": "manual"
     }
   ],
+  "marks": {
+    "chapters": [
+      {
+        "startMs": 0,
+        "endMs": 600000,
+        "title": "Opening",
+        "ordinal": 1
+      },
+      {
+        "startMs": 600000,
+        "endMs": 0,
+        "title": "Middle",
+        "ordinal": 2
+      },
+      {
+        "startMs": 900000,
+        "endMs": 1200000,
+        "title": "Gap",
+        "ordinal": 4
+      },
+      {
+        "startMs": 1200000,
+        "endMs": 1800000,
+        "title": null,
+        "ordinal": null
+      }
+    ],
+    "segments": [
+      {
+        "kind": "intro",
+        "startMs": 0,
+        "endMs": 30000,
+        "detector": "chromaprint",
+        "confidence": 0.99,
+        "label": "chromaprint x4"
+      },
+      {
+        "kind": "other",
+        "startMs": 0,
+        "endMs": 30000,
+        "detector": "chapter",
+        "confidence": 1.0,
+        "label": "chaptersdb"
+      },
+      {
+        "kind": "credits",
+        "startMs": 850000,
+        "endMs": 888000,
+        "detector": "blackframe",
+        "confidence": 0.7,
+        "label": "black 2.5s"
+      }
+    ]
+  },
   "curation": {
     "metadataLocked": false,
     "lockedFields": [],

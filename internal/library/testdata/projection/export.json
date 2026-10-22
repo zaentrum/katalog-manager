@@ -15,6 +15,7 @@
       "parentId": null,
       "seasonNumber": null,
       "episodeNumber": null,
+      "coveredBy": null,
       "metadataLocked": false,
       "createdAt": "2026-09-03T10:00:00Z",
       "createdBy": null,
@@ -82,6 +83,7 @@
       "parentId": "5e5e5e5e-0000-4000-8000-000000000001",
       "seasonNumber": 1,
       "episodeNumber": 1,
+      "coveredBy": null,
       "metadataLocked": false,
       "createdAt": "2026-09-03T10:00:01Z",
       "createdBy": null,
@@ -106,7 +108,16 @@
         }
       ],
       "chapters": [],
-      "segments": [],
+      "segments": [
+        {
+          "kind": "recap",
+          "startMs": 0,
+          "endMs": 5000,
+          "source": "subtitle",
+          "confidence": null,
+          "label": null
+        }
+      ],
       "playbackAssets": [],
       "subtitleAssets": [],
       "trailers": [],
@@ -125,6 +136,7 @@
       "parentId": "5e5e5e5e-0000-4000-8000-000000000001",
       "seasonNumber": 1,
       "episodeNumber": 2,
+      "coveredBy": null,
       "metadataLocked": false,
       "createdAt": "2026-09-03T10:00:02Z",
       "createdBy": null,
@@ -153,6 +165,7 @@
       "parentId": "5e5e5e5e-0000-4000-8000-000000000001",
       "seasonNumber": 2,
       "episodeNumber": 1,
+      "coveredBy": null,
       "metadataLocked": false,
       "createdAt": "2026-09-03T10:00:03Z",
       "createdBy": null,
@@ -181,6 +194,7 @@
       "parentId": null,
       "seasonNumber": null,
       "episodeNumber": null,
+      "coveredBy": null,
       "metadataLocked": false,
       "createdAt": "2026-09-01T10:00:00Z",
       "createdBy": "katalog-manager/ingest",
@@ -246,8 +260,58 @@
           "episodeCount": null
         }
       ],
-      "chapters": [],
-      "segments": [],
+      "chapters": [
+        {
+          "startMs": 0,
+          "endMs": 600000,
+          "title": "Opening",
+          "ordinal": 1
+        },
+        {
+          "startMs": 600000,
+          "endMs": 0,
+          "title": " Middle\n",
+          "ordinal": 2
+        },
+        {
+          "startMs": 900000,
+          "endMs": 1200000,
+          "title": "Gap",
+          "ordinal": 4
+        },
+        {
+          "startMs": 1200000,
+          "endMs": 1800000,
+          "title": null,
+          "ordinal": null
+        }
+      ],
+      "segments": [
+        {
+          "kind": "intro",
+          "startMs": 0,
+          "endMs": 30000,
+          "source": "chromaprint",
+          "confidence": 0.99,
+          "label": " chromaprint x4 "
+        },
+        {
+          "kind": "chaptersdb",
+          "startMs": 0,
+          "endMs": 30000,
+          "source": "chapter",
+          "confidence": 1.00,
+          "label": "Opening Titles"
+        },
+        {
+          "kind": "Credits",
+          "startMs": 850000,
+          "endMs": 888000,
+          "source": "blackframe",
+          "confidence": 0.70,
+          "label": "black 2.5s"
+        }
+      ],
       "playbackAssets": [],
       "subtitleAssets": [],
       "trailers": [
@@ -331,6 +395,7 @@
       "parentId": null,
       "seasonNumber": null,
       "episodeNumber": null,
+      "coveredBy": null,
       "metadataLocked": true,
       "createdAt": "2026-09-02T10:00:00Z",
       "createdBy": null,

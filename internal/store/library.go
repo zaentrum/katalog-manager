@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -270,6 +271,61 @@ func (s *Store) EnsureMultiEpisodeFiles(ctx context.Context) error {
 		return err
 	}
 	_, err = s.pool.Exec(ctx, migrations.MultiEpisodeFiles)
+	return err
+}
+
+// writeThroughFunctions are the functions 050 creates, but the person's;
+// writeThroughTriggers its triggers, as table.trigger, but the person's.
+var writeThroughFunctions = []string{"com_nalet_katalog_library_extras_listed", "com_nalet_katalog_library_genre_renamed"}
+
+func writeThroughTriggers() []string {
+	var out []string
+	for _, t := range []string{"com_nalet_katalog_mediasegments", "com_nalet_katalog_itemchapters"} {
+		for _, tr := range []string{"library_insert", "library_update", "library_delete"} {
+			out = append(out, t+"."+tr)
+		}
+	}
+	return append(out, "com_nalet_katalog_itemextras.library_insert", "com_nalet_katalog_itemextras.library_delete",
+		"com_nalet_katalog_genres.library_renamed")
+}
+
+// LibraryWriteThroughReady reports whether migration 050 is in place: its
+// functions and its triggers, and the person's where migration 030's columns
+// are (people.libraryprojectedat came with 040, its other columns with 030).
+// Without it a change of an item's marks, or of a person's columns a writer
+// did not mark itself, leaves the projection showing it behind.
+func (s *Store) LibraryWriteThroughReady(ctx context.Context) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `SELECT
+		(SELECT count(DISTINCT f.name) FROM unnest($1::text[]) AS f(name)
+		 JOIN pg_proc p ON p.proname = f.name AND pg_function_is_visible(p.oid)) = cardinality($1::text[])
+		AND NOT EXISTS (
+			SELECT 1 FROM unnest($2::text[]) AS t(spec)
+			WHERE NOT EXISTS (SELECT 1 FROM pg_trigger g WHERE g.tgrelid = to_regclass(split_part(t.spec, '.', 1))
+			                  AND g.tgname = split_part(t.spec, '.', 2)))
+		AND (EXISTS (SELECT 1 FROM pg_trigger g WHERE g.tgrelid = to_regclass('com_nalet_katalog_people')
+		             AND g.tgname = 'library_changed')
+		     OR NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('com_nalet_katalog_people')
+		                    AND attname = 'tmdbpersonid' AND attnum > 0 AND NOT attisdropped))`,
+		writeThroughFunctions, writeThroughTriggers()).Scan(&ok)
+	return ok, err
+}
+
+// EnsureLibraryWriteThrough applies db/migrations/050_library_write_through.sql
+// when any of its objects is missing. Its triggers on an item's marks call
+// 041's function, so it runs after EnsureLibrary, and refuses without it.
+func (s *Store) EnsureLibraryWriteThrough(ctx context.Context) error {
+	if ready, err := s.LibraryProjectionReady(ctx); err != nil || !ready {
+		if err == nil {
+			err = errors.New("migration 041 is not in place: its triggers come first")
+		}
+		return err
+	}
+	ready, err := s.LibraryWriteThroughReady(ctx)
+	if err != nil || ready {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, migrations.LibraryWriteThrough)
 	return err
 }
 

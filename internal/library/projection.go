@@ -551,6 +551,126 @@ func videos(row Doc) []any {
 	return out
 }
 
+// markKinds are the kinds of a detected range a record knows; any other is
+// "other", labelled with the catalog's own kind.
+var markKinds = map[string]bool{"intro": true, "recap": true, "credits": true, "preview": true, "commercial": true,
+	"other": true}
+
+// marks are a movie's or an episode's marks as the database holds them,
+// which metadata.json projects: the port of the tool's marks_of() — the
+// chapters, each with the ordinal the database gives it, and the ranges its
+// detectors found as a version keeps them (libv2_records' segments()) but
+// for their ends, which are the database's; each list in the order of the
+// timeline, whatever order the row lists them in.
+func marks(row Doc) Doc {
+	type chapter struct {
+		start, end int64
+		title      *string
+		ordinal    any // int64, or nil
+	}
+	var chs []chapter
+	for _, e := range asSlice(get(row, "chapters")) {
+		c, ok := e.(Doc)
+		if !ok || get(c, "startMs") == nil {
+			continue
+		}
+		start, ok := pyInt(get(c, "startMs"))
+		if !ok {
+			continue
+		}
+		end := start // the end the database holds, as it holds it
+		if v, ok := pyInt(get(c, "endMs")); ok {
+			end = v
+		}
+		chs = append(chs, chapter{start: start, end: end, title: text(c, "title"), ordinal: whole(get(c, "ordinal"), nil)})
+	}
+	str := func(p *string) string {
+		if p == nil {
+			return ""
+		}
+		return *p
+	}
+	sort.SliceStable(chs, func(i, j int) bool {
+		a, b := chs[i], chs[j]
+		oa, aok := a.ordinal.(int64)
+		ob, bok := b.ordinal.(int64)
+		switch {
+		case a.start != b.start:
+			return a.start < b.start
+		case a.end != b.end:
+			return a.end < b.end
+		case aok != bok:
+			return aok // of two at one place, one without an ordinal last
+		case oa != ob:
+			return oa < ob
+		}
+		return str(a.title) < str(b.title)
+	})
+	chapters := make([]any, len(chs))
+	for i, c := range chs {
+		chapters[i] = Doc{{"startMs", c.start}, {"endMs", c.end}, {"title", ptrStr(c.title)}, {"ordinal", c.ordinal}}
+	}
+
+	type segment struct {
+		kind            string
+		start, end      int64
+		detector, label *string
+		confidence      any
+	}
+	var segs []segment
+	for _, e := range asSlice(get(row, "segments")) {
+		s, ok := e.(Doc)
+		if !ok || get(s, "startMs") == nil {
+			continue
+		}
+		start, ok := pyInt(get(s, "startMs"))
+		if !ok {
+			continue
+		}
+		end := start
+		if v, ok := pyInt(get(s, "endMs")); ok {
+			end = v
+		}
+		kind := "other"
+		if k, _ := get(s, "kind").(string); k != "" {
+			kind = strings.ToLower(k)
+		}
+		sg := segment{kind: kind, start: start, end: end, detector: text(s, "source")}
+		if n, ok := pyNumber(get(s, "confidence")); ok {
+			sg.confidence = n
+		}
+		if markKinds[kind] {
+			sg.label = text(s, "label")
+		} else {
+			sg.kind, sg.label = "other", pyText(kind)
+			if sg.label == nil {
+				sg.label = text(s, "label")
+			}
+		}
+		segs = append(segs, sg)
+	}
+	sort.SliceStable(segs, func(i, j int) bool {
+		a, b := segs[i], segs[j]
+		switch {
+		case a.start != b.start:
+			return a.start < b.start
+		case a.end != b.end:
+			return a.end < b.end
+		case a.kind != b.kind:
+			return a.kind < b.kind
+		case str(a.detector) != str(b.detector):
+			return str(a.detector) < str(b.detector)
+		}
+		return str(a.label) < str(b.label)
+	})
+	ranges := make([]any, len(segs))
+	for i, s := range segs {
+		ranges[i] = Doc{{"kind", s.kind}, {"startMs", s.start}, {"endMs", s.end}, {"detector", ptrStr(s.detector)},
+			{"confidence", s.confidence}, {"label", ptrStr(s.label)}}
+	}
+	return Doc{{"chapters", chapters}, {"segments", ranges}}
+}
+
 // ItemProjection is what an item's metadata.json says beside its row: when
 // it is written, its images, a series' season numbers, the version that
 // plays, the extras' decisions; what the tool fills in itself
@@ -660,8 +780,14 @@ func MetadataDoc(row Doc, p ItemProjection) (Doc, []ImageFile, error) {
 		return nil, nil, err
 	}
 	vids := videos(row)
-	doc = append(doc, Field{"library", lib}, Field{"images", imgs}, Field{"videos", vids},
-		Field{"curation", Doc{{"metadataLocked", truthyAt(row, "metadataLocked")}, {"lockedFields", []any{}}, {"notes", nil}}})
+	doc = append(doc, Field{"library", lib}, Field{"images", imgs}, Field{"videos", vids})
+	if typ == "movie" || typ == "episode" {
+		// the marks follow the database: the version keeps the ones it was
+		// established with
+		doc = append(doc, Field{"marks", marks(row)})
+	}
+	doc = append(doc, Field{"curation", Doc{{"metadataLocked", truthyAt(row, "metadataLocked")}, {"lockedFields", []any{}},
+		{"notes", nil}}})
 	origins := Doc{}
 	titles, _ := doc.Get("titles")
 	for _, f := range []Field{{"titles.primary", get(titles.(Doc), "primary")}, {"titles.sort", get(titles.(Doc), "sort")},

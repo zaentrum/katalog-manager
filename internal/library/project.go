@@ -316,7 +316,14 @@ const itemSnapshot = `SELECT json_build_object(
 		'trailers', (SELECT coalesce(json_agg(json_build_object('source', tl.source, 'site', tl.site,
 				'externalId', tl.externalid, 'url', tl.url, 'title', tl.title, 'durationSec', tl.durationsec,
 				'localPath', tl.localpath) ORDER BY tl.id), '[]')
-			FROM com_nalet_katalog_itemtrailerlinks tl WHERE tl.item_id = i.id)
+			FROM com_nalet_katalog_itemtrailerlinks tl WHERE tl.item_id = i.id),
+		'chapters', (SELECT coalesce(json_agg(json_build_object('startMs', c.startms, 'endMs', c.endms,
+				'title', c.title, 'ordinal', c.ordinal) ORDER BY c.ordinal, c.startms, c.id), '[]')
+			FROM com_nalet_katalog_itemchapters c WHERE c.item_id = i.id),
+		'segments', (SELECT coalesce(json_agg(json_build_object('kind', s.kind, 'startMs', s.startms,
+				'endMs', s.endms, 'source', s.source, 'confidence', s.confidence, 'label', s.label)
+				ORDER BY s.startms, s.id), '[]')
+			FROM com_nalet_katalog_mediasegments s WHERE s.item_id = i.id)
 	)::text, i.modifiedat
 	FROM com_nalet_katalog_items i WHERE i.id = $1`
 

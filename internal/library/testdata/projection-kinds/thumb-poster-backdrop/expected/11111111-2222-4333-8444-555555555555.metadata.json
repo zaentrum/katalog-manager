@@ -119,6 +119,32 @@
       "origin": "tmdb"
     }
   ],
+  "marks": {
+    "chapters": [
+      {
+        "startMs": 0,
+        "endMs": 300000,
+        "title": "One",
+        "ordinal": 1
+      },
+      {
+        "startMs": 300000,
+        "endMs": 600000,
+        "title": "Two",
+        "ordinal": 2
+      }
+    ],
+    "segments": [
+      {
+        "kind": "credits",
+        "startMs": 580000,
+        "endMs": 600000,
+        "detector": "blackframe",
+        "confidence": 0.8,
+        "label": "black 20.0s"
+      }
+    ]
+  },
   "curation": {
     "metadataLocked": false,
     "lockedFields": [],

@@ -17,4 +17,6 @@ person.json as <personId>.person.json, and the images' paths into images.txt.
 suite (test_images_of_several_kinds, schemas a08c78e): fake_export's film with its artwork of one
 image's bytes as a poster and a backdrop, and as a thumb, a poster and a backdrop, each projected
 by library-v2-from-catalog.py --projections-only --as-of 2026-10-06T12:00:00Z in a tree holding
-the film's item.json; each case's export.json, its metadata.json and images.txt as above.
+the film's item.json; each case's export.json, its metadata.json and images.txt as above. Both
+fixtures were projected again by the tool that writes the marks (2026-10-22), from the same
+exports: the film's chapters and ranges of fillProjection, and the case's of fake_export.

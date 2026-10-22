@@ -57,6 +57,19 @@
   },
   "images": [],
   "videos": [],
+  "marks": {
+    "chapters": [],
+    "segments": [
+      {
+        "kind": "recap",
+        "startMs": 0,
+        "endMs": 5000,
+        "detector": "subtitle",
+        "confidence": null,
+        "label": null
+      }
+    ]
+  },
   "curation": {
     "metadataLocked": false,
     "lockedFields": [],

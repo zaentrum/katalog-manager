@@ -39,6 +39,10 @@
   },
   "images": [],
   "videos": [],
+  "marks": {
+    "chapters": [],
+    "segments": []
+  },
   "curation": {
     "metadataLocked": false,
     "lockedFields": [],
