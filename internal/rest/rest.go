@@ -41,7 +41,8 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 //     and portraits here with the viewer's token or stream token; the console
 //     reads them at /api/manage/artwork), playback and subtitles; a viewer
 //     capped at an age (max_rating) is answered for a title rated above the
-//     cap as for a title there is not (ratings.go);
+//     cap as for a title there is not (ratings.go); and the languages every
+//     title of the instance is to have a subtitle in, which are no secret;
 //   - workers (an admin, or the platform's service account the analyzer,
 //     transcoder and packager mint tokens with): the worker protocol, which
 //     hands out paths on disk and writes the pipeline's results, and the
@@ -153,13 +154,16 @@ func (h *Handlers) Register(r chi.Router) {
 	// an operator's tool, a deployment's Job or an addon.
 	r.With(pol.Require(auth.Ingest)).Post("/api/extras", h.postExtra)
 
+	// The languages every title is to have a subtitle in (attached.go), for
+	// any signed-in caller: nothing in them is secret.
+	r.With(pol.Require(auth.Viewer)).Get("/api/library/subtitles/languages", h.getSubtitleLanguages)
+
 	// A subtitle attached to a title once its version is in the library,
-	// packaged or taken in (the attach seam, attached.go): the languages
-	// every title is to have one in, the title's subtitles and what its
-	// original is matched by, an attach, and the removal of one attached.
+	// packaged or taken in (the attach seam, attached.go): the title's
+	// subtitles and what its original is matched by, an attach, and the
+	// removal of one attached.
 	r.Group(func(r chi.Router) {
 		r.Use(pol.Require(auth.Ingest))
-		r.Get("/api/library/subtitles/languages", h.getSubtitleLanguages)
 		r.Get("/api/library/items/{itemId}/subtitles", h.getItemSubtitles)
 		r.Post("/api/library/items/{itemId}/subtitles", h.attachSubtitle)
 		r.Delete("/api/library/items/{itemId}/subtitles/{subtitleId}", h.detachSubtitle)

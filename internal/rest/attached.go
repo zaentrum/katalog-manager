@@ -328,7 +328,10 @@ var languageSettings = []string{"subtitles.languages", "packager.language_whitel
 // languages every title of the instance is to have a subtitle in, each as
 // languages.Tag spells it, in the order the setting names them, and the
 // setting they come from — subtitles.languages, else the packager's language
-// whitelist, the languages a player shows. None when neither is set.
+// whitelist, the languages a player shows. None when neither is set. Any
+// signed-in caller reads them, a viewer too, as nothing in them is secret;
+// the rest of the attach seam, the items' routes, is an admin's, the service
+// account's and an addon's.
 func (h *Handlers) getSubtitleLanguages(w http.ResponseWriter, r *http.Request) {
 	ss, err := h.d.Store.ListSettings(reqCtx(r))
 	if err != nil {

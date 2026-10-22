@@ -970,16 +970,21 @@ func TestAStreamEmbeddedInTheOriginalIsNotRemoved(t *testing.T) {
 
 // The instance's subtitle languages are its own setting's, else the
 // languages its players show, the packager's whitelist; each spelled as a
-// language tag, once, in the setting's order. None without either.
+// language tag, once, in the setting's order. None without either. A viewer
+// reads the same as an addon: nothing in them is secret.
 func TestTheInstancesSubtitleLanguages(t *testing.T) {
 	st := storetest.Open(t)
 	h, iss := server(t, st, testConfig(t.TempDir()))
-	addon := iss.Addon(t)
+	addon, viewer := iss.Addon(t), iss.Viewer(t)
 	get := func() string {
 		t.Helper()
 		w := do(h, http.MethodGet, "/api/library/subtitles/languages", "", addon)
 		if w.Code != http.StatusOK {
 			t.Fatalf("%d %s", w.Code, w.Body)
+		}
+		if v := do(h, http.MethodGet, "/api/library/subtitles/languages", "", viewer); v.Code != http.StatusOK ||
+			v.Body.String() != w.Body.String() {
+			t.Errorf("a viewer: %d %s, want %s", v.Code, v.Body, w.Body)
 		}
 		return strings.TrimSpace(w.Body.String())
 	}
@@ -1016,8 +1021,9 @@ func TestACoveredEpisodeAttachesToItsHolder(t *testing.T) {
 }
 
 // The seam is an addon's, the service account's and an admin's: a viewer and
-// another confidential client are refused each of its routes, and nothing
-// is attached or removed for them.
+// another confidential client are refused each of a title's routes, and
+// nothing is attached or removed for them. The instance's subtitle languages
+// are no secret: they read them.
 func TestTheAttachSeamIsForWhomItIsFor(t *testing.T) {
 	f := packagedFilm(t)
 	var own string
@@ -1027,6 +1033,10 @@ func TestTheAttachSeamIsForWhomItIsFor(t *testing.T) {
 	}
 	body := attachBody(t, map[string]any{"language": "de", "origin": "provider", "content": germanSRT})
 	for _, token := range []string{f.iss.Viewer(t), f.iss.Service(t, "zaentrum-other")} {
+		if w := do(f.h, http.MethodGet, "/api/library/subtitles/languages", "", token); w.Code != http.StatusOK ||
+			strings.TrimSpace(w.Body.String()) != `{"from":null,"languages":[]}` {
+			t.Errorf("the instance's subtitle languages: %d %s, want 200 with none", w.Code, w.Body)
+		}
 		for _, c := range []struct{ method, path, body string }{
 			{http.MethodGet, "/api/library/items/" + filmItem + "/subtitles", ""},
 			{http.MethodPost, "/api/library/items/" + filmItem + "/subtitles", body},

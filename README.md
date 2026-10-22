@@ -113,11 +113,12 @@ account, whose token carries the addon role. Everyone else signed in is a
 | `GET /api/manage/stream` (the console's live stream) | admin |
 | `GET /api/artwork/...`, `/api/manage/artwork/...` (also a person's portrait) | any signed-in caller, or a stream token; a capped viewer is answered for a title above its cap as for a title there is not |
 | `GET /api/play/...`, `GET /api/subtitles/...` | any signed-in caller; a capped viewer as for the artwork |
+| `GET /api/library/subtitles/languages` (the languages every title is to have a subtitle in) | any signed-in caller |
 | `PUT /api/artwork/...`, `/api/analyze/*` (an extra's record and steps too), segments, chapters, `packaging-complete` (an item's and an extra's), `GET /api/settings` | admin, service account |
 | `POST /api/library/migrations/{run}/adopt`, `…/revert` (the library's migration), `POST /api/library/projections` | admin, service account |
 | `POST /api/library/reencode`, `GET /api/library/reencode` (the re-encode queue) | admin, service account |
 | `POST /api/ingest`, `POST /api/extras` | admin, service account, addon |
-| `GET`, `POST /api/library/items/{id}/subtitles`, `DELETE …/subtitles/{subtitleId}`, `GET /api/library/subtitles/languages` (attached subtitles) | admin, service account, addon; a removal the caller's own attach, an admin any |
+| `GET`, `POST /api/library/items/{id}/subtitles`, `DELETE …/subtitles/{subtitleId}` (attached subtitles) | admin, service account, addon; a removal the caller's own attach, an admin any |
 | `POST /api/items/{id}/package`, `POST /api/items/{id}/takein` | admin |
 
 A refused GraphQL field answers with an error whose `extensions.code` is
@@ -908,7 +909,10 @@ more.
 to have a subtitle in, as tags, in the order the setting names them:
 `{"languages": ["en", "de", "zh"], "from": "packager.language_whitelist"}` —
 `subtitles.languages` when it is set, else the packager's language
-whitelist, the languages a player shows; none when neither is.
+whitelist, the languages a player shows; none when neither is. Nothing in
+it is secret, and any signed-in caller reads it, a viewer's client too; the
+title's routes of the seam are an admin's, the service account's and an
+addon's.
 
 `DELETE /api/library/items/{id}/subtitles/{subtitleId}` removes a subtitle
 attached to the title: one the caller attached (its token's client), or, for

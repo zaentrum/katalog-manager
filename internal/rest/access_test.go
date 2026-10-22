@@ -77,9 +77,10 @@ var routes = []route{
 
 	{http.MethodPost, "/api/ingest", `{"path": "MEDIA/new.mkv", "type": "movie", "title": "New"}`, "ingest"},
 	{http.MethodPost, "/api/extras", `{"itemId": "m1", "path": "MEDIA/m1-trailer.mkv", "kind": "trailer"}`, "ingest"},
-	// The attach seam: m1 takes no subtitle (it has no version in the
-	// library), m2 does; its removal of one not there is done as well.
-	{http.MethodGet, "/api/library/subtitles/languages", "", "ingest"},
+	// The instance's subtitle languages, which are no secret, and the attach
+	// seam: m1 takes no subtitle (it has no version in the library), m2
+	// does; its removal of one not there is done as well.
+	{http.MethodGet, "/api/library/subtitles/languages", "", "viewer"},
 	{http.MethodGet, "/api/library/items/m1/subtitles", "", "ingest"},
 	{http.MethodPost, "/api/library/items/m2/subtitles",
 		`{"language": "de", "origin": "provider", "content": "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHallo\n"}`, "ingest"},
@@ -90,10 +91,11 @@ var routes = []route{
 }
 
 // Every route answers whom it is for, and refuses everyone else before it
-// does anything: a viewer reads artwork, playback and subtitles; the worker
-// protocol and the library's migration are the service account's and the
-// admins'; an addon only ingests; the packaging action is an admin's alone.
-// A stream token reads artwork and nothing else, and no token gets nowhere.
+// does anything: a viewer reads artwork, playback and subtitles, and the
+// instance's subtitle languages; the worker protocol and the library's
+// migration are the service account's and the admins'; an addon only
+// ingests; the packaging action is an admin's alone. A stream token reads
+// artwork and nothing else, and no token gets nowhere.
 func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 	st := storetest.Open(t)
 	dir := t.TempDir()
