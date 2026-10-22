@@ -26,7 +26,11 @@ import (
 // follows (library.AttachableVersion), beside the package or where the
 // package of a version taken in is added later, and its row makes every
 // player list it and play it, through the catalog's subtitles as any other:
-// nothing is packaged again.
+// nothing is packaged again. The seam lists a title's own subtitles beside
+// the ones attached, so that a client attaches none the title has: its
+// package's, the files beside its source and, for a title taken in, which
+// plays its original, the subtitle streams embedded in that file, as its
+// source record lists them (library.EmbeddedSubtitles).
 
 // maxAttachBody is the most a POST of the attach seam may send: a subtitle's
 // text, as JSON, of a long film with every line twice.
@@ -64,7 +68,12 @@ func (h *Handlers) attachedItem(w http.ResponseWriter, r *http.Request) (string,
 // not), and with
 // ?fingerprint=true what subtitle sources match its original by: its size,
 // its Sum64 and what its name claimed (the source record's labels), or why
-// there is none.
+// there is none. A title taken in (no complete version: it plays the
+// original its version's folder holds) has the subtitle streams embedded in
+// that original for its own too, after its rows of its own and before the
+// ones attached, as the original's source record lists them; a record that
+// tells nothing of them leaves the rows alone, and embeddedNote says why. A
+// complete version's own are its rows, its package's.
 func (h *Handlers) getItemSubtitles(w http.ResponseWriter, r *http.Request) {
 	id, typ, ok := h.attachedItem(w, r)
 	if !ok {
@@ -88,6 +97,13 @@ func (h *Handlers) getItemSubtitles(w http.ResponseWriter, r *http.Request) {
 		return
 	default:
 		answer["versionId"], answer["attachable"] = v.ID, true
+		if v.State == library.VersionTaken {
+			embedded, note := h.embeddedSubtitles(r, id, v)
+			if note != "" {
+				answer["embeddedNote"] = "the subtitles embedded in the original the title plays are not listed: " + note
+			}
+			answer["subtitles"] = withEmbedded(subs, embedded)
+		}
 	}
 	if r.URL.Query().Get("fingerprint") == "true" {
 		original, note := h.originalFingerprint(r, id, v)
@@ -97,6 +113,45 @@ func (h *Handlers) getItemSubtitles(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, answer)
+}
+
+// embeddedSubtitles are, for the item id whose version v is taken in, the
+// subtitle streams embedded in the original it plays, its primary asset's
+// file (library.EmbeddedSubtitles: the record of its source, in the item's
+// folder); none, and why, when there is no record of them to read.
+func (h *Handlers) embeddedSubtitles(r *http.Request, id string, v *library.Version) ([]library.Subtitle, string) {
+	ctx := reqCtx(r)
+	pool := h.d.Store.Pool()
+	s, err := library.PrimarySource(ctx, pool, id)
+	switch {
+	case err != nil:
+		return nil, "the title's file could not be read: " + err.Error()
+	case s == nil || !slices.Contains(v.SourceIDs, s.ID):
+		return nil, "the title's file is not an original its version is taken in from"
+	}
+	pl, err := library.PlaceOf(ctx, pool, id)
+	if err != nil {
+		return nil, "the title has no folder in the library: " + err.Error()
+	}
+	embedded, err := library.EmbeddedSubtitles(h.paths().ItemDir(pl), s.ID)
+	if err != nil {
+		return nil, err.Error()
+	}
+	return embedded, ""
+}
+
+// withEmbedded is the title's subtitles of subs (its rows: its own, then the
+// ones attached) with the streams embedded in its original among its own,
+// after its rows of them.
+func withEmbedded(subs, embedded []library.Subtitle) []library.Subtitle {
+	if len(embedded) == 0 {
+		return subs
+	}
+	at := slices.IndexFunc(subs, func(s library.Subtitle) bool { return s.Attached })
+	if at < 0 {
+		at = len(subs)
+	}
+	return slices.Concat(subs[:at], embedded, subs[at:])
 }
 
 // originalFingerprint is what subtitle sources match the original of the
@@ -241,8 +296,8 @@ func (h *Handlers) attachSubtitle(w http.ResponseWriter, r *http.Request) {
 // it removes a subtitle attached to the title (library.Detach), one the
 // caller attached, or, for an admin, any. 204, also when the title has no
 // subtitle of that id (removed already, or never there: either way it is
-// not attached); 409 for one of the title's own, 403 for one another client
-// attached.
+// not attached); 409 for one of the title's own (a stream embedded in its
+// original too, which has no row), 403 for one another client attached.
 func (h *Handlers) detachSubtitle(w http.ResponseWriter, r *http.Request) {
 	id, _, ok := h.attachedItem(w, r)
 	if !ok {

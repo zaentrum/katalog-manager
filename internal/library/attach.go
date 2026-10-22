@@ -34,8 +34,11 @@ const (
 var Origins = []string{OriginSource, OriginProvider, OriginTranscribed, OriginTranslated, OriginConverted}
 
 // Subtitle is a subtitle of a title as the attach seam says it: one of the
-// title's own (its package's, a file beside its source), whose Origin is nil,
-// or one attached to it.
+// title's own (its package's, a file beside its source, a stream embedded in
+// the original a title taken in plays), whose Origin is nil, or one attached
+// to it. Only a stream embedded in an original (EmbeddedSubtitles) is
+// Embedded, with its index in the file (Stream), its Form and its Purpose;
+// a row has none of them.
 type Subtitle struct {
 	ID         string     `json:"id"`
 	Language   string     `json:"language"`
@@ -48,6 +51,10 @@ type Subtitle struct {
 	VersionID  *string    `json:"versionId,omitempty"`
 	AttachedBy *string    `json:"attachedBy,omitempty"`
 	AttachedAt *time.Time `json:"attachedAt,omitempty"`
+	Embedded   bool       `json:"embedded,omitempty"`
+	Stream     *int       `json:"stream,omitempty"`
+	Form       string     `json:"form,omitempty"`
+	Purpose    string     `json:"purpose,omitempty"`
 	Path       string     `json:"-"`
 }
 
@@ -93,9 +100,10 @@ func (e *NotAttachable) Error() string { return e.Reason }
 var (
 	// ErrNoSuchSubtitle: the title has no subtitle of that id.
 	ErrNoSuchSubtitle = errors.New("the title has no subtitle of that id")
-	// ErrNotAttached: the subtitle is the title's own, its package's or a file
-	// beside its source, which no caller removes.
-	ErrNotAttached = errors.New("the subtitle is the title's own (its package's, or a file beside its source): only one attached to it can be removed")
+	// ErrNotAttached: the subtitle is the title's own, its package's, a file
+	// beside its source or a stream embedded in its original, which no
+	// caller removes.
+	ErrNotAttached = errors.New("the subtitle is the title's own (its package's, a file beside its source, or a stream embedded in its original): only one attached to it can be removed")
 	// ErrAttachedByOther: another caller attached it.
 	ErrAttachedByOther = errors.New("another client attached the subtitle: only it, or an admin, can remove it")
 )
@@ -112,8 +120,10 @@ func scanSubtitle(row pgx.Row, s *Subtitle) error {
 	return nil
 }
 
-// SubtitlesOf lists the subtitles of the item id: its own first, then the
-// ones attached to it, each by language.
+// SubtitlesOf lists the subtitles of the item id the catalog holds a row of:
+// its own first, then the ones attached to it, each by language. A title
+// taken in has more of its own than its rows say, the subtitle streams
+// embedded in its original (EmbeddedSubtitles).
 func SubtitlesOf(ctx context.Context, q Querier, id string) ([]Subtitle, error) {
 	rows, err := q.Query(ctx, `SELECT `+subtitleCols+` FROM com_nalet_katalog_subtitleassets WHERE item_id = $1
 		ORDER BY origin IS NOT NULL, lang NULLS LAST, id`, id)
@@ -241,7 +251,9 @@ func writeAttached(path string, vtt []byte) error {
 // migration's fill hashed it into the chain, which must keep holding), and
 // the version's subs/ with the last file in it: a version taken in had none
 // before, and a package is added to a folder without one.
-// ErrNoSuchSubtitle, ErrNotAttached and ErrAttachedByOther refuse it.
+// ErrNoSuchSubtitle, ErrNotAttached and ErrAttachedByOther refuse it; a
+// stream embedded in an original of the title (EmbeddedID), which has no
+// row, is ErrNotAttached as any of its own.
 func Detach(ctx context.Context, pool *pgxpool.Pool, id, sub, by string, admin bool) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -256,6 +268,11 @@ func Detach(ctx context.Context, pool *pgxpool.Pool, id, sub, by string, admin b
 		WHERE id = $1 AND item_id = $2`, sub, id), &s)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
+		if own, err := embeddedIn(ctx, tx, id, sub); err != nil {
+			return err
+		} else if own {
+			return ErrNotAttached
+		}
 		return ErrNoSuchSubtitle
 	case err != nil:
 		return err

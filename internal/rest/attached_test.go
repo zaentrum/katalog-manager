@@ -1,6 +1,7 @@
 package rest
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -650,6 +652,319 @@ func TestOnlyTheVersionTakenInOfTheFileThatPlaysTakesASubtitle(t *testing.T) {
 	}
 	if got := strings.Join(fileNames(t, filepath.Join(library.VersionDir(f.itemDir, filmVersion), "subs")), " "); got != filepath.Base(f.germanFile(filmVersion)) {
 		t.Errorf("the old file's version holds %s", got)
+	}
+}
+
+// embeddedStream is a subtitle stream of an original as a source record
+// lists it.
+func embeddedStream(index int, codec string, language, raw, title, variant any, purpose string, flags ...string) map[string]any {
+	d := map[string]any{"default": false, "forced": false, "original": false, "dub": false, "commentary": false,
+		"hearingImpaired": false, "visualImpaired": false}
+	for _, f := range flags {
+		d[f] = true
+	}
+	form := "text"
+	if codec == "hdmv_pgs_subtitle" {
+		form = "image"
+	}
+	return map[string]any{"index": index, "type": "subtitle", "codec": codec, "language": language, "languageRaw": raw,
+		"title": title, "dispositions": d, "form": form, "styled": codec == "ass", "variant": variant, "events": 900,
+		"purpose": purpose, "purposeFrom": "assumed"}
+}
+
+// writeManyStreams writes the record of the film's source as one of an
+// original with many subtitle streams: a picture and a sound, then English
+// (a full one, one for the deaf and hard of hearing), Chinese in Simplified
+// and in Traditional characters, a forced English one, a commentary, German
+// in pictures, Latin American Spanish, Spanish signs and songs, song lyrics,
+// one of no language whose record says nothing of its form, and a font.
+func (f *v2Film) writeManyStreams(t *testing.T) {
+	t.Helper()
+	noForm := embeddedStream(12, "mov_text", nil, nil, nil, nil, "dialogue")
+	delete(noForm, "form")
+	librarytest.WriteSource(t, library.SourceDir(f.itemDir, filmSource), map[string]any{"sourceId": filmSource,
+		"streams": []map[string]any{
+			{"index": 0, "type": "video", "codec": "hevc", "width": 1920, "height": 800},
+			{"index": 1, "type": "audio", "codec": "eac3", "language": "en", "languageRaw": "eng", "channels": 6},
+			embeddedStream(2, "subrip", "en", "eng", nil, nil, "dialogue"),
+			embeddedStream(3, "subrip", "en", "eng", "SDH", nil, "sdh", "hearingImpaired"),
+			embeddedStream(4, "subrip", "zh", "chi", "Chinese (Simplified)", "Simplified", "dialogue"),
+			embeddedStream(5, "subrip", "zh", "chi", "Chinese (Traditional)", "Traditional", "dialogue"),
+			embeddedStream(6, "subrip", "en", "eng", "Forced", nil, "forced", "forced"),
+			embeddedStream(7, "subrip", "en", "eng", "Commentary", nil, "commentary"),
+			embeddedStream(8, "hdmv_pgs_subtitle", "de", "ger", nil, nil, "dialogue"),
+			embeddedStream(9, "ass", "es", "spa", "Latin American", "Latin American", "dialogue"),
+			embeddedStream(10, "subrip", "es", "spa", "Signs & Songs", nil, "signs-songs"),
+			embeddedStream(11, "subrip", "en", "eng", "Lyrics", nil, "lyrics", "lyrics"),
+			noForm,
+			{"index": 13, "type": "attachment", "codec": "ttf", "filename": "font.ttf", "role": "font"},
+		}}, nil)
+}
+
+// manyStreamsListed are the film's own subtitles of the streams
+// writeManyStreams records, as the seam lists them: each subtitle stream
+// but the commentary and the lyrics, in the file's order.
+const manyStreamsListed = `2 en - subrip text dialogue
+3 en SDH subrip sdh text sdh
+4 zh-Hans Chinese (Simplified) subrip text dialogue
+5 zh-Hant Chinese (Traditional) subrip text dialogue
+6 en Forced subrip forced text forced
+8 de - hdmv_pgs_subtitle image dialogue
+9 es-419 Latin American ass text dialogue
+10 es Signs & Songs subrip forced text signs-songs
+12  - mov_text text dialogue`
+
+// itemSubtitles is the seam's answer of the item's subtitles for the token,
+// decoded: its fields, and its subtitles as rows (library.Subtitle) and as
+// the JSON it sends.
+func (f *v2Film) itemSubtitles(t *testing.T, item, token string) (map[string]json.RawMessage, []library.Subtitle) {
+	t.Helper()
+	w := do(f.h, http.MethodGet, "/api/library/items/"+item+"/subtitles", "", token)
+	var answer map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &answer); err != nil || w.Code != http.StatusOK {
+		t.Fatalf("the title's subtitles: %d %s %v", w.Code, w.Body, err)
+	}
+	var subs []library.Subtitle
+	if err := json.Unmarshal(answer["subtitles"], &subs); err != nil {
+		t.Fatal(err)
+	}
+	return answer, subs
+}
+
+// embeddedLines are the subtitles of subs embedded in the film's original,
+// one a line: the stream's index, the language, the label (- for none), the
+// format, forced and sdh where they are, the form and the purpose; each
+// checked to be the film's own, not attached, with its id.
+func embeddedLines(t *testing.T, subs []library.Subtitle) string {
+	t.Helper()
+	var lines []string
+	for _, s := range subs {
+		if !s.Embedded {
+			continue
+		}
+		if s.Stream == nil || s.ID != library.EmbeddedID(filmSource, *s.Stream) || s.Origin != nil || s.Attached ||
+			s.VersionID != nil || s.AttachedBy != nil || s.AttachedAt != nil {
+			t.Errorf("an embedded subtitle that is not the title's own stream: %+v", s)
+			continue
+		}
+		label := "-"
+		if s.Label != nil {
+			label = *s.Label
+		}
+		fields := []string{fmt.Sprint(*s.Stream), s.Language, label, s.Format}
+		if s.Forced {
+			fields = append(fields, "forced")
+		}
+		if s.SDH {
+			fields = append(fields, "sdh")
+		}
+		lines = append(lines, strings.Join(append(fields, s.Form, s.Purpose), " "))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// rowsOf is the JSON of the item's subtitles as its rows say them
+// (library.SubtitlesOf), the seam's answer for a title with nothing else.
+func (f *v2Film) rowsOf(t *testing.T, item string) string {
+	t.Helper()
+	subs, err := library.SubtitlesOf(t.Context(), f.st.Pool(), item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(subs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// compactJSON is raw without the space between its tokens.
+func compactJSON(t *testing.T, raw []byte) string {
+	t.Helper()
+	var b bytes.Buffer
+	if err := json.Compact(&b, raw); err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
+}
+
+// A title taken in plays its original, and the subtitle streams embedded in
+// it are the title's own subtitles: the seam lists each as its source record
+// lists it, after the title's rows of its own and before the subtitles
+// attached to it, in the file's order — its language tag (Chinese with its
+// script, Latin American Spanish with its region), its label the stream's
+// title, its format the stream's codec, forced and SDH as the file flags it
+// or the record's purpose says, and what it is (embedded, its index in the
+// file, its form, its purpose). A commentary and song lyrics are no subtitle
+// of the dialogue, and stay out. An episode the file covers answers for its
+// holder, whose file it is. Once a package is added, its rows are the
+// title's own, and the streams are listed no more.
+func TestATitleTakenInHasTheSubtitlesEmbeddedInItsOriginal(t *testing.T) {
+	f := takenFilm(t)
+	f.writeManyStreams(t)
+	addon := f.iss.Addon(t)
+	attached := f.attachTo(t, filmItem, addon)
+
+	answer, subs := f.itemSubtitles(t, filmItem, addon)
+	if got := embeddedLines(t, subs); got != manyStreamsListed {
+		t.Errorf("the streams listed:\n%s\nwant:\n%s", got, manyStreamsListed)
+	}
+	var order []string
+	for _, s := range subs {
+		switch {
+		case s.Embedded:
+			if len(order) == 0 || order[len(order)-1] != "embedded" {
+				order = append(order, "embedded")
+			}
+		case s.Attached:
+			order = append(order, "attached "+s.ID)
+		default:
+			order = append(order, "row "+s.ID)
+		}
+	}
+	rows, err := library.SubtitlesOf(t.Context(), f.st.Pool(), filmItem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, s := range rows {
+		if !s.Attached {
+			want = append(want, "row "+s.ID)
+		}
+	}
+	want = append(want, "embedded", "attached "+attached.ID)
+	if strings.Join(order, ", ") != strings.Join(want, ", ") {
+		t.Errorf("the order: %v, want %v", order, want)
+	}
+	body := compactJSON(t, answer["subtitles"])
+	for _, entry := range []string{
+		`{"id":"source-` + filmSource + `-4","language":"zh-Hans","label":"Chinese (Simplified)","format":"subrip",` +
+			`"forced":false,"sdh":false,"origin":null,"attached":false,"embedded":true,"stream":4,"form":"text","purpose":"dialogue"}`,
+		`{"id":"source-` + filmSource + `-2","language":"en","label":null,"format":"subrip",` +
+			`"forced":false,"sdh":false,"origin":null,"attached":false,"embedded":true,"stream":2,"form":"text","purpose":"dialogue"}`,
+	} {
+		if !strings.Contains(body, entry) {
+			t.Errorf("the answer does not hold %s:\n%s", entry, body)
+		}
+	}
+	if string(answer["versionId"]) != `"`+filmVersion+`"` || string(answer["attachable"]) != "true" || answer["embeddedNote"] != nil {
+		t.Errorf("the title: %s %s %s", answer["versionId"], answer["attachable"], answer["embeddedNote"])
+	}
+
+	// An episode the file covers: its holder's.
+	const covered = "e2e2e2e2-0000-4000-8000-000000000002"
+	storetest.AddItem(t, f.st, covered, "episode", "The Second Half", "")
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_items SET coveredby = $1 WHERE id = $2`, filmItem, covered)
+	answer, subs = f.itemSubtitles(t, covered, addon)
+	if string(answer["itemId"]) != `"`+filmItem+`"` || embeddedLines(t, subs) != manyStreamsListed {
+		t.Errorf("a covered episode: %s\n%s", answer["itemId"], embeddedLines(t, subs))
+	}
+
+	// A package added: the version is complete, its rows the title's own.
+	if code, m := f.complete(t, f.payload(filmVersion, filmPackage, f.versionOf(t, filmVersion, filmPackage, originalNamed))); code != http.StatusOK {
+		t.Fatalf("the package added: %d %v", code, m)
+	}
+	answer, subs = f.itemSubtitles(t, filmItem, addon)
+	if got := compactJSON(t, answer["subtitles"]); got != f.rowsOf(t, filmItem) || len(subs) == 0 || answer["embeddedNote"] != nil {
+		t.Errorf("complete: %s, want its rows %s", got, f.rowsOf(t, filmItem))
+	}
+}
+
+// A complete version's subtitles of its own are its rows, its package's:
+// the seam answers them as it did, whatever the source record lists, and
+// says nothing of embedded streams.
+func TestAPackagedTitlesOwnSubtitlesAreItsRows(t *testing.T) {
+	f := packagedFilm(t)
+	f.writeManyStreams(t)
+	addon := f.iss.Addon(t)
+	f.attachTo(t, filmItem, addon)
+	answer, _ := f.itemSubtitles(t, filmItem, addon)
+	var keys []string
+	for k := range answer {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	if strings.Join(keys, " ") != "attachable itemId subtitles type versionId" {
+		t.Errorf("the answer's fields: %v", keys)
+	}
+	if got, want := compactJSON(t, answer["subtitles"]), f.rowsOf(t, filmItem); got != want || strings.Contains(got, "embedded") {
+		t.Errorf("the subtitles: %s, want its rows %s", got, want)
+	}
+}
+
+// A title taken in whose source record tells nothing of its original's
+// streams — none there, none readable, no record, none of its streams — is
+// answered with its rows as before, and embeddedNote says why: never an
+// error.
+func TestATitleTakenInWithoutARecordOfItsStreams(t *testing.T) {
+	f := takenFilm(t)
+	addon := f.iss.Addon(t)
+	f.attachTo(t, filmItem, addon)
+	dir := library.SourceDir(f.itemDir, filmSource)
+	for _, c := range []struct {
+		name, says string
+		write      func()
+	}{
+		{"no record", "is not there", func() { os.RemoveAll(dir) }},
+		{"no JSON", "is no source record", func() { librarytest.Write(t, filepath.Join(dir, "source.json"), []byte("{")) }},
+		{"streams that are no list", "is no source record", func() {
+			librarytest.Write(t, filepath.Join(dir, "source.json"), []byte(`{"streams": {"index": 2}}`))
+		}},
+		{"none of its streams", "lists none of the original's streams", func() {
+			librarytest.WriteSource(t, dir, map[string]any{"sourceId": filmSource, "streams": []any{}}, nil)
+		}},
+		{"its streams unsaid", "lists none of the original's streams", func() {
+			librarytest.WriteSource(t, dir, map[string]any{"sourceId": filmSource}, nil)
+		}},
+	} {
+		os.RemoveAll(dir)
+		c.write()
+		answer, _ := f.itemSubtitles(t, filmItem, addon)
+		var note string
+		_ = json.Unmarshal(answer["embeddedNote"], &note)
+		if !strings.HasPrefix(note, "the subtitles embedded in the original the title plays are not listed: its source record sources/"+
+			filmSource+"/source.json "+c.says) {
+			t.Errorf("%s: the note %q, want it saying %q", c.name, note, c.says)
+		}
+		if got, want := compactJSON(t, answer["subtitles"]), f.rowsOf(t, filmItem); got != want {
+			t.Errorf("%s: the subtitles %s, want its rows %s", c.name, got, want)
+		}
+		if string(answer["versionId"]) != `"`+filmVersion+`"` || string(answer["attachable"]) != "true" {
+			t.Errorf("%s: the title: %s %s", c.name, answer["versionId"], answer["attachable"])
+		}
+	}
+}
+
+// A stream embedded in the original is the title's own: no caller removes
+// it, an admin neither (409, as for one of its rows of its own), and the
+// seam lists it still. An id of the kind that names a source of no title's
+// is none of the title's, removed already or never there (204).
+func TestAStreamEmbeddedInTheOriginalIsNotRemoved(t *testing.T) {
+	f := takenFilm(t)
+	f.writeManyStreams(t)
+	addon := f.iss.Addon(t)
+	const covered = "e2e2e2e2-0000-4000-8000-000000000002"
+	storetest.AddItem(t, f.st, covered, "episode", "The Second Half", "")
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_items SET coveredby = $1 WHERE id = $2`, filmItem, covered)
+	del := func(item, id, token string) (int, string) {
+		w := do(f.h, http.MethodDelete, "/api/library/items/"+item+"/subtitles/"+id, "", token)
+		return w.Code, w.Body.String()
+	}
+	stream := library.EmbeddedID(filmSource, 4)
+	for _, c := range []struct{ who, item, token string }{
+		{"the addon", filmItem, addon}, {"an admin", filmItem, f.iss.Admin(t)}, {"for a covered episode", covered, addon},
+	} {
+		if code, body := del(c.item, stream, c.token); code != http.StatusConflict || !strings.Contains(body, "the title's own") ||
+			!strings.Contains(body, "a stream embedded in its original") {
+			t.Errorf("%s: %d %s, want 409 saying it is the title's own", c.who, code, body)
+		}
+	}
+	if code, body := del(filmItem, library.EmbeddedID("0b6c0000-0000-4000-8000-0000000000ff", 4), addon); code != http.StatusNoContent {
+		t.Errorf("a stream of no source of the title's: %d %s", code, body)
+	}
+	_, subs := f.itemSubtitles(t, filmItem, addon)
+	if got := embeddedLines(t, subs); got != manyStreamsListed {
+		t.Errorf("the streams listed after the refusals:\n%s", got)
 	}
 }
 

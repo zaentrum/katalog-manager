@@ -793,12 +793,14 @@ the episodes its file covers.
 
 ## Attached subtitles
 
-A title plays the subtitles its package made of its source and the subtitle
-files beside its source. A subtitle can also be **attached** to it once its
-version is in the library — its package completed, or its original taken in
-without one — made from its audio or from another of its subtitles, or found
-elsewhere, by an admin, the service account or an addon, and every player
-lists and plays it as any other: nothing is encoded or packaged again.
+A title plays the subtitles its package made of its source (a title taken
+in without one, the subtitle streams embedded in its original) and the
+subtitle files beside its source. A subtitle can also be **attached** to it
+once its version is in the library — its package completed, or its original
+taken in without one — made from its audio or from another of its
+subtitles, or found elsewhere, by an admin, the service account or an addon,
+and every player lists and plays it as any other: nothing is encoded or
+packaged again.
 
 `POST /api/library/items/{id}/subtitles` attaches one:
 
@@ -865,6 +867,43 @@ labels}`: its size, the 16 hex digits of its size plus its first and last
 source record's `labels`) — or `original: null` and why (`originalNote`:
 deleted after packaging, unreadable).
 
+A title **taken in** — no complete version: it plays the original its
+version's folder holds, whose embedded subtitle streams chino-stream
+extracts as a player asks for one — has those streams for its own too,
+listed after its rows of its own and before those attached. The catalog
+keeps no row of them: the seam reads them from the original's source record
+(`sources/<sourceId>/source.json`, its `streams`), one entry each, in the
+file's order:
+
+```json
+{"id": "source-0b6c…-4", "language": "zh-Hans", "label": "Chinese (Simplified)", "format": "subrip",
+ "forced": false, "sdh": false, "origin": null, "attached": false,
+ "embedded": true, "stream": 4, "form": "text", "purpose": "dialogue"}
+```
+
+- **`id`** is `source-<sourceId>-<index>`, `stream` the stream's index in the
+  file: no row's, and the same as long as the record is, which is written
+  once. `embedded`, `stream`, `form` and `purpose` are an embedded stream's
+  alone; a row's entry is as it was.
+- **`language`** is the stream's language as a tag (else the code its file
+  carried; none when that names no language either), with the script its
+  `variant` names for Chinese (`Simplified`: `zh-Hans`, `Traditional`:
+  `zh-Hant`) and the region it names cleanly (`Latin American`: `419`,
+  `Brazilian`: `BR`, `Canadian`: `CA`), where the tag has none of its own.
+  `label` is the stream's title, `format` its codec (`subrip`, `ass`,
+  `hdmv_pgs_subtitle`, …) and `form` whether it is text or pictures
+  (`image`: PGS, VobSub).
+- **`forced`** is the file's flag, or the record's `purpose` `forced` or
+  `signs-songs`; **`sdh`** the file's hearing-impaired flag, or the purpose
+  `sdh`. A stream of a commentary or of song lyrics alone (its purpose, or
+  the file's flag) is left out: it is no subtitle of the dialogue.
+
+A record that is not there, cannot be read or lists none of the original's
+streams leaves the list at the title's rows, and `embeddedNote` says why.
+Once a package is added to the version, the package's subtitles are the
+title's own, as every complete version's are, and the streams are listed no
+more.
+
 `GET /api/library/subtitles/languages` names the languages every title is
 to have a subtitle in, as tags, in the order the setting names them:
 `{"languages": ["en", "de", "zh"], "from": "packager.language_whitelist"}` —
@@ -875,7 +914,8 @@ whitelist, the languages a player shows; none when neither is.
 attached to the title: one the caller attached (its token's client), or, for
 an admin, any; its row and its file go, and the version's `subs/` with the
 last file in it. It is `204`, also for a subtitle the title has not (removed
-already); one of the title's own is `409`, one another client attached `403`.
+already); one of the title's own is `409` (a stream embedded in its original
+too), one another client attached `403`.
 
 **A new version** of the title made of the same sources carries the attached
 subtitles over: their files are copied into its `subs/` and their rows follow
