@@ -203,16 +203,61 @@ func run() error {
 	// a build CONCURRENTLY waits for the transactions that began before it.
 	go ensureCatalogSearch(bgCtx, st)
 
+	svc, err := wire(bgCtx, cfg, st)
+	if err != nil {
+		return err
+	}
+	defer svc.close()
+	svc.start(bgCtx)
+
+	srv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           svc.handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		log.Printf("katalog-manager listening on :%s (graphql /query, rest /api/*)", cfg.Port)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+	log.Println("shutting down…")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return srv.Shutdown(shutdownCtx)
+}
+
+// service is katalog-manager as run wires it: the handler it serves, the
+// work it sets going at its start, and what it closes once it stops.
+type service struct {
+	handler http.Handler
+	// start fails the scans a previous process left running, then sets the
+	// background workers going, for as long as ctx lasts.
+	start func(ctx context.Context)
+	close func()
+}
+
+// wire builds the service of cfg over st as run serves it: its auth, its
+// event producer, the integrations, the pipeline's retries and the library's
+// compliance check, GraphQL and the REST routes behind the router's health
+// routes. Nothing runs before start. A test serves what wire builds, so the
+// wiring it tests is run's.
+func wire(ctx context.Context, cfg config.Config, st *store.Store) (*service, error) {
 	steps := processing.New(st.Pool()).WithPolicy(cfg.RetryPolicy())
 
 	// Auth: bearer JWT (issuer-only MVP) + stream-token (artwork only).
 	streamVerifier, err := auth.NewStreamVerifier(cfg.StreamSigningKey)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	jwtVerifier, err := auth.NewJWTVerifier(bgCtx, cfg.OIDCIssuer, cfg.Audience, cfg.AudienceRequired, cfg.AuthDisabled)
+	jwtVerifier, err := auth.NewJWTVerifier(ctx, cfg.OIDCIssuer, cfg.Audience, cfg.AudienceRequired, cfg.AuthDisabled)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	authMW := auth.NewMiddleware(jwtVerifier, streamVerifier)
 	if cfg.AuthDisabled || cfg.OIDCIssuer == "" {
@@ -233,7 +278,6 @@ func run() error {
 			tlsCfg = nil
 		}
 		eventProducer = events.NewProducer(brokers, tlsCfg)
-		defer eventProducer.Close()
 	}
 
 	// Integration services. Each no-ops cleanly when its feature is unconfigured.
@@ -256,15 +300,6 @@ func run() error {
 	// The scanner takes a title's extras in by their names behind the
 	// setting extras.scan, and sends their triggers.
 	scan := scanner.New(st, cfg, steps, eventProducer).WithExtras(extrasSvc)
-	// A scan runs in the process that started it, so one a previous process
-	// left running never ends: it is failed now, saying so, before this
-	// process starts a scan of its own. A scan another host runs is left to
-	// the reaper, which fails it once it is silent past the scan's timeout.
-	if n, err := scan.FailInterrupted(bgCtx); err != nil {
-		log.Printf("catalog: the scans a previous process left running could not be failed: %v", err)
-	} else if n > 0 {
-		log.Printf("catalog: %d scans a previous process left running are failed (%s)", n, scanner.InterruptedReason)
-	}
 	actions := itemactions.New(st, cfg, steps, eventProducer)
 	// The library's compliance check: every movie and episode held against
 	// the rules the transcoder and the packager report, in the background,
@@ -283,56 +318,6 @@ func run() error {
 	// A title given another file (replaceSource) is encoded again from it as
 	// reencodeItem encodes one.
 	actions.WithReencoder(retries)
-
-	// Background workers (lifetime = server) share bgCtx, cancelled on shutdown.
-	// Keep the people and titles the catalog holds fresh from TMDB's change
-	// lists, without crawling TMDB: every TMDB_REFRESH_INTERVAL (default 24h),
-	// idle while there is no TMDB key.
-	go enricher.RunChangeSync(bgCtx, cfg.TMDBRefreshInterval)
-	go retries.Run(bgCtx)
-	go check.Run(bgCtx)
-	// The library's projections (metadata.json, person.json) follow the
-	// database, with library.layout=v2, in one instance at a time.
-	go library.NewProjector(st.Pool(), cfg).Run(bgCtx)
-	// Event-driven enrichment: consume stube.catalog.item.discovered, enrich the
-	// item synchronously, then emit stube.catalog.item.enriched to trigger analyze.
-	// This replaces the old 60s enrichment poll ticker (pure-Kafka triggers).
-	if cfg.CatalogEventsEnabled && cfg.TMDBEnabled() {
-		go events.Consume(bgCtx, events.SplitBrokers(cfg.KafkaBrokers), cfg.KafkaCertDir,
-			cfg.KafkaEnricherGroup, []string{events.TopicDiscovered},
-			func(ctx context.Context, _ string, ev events.ItemEvent) error {
-				status, _, err := enricher.EnrichOne(ctx, ev.ItemID)
-				if err != nil {
-					return err
-				}
-				// done|not_found both mean "enrichment finished, proceed to analyze".
-				// failed|skipped do not advance the pipeline. A series parent is
-				// metadata-only (no primary playback asset) — it enriches but must
-				// NOT enter analyze/transcode/package, so gate on a playable file.
-				// So is an episode another's file covers (that one's run is
-				// its), and a title whose file is a disc image runs nothing of
-				// it: its steps fail, saying why.
-				switch status {
-				case "done", "not_found":
-					// With the library's v2 layout the item's identity is
-					// settled now: its record is written before the
-					// pipeline goes on (a series' too, before its first
-					// episode's).
-					recordItem(ctx, st, cfg, ev.ItemID)
-					if discImage(ctx, st, steps, ev.ItemID) {
-						return nil
-					}
-					if hasPrimaryAsset(ctx, st, ev.ItemID) {
-						out := events.NewItemEvent(ev.ItemID)
-						out.Type = ev.Type
-						out.Step = "analyze"
-						out.Status = status
-						eventProducer.EmitItem(ctx, events.TopicEnriched, out)
-					}
-				}
-				return nil
-			})
-	}
 
 	// GraphQL.
 	resolver := graph.NewResolver(st, cfg, graph.Services{
@@ -373,52 +358,101 @@ func run() error {
 	// Live catalog stream: a per-pod Kafka tail (latest offset) fans thin
 	// catalog.updated notifications out to the console over SSE, so it refreshes
 	// the moment the pipeline moves instead of polling. No brokers => inert.
-	// An extra's package recorded is a note of its title, phase extra.
+	// An extra's package recorded is a note of its title, phase extra. Its
+	// tail starts with start.
 	broker := stream.NewBroker()
-	if cfg.CatalogEventsEnabled {
-		host, _ := os.Hostname()
-		if host == "" {
-			host = "unknown"
-		}
-		go events.ConsumeLatest(bgCtx, events.SplitBrokers(cfg.KafkaBrokers), cfg.KafkaCertDir,
-			"katalog-stream-"+host,
-			[]string{events.TopicDiscovered, events.TopicEnriched, events.TopicAnalyzed, events.TopicTranscoded, events.TopicPackaged,
-				events.TopicRemoved, events.TopicExtraPackaged},
-			func(_ context.Context, topic string, ev events.ItemEvent) error {
-				phase := stream.PhaseOf(topic)
-				if topic == events.TopicExtraPackaged {
-					phase = "extra"
-				}
-				broker.Publish(stream.Note{ItemID: ev.ItemID, ItemType: ev.Type, Phase: phase})
-				return nil
-			})
-	}
 
 	// Authenticated surface.
 	routes(r, authMW.Handler, cfg.Policy(), schema, broker.Handler,
 		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: steps, Events: eventProducer, Packager: actions, Extras: extrasSvc,
 			Reencode: retries, TakeIn: retries, Compliance: check}))
 
-	srv := &http.Server{
-		Addr:              ":" + cfg.Port,
-		Handler:           r,
-		ReadHeaderTimeout: 10 * time.Second,
+	start := func(ctx context.Context) {
+		// A scan runs in the process that started it, so one a previous process
+		// left running never ends: it is failed now, saying so, before this
+		// process starts a scan of its own. A scan another host runs is left to
+		// the reaper, which fails it once it is silent past the scan's timeout.
+		if n, err := scan.FailInterrupted(ctx); err != nil {
+			log.Printf("catalog: the scans a previous process left running could not be failed: %v", err)
+		} else if n > 0 {
+			log.Printf("catalog: %d scans a previous process left running are failed (%s)", n, scanner.InterruptedReason)
+		}
+		// Background workers (lifetime = server) share ctx, cancelled on shutdown.
+		// Keep the people and titles the catalog holds fresh from TMDB's change
+		// lists, without crawling TMDB: every TMDB_REFRESH_INTERVAL (default 24h),
+		// idle while there is no TMDB key.
+		go enricher.RunChangeSync(ctx, cfg.TMDBRefreshInterval)
+		go retries.Run(ctx)
+		go check.Run(ctx)
+		// The library's projections (metadata.json, person.json) follow the
+		// database, with library.layout=v2, in one instance at a time.
+		go library.NewProjector(st.Pool(), cfg).Run(ctx)
+		// Event-driven enrichment: consume stube.catalog.item.discovered, enrich the
+		// item synchronously, then emit stube.catalog.item.enriched to trigger analyze.
+		// This replaces the old 60s enrichment poll ticker (pure-Kafka triggers).
+		if cfg.CatalogEventsEnabled && cfg.TMDBEnabled() {
+			go events.Consume(ctx, events.SplitBrokers(cfg.KafkaBrokers), cfg.KafkaCertDir,
+				cfg.KafkaEnricherGroup, []string{events.TopicDiscovered},
+				func(ctx context.Context, _ string, ev events.ItemEvent) error {
+					status, _, err := enricher.EnrichOne(ctx, ev.ItemID)
+					if err != nil {
+						return err
+					}
+					// done|not_found both mean "enrichment finished, proceed to analyze".
+					// failed|skipped do not advance the pipeline. A series parent is
+					// metadata-only (no primary playback asset) — it enriches but must
+					// NOT enter analyze/transcode/package, so gate on a playable file.
+					// So is an episode another's file covers (that one's run is
+					// its), and a title whose file is a disc image runs nothing of
+					// it: its steps fail, saying why.
+					switch status {
+					case "done", "not_found":
+						// With the library's v2 layout the item's identity is
+						// settled now: its record is written before the
+						// pipeline goes on (a series' too, before its first
+						// episode's).
+						recordItem(ctx, st, cfg, ev.ItemID)
+						if discImage(ctx, st, steps, ev.ItemID) {
+							return nil
+						}
+						if hasPrimaryAsset(ctx, st, ev.ItemID) {
+							out := events.NewItemEvent(ev.ItemID)
+							out.Type = ev.Type
+							out.Step = "analyze"
+							out.Status = status
+							eventProducer.EmitItem(ctx, events.TopicEnriched, out)
+						}
+					}
+					return nil
+				})
+		}
+		// The live catalog stream's Kafka tail (broker).
+		if cfg.CatalogEventsEnabled {
+			host, _ := os.Hostname()
+			if host == "" {
+				host = "unknown"
+			}
+			go events.ConsumeLatest(ctx, events.SplitBrokers(cfg.KafkaBrokers), cfg.KafkaCertDir,
+				"katalog-stream-"+host,
+				[]string{events.TopicDiscovered, events.TopicEnriched, events.TopicAnalyzed, events.TopicTranscoded, events.TopicPackaged,
+					events.TopicRemoved, events.TopicExtraPackaged},
+				func(_ context.Context, topic string, ev events.ItemEvent) error {
+					phase := stream.PhaseOf(topic)
+					if topic == events.TopicExtraPackaged {
+						phase = "extra"
+					}
+					broker.Publish(stream.Note{ItemID: ev.ItemID, ItemType: ev.Type, Phase: phase})
+					return nil
+				})
+		}
 	}
 
-	go func() {
-		log.Printf("katalog-manager listening on :%s (graphql /query, rest /api/*)", cfg.Port)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("server error: %v", err)
+	stop := func() {
+		if eventProducer != nil {
+			eventProducer.Close()
 		}
-	}()
-
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
-	log.Println("shutting down…")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	}
+	return &service{handler: r, start: start, close: stop}, nil
 }
 
 // dropRetiredJobTables applies migration 035 at startup: the job tables of an
