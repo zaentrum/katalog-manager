@@ -1385,8 +1385,11 @@ type ComplianceFinding {
 }
 
 # A title that breaks a rule. originalBytes is the size of its original,
-# packageBytes of its package; estimatedBytes what its package is to be at
-# most once it is processed again, null when that cannot be told. queue is
+# packageBytes of its package; estimatedBytes an estimate of its package once
+# it is processed again, not a bound (what today's transcoder and packager
+# make of its original, as its records tell: the video of each rung of the
+# ladder, copied or at its maxrate, the audio, and what the package holds
+# beside its renditions), null when the records don't tell. queue is
 # where it stands in the re-encode queue (queued, sent, done or failed; null
 # when it was never queued), queueReason why it waits or failed there (a
 # title queued and not yet sent "It is waiting in the queue." when nothing
@@ -1453,23 +1456,29 @@ enum ComplianceOutcome {
 }
 
 # Of the titles of the report's kind and search, whatever its rules, those
-# that break a rule: how many, the size of their packages, and what those are
-# to be at most once processed again (null when it cannot be told of any).
+# that break a rule: how many, and of the same titles, those with an
+# estimate, the size of their packages now and the estimate of them once
+# processed again (null when none has one); withoutEstimate counts those
+# left out of both.
 type ComplianceSummary {
   rule: ComplianceRule!
   titles: Int!
   packageBytes: Float!
   estimatedBytes: Float
+  withoutEstimate: Int!
 }
 
 # The titles a report's whole filter (kind, rules, search) matches: how
-# many, the sizes of their originals and packages, and what those packages
-# are to be at most once processed again (null when that is known of none).
+# many, and the size of their originals; and of the same titles, those with
+# an estimate, the size of their packages now and the estimate of them once
+# processed again (null when none has one), so that the two compare the
+# same titles; withoutEstimate counts those left out of both.
 type ComplianceTotals {
   titles: Int!
   originalBytes: Float!
   packageBytes: Float!
   estimatedBytes: Float
+  withoutEstimate: Int!
 }
 
 # The re-encode queue, all its titles, by state: queued, processing (sent),

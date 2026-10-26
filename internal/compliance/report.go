@@ -100,11 +100,12 @@ func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, o graph.
 			count(*) FILTER (WHERE f.ruleshash <> ''),
 			count(*) FILTER (WHERE `+breaking+`),
 			COALESCE(sum(f.originalbytes) FILTER (WHERE `+breaking+`), 0)::float8,
-			COALESCE(sum(f.packagebytes) FILTER (WHERE `+breaking+`), 0)::float8,
+			COALESCE(sum(f.packagebytes) FILTER (WHERE `+breaking+` AND f.estimatedbytes IS NOT NULL), 0)::float8,
 			(sum(f.estimatedbytes) FILTER (WHERE `+breaking+`))::float8,
+			count(*) FILTER (WHERE `+breaking+` AND f.estimatedbytes IS NULL),
 			count(*) FILTER (WHERE f.unchecked IS NOT NULL)
 		FROM f`, f.Kind, f.Search, rules).Scan(&out.EvaluatedAt, &out.CheckedTitles, &m.Titles, &m.OriginalBytes,
-		&m.PackageBytes, &m.EstimatedBytes, &unchecked); err != nil {
+		&m.PackageBytes, &m.EstimatedBytes, &m.WithoutEstimate, &unchecked); err != nil {
 		return out, err
 	}
 	out.Total = m.Titles
@@ -146,10 +147,13 @@ func (s *Service) pending(ctx context.Context, kind, hash string) (int32, error)
 }
 
 // summary is, for every rule, how many of the titles of f's kind and search
-// break it, the size of their packages, and what those are to be at most
-// once processed again (nil when that is known of none).
+// break it, and of the same titles with an estimate, the size of their
+// packages and the estimate of them once processed again (nil when none has
+// one), and how many have none.
 func (s *Service) summary(ctx context.Context, f graph.ComplianceFilter) ([]graph.ComplianceSummary, error) {
-	rows, err := s.pool.Query(ctx, filtered+`SELECT r, count(*), COALESCE(sum(f.packagebytes), 0)::float8, sum(f.estimatedbytes)::float8
+	rows, err := s.pool.Query(ctx, filtered+`SELECT r, count(*),
+			COALESCE(sum(f.packagebytes) FILTER (WHERE f.estimatedbytes IS NOT NULL), 0)::float8, sum(f.estimatedbytes)::float8,
+			count(*) FILTER (WHERE f.estimatedbytes IS NULL)
 		FROM f, unnest(f.rules) AS r GROUP BY r`, f.Kind, f.Search)
 	if err != nil {
 		return nil, err
@@ -158,7 +162,7 @@ func (s *Service) summary(ctx context.Context, f graph.ComplianceFilter) ([]grap
 	by := map[string]graph.ComplianceSummary{}
 	for rows.Next() {
 		var c graph.ComplianceSummary
-		if err := rows.Scan(&c.Rule, &c.Titles, &c.PackageBytes, &c.EstimatedBytes); err != nil {
+		if err := rows.Scan(&c.Rule, &c.Titles, &c.PackageBytes, &c.EstimatedBytes, &c.WithoutEstimate); err != nil {
 			return nil, err
 		}
 		by[c.Rule] = c
@@ -533,9 +537,10 @@ func (s *Service) matching(ctx context.Context, f graph.ComplianceFilter, rules 
 	return out, nil
 }
 
-// totalsOf sums titles up: how many, the sizes of their originals and
-// packages, and of their packages once processed again (nil when that is
-// known of none).
+// totalsOf sums titles up: how many, and the sizes of their originals; and
+// of the same titles with an estimate, the sizes of their packages and the
+// estimate of them once processed again (nil when none has one), and how
+// many have none.
 func totalsOf(titles []sized) graph.ComplianceTotals {
 	out := graph.ComplianceTotals{Titles: int32(len(titles))}
 	var est int64
@@ -544,13 +549,15 @@ func totalsOf(titles []sized) graph.ComplianceTotals {
 		if t.orig != nil {
 			out.OriginalBytes += float64(*t.orig)
 		}
+		if t.est == nil {
+			out.WithoutEstimate++
+			continue
+		}
 		if t.pkg != nil {
 			out.PackageBytes += float64(*t.pkg)
 		}
-		if t.est != nil {
-			est += *t.est
-			known = true
-		}
+		est += *t.est
+		known = true
 	}
 	if known {
 		e := float64(est)

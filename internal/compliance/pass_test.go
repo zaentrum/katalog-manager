@@ -822,6 +822,29 @@ A Film In Dolby Vision 7: PACKAGING_FAILED` {
 	if m := rep.Matching; m.Titles != 9 || rep.Total != 9 {
 		t.Errorf("matching: %+v, total %d; want the 9 titles", m, rep.Total)
 	}
+	// now and after compare the same titles, those with an estimate: the
+	// films whose originals were deleted or are being deleted, the disc
+	// image and the film in Dolby Vision 7 have none, and are counted apart
+	var now, after float64
+	for _, r := range rep.Rows {
+		if r.EstimatedBytes != nil {
+			after += *r.EstimatedBytes
+			if r.PackageBytes != nil {
+				now += *r.PackageBytes
+			}
+		}
+	}
+	if m := rep.Matching; m.WithoutEstimate != 4 || m.PackageBytes != now || m.EstimatedBytes == nil || *m.EstimatedBytes != after {
+		t.Errorf("matching: %+v; want 4 without an estimate, now %v and after %v of the others", m, now, after)
+	}
+	for _, c := range rep.Summary {
+		if c.Rule == OverBitrateCap && (c.Titles != 4 || c.WithoutEstimate != 2 || c.PackageBytes != 59e9+2.7e9) {
+			t.Errorf("the summary over the bit rate cap: %+v; want 4, the 2 whose originals are gone without an estimate", c)
+		}
+	}
+	if q := rep.Queueable; q.WithoutEstimate != 0 {
+		t.Errorf("queueable: %+v, want every one with an estimate", q)
+	}
 	got, err := s.Matching(ctx, all)
 	if err != nil {
 		t.Fatal(err)

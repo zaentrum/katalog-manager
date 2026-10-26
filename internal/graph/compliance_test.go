@@ -79,6 +79,8 @@ extend type ComplianceRow {
 enum ComplianceOutcome { REENCODE REPACKAGE FIRST_PACKAGE BLOCKED }
 enum ComplianceSort { PACKAGE_SIZE ORIGINAL_SIZE SAVING VIDEO_BITRATE TITLE }
 extend type ComplianceReport { checkedTitles: Int }   # every title of the kind (and search) the check checked, compliant or not
+extend type ComplianceTotals { withoutEstimate: Int! }   # the titles left out of packageBytes and estimatedBytes, which compare the same titles
+extend type ComplianceSummary { withoutEstimate: Int! }
 `
 
 var (
@@ -135,8 +137,8 @@ func TestTheComplianceContract(t *testing.T) {
 		types[ty.Name] = ty
 	}
 	blocks := contractBlockRE.FindAllStringSubmatch(complianceContract, -1)
-	if len(blocks) != 26 {
-		t.Fatalf("the contract reads as %d blocks, want 26", len(blocks))
+	if len(blocks) != 28 {
+		t.Fatalf("the contract reads as %d blocks, want 28", len(blocks))
 	}
 	for _, b := range blocks {
 		kind, name, body := b[1], b[2], b[3]

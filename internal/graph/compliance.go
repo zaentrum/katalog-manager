@@ -137,22 +137,27 @@ type ComplianceRow struct {
 }
 
 // ComplianceSummary is how many of the titles a report covers break a rule,
-// the size of their packages and what those are to be at most once processed
-// again.
+// and of the same titles with an estimate, the size of their packages and
+// the estimate of them once processed again; WithoutEstimate counts those
+// left out of both.
 type ComplianceSummary struct {
-	Rule           string
-	Titles         int32
-	PackageBytes   float64
-	EstimatedBytes *float64
+	Rule            string
+	Titles          int32
+	PackageBytes    float64
+	EstimatedBytes  *float64
+	WithoutEstimate int32
 }
 
 // ComplianceTotals are the titles a report's whole filter matches: how many,
-// the sizes of their originals and packages, and what those packages are to
-// be after they are processed again (nil when that is known of none).
+// the size of their originals, and of the same titles with an estimate, the
+// size of their packages and the estimate of them after they are processed
+// again (nil when none has one); WithoutEstimate counts those left out of
+// both.
 type ComplianceTotals struct {
 	Titles                      int32
 	OriginalBytes, PackageBytes float64
 	EstimatedBytes              *float64
+	WithoutEstimate             int32
 }
 
 // ComplianceQueueCounts are the re-encode queue's titles by state: queued,
@@ -433,6 +438,7 @@ func (r *complianceTotalsResolver) Titles() int32            { return r.m.Titles
 func (r *complianceTotalsResolver) OriginalBytes() float64   { return r.m.OriginalBytes }
 func (r *complianceTotalsResolver) PackageBytes() float64    { return r.m.PackageBytes }
 func (r *complianceTotalsResolver) EstimatedBytes() *float64 { return r.m.EstimatedBytes }
+func (r *complianceTotalsResolver) WithoutEstimate() int32   { return r.m.WithoutEstimate }
 
 type complianceQueueCountsResolver struct{ m ComplianceQueueCounts }
 
@@ -447,6 +453,7 @@ func (r *complianceSummaryResolver) Rule() string             { return r.m.Rule 
 func (r *complianceSummaryResolver) Titles() int32            { return r.m.Titles }
 func (r *complianceSummaryResolver) PackageBytes() float64    { return r.m.PackageBytes }
 func (r *complianceSummaryResolver) EstimatedBytes() *float64 { return r.m.EstimatedBytes }
+func (r *complianceSummaryResolver) WithoutEstimate() int32   { return r.m.WithoutEstimate }
 
 type complianceRowResolver struct{ m ComplianceRow }
 
