@@ -711,7 +711,7 @@ with, at their start and every ten minutes, on `PUT
 
 ```json
 {"version": "3f2a9c1", "rules": {"surroundAudio": "eac3", "surroundLayout": "5.1", "surroundBitrate": "448k",
-  "stereoBitrate": "192k", "imageSubtitles": ["pgs", "vobsub"]}}
+  "stereoAudio": "aac", "stereoBitrate": "192k", "imageSubtitles": ["pgs", "vobsub"]}}
 ```
 
 Each value is the one the worker runs with (a cap of 0 a rule switched
@@ -735,12 +735,12 @@ records can't be read …`).
 | Rule | A title breaks it when |
 | --- | --- |
 | `NOT_PACKAGED` | its original is present, it has no package, and its transcode and its package neither wait nor run ("It has no package, and none is being made."; one taken in without a package: "It was taken in without a package and plays from its original.") |
-| `PACKAGING_FAILED` | it has no package, and its transcode or its package failed or was skipped, saying which and why ("The transcoder failed: ffmpeg exited 1."), or its file is a disc image ("Its file is a disc image, which the transcoder doesn’t encode.") |
-| `OVER_BITRATE_CAP` | its package's video is above the bit rate the transcoder allows for its kind and bucket ("The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie.") |
-| `OVER_SIZE_CAP` | a movie's original is larger than `movieMaxGiB`, and its package copies its video as it is ("The original is larger than the 16.1 GB the transcoder allows for a movie, and the package keeps its video as it is.") |
-| `NO_SURROUND` | the packager makes a surround track, and the package lacks the surround its source had, as the retire job holds an original for it ("The package has 2 audio channels, and the source has 8. The 5.1 E-AC-3 track the packager makes is missing.") |
-| `IMAGE_SUBTITLES_MISSING` | the source has image subtitles of a form the packager keeps, and the package has none of them in their language ("The source's PGS subtitles in German and French, and its VobSub subtitles in Italian, are missing from the package. The packager keeps PGS and VobSub subtitles.") |
-| `VIDEO_NOT_HEVC` | the package's video is not HEVC (`hev1`, `hvc1`) where the transcoder's rules make every package HEVC: its ladder names the source rung's codec, or its encoder is no CPU one ("The video is H.264, and the transcoder makes every video HEVC.") |
+| `PACKAGING_FAILED` | it has no package, and its transcode or its package failed or was skipped, saying which, and why where the words know the worker's reason ("The transcoder failed.", its detail "ffmpeg exited 1"; "The transcoder left it as it is: Dolby Vision profile 7 needs a tone-mapping encode."; "The packager failed, and tries again by itself." while a retry is really scheduled), or its file is a disc image ("Its file is a disc image, which the transcoder doesn’t encode.") |
+| `OVER_BITRATE_CAP` | its package's video is above the bit rate the transcoder allows for its kind and bucket ("The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160p movie.") |
+| `OVER_SIZE_CAP` | a movie's original is larger than `movieMaxGiB`, and its package copies its video as it is ("The original is larger than the 16.1 GB the transcoder allows for a movie, and the package copied its video.") |
+| `NO_SURROUND` | the packager makes a surround track, and the package lacks the surround its original had, as the retire job holds an original for it ("The package has 2 audio channels, and the original has 8. The 5.1 E-AC-3 track the packager makes is missing.") |
+| `IMAGE_SUBTITLES_MISSING` | the original has image subtitles of a form the packager keeps, and the package has none of them in their language ("The original’s PGS subtitles in German and Portuguese (Brazil), and its VobSub subtitles in Italian, are missing from the package. The packager keeps PGS and VobSub subtitles.") |
+| `VIDEO_NOT_HEVC` | the package's video is not HEVC (`hev1`, `hvc1`) where the transcoder's rules make every package HEVC: its ladder names the source rung's codec, or its encoder is no CPU one ("The video is H.264, and the transcoder makes every video HEVC.", its detail the codec, "avc1.640028") |
 
 The cap bucket is the transcoder's: 2160 from `minHeight` lines tall or
 `minWidth` wide, of the source's tallest and widest video stream (cover art
@@ -773,15 +773,24 @@ original was deleted from disk after packaging.").
 
 **The words.** Every text the check writes for the report (a finding's
 `text`, `measured` and `limit`, `notEvaluated`, `queueReason`,
-`reworkBlocked`, the mutations' `message` and the reason of each title
-they skipped) is in sentence case, with the typographic apostrophe
-("can’t"), and gives the reason, never an instruction: a skip's reason is
-the clause the console says after a colon ("1 title wasn’t queued: its
-file is a disc image, which the transcoder doesn’t encode."), and the rest
-are sentences. A text names no queue's internals: a reason the queue keeps
-in its own words is said in the reader's. A limit is the one its worker
+`reworkBlocked`, the rules panel's labels and values, the mutations' texts
+and the reason of each title they skipped) is in sentence case, with the
+typographic apostrophe ("can’t"), and gives the reason, never an
+instruction: a skip's reason is the clause the console says after a colon
+("1 title wasn’t queued: its file is a disc image, which the transcoder
+doesn’t encode."), a toast has no full stop, and the rest are sentences.
+A title's file is its original, never its source; a height has its p
+("2160p"); a bit rate is two words. What a tool said is never in a text
+but in a detail: a finding's `detail` (an exit code, "ffmpeg exited 1"; a
+codec id, "avc1.640028"), a row's `queueDetail` (what a worker said, when
+its worker last reported, an event) and a rule's `detail` (its
+configuration as reported, "source:hevc"); a worker's reason the words
+know is said in the reader's words ("Dolby Vision profile 7 needs a
+tone-mapping encode"), and a failed step says it is tried again only while
+a retry is really scheduled: its next retry set, and the sweep that sends
+it running (`KATALOG_RETRY_INTERVAL`). A limit is the one its worker
 reports, read when the text is written and named by the worker that
-allows it ("the 14 Mbit/s the transcoder allows for a 2160 movie"): no
+allows it ("the 14 Mbit/s the transcoder allows for a 2160p movie"): no
 number is typed into a text. Sizes are written as the clients write them,
 in decimal units, GB with one decimal and no trailing zero from 1 GB up and
 MB below it ("58.8 GB", "820 MB"), so a file size reported as 15 GiB reads
@@ -789,8 +798,10 @@ MB below it ("58.8 GB", "820 MB"), so a file size reported as 15 GiB reads
 number on the line of its unit. A size the row's columns show is not said
 again (a movie's original too large is its `originalBytes`, and the finding
 has no `measured`), a bit rate read off the package's size is "about" one,
-languages are named in English ("German"), and what the queue does to a
-title is to process it again. The words are part of the check's version,
+languages are named in English, with the region or the script a stream's
+tag names in brackets ("German", "Portuguese (Brazil)", "Chinese
+(Simplified)"), and what the queue does to a title is to process it
+again. The words are part of the check's version,
 which each row's hash of its rules holds, so new words check every title
 again. `go test ./internal/compliance -run TestTheServerTexts` with
 `COMPLIANCE_TEXTS` set to a file writes every text there with real values,
@@ -816,16 +827,22 @@ nor package) leaves the report.
 **GraphQL** (admins):
 
 - `pipelineRules` — each worker's last report: its version, when, and
-  each rule written out (`{key, label, value}`: "Video bit rate allowed for
-  a 2160 movie", "14 Mbit/s"; a limit of 0 "any").
+  each rule a row of the rules panel (`{key, label, value, detail}`):
+  "Video bit rate, 2160p movies", "at most 14 Mbit/s" (a limit of 0 "any");
+  "File size, movies", "at most 16.1 GB (15 GiB)"; "Renditions", the
+  ladder in words, "one, at the original’s size, in HEVC", its spec the
+  detail; "Surround track", "5.1 E-AC-3, 448 kbit/s"; "Stereo track",
+  "AAC, 192 kbit/s" (the codec where the packager reports it); the
+  configuration as reported the detail where the value says it in words.
 - `libraryCompliance(kind, rules, search, first, after)` — a page of the
   titles that break a rule (any of `rules` when given), of `kind`, whose
   title or series' title holds `search`, the largest package first, then
   the largest original: `first` (100, at most 500) after the cursor
   `after` (the last page's `nextCursor`). Each row has its findings
-  (`{rule, text, measured, limit}`), sizes, its place in the re-encode
-  queue (`queued`, `sent`, `done` or `failed`, and why) and when it was
-  checked. `total` counts the titles the whole filter (`kind`, `rules`,
+  (`{rule, text, measured, limit, detail}`), sizes, its place in the
+  re-encode queue (`queued`, `sent`, `done` or `failed`, why in words,
+  `queueReason`, and that reason's technical part, `queueDetail`) and when
+  it was checked. `total` counts the titles the whole filter (`kind`, `rules`,
   `search`) matches, and `matching` sums them up, every one of them and not
   only the page's (`{titles, originalBytes, packageBytes,
   estimatedBytes}`); `summary`, for every rule, those of `kind` and `search`
@@ -845,19 +862,26 @@ nor package) leaves the report.
   exactly: what the console offers is what is queued), into the re-encode
   queue (as `POST /api/library/reencode` with `items`: a series is its
   episodes), which sends them at its pace: `{queued, alreadyQueued,
-  skipped, skippedTitles, message}`, a title waiting or sent already
-  counted in `alreadyQueued`, one the queue does not take (not in the
-  catalog, no movie, episode or series, a series without episodes, no file,
-  its original deleted after packaging, a disc image) in `skipped` and,
-  each of them, in `skippedTitles` (`{itemId, title, reason}`: the title as
-  a list names it, "A Film (1991)" or "A Show · S01E02 · Its Title", an id
-  the catalog doesn't hold as it is, and the reason as the queue tells it,
-  in the reader's words, "its original was deleted from disk after
-  packaging"), and `message` saying it in a sentence ("12 titles queued to
-  be processed again. 3 titles are queued already. 1 title wasn’t queued:
-  it has no file."); a filter that queues none says why ("Of the 4 titles
-  that fit the filter, 3 are queued already and 1 can’t be processed
-  again.").
+  skipped, skippedTitles, queuedText, alreadyText, notQueuedText,
+  message}`, a title waiting or sent already counted in `alreadyQueued`,
+  one the queue does not take (not in the catalog, no movie, episode or
+  series, a series without episodes, no file, its original deleted after
+  packaging, a disc image) in `skipped` and, each of them, in
+  `skippedTitles` (`{itemId, title, reason}`: the title as a list names it,
+  "A Film (1991)" or "A Show · S01E02 · Its Title", an id the catalog
+  doesn't hold as it is, and the reason as the queue tells it, in the
+  reader's words, "its original was deleted after packaging"). The console
+  says it in three texts, each null when it has nothing to say: a toast of
+  the titles queued, without a full stop (`queuedText`, "12 titles queued
+  to be processed again"), a plain one of those already in the queue
+  (`alreadyText`, "3 titles already in the queue"), and a banner line of
+  those not queued, with why when they share one ("2 titles weren’t
+  queued: their originals were deleted after packaging.") and the reasons
+  composed when they don't ("4 titles weren’t queued: the originals of 2
+  were deleted after packaging, 1 has no file and 1 is a disc image."), or
+  of nothing queued at all ("Nothing was queued: no title was selected.";
+  by a filter, "Nothing was queued: no title fits the filter anymore.")
+  (`notQueuedText`); `message` is the three in one text.
 - `refreshCompliance(kind)` — the titles of `kind` (every kind when
   omitted) checked again by the next pass, at once.
 
