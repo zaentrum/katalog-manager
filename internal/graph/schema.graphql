@@ -1403,6 +1403,38 @@ type ComplianceRow {
   queueDetail: String
   reworkBlocked: String
   evaluatedAt: String!
+  # What the report's columns show of it, as the check measured it: its
+  # video's size ("3840×2160") and codec ("HEVC", "H.264"), the package's,
+  # else the original's; its video's average bit rate (bit/s), as
+  # OVER_BITRATE_CAP measures it, the package's, else the original's, and
+  # whether it was estimated of a size and a duration; the transcoder's caps
+  # that hold for it, the bit rate of its kind and bucket (bit/s) and a
+  # movie's file size (bytes), null where none was reported or it allows any;
+  # its duration (s); its package's and its original's audio, from their
+  # records ("5.1 E‑AC‑3 + 2.0 AAC", "7.1 TrueHD"); and what processing it
+  # again does.
+  resolution: String
+  videoCodec: String
+  videoBitrate: Float
+  videoBitrateEstimated: Boolean!
+  bitrateCap: Float
+  sizeCap: Float
+  durationSeconds: Float
+  packageAudio: String
+  originalAudio: String
+  outcome: ComplianceOutcome
+}
+
+# What processing a title again does to it, of the rules it breaks: its video
+# encoded again (over a cap of the transcoder's, or not HEVC), its package
+# made again of its video as it is (a track missing), its first package (it
+# was never packaged), or nothing (processing it again can't help:
+# reworkBlocked).
+enum ComplianceOutcome {
+  REENCODE
+  REPACKAGE
+  FIRST_PACKAGE
+  BLOCKED
 }
 
 # Of the titles of the report's kind and search, whatever its rules, those

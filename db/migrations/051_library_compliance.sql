@@ -31,6 +31,13 @@
 --                   record or its failed step tells (an original without
 --                   video, a Dolby Vision profile the transcoder leaves as it
 --                   is): a kind, or null
+--   resolution, videocodec, videobitrate, bitrateestimated, bitratecap,
+--   sizecap, durationseconds, packageaudio, originalaudio
+--                   what the report's columns show of it, as the check
+--                   measured it: its video's size and codec, its video's bit
+--                   rate (bit/s) and whether that was estimated, the caps
+--                   that hold for it (bit/s, bytes), its duration (s), and
+--                   its package's and its original's audio
 --   ruleshash       the rules it was checked against (both workers' hashes,
 --                   the library's layout, the check's own version): a row
 --                   whose hash is no longer the rules' is checked again
@@ -57,11 +64,26 @@ CREATE TABLE IF NOT EXISTS com_nalet_katalog_compliance (
   estimatedbytes BIGINT,
   unchecked VARCHAR(500),
   blocked VARCHAR(64),
+  resolution VARCHAR(32),
+  videocodec VARCHAR(32),
+  videobitrate DOUBLE PRECISION,
+  bitrateestimated BOOLEAN NOT NULL DEFAULT false,
+  bitratecap DOUBLE PRECISION,
+  sizecap BIGINT,
+  durationseconds DOUBLE PRECISION,
+  packageaudio VARCHAR(255),
+  originalaudio VARCHAR(255),
   ruleshash VARCHAR(64) NOT NULL,
   staleat TIMESTAMPTZ,
   evaluatedat TIMESTAMPTZ NOT NULL DEFAULT now());
--- a table an earlier build of this migration created gains the column
-ALTER TABLE com_nalet_katalog_compliance ADD COLUMN IF NOT EXISTS blocked VARCHAR(64);
+-- a table an earlier build of this migration created gains the columns
+ALTER TABLE com_nalet_katalog_compliance ADD COLUMN IF NOT EXISTS blocked VARCHAR(64),
+  ADD COLUMN IF NOT EXISTS resolution VARCHAR(32), ADD COLUMN IF NOT EXISTS videocodec VARCHAR(32),
+  ADD COLUMN IF NOT EXISTS videobitrate DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS bitrateestimated BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS bitratecap DOUBLE PRECISION, ADD COLUMN IF NOT EXISTS sizecap BIGINT,
+  ADD COLUMN IF NOT EXISTS durationseconds DOUBLE PRECISION, ADD COLUMN IF NOT EXISTS packageaudio VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS originalaudio VARCHAR(255);
 CREATE INDEX IF NOT EXISTS idx_compliance_report ON com_nalet_katalog_compliance
   (kind, (COALESCE(packagebytes, -1)) DESC, (COALESCE(originalbytes, -1)) DESC, item_id)
   WHERE rules <> '{}';

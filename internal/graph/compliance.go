@@ -96,6 +96,16 @@ type ComplianceRow struct {
 	QueueDetail                 *string
 	ReworkBlocked               *string
 	EvaluatedAt                 time.Time
+	// What the report's columns show of it: its video's size and codec, its
+	// video's bit rate (bit/s) and whether that was estimated, the caps that
+	// hold for it (bit/s, bytes), its duration (s), its package's and its
+	// original's audio, and what processing it again does (Outcome).
+	Resolution, VideoCodec               *string
+	VideoBitrate                         *float64
+	VideoBitrateEstimated                bool
+	BitrateCap, SizeCap, DurationSeconds *float64
+	PackageAudio, OriginalAudio          *string
+	Outcome                              *string
 }
 
 // ComplianceSummary is how many of the titles a report covers break a rule,
@@ -412,8 +422,20 @@ func (r *complianceRowResolver) EstimatedBytes() *float64 {
 func (r *complianceRowResolver) Queue() *string         { return r.m.Queue }
 func (r *complianceRowResolver) QueueReason() *string   { return r.m.QueueReason }
 func (r *complianceRowResolver) QueueDetail() *string   { return r.m.QueueDetail }
-func (r *complianceRowResolver) ReworkBlocked() *string { return r.m.ReworkBlocked }
-func (r *complianceRowResolver) EvaluatedAt() string    { return stamp(r.m.EvaluatedAt) }
+func (r *complianceRowResolver) Resolution() *string    { return r.m.Resolution }
+func (r *complianceRowResolver) VideoCodec() *string    { return r.m.VideoCodec }
+func (r *complianceRowResolver) VideoBitrate() *float64 { return r.m.VideoBitrate }
+func (r *complianceRowResolver) VideoBitrateEstimated() bool {
+	return r.m.VideoBitrateEstimated
+}
+func (r *complianceRowResolver) BitrateCap() *float64      { return r.m.BitrateCap }
+func (r *complianceRowResolver) SizeCap() *float64         { return r.m.SizeCap }
+func (r *complianceRowResolver) DurationSeconds() *float64 { return r.m.DurationSeconds }
+func (r *complianceRowResolver) PackageAudio() *string     { return r.m.PackageAudio }
+func (r *complianceRowResolver) OriginalAudio() *string    { return r.m.OriginalAudio }
+func (r *complianceRowResolver) Outcome() *string          { return r.m.Outcome }
+func (r *complianceRowResolver) ReworkBlocked() *string    { return r.m.ReworkBlocked }
+func (r *complianceRowResolver) EvaluatedAt() string       { return stamp(r.m.EvaluatedAt) }
 func (r *complianceRowResolver) Findings() []*complianceFindingResolver {
 	out := make([]*complianceFindingResolver, 0, len(r.m.Findings))
 	for i := range r.m.Findings {

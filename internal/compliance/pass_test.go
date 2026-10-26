@@ -245,6 +245,24 @@ A Disc Image: PACKAGING_FAILED`
 		*failed.Findings[0].Detail != "ffmpeg exited 1" {
 		t.Errorf("the failed transcode: %+v", failed.Findings)
 	}
+	// each row's outcome, and the remux's columns
+	var outcomes []string
+	for _, r := range rep.Rows {
+		o := "-"
+		if r.Outcome != nil {
+			o = *r.Outcome
+		}
+		outcomes = append(outcomes, o)
+	}
+	if got := strings.Join(outcomes, " "); got != "REENCODE REPACKAGE REENCODE FIRST_PACKAGE FIRST_PACKAGE BLOCKED" {
+		t.Errorf("the outcomes: %s", got)
+	}
+	if top.Resolution == nil || *top.Resolution != "3840×2160" || top.VideoCodec == nil || *top.VideoCodec != "HEVC" ||
+		top.VideoBitrate == nil || *top.VideoBitrate != 73e6 || top.VideoBitrateEstimated || top.BitrateCap == nil ||
+		*top.BitrateCap != 14e6 || top.SizeCap == nil || *top.SizeCap != 15*gib || top.DurationSeconds == nil ||
+		*top.DurationSeconds != 7200 || top.PackageAudio == nil || *top.PackageAudio != "5.1 + 2.0" {
+		t.Errorf("the 4K remux's columns: %+v", top)
+	}
 	summary := map[string]graph.ComplianceSummary{}
 	var order []string
 	for _, c := range rep.Summary {

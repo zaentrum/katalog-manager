@@ -184,6 +184,113 @@ func audioCodecName(codec string) string {
 	return codec
 }
 
+// audioFormatName names an audio track's format as the report's columns
+// write it, from its codec, as a package's record or ffprobe names it
+// ("ec-3", "eac3", "mp4a.40.2", "truehd"), and the profile ffprobe gives it
+// ("DTS-HD MA", "Dolby TrueHD + Dolby Atmos"): "E‑AC‑3", "AAC",
+// "TrueHD Atmos", "DTS‑HD MA"; "" for none.
+func audioFormatName(codec, profile string) string {
+	c := strings.ToLower(strings.TrimSpace(codec))
+	p := strings.ToLower(profile)
+	name := ""
+	switch {
+	case c == "":
+		return ""
+	case c == "eac3" || strings.HasPrefix(c, "ec-3"):
+		name = "E" + nbhy + "AC" + nbhy + "3"
+	case c == "ac3" || strings.HasPrefix(c, "ac-3"):
+		name = "AC" + nbhy + "3"
+	case c == "truehd" || c == "mlp":
+		name = "TrueHD"
+	case c == "dts" || c == "dca":
+		switch {
+		case strings.Contains(p, "ma"):
+			name = "DTS" + nbhy + "HD MA"
+		case strings.Contains(p, "hra"):
+			name = "DTS" + nbhy + "HD HRA"
+		case strings.Contains(p, "express"):
+			name = "DTS Express"
+		case strings.Contains(p, "es"):
+			name = "DTS" + nbhy + "ES"
+		default:
+			name = "DTS"
+		}
+		if strings.Contains(p, "dts:x") {
+			name += " + DTS:X"
+		}
+	case c == "aac" || strings.HasPrefix(c, "mp4a.40.2") || strings.HasPrefix(c, "mp4a.40.5") || c == "mp4a":
+		name = "AAC"
+	case c == "mp3" || c == "mp4a.40.34" || c == "mp4a.6b":
+		name = "MP3"
+	case c == "flac":
+		name = "FLAC"
+	case c == "opus":
+		name = "Opus"
+	case c == "vorbis":
+		name = "Vorbis"
+	case strings.HasPrefix(c, "pcm"):
+		name = "PCM"
+	default:
+		name = strings.ToUpper(strings.TrimSpace(codec))
+	}
+	if strings.Contains(p, "atmos") && (strings.HasPrefix(name, "E") || name == "TrueHD") {
+		name += " Atmos"
+	}
+	return name
+}
+
+// layoutText is a count of channels as its layout: "2.0", "5.1", "7.1";
+// "" for none.
+func layoutText(channels float64) string {
+	n := int(channels)
+	if layout, ok := map[int]string{1: "1.0", 2: "2.0", 3: "2.1", 4: "4.0", 5: "5.0", 6: "5.1", 7: "6.1", 8: "7.1"}[n]; ok {
+		return layout
+	}
+	if n > 0 {
+		return strconv.Itoa(n) + " channels"
+	}
+	return ""
+}
+
+// trackText is an audio track as the report's columns write it, its layout
+// and its format: "5.1 E‑AC‑3", "2.0 AAC".
+func trackText(channels float64, codec, profile string) string {
+	return strings.TrimSpace(layoutText(channels) + " " + audioFormatName(codec, profile))
+}
+
+// audioText is a title's audio as the report's columns write it: each
+// track once, in their order, a count where there are more of it ("5.1
+// E‑AC‑3 + 2.0 AAC ×2"); nil for none.
+func audioText(tracks []string) *string {
+	var order []string
+	count := map[string]int{}
+	for _, t := range tracks {
+		if t == "" {
+			continue
+		}
+		if count[t] == 0 {
+			order = append(order, t)
+		}
+		count[t]++
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	parts := make([]string, len(order))
+	for i, t := range order {
+		parts[i] = t
+		if count[t] > 1 {
+			parts[i] += " ×" + strconv.Itoa(count[t])
+		}
+	}
+	text := []rune(strings.Join(parts, " + "))
+	if len(text) > 255 {
+		text = append(text[:254], '…')
+	}
+	out := string(text)
+	return &out
+}
+
 // languageName names a language in English as the clients name one: the
 // language, and the script and the region a tag names in brackets
 // ("German", "Portuguese (Brazil)", "Chinese (Simplified)"), never a

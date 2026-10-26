@@ -34,6 +34,16 @@ func serverTexts(t *testing.T) []text {
 		if len(res.Findings) == 0 {
 			t.Fatalf("%s: nothing found", source)
 		}
+		m := res.Measures
+		for _, c := range []struct {
+			field string
+			value *string
+		}{{"resolution", m.Resolution}, {"videoCodec", m.VideoCodec}, {"packageAudio", m.PackageAudio},
+			{"originalAudio", m.OriginalAudio}} {
+			if c.value != nil {
+				out = append(out, text{"columns", source, c.field, *c.value})
+			}
+		}
 		for _, f := range res.Findings {
 			out = append(out, text{"finding", source, f.Rule + " text", f.Text})
 			if f.Measured != nil {
@@ -358,7 +368,8 @@ func TestTheServerTexts(t *testing.T) {
 			continue
 		}
 		sentenceText := x.section != "pipelineRules" && x.section != "ComplianceSkip" && x.section != "ComplianceQueued" &&
-			x.section != "reworkBlocked" && !strings.HasSuffix(x.field, "measured") && !strings.HasSuffix(x.field, "limit")
+			x.section != "reworkBlocked" && x.section != "columns" && !strings.HasSuffix(x.field, "measured") &&
+			!strings.HasSuffix(x.field, "limit")
 		if x.section == "ComplianceQueued" {
 			switch x.field {
 			case "queuedText", "alreadyText":
@@ -392,7 +403,8 @@ func TestTheServerTexts(t *testing.T) {
 				t.Errorf("%s, %s: %q does not end as a sentence", x.section, x.source, x.words)
 			}
 		}
-		if m := leaks.FindString(x.words); m != "" {
+		// a resolution is a width and a height, "1920×1080", no height alone
+		if m := leaks.FindString(x.words); m != "" && !(x.section == "columns" && x.field == "resolution") {
 			t.Errorf("%s, %s: %q says %q", x.section, x.source, x.words, m)
 		}
 		if m := unitRE.FindString(x.words); m != "" {
@@ -489,12 +501,19 @@ func TestTheUnits(t *testing.T) {
 		{titlesText(1), "1 title"}, {titlesText(2500), "2,500 titles"},
 		{joinAnd([]string{"German"}), "German"}, {joinAnd([]string{"German", "French"}), "German and French"},
 		{joinAnd([]string{"German", "French", "Italian"}), "German, French and Italian"},
+		{audioFormatName("eac3", ""), "E-AC-3"}, {audioFormatName("ec-3", ""), "E-AC-3"}, {audioFormatName("mp4a.40.2", ""), "AAC"},
+		{audioFormatName("dts", "DTS-HD MA"), "DTS-HD MA"}, {audioFormatName("dts", "DTS"), "DTS"},
+		{audioFormatName("truehd", "Dolby TrueHD + Dolby Atmos"), "TrueHD Atmos"}, {audioFormatName("pcm_s24le", ""), "PCM"},
+		{audioFormatName("eac3", "Dolby Digital Plus + Dolby Atmos"), "E-AC-3 Atmos"}, {audioFormatName("", ""), ""},
+		{layoutText(8), "7.1"}, {layoutText(6), "5.1"}, {layoutText(2), "2.0"}, {layoutText(10), "10 channels"}, {layoutText(0), ""},
+		{trackText(6, "dts", "DTS-HD MA"), "5.1 DTS-HD MA"}, {trackText(0, "aac", ""), "AAC"},
+		{*audioText([]string{"5.1 E-AC-3", "2.0 AAC", "2.0 AAC"}), "5.1 E-AC-3 + 2.0 AAC ×2"},
 		{languageName("de"), "German"}, {languageName("zh"), "Chinese"}, {languageName("und"), "an unknown language"},
 		{languageName("ger"), "German"}, {languageName("pt-BR"), "Portuguese (Brazil)"}, {languageName("zh-Hans"), "Chinese (Simplified)"},
 		{languageName("zh-Hant-TW"), "Chinese (Traditional, Taiwan)"}, {languageName("es-419"), "Spanish (Latin America)"},
 		{languageName("de-CH"), "German (Switzerland)"}, {languageName("sr-Latn"), "Serbian (Latin)"},
 	} {
-		if got := strings.ReplaceAll(tc.got, nbsp, " "); got != tc.want {
+		if got := strings.NewReplacer(nbsp, " ", nbhy, "-").Replace(tc.got); got != tc.want {
 			t.Errorf("%q, want %q", got, tc.want)
 		}
 	}

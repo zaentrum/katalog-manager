@@ -23,7 +23,9 @@ const maxPage = 500
 // each: its title, year, numbers and series.
 const filtered = `WITH f AS (
 	SELECT c.item_id, c.kind, c.rules, c.findings, c.originalbytes, c.packagebytes, c.estimatedbytes, c.unchecked,
-		c.blocked, c.ruleshash, c.evaluatedat, i.title, i.year, i.seasonnumber, i.episodenumber, sr.id AS series_id,
+		c.blocked, c.resolution, c.videocodec, c.videobitrate, c.bitrateestimated, c.bitratecap, c.sizecap,
+		c.durationseconds, c.packageaudio, c.originalaudio, c.ruleshash, c.evaluatedat,
+		i.title, i.year, i.seasonnumber, i.episodenumber, sr.id AS series_id,
 		sr.title AS series_title
 	FROM ` + store.ComplianceTable + ` c
 	JOIN com_nalet_katalog_items i ON i.id = c.item_id
@@ -215,7 +217,8 @@ func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []st
 	}
 	rows, err := s.pool.Query(ctx, filtered+`SELECT f.item_id, f.title, f.year, f.kind, f.series_id, f.series_title,
 			f.seasonnumber, f.episodenumber, f.findings::text, f.originalbytes, f.packagebytes, f.estimatedbytes,
-			f.evaluatedat, q.state, q.reason, f.blocked
+			f.evaluatedat, q.state, q.reason, f.blocked, f.resolution, f.videocodec, f.videobitrate, f.bitrateestimated,
+			f.bitratecap, f.sizecap::float8, f.durationseconds, f.packageaudio, f.originalaudio
 		FROM f
 		LEFT JOIN LATERAL (SELECT q.state, q.reason FROM `+store.ReencodeQueueTable+` q WHERE q.item_id = f.item_id
 			ORDER BY q.seq DESC LIMIT 1) q ON true
@@ -235,7 +238,9 @@ func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []st
 		var orig, pkg, est *int64
 		var reason, blocked *string
 		if err := rows.Scan(&r.ItemID, &r.Title, &r.Year, &r.Kind, &r.SeriesID, &r.SeriesTitle, &r.Season, &r.Episode,
-			&findings, &orig, &pkg, &est, &r.EvaluatedAt, &r.Queue, &reason, &blocked); err != nil {
+			&findings, &orig, &pkg, &est, &r.EvaluatedAt, &r.Queue, &reason, &blocked, &r.Resolution, &r.VideoCodec,
+			&r.VideoBitrate, &r.VideoBitrateEstimated, &r.BitrateCap, &r.SizeCap, &r.DurationSeconds, &r.PackageAudio,
+			&r.OriginalAudio); err != nil {
 			return nil, nil, err
 		}
 		k := ""
@@ -304,6 +309,46 @@ func (s *Service) blocked(ctx context.Context, rows []graph.ComplianceRow, kept 
 		if ok {
 			rows[i].ReworkBlocked = strp(skipReason(k))
 		}
+		rows[i].Outcome = outcomeOf(rows[i])
+	}
+	return nil
+}
+
+// The outcomes of processing a title again (ComplianceOutcome).
+const (
+	OutcomeReencode     = "REENCODE"
+	OutcomeRepackage    = "REPACKAGE"
+	OutcomeFirstPackage = "FIRST_PACKAGE"
+	OutcomeBlocked      = "BLOCKED"
+)
+
+// outcomeOf is what processing a row's title again does to it, of the rules
+// it breaks, as the console has said it: nothing, when processing it again
+// can't help (BLOCKED); its first package, when it was never packaged
+// (FIRST_PACKAGE); an encode of its video, over a cap of the transcoder's or
+// not HEVC (REENCODE); its package made again, of its video as it is, when it
+// lacks a track (REPACKAGE). A title whose packaging failed is packaged
+// again when it has a package, else for the first time. Nil for rules the
+// outcomes don't name.
+func outcomeOf(r graph.ComplianceRow) *string {
+	rules := map[string]bool{}
+	for _, f := range r.Findings {
+		rules[f.Rule] = true
+	}
+	packaged := r.PackageBytes != nil && *r.PackageBytes > 0
+	switch {
+	case r.ReworkBlocked != nil:
+		return strp(OutcomeBlocked)
+	case rules[NotPackaged]:
+		return strp(OutcomeFirstPackage)
+	case rules[OverBitrateCap] || rules[OverSizeCap] || rules[VideoNotHEVC]:
+		return strp(OutcomeReencode)
+	case rules[PackagingFailed] && packaged:
+		return strp(OutcomeRepackage)
+	case rules[PackagingFailed]:
+		return strp(OutcomeFirstPackage)
+	case rules[NoSurround] || rules[ImageSubtitlesMissing]:
+		return strp(OutcomeRepackage)
 	}
 	return nil
 }

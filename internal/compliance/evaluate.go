@@ -127,6 +127,7 @@ type packageRecord struct {
 }
 
 type rendition struct {
+	Codec      *string  `json:"codec"`
 	Channels   *float64 `json:"channels"`
 	BitrateBps *float64 `json:"bitrateBps"`
 }
@@ -147,6 +148,8 @@ type sourceRecord struct {
 		LanguageRaw  *string  `json:"languageRaw"`
 		Variant      *string  `json:"variant"`
 		Form         *string  `json:"form"`
+		Channels     *float64 `json:"channels"`
+		Profile      *string  `json:"profile"`
 		Width        *float64 `json:"width"`
 		Height       *float64 `json:"height"`
 		Bitrate      *float64 `json:"bitrate"`
@@ -174,6 +177,23 @@ type result struct {
 	// original's record or its failed step tells (blockedOf), "" when
 	// nothing tells it can't.
 	Blocked string
+	// Measures are what the report's columns show of it.
+	Measures measures
+}
+
+// measures are what the report's columns show of a title, as the check
+// measured it: its video's size and codec (the package's, else the
+// original's), its video's bit rate (as OVER_BITRATE_CAP measures it;
+// estimated when it was read off a size and a duration), the transcoder's
+// caps that hold for it, its duration, and the audio of its package and of
+// its original, from their records.
+type measures struct {
+	Resolution, VideoCodec      *string
+	VideoBitrate                *float64
+	BitrateEstimated            bool
+	BitrateCap, DurationSeconds *float64
+	SizeCap                     *int64
+	PackageAudio, OriginalAudio *string
 }
 
 // rules are the rules a result breaks, in its findings' order.
@@ -245,6 +265,7 @@ func evaluate(t title, r records, rs rulesState) result {
 		}
 		res.Blocked = blockedBy(t, r, rs)
 		res.EstimatedBytes = estimate(t, r, rs, res)
+		res.Measures = measure(t, r, rs, unknown)
 		return res
 	}
 
@@ -291,7 +312,120 @@ func evaluate(t title, r records, rs rulesState) result {
 	}
 	res.Blocked = blockedBy(t, r, rs)
 	res.EstimatedBytes = estimate(t, r, rs, res)
+	res.Measures = measure(t, r, rs, copied)
 	return res
+}
+
+// measure is what the report's columns show of a title (measures).
+func measure(t title, r records, rs rulesState, copied tri) measures {
+	var m measures
+	if w, h, ok := t.picture(r); ok {
+		m.Resolution = strp(strconv.Itoa(w) + "×" + strconv.Itoa(h))
+	}
+	if c := t.videoCodec(r); c != "" {
+		m.VideoCodec = strp(codecName(c))
+	} else if r.src != nil {
+		for _, s := range r.src.Streams {
+			if s.Type == "video" && !s.Dispositions.AttachedPic && s.Codec != nil && *s.Codec != "" {
+				m.VideoCodec = strp(codecName(*s.Codec))
+				break
+			}
+		}
+	}
+	dur, durOK := t.durationMs(r)
+	if durOK {
+		m.DurationSeconds = roundp(dur/1000, 1)
+	}
+	if t.packaged() {
+		if rate, approx, ok := videoRate(r, copied); ok {
+			m.VideoBitrate, m.BitrateEstimated = roundp(rate, 0), approx
+		}
+	} else if t.FileBytes != nil && *t.FileBytes > 0 && durOK {
+		// the original's, of its file's size over its duration
+		m.VideoBitrate, m.BitrateEstimated = roundp(float64(*t.FileBytes)*8*1000/dur, 0), true
+	}
+	if tr := rs.transcoder; tr != nil && tr.t != nil {
+		if bucket, ok := t.bucket(r, rs); ok {
+			if c, ok := tr.t.capOf(t.Kind, bucket); ok && c > 0 {
+				m.BitrateCap = roundp(c*1e6, 0)
+			}
+		}
+		if c := tr.t.Caps.MovieMaxGiB; t.Kind == "movie" && c != nil && *c > 0 {
+			b := int64(*c * gib)
+			m.SizeCap = &b
+		}
+	}
+	if r.pkg != nil {
+		var tracks []string
+		for _, group := range [][]rendition{r.pkg.Renditions.AudioSurround, r.pkg.Renditions.Audio} {
+			for _, a := range group {
+				codec, ch := "", 0.0
+				if a.Codec != nil {
+					codec = *a.Codec
+				}
+				if a.Channels != nil {
+					ch = *a.Channels
+				}
+				tracks = append(tracks, trackText(ch, codec, ""))
+			}
+		}
+		m.PackageAudio = audioText(tracks)
+	}
+	if r.src != nil {
+		var tracks []string
+		for _, s := range r.src.Streams {
+			if s.Type != "audio" {
+				continue
+			}
+			codec, profile, ch := "", "", 0.0
+			if s.Codec != nil {
+				codec = *s.Codec
+			}
+			if s.Profile != nil {
+				profile = *s.Profile
+			}
+			if s.Channels != nil {
+				ch = *s.Channels
+			}
+			tracks = append(tracks, trackText(ch, codec, profile))
+		}
+		m.OriginalAudio = audioText(tracks)
+	}
+	return m
+}
+
+// picture is the size of a title's video: the package's top rendition's,
+// else its original's video stream's (cover art aside), else its file's as
+// the catalog holds it ("1920x1080").
+func (t title) picture(r records) (int, int, bool) {
+	if r.pkg != nil && len(r.pkg.Renditions.Video) > 0 {
+		v := r.pkg.Renditions.Video[0]
+		if v.Width != nil && v.Height != nil && *v.Width > 0 && *v.Height > 0 {
+			return int(*v.Width), int(*v.Height), true
+		}
+	}
+	if r.src != nil {
+		for _, s := range r.src.Streams {
+			if s.Type == "video" && !s.Dispositions.AttachedPic && s.Width != nil && s.Height != nil && *s.Width > 0 && *s.Height > 0 {
+				return int(*s.Width), int(*s.Height), true
+			}
+		}
+	}
+	for _, res := range []*string{t.PkgResolution, t.FileResolution} {
+		if res == nil {
+			continue
+		}
+		if w, h := resolution(*res); w > 0 && h > 0 {
+			return int(w), int(h), true
+		}
+	}
+	return 0, 0, false
+}
+
+// roundp is v rounded to places, as a pointer.
+func roundp(v float64, places int) *float64 {
+	f := roundTo(v, places)
+	return &f
 }
 
 // blockedBy is why processing a title again can't help that the check can

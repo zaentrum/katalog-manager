@@ -116,7 +116,9 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		queueable { titles originalBytes packageBytes estimatedBytes }
 		summary { rule titles packageBytes estimatedBytes }
 		rows { itemId title year kind seriesId seriesTitle season episode findings { rule text measured limit detail }
-			originalBytes packageBytes estimatedBytes queue queueReason queueDetail reworkBlocked evaluatedAt } } }`
+			originalBytes packageBytes estimatedBytes queue queueReason queueDetail reworkBlocked evaluatedAt
+			resolution videoCodec videoBitrate videoBitrateEstimated bitrateCap sizeCap durationSeconds packageAudio
+			originalAudio outcome } } }`
 	for who, token := range map[string]string{"a viewer": viewer, "an addon": addon, "the service account": service} {
 		for _, doc := range []string{report, `{ pipelineRules { transcoder { worker } } }`,
 			`mutation { queueRework(items: ["` + remuxID + `"]) { queued } }`,
@@ -169,6 +171,11 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 				OriginalBytes, PackageBytes, EstimatedBytes *float64
 				Queue, QueueReason, QueueDetail             *string
 				ReworkBlocked                               *string
+				Resolution, VideoCodec, Outcome             *string
+				VideoBitrate, BitrateCap, SizeCap           *float64
+				DurationSeconds                             *float64
+				VideoBitrateEstimated                       bool
+				PackageAudio, OriginalAudio                 *string
 				EvaluatedAt                                 string
 			}
 		}
@@ -203,6 +210,12 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		"allows for a 2160p movie." || spaced(*remux.Findings[0].Measured) != "73 Mbit/s" || spaced(*remux.Findings[0].Limit) != "14 Mbit/s" ||
 		*remux.PackageBytes != 59e9 || *remux.OriginalBytes != 63e9 || remux.EstimatedBytes == nil || remux.Queue != nil {
 		t.Errorf("the remux: %+v", remux)
+	}
+	if remux.Resolution == nil || *remux.Resolution != "3840\u00d72160" || remux.VideoCodec == nil || *remux.VideoCodec != "HEVC" ||
+		remux.VideoBitrate == nil || *remux.VideoBitrate != 73e6 || remux.BitrateCap == nil || *remux.BitrateCap != 14e6 ||
+		remux.SizeCap == nil || *remux.SizeCap != 15*1024*1024*1024 || remux.Outcome == nil || *remux.Outcome != "REENCODE" ||
+		remux.DurationSeconds == nil || *remux.DurationSeconds != 7200 || remux.VideoBitrateEstimated {
+		t.Errorf("the remux's columns: %+v", remux)
 	}
 	if f := rep.Rows[2].Findings[0]; f.Text != "The transcoder failed." || f.Detail == nil || *f.Detail != "ffmpeg exited 1" {
 		t.Errorf("the film whose transcode failed: %+v", f)

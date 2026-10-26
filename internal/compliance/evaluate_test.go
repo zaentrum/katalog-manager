@@ -2,6 +2,7 @@ package compliance
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -518,6 +519,74 @@ func TestWhatTheTranscoderWouldRefuseAgain(t *testing.T) {
 		}
 		if (res.EstimatedBytes == nil) != (tc.want != "") {
 			t.Errorf("%s: an estimate of %v, blocked %q", tc.name, res.EstimatedBytes, res.Blocked)
+		}
+	}
+}
+
+// What the report's columns show of a title is measured as the findings
+// are: the package's video (else the original's) for its size, codec and bit
+// rate, the bit rate estimated when read off a size; the caps of its kind and
+// bucket, a movie's file size alone; its duration; and the audio of its
+// package and of its original, as their records list it.
+func TestTheColumnsAreWhatTheCheckMeasured(t *testing.T) {
+	rs := stateOf(t, transcoderReport, packagerReport)
+	remuxPkg := `{"sizeBytes": 58800000000, "durationMs": 7980000, "renditions": {"video": [{"codec": "hvc1.2.4.L153.B0",
+		"width": 3840, "height": 2160, "bitrateBps": 73000000, "encoder": "copy"}],
+		"audio": [{"codec": "mp4a.40.2", "channels": 2, "bitrateBps": 192000}, {"codec": "mp4a.40.2", "channels": 2, "bitrateBps": 192000}],
+		"audioSurround": [{"codec": "ec-3", "channels": 6, "bitrateBps": 448000}]}, "essence": {"surround": true, "maxAudioChannels": 6}}`
+	remuxSrc := `{"streams": [{"index": 0, "type": "video", "codec": "hevc", "width": 3840, "height": 2160},
+		{"index": 1, "type": "audio", "codec": "truehd", "channels": 8, "profile": "Dolby TrueHD + Dolby Atmos"},
+		{"index": 2, "type": "audio", "codec": "dts", "channels": 6, "profile": "DTS-HD MA"},
+		{"index": 3, "type": "audio", "codec": "ac3", "channels": 2}], "essence": {"surround": true, "maxAudioChannels": 8}}`
+	str := func(p *string) string {
+		if p == nil {
+			return "-"
+		}
+		return strings.NewReplacer(nbsp, " ", nbhy, "-").Replace(*p)
+	}
+	num := func(p *float64) string {
+		if p == nil {
+			return "-"
+		}
+		return strconv.FormatFloat(*p, 'f', -1, 64)
+	}
+	cols := func(m measures) string {
+		size := "-"
+		if m.SizeCap != nil {
+			size = strconv.FormatInt(*m.SizeCap, 10)
+		}
+		return strings.Join([]string{str(m.Resolution), str(m.VideoCodec), num(m.VideoBitrate), strconv.FormatBool(m.BitrateEstimated),
+			num(m.BitrateCap), size, num(m.DurationSeconds), str(m.PackageAudio), str(m.OriginalAudio)}, " | ")
+	}
+	unpackaged := func() title {
+		p := "/library/arrivals/a-film.mkv"
+		return title{ID: "a1", Kind: "movie", Path: &p, FileBytes: i64(4_500_000_000), FileResolution: strp("1920x1080"),
+			ItemDurMs: i64(6_000_000), Original: library.Original{State: library.OriginalPresent}}
+	}
+	sized := `{"sizeBytes": 31500000000, "durationMs": 7200000, "renditions": {"video": [{"codec": "hvc1.2.4.L153.B0",
+		"width": 3840, "height": 2160, "encoder": "copy"}], "audio": [{"channels": 2, "bitrateBps": 192000}]}, "essence": {}}`
+	for _, tc := range []struct {
+		name string
+		t    title
+		r    records
+		rs   rulesState
+		want string
+	}{
+		{"a 4K remux", packagedTitle("movie"), recordsOf(t, remuxPkg, remuxSrc), rs,
+			"3840×2160 | HEVC | 73000000 | false | 14000000 | 16106127360 | 7980 | 5.1 E-AC-3 + 2.0 AAC ×2 | " +
+				"7.1 TrueHD Atmos + 5.1 DTS-HD MA + 2.0 AC-3"},
+		{"a package measured by its size", packagedTitle("movie"), recordsOf(t, sized, `{"streams": [], "essence": {}}`), rs,
+			"3840×2160 | HEVC | 34808000 | true | 14000000 | 16106127360 | 7200 | 2.0 | -"},
+		{"an episode, which has no file size cap", packagedTitle("episode"), recordsOf(t, pkgJSON(1920, 1080, 7e6, "copy"),
+			srcJSON(1920, 1080)), rs, "1920×1080 | HEVC | 7000000 | false | 6000000 | - | 7200 | 2.0 | 2.0 AC-3"},
+		{"a film never packaged, measured by its file", unpackaged(), records{}, rs,
+			"1920×1080 | - | 6000000 | true | 8000000 | 16106127360 | 6000 | - | -"},
+		{"a transcoder that reports no caps", packagedTitle("movie"), recordsOf(t, remuxPkg, remuxSrc),
+			stateOf(t, "", packagerReport), "3840×2160 | HEVC | 73000000 | false | - | - | 7980 | 5.1 E-AC-3 + 2.0 AAC ×2 | " +
+				"7.1 TrueHD Atmos + 5.1 DTS-HD MA + 2.0 AC-3"},
+	} {
+		if got := cols(evaluate(tc.t, tc.r, tc.rs).Measures); got != tc.want {
+			t.Errorf("%s:\n got  %s\n want %s", tc.name, got, tc.want)
 		}
 	}
 }

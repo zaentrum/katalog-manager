@@ -64,6 +64,19 @@ extend type ComplianceQueued {
   alreadyText: String     # second plain toast; null when none
   notQueuedText: String   # warning banner line, titles under skippedTitles; null when none
 }
+extend type ComplianceRow {
+  resolution: String            # the package's video, else the original's
+  videoCodec: String
+  videoBitrate: Float           # bit/s
+  videoBitrateEstimated: Boolean!
+  bitrateCap: Float             # bit/s
+  sizeCap: Float                # bytes
+  durationSeconds: Float
+  packageAudio: String
+  originalAudio: String
+  outcome: ComplianceOutcome
+}
+enum ComplianceOutcome { REENCODE REPACKAGE FIRST_PACKAGE BLOCKED }
 `
 
 var (
@@ -120,8 +133,8 @@ func TestTheComplianceContract(t *testing.T) {
 		types[ty.Name] = ty
 	}
 	blocks := contractBlockRE.FindAllStringSubmatch(complianceContract, -1)
-	if len(blocks) != 22 {
-		t.Fatalf("the contract reads as %d blocks, want 22", len(blocks))
+	if len(blocks) != 24 {
+		t.Fatalf("the contract reads as %d blocks, want 24", len(blocks))
 	}
 	for _, b := range blocks {
 		kind, name, body := b[1], b[2], b[3]

@@ -358,10 +358,17 @@ func (s *Service) write(ctx context.Context, results []result, hash string, star
 	ids, kinds, rules, findings, unchecked := make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]*string, n)
 	orig, pkg, est := make([]*int64, n), make([]*int64, n), make([]*int64, n)
 	blocked := make([]*string, n)
+	res, codec, pkgAudio, srcAudio := make([]*string, n), make([]*string, n), make([]*string, n), make([]*string, n)
+	rate, rateCap, dur := make([]*float64, n), make([]*float64, n), make([]*float64, n)
+	estimated, sizeCap := make([]bool, n), make([]*int64, n)
 	for i, r := range results {
 		if r.Blocked != "" {
 			blocked[i] = strp(r.Blocked)
 		}
+		m := r.Measures
+		res[i], codec[i], pkgAudio[i], srcAudio[i] = m.Resolution, m.VideoCodec, m.PackageAudio, m.OriginalAudio
+		rate[i], rateCap[i], dur[i], estimated[i], sizeCap[i] = m.VideoBitrate, m.BitrateCap, m.DurationSeconds,
+			m.BitrateEstimated, m.SizeCap
 		f := r.Findings
 		if f == nil {
 			f = []finding{}
@@ -382,16 +389,24 @@ func (s *Service) write(ctx context.Context, results []result, hash string, star
 		}
 	}
 	_, err := s.pool.Exec(ctx, `INSERT INTO `+store.ComplianceTable+` AS c
-			(item_id, kind, rules, findings, originalbytes, packagebytes, estimatedbytes, unchecked, blocked, ruleshash,
-			 staleat, evaluatedat)
-		SELECT u.id, u.kind, string_to_array(u.rules, ',')::varchar[], u.findings::jsonb, u.ob, u.pb, u.eb, u.un, u.bl, $9,
-			NULL, now()
+			(item_id, kind, rules, findings, originalbytes, packagebytes, estimatedbytes, unchecked, blocked,
+			 resolution, videocodec, videobitrate, bitrateestimated, bitratecap, sizecap, durationseconds, packageaudio,
+			 originalaudio, ruleshash, staleat, evaluatedat)
+		SELECT u.id, u.kind, string_to_array(u.rules, ',')::varchar[], u.findings::jsonb, u.ob, u.pb, u.eb, u.un, u.bl,
+			u.res, u.codec, u.rate, u.est, u.rcap, u.scap, u.dur, u.pa, u.oa, $9, NULL, now()
 		FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::bigint[], $6::bigint[], $7::bigint[], $8::text[],
-			$11::text[]) AS u(id, kind, rules, findings, ob, pb, eb, un, bl)
+			$11::text[], $12::text[], $13::text[], $14::float8[], $15::boolean[], $16::float8[], $17::bigint[],
+			$18::float8[], $19::text[], $20::text[])
+			AS u(id, kind, rules, findings, ob, pb, eb, un, bl, res, codec, rate, est, rcap, scap, dur, pa, oa)
 		ON CONFLICT (item_id) DO UPDATE SET kind = EXCLUDED.kind, rules = EXCLUDED.rules, findings = EXCLUDED.findings,
 			originalbytes = EXCLUDED.originalbytes, packagebytes = EXCLUDED.packagebytes,
 			estimatedbytes = EXCLUDED.estimatedbytes, unchecked = EXCLUDED.unchecked, blocked = EXCLUDED.blocked,
+			resolution = EXCLUDED.resolution, videocodec = EXCLUDED.videocodec, videobitrate = EXCLUDED.videobitrate,
+			bitrateestimated = EXCLUDED.bitrateestimated, bitratecap = EXCLUDED.bitratecap, sizecap = EXCLUDED.sizecap,
+			durationseconds = EXCLUDED.durationseconds, packageaudio = EXCLUDED.packageaudio,
+			originalaudio = EXCLUDED.originalaudio,
 			ruleshash = EXCLUDED.ruleshash, staleat = CASE WHEN c.staleat > $10 THEN c.staleat END, evaluatedat = now()`,
-		ids, kinds, rules, findings, orig, pkg, est, unchecked, hash, start, blocked)
+		ids, kinds, rules, findings, orig, pkg, est, unchecked, hash, start, blocked,
+		res, codec, rate, estimated, rateCap, sizeCap, dur, pkgAudio, srcAudio)
 	return err
 }
