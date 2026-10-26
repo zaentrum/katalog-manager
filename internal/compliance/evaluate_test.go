@@ -16,8 +16,8 @@ const (
 		"bucket2160": {"minHeight": 2000, "minWidth": 3200},
 		"encoder": {"codec": "hevc_nvenc", "preset": "p5", "cq": 23, "maxrate1080Mbps": null, "maxrate2160Mbps": null},
 		"ladder": "source:hevc", "extraLadder": "source:hevc"}`
-	packagerReport = `{"surroundAudio": "eac3", "surroundLayout": "5.1", "surroundBitrate": "448k", "stereoBitrate": "192k",
-		"imageSubtitles": ["pgs", "vobsub"]}`
+	packagerReport = `{"surroundAudio": "eac3", "surroundLayout": "5.1", "surroundBitrate": "448k", "stereoAudio": "aac",
+		"stereoBitrate": "192k", "imageSubtitles": ["pgs", "vobsub"]}`
 )
 
 // stateOf is the rules of the reports given ("" for a worker that did not

@@ -911,7 +911,7 @@ extraLadder | Renditions of extras | one, at the original’s size, in HEVC {sou
 		got = append(got, row(r))
 	}
 	if want := `surroundAudio | Surround track | 5.1 E-AC-3, 448 kbit/s {surroundAudio=eac3, surroundLayout=5.1, surroundBitrate=448k}
-stereoBitrate | Stereo track | 192 kbit/s {stereoBitrate=192k}
+stereoAudio | Stereo track | AAC, 192 kbit/s {stereoAudio=aac, stereoBitrate=192k}
 imageSubtitles | Image subtitles kept | PGS, VobSub`; strings.Join(got, "\n") != want {
 		t.Errorf("the packager's rules:\n%s\nwant:\n%s", strings.Join(got, "\n"), want)
 	}

@@ -83,7 +83,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		"encoder": {"codec": "hevc_nvenc", "preset": "p5", "cq": 23, "maxrate1080Mbps": null, "maxrate2160Mbps": null},
 		"ladder": "source:hevc", "extraLadder": "source:hevc"}}`
 	packager := `{"version": "3f2a9c1", "rules": {"surroundAudio": "eac3", "surroundLayout": "5.1", "surroundBitrate": "448k",
-		"stereoBitrate": "192k", "imageSubtitles": ["pgs", "vobsub"]}}`
+		"stereoAudio": "aac", "stereoBitrate": "192k", "imageSubtitles": ["pgs", "vobsub"]}}`
 	if code := in.put(t, "/api/analyze/rules/transcoder", viewer, transcoder); code != http.StatusForbidden {
 		t.Errorf("a viewer's report of rules: %d, want 403", code)
 	}
@@ -366,6 +366,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	}
 	if p := rules.PipelineRules.Packager; p.Worker != "packager" || p.Version != "3f2a9c1" || len(p.Rules) != 3 ||
 		p.Rules[0].Key != "surroundAudio" || spaced(p.Rules[0].Value) != "5.1 E-AC-3, 448 kbit/s" ||
+		p.Rules[1].Key != "stereoAudio" || spaced(p.Rules[1].Value) != "AAC, 192 kbit/s" ||
 		p.Rules[2].Key != "imageSubtitles" || p.Rules[2].Value != "PGS, VobSub" {
 		t.Errorf("the packager's rules: %+v", p)
 	}

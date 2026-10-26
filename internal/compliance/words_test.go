@@ -268,8 +268,8 @@ func serverTexts(t *testing.T) []text {
 			`"ladder": "source:hevc"`, `"ladder": "source,720p:h264:2500k,480p"`, `"extraLadder": "source:hevc"`,
 			`"extraLadder": "720p:h264,480p:h264"`, `"episode1080Mbps": 6`, `"episode1080Mbps": 0`,
 			`"maxrate2160Mbps": null`, `"maxrate2160Mbps": 18`).Replace(transcoderReport)},
-		{"packager making no surround track, its stereo codec reported", strings.NewReplacer(`"surroundAudio": "eac3"`,
-			`"surroundAudio": "off"`, `"stereoBitrate": "192k"`, `"stereoAudio": "aac", "stereoBitrate": "192k"`,
+		{"packager making no surround track, of an image that doesn’t report its stereo codec", strings.NewReplacer(
+			`"surroundAudio": "eac3"`, `"surroundAudio": "off"`, `"stereoAudio": "aac", `, ``,
 			`["pgs", "vobsub"]`, `[]`).Replace(packagerReport)},
 	} {
 		for _, r := range settingsOf([]byte(w.raw)) {
