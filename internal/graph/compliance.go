@@ -169,6 +169,17 @@ type ComplianceQueueCounts struct {
 	Queued, Processing, Processed, Failed int32
 }
 
+// ComplianceProcessing is how processing a title again goes, from the
+// settings as they are set: what becomes of its original once its new
+// version is complete (keep, delete-after-package), how many titles the
+// re-encode queue has encoded at once at most (nil: not set), and when it
+// sends them (nil: not set, any time).
+type ComplianceProcessing struct {
+	Originals string
+	Inflight  *int32
+	Window    *string
+}
+
 // ComplianceReport is a page of the titles that break a rule.
 type ComplianceReport struct {
 	Rules        PipelineRules
@@ -183,6 +194,7 @@ type ComplianceReport struct {
 	Matching      ComplianceTotals
 	Queueable     ComplianceTotals
 	Queue         ComplianceQueueCounts
+	Processing    ComplianceProcessing
 	Summary       []ComplianceSummary
 	Rows          []ComplianceRow
 	NextCursor    *string
@@ -439,6 +451,15 @@ func (r *complianceReportResolver) Queueable() *complianceTotalsResolver {
 func (r *complianceReportResolver) Queue() *complianceQueueCountsResolver {
 	return &complianceQueueCountsResolver{m: r.m.Queue}
 }
+func (r *complianceReportResolver) Processing() *complianceProcessingResolver {
+	return &complianceProcessingResolver{m: r.m.Processing}
+}
+
+type complianceProcessingResolver struct{ m ComplianceProcessing }
+
+func (r *complianceProcessingResolver) Originals() string { return r.m.Originals }
+func (r *complianceProcessingResolver) Inflight() *int32  { return r.m.Inflight }
+func (r *complianceProcessingResolver) Window() *string   { return r.m.Window }
 
 type complianceTotalsResolver struct{ m ComplianceTotals }
 

@@ -124,6 +124,9 @@ func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, o graph.
 	if out.Pending, err = s.pending(ctx, f.Kind, rs.hash()); err != nil {
 		return out, err
 	}
+	if out.Processing, err = s.processing(ctx); err != nil {
+		return out, err
+	}
 	if out.Summary, err = s.summary(ctx, f); err != nil {
 		return out, err
 	}
@@ -131,6 +134,48 @@ func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, o graph.
 		return out, err
 	}
 	return out, nil
+}
+
+// processing is how processing a title again goes now, from the library's
+// settings as they are set: library.originals (keep unless it is
+// delete-after-package), library.reencode.inflight and .window where they
+// are set to one (nil where they are not, or to none).
+func (s *Service) processing(ctx context.Context) (graph.ComplianceProcessing, error) {
+	set, err := library.ReadSettings(ctx, s.pool)
+	if err != nil {
+		return graph.ComplianceProcessing{}, err
+	}
+	out := graph.ComplianceProcessing{Originals: set.Originals}
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT ON (btrim(key)) btrim(key), valuetext FROM com_nalet_katalog_settings
+		WHERE btrim(key) = ANY($1) ORDER BY btrim(key), id`,
+		[]string{library.SettingReencodeInflight, library.SettingReencodeWindow})
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var value *string
+		if err := rows.Scan(&key, &value); err != nil {
+			return out, err
+		}
+		v := ""
+		if value != nil {
+			v = strings.TrimSpace(*value)
+		}
+		switch key {
+		case library.SettingReencodeInflight:
+			if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+				i := int32(n)
+				out.Inflight = &i
+			}
+		case library.SettingReencodeWindow:
+			if _, err := library.ParseWindow(v); err == nil && v != "" {
+				out.Window = &v
+			}
+		}
+	}
+	return out, rows.Err()
 }
 
 // pending counts the titles of kind ("" both) the next pass checks.

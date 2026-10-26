@@ -502,6 +502,49 @@ func TestTheChecksSettings(t *testing.T) {
 	}
 }
 
+// The report says how processing a title again goes from the settings as
+// they are set, for the console's confirm: what becomes of the original
+// (kept unless library.originals deletes it after packaging), and the
+// queue's inflight and window where they are set to one.
+func TestTheReportSaysHowProcessingGoes(t *testing.T) {
+	s, st, _ := library4(t)
+	said := func() string {
+		t.Helper()
+		p := reportOf(t, s, graph.ComplianceFilter{}, 0, "").Processing
+		out := p.Originals
+		for _, v := range []any{p.Inflight, p.Window} {
+			switch x := v.(type) {
+			case *int32:
+				if x == nil {
+					out += " -"
+				} else {
+					out += fmt.Sprintf(" %d", *x)
+				}
+			case *string:
+				if x == nil {
+					out += " -"
+				} else {
+					out += " " + *x
+				}
+			}
+		}
+		return out
+	}
+	if got := said(); got != "keep - -" {
+		t.Errorf("nothing set: %s", got)
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES
+		('o', 'library.originals', 'delete-after-package'), ('i', 'library.reencode.inflight', '2'),
+		('w', 'library.reencode.window', '23:00-07:00')`)
+	if got := said(); got != "delete-after-package 2 23:00-07:00" {
+		t.Errorf("each set: %s", got)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_settings SET valuetext = 'some time' WHERE id IN ('i', 'w')`)
+	if got := said(); got != "delete-after-package - -" {
+		t.Errorf("the queue's set to none: %s", got)
+	}
+}
+
 // The report narrows to a kind, to titles that break any of some rules, and
 // to a title or a series whose title holds a search, and pages: each page
 // after the one before, none twice; the summary and the titles checked

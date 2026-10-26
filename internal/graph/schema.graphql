@@ -1515,9 +1515,25 @@ type ComplianceReport {
   matching: ComplianceTotals!
   queueable: ComplianceTotals!
   queue: ComplianceQueueCounts!
+  # How processing a title again goes now, from the settings as they are
+  # set, for the console's confirm.
+  processing: ComplianceProcessing!
   summary: [ComplianceSummary!]!
   rows: [ComplianceRow!]!
   nextCursor: String
+}
+
+# How processing a title again goes, from the settings as they are set:
+# what becomes of a title's original once its new version is complete
+# (originals, library.originals: keep, or delete-after-package, when it is
+# deleted), how many titles the re-encode queue has encoded at once at most
+# (inflight, library.reencode.inflight; null where it is not set), and when
+# it sends them (window, library.reencode.window, "23:00-07:00" of the
+# service's time; null where it is not set, or is none, any time).
+type ComplianceProcessing {
+  originals: String!
+  inflight: Int
+  window: String
 }
 
 # A title a request to process titles again didn't queue: its id, its name
