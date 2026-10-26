@@ -228,13 +228,21 @@ func (t title) originalOf(r records, copied tri, dur float64) original {
 	}
 	if copied == yes && r.pkg != nil && len(r.pkg.Renditions.Video) > 0 {
 		v := r.pkg.Renditions.Video[0]
-		if o.codec == "" {
-			switch c := strings.ToLower(v.Codec); {
-			case isH264(c):
-				o.codec, o.pixFmt = "h264", "yuv420p"
-			case isHEVC(c):
-				o.codec, o.profile = "hevc", "main"
-				if strings.HasPrefix(c[4:], ".2") {
+		switch c := strings.ToLower(v.Codec); {
+		case isH264(c) && (o.codec == "" || o.codec == "h264"):
+			o.codec = "h264"
+			if o.pixFmt == "" {
+				o.pixFmt = "yuv420p"
+			}
+		case isHEVC(c) && (o.codec == "" || o.codec == "hevc"):
+			// the profile of its codec string, Main (1) or Main 10 (2); of
+			// another (a range extension) none, so nothing is copied blind
+			o.codec = "hevc"
+			if o.profile == "" {
+				switch {
+				case strings.HasPrefix(c[4:], ".1."):
+					o.profile = "main"
+				case strings.HasPrefix(c[4:], ".2."):
 					o.profile = "main 10"
 				}
 			}

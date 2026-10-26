@@ -827,6 +827,14 @@ func TestTheEstimate(t *testing.T) {
 		{"an encode at another maxrate: today's maxrate", encoded("profile=nvenc-1080p maxrate=10Mbps"),
 			pkgOf("hvc1.1.6.L120.B0", 1920, 1080, 2.8e6, "hevc_nvenc", 1), srcOf(h264, englishAC3), rs,
 			at(8e6+192e3+448e3) + extras},
+		{"an HEVC original whose record names no profile: the profile of the copy's codec, Main, copied again",
+			packagedTitle("movie"), pkgOf("hvc1.1.6.L120.B0", 1920, 1080, 4e6, "copy", 1),
+			srcOf(`{"index": 0, "type": "video", "codec": "hevc", "width": 1920, "height": 1080}`, englishAC3), rs,
+			at(4e6+192e3+448e3) + extras},
+		{"the same of a range extension's codec: nothing copied blind, an encode at the cap",
+			packagedTitle("movie"), pkgOf("hvc1.4.10.L120.B0", 1920, 1080, 4e6, "copy", 1),
+			srcOf(`{"index": 0, "type": "video", "codec": "hevc", "width": 1920, "height": 1080}`, englishAC3), rs,
+			at(8e6+192e3+448e3) + extras},
 	} {
 		got := evaluate(tc.ti, recordsOf(t, tc.pkg, tc.src), tc.rs)
 		if got.EstimatedBytes == nil || *got.EstimatedBytes != tc.want {
