@@ -173,10 +173,11 @@ func (s *Store) LayoutWaits(ctx context.Context) (titles, extras int, err error)
 }
 
 // deleteLibraryOf removes, in tx, the originals and the versions the catalog
-// keeps of the items of ids, and their places in the re-encode queue, on a
-// catalog that has their tables (040, 043).
+// keeps of the items of ids, their places in the re-encode queue and what the
+// compliance check found of them, on a catalog that has their tables (040,
+// 043, 051).
 func deleteLibraryOf(ctx context.Context, tx pgx.Tx, ids []string) error {
-	for _, t := range []string{SourcesTable, VersionsTable, ReencodeQueueTable} {
+	for _, t := range []string{SourcesTable, VersionsTable, ReencodeQueueTable, ComplianceTable} {
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT to_regclass($1::text) IS NOT NULL`, t).Scan(&exists); err != nil {
 			return err

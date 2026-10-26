@@ -11,8 +11,9 @@
 // store.EnsureItemExtras, store.EnsureLibrary, which applies 040, 041 and
 // 042, store.EnsureReencodeQueue, store.EnsureTakeIn,
 // store.EnsureMultiEpisodeFiles, store.EnsureSeriesScanTitle,
-// store.EnsureIdentityIndexes, store.EnsureAttachedSubtitles and
-// store.EnsureLibraryWriteThrough, which applies 050 after 041).
+// store.EnsureIdentityIndexes, store.EnsureAttachedSubtitles,
+// store.EnsureLibraryWriteThrough, which applies 050 after 041, and
+// store.EnsureCompliance).
 // It applies 035, which drops what is left of a retired integration, at every
 // start when any of that is there (store.DropRetiredJobTables), and 049, the
 // catalog search, in the background after startup, one statement at a time:
@@ -156,3 +157,10 @@ var CatalogSearch string
 //
 //go:embed 050_library_write_through.sql
 var LibraryWriteThrough string
+
+// Compliance is 051_library_compliance.sql: the rules the transcoder and the
+// packager report they run with, and what the library's compliance check
+// found of each title against them.
+//
+//go:embed 051_library_compliance.sql
+var Compliance string

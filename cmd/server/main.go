@@ -167,6 +167,11 @@ func run() error {
 	if err := st.EnsureLibraryWriteThrough(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/050_library_write_through.sql is missing and could not be applied: %v; a change of an item's marks reaches its projection only when its writer marks the item itself, until it is", err)
 	}
+	// The rules the workers report they run with, and what the library's
+	// compliance check found of each title against them (migration 051).
+	if err := st.EnsureCompliance(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/051_library_compliance.sql is missing and could not be applied: %v; the workers' rules are not kept and the library's compliance is not checked until it is", err)
+	}
 	// An item the scanner made before it wrote its own name into the row has
 	// it in its record alone: the row follows the record (bounded, in the
 	// background).

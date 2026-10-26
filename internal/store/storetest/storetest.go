@@ -98,6 +98,9 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	if err := st.EnsureLibraryWriteThrough(ctx); err != nil {
 		t.Fatalf("apply the library write-through migration: %v", err)
 	}
+	if err := st.EnsureCompliance(ctx); err != nil {
+		t.Fatalf("apply the library compliance migration: %v", err)
+	}
 	return st
 }
 
