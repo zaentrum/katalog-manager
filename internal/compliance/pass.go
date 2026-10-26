@@ -60,6 +60,7 @@ func (s *Service) state(ctx context.Context) (rulesState, error) {
 		return rs, fmt.Errorf("the library's settings: %w", err)
 	}
 	rs.v2 = set.V2()
+	rs.retries = s.retries
 	return rs, nil
 }
 

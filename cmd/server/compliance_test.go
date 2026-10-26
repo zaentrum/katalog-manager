@@ -110,13 +110,13 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	}
 
 	const report = `{ libraryCompliance {
-		rules { transcoder { worker version reportedAt rules { key label value } } packager { worker version } }
+		rules { transcoder { worker version reportedAt rules { key label value detail } } packager { worker version } }
 		notEvaluated evaluatedAt evaluating pending total nextCursor
 		matching { titles originalBytes packageBytes estimatedBytes } queue { queued processing processed failed }
 		queueable { titles originalBytes packageBytes estimatedBytes }
 		summary { rule titles packageBytes estimatedBytes }
-		rows { itemId title year kind seriesId seriesTitle season episode findings { rule text measured limit }
-			originalBytes packageBytes estimatedBytes queue queueReason reworkBlocked evaluatedAt } } }`
+		rows { itemId title year kind seriesId seriesTitle season episode findings { rule text measured limit detail }
+			originalBytes packageBytes estimatedBytes queue queueReason queueDetail reworkBlocked evaluatedAt } } }`
 	for who, token := range map[string]string{"a viewer": viewer, "an addon": addon, "the service account": service} {
 		for _, doc := range []string{report, `{ pipelineRules { transcoder { worker } } }`,
 			`mutation { queueRework(items: ["` + remuxID + `"]) { queued } }`,
@@ -134,7 +134,10 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 			Rules struct {
 				Transcoder struct {
 					Worker, Version, ReportedAt string
-					Rules                       []struct{ Key, Label, Value string }
+					Rules                       []struct {
+						Key, Label, Value string
+						Detail            *string
+					}
 				}
 				Packager struct{ Worker, Version string }
 			}
@@ -160,11 +163,12 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 				ItemID, Title, Kind string
 				SeriesTitle         *string
 				Findings            []struct {
-					Rule, Text      string
-					Measured, Limit *string
+					Rule, Text              string
+					Measured, Limit, Detail *string
 				}
 				OriginalBytes, PackageBytes, EstimatedBytes *float64
-				Queue, QueueReason, ReworkBlocked           *string
+				Queue, QueueReason, QueueDetail             *string
+				ReworkBlocked                               *string
 				EvaluatedAt                                 string
 			}
 		}
@@ -196,9 +200,16 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	remux := rep.Rows[0]
 	spaced := func(s string) string { return strings.ReplaceAll(s, "\u00a0", " ") }
 	if remux.ItemID != remuxID || spaced(remux.Findings[0].Text) != "The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder "+
-		"allows for a 2160 movie." || spaced(*remux.Findings[0].Measured) != "73 Mbit/s" || spaced(*remux.Findings[0].Limit) != "14 Mbit/s" ||
+		"allows for a 2160p movie." || spaced(*remux.Findings[0].Measured) != "73 Mbit/s" || spaced(*remux.Findings[0].Limit) != "14 Mbit/s" ||
 		*remux.PackageBytes != 59e9 || *remux.OriginalBytes != 63e9 || remux.EstimatedBytes == nil || remux.Queue != nil {
 		t.Errorf("the remux: %+v", remux)
+	}
+	if f := rep.Rows[2].Findings[0]; f.Text != "The transcoder failed." || f.Detail == nil || *f.Detail != "ffmpeg exited 1" {
+		t.Errorf("the film whose transcode failed: %+v", f)
+	}
+	if r := rep.Rules.Transcoder.Rules[12]; r.Key != "ladder" || r.Value != "one, at the original’s size, in HEVC" ||
+		r.Detail == nil || *r.Detail != "source:hevc" {
+		t.Errorf("the transcoder's renditions: %+v", r)
 	}
 	if _, err := time.Parse(time.RFC3339, remux.EvaluatedAt); err != nil {
 		t.Errorf("evaluatedAt %q: %v", remux.EvaluatedAt, err)
@@ -216,7 +227,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 			rep.Total, rep.Pending, rep.Evaluating, rep.EvaluatedAt, rep.NextCursor, rep.NotEvaluated, len(rep.Summary))
 	}
 	if tr := rep.Rules.Transcoder; tr.Worker != "transcoder" || tr.Version != "3f2a9c1" || len(tr.Rules) != 14 ||
-		tr.Rules[1].Key != "caps.movie2160Mbps" || spaced(tr.Rules[1].Value) != "14 Mbit/s" || rep.Rules.Packager.Worker != "packager" {
+		tr.Rules[1].Key != "caps.movie2160Mbps" || spaced(tr.Rules[1].Value) != "at most 14 Mbit/s" || rep.Rules.Packager.Worker != "packager" {
 		t.Errorf("the rules: %+v", rep.Rules)
 	}
 
@@ -256,8 +267,8 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		queued alreadyQueued skipped skippedTitles { itemId title reason } message } }`)
 	if q := queued.Q; q.Queued != 2 || q.AlreadyQueued != 1 || q.Skipped != 1 || len(q.SkippedTitles) != 1 ||
 		q.SkippedTitles[0].ItemID != goneID || q.SkippedTitles[0].Title != goneID ||
-		q.SkippedTitles[0].Reason != "it’s no longer in the catalog" ||
-		q.Message != "2 titles queued to be processed again. 1 title is queued already. 1 title wasn’t queued: it’s no longer in the catalog." {
+		q.SkippedTitles[0].Reason != "it is not in the catalog" ||
+		q.Message != "2 titles queued to be processed again. 1 title is queued already. 1 title wasn’t queued: it is not in the catalog." {
 		t.Errorf("queueRework: %+v", q)
 	}
 	if got := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue WHERE state = 'queued' AND selection = 'items'`); got != 3 {
@@ -339,8 +350,9 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	if len(a.Errors) > 0 || json.Unmarshal(a.Data, &rules) != nil {
 		t.Fatalf("pipelineRules: %s %v", a.Data, a.Errors)
 	}
-	if p := rules.PipelineRules.Packager; p.Worker != "packager" || p.Version != "3f2a9c1" || len(p.Rules) != 5 ||
-		p.Rules[4].Key != "imageSubtitles" || p.Rules[4].Value != "PGS, VobSub" {
+	if p := rules.PipelineRules.Packager; p.Worker != "packager" || p.Version != "3f2a9c1" || len(p.Rules) != 3 ||
+		p.Rules[0].Key != "surroundAudio" || spaced(p.Rules[0].Value) != "5.1 E-AC-3, 448 kbit/s" ||
+		p.Rules[2].Key != "imageSubtitles" || p.Rules[2].Value != "PGS, VobSub" {
 		t.Errorf("the packager's rules: %+v", p)
 	}
 }

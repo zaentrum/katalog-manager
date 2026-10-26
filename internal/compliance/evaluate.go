@@ -42,6 +42,9 @@ type finding struct {
 	Text     string  `json:"text"`
 	Measured *string `json:"measured"`
 	Limit    *string `json:"limit"`
+	// Detail is what a tool said of it (an exit code, a codec id), for
+	// under the finding's details and never in its text.
+	Detail *string `json:"detail,omitempty"`
 }
 
 // step is a title's transcode or package as the check reads it.
@@ -142,6 +145,7 @@ type sourceRecord struct {
 		Codec        *string  `json:"codec"`
 		Language     *string  `json:"language"`
 		LanguageRaw  *string  `json:"languageRaw"`
+		Variant      *string  `json:"variant"`
 		Form         *string  `json:"form"`
 		Width        *float64 `json:"width"`
 		Height       *float64 `json:"height"`
@@ -202,15 +206,19 @@ func evaluate(t title, r records, rs rulesState) result {
 	add := func(rule, text string, measured, limit *string) {
 		res.Findings = append(res.Findings, finding{Rule: rule, Text: text, Measured: measured, Limit: limit})
 	}
+	addStep := func(worker string, s step) {
+		text, detail := stepText(worker, s, rs.retries)
+		res.Findings = append(res.Findings, finding{Rule: PackagingFailed, Text: text, Detail: detail})
+	}
 
 	if !t.packaged() {
 		switch {
 		case t.Path != nil && processing.IsDiscImage(*t.Path):
 			add(PackagingFailed, discImageText, nil, nil)
 		case t.Transcode.is(processing.StatusFailed, processing.StatusSkipped):
-			add(PackagingFailed, stepText("transcoder", t.Transcode), nil, nil)
+			addStep("transcoder", t.Transcode)
 		case t.Package.is(processing.StatusFailed, processing.StatusSkipped):
-			add(PackagingFailed, stepText("packager", t.Package), nil, nil)
+			addStep("packager", t.Package)
 		case t.Original.State != library.OriginalPresent:
 			// no original to package, nor a package: processing it again cannot help
 		case t.Transcode.is(processing.StatusPending, processing.StatusInProgress),
@@ -262,8 +270,9 @@ func evaluate(t title, r records, rs rulesState) result {
 	if tr := rs.transcoder; tr != nil && tr.t != nil {
 		if ok, _ := tr.t.hevcRequired(); ok {
 			if codec := t.videoCodec(r); codec != "" && !isHEVC(codec) {
-				text, measured, allowed := codecWords(codec)
-				add(VideoNotHEVC, text, measured, allowed)
+				text, measured, allowed, detail := codecWords(codec)
+				res.Findings = append(res.Findings, finding{Rule: VideoNotHEVC, Text: text, Measured: measured, Limit: allowed,
+					Detail: detail})
 			}
 		}
 	}
@@ -271,16 +280,18 @@ func evaluate(t title, r records, rs rulesState) result {
 	return res
 }
 
-// stepText is what a failed or skipped transcode or package of worker says:
-// its reason, and whether a retry is scheduled.
-func stepText(worker string, s step) string {
+// stepText is what a failed or skipped transcode or package of worker says,
+// and the worker's reason, its detail: a retry is said only while one is
+// really scheduled, the step's next retry set and the sweep that sends it
+// running (retries).
+func stepText(worker string, s step, retries bool) (string, *string) {
 	reason := ""
 	if s.Error != nil && strings.TrimSpace(*s.Error) != "" {
 		reason = *s.Error
 	} else if s.Details != nil {
 		reason = *s.Details
 	}
-	return stepWords(worker, *s.Status, reason, *s.Status == processing.StatusFailed && s.NextRetryAt != nil)
+	return stepWords(worker, *s.Status, reason, retries && *s.Status == processing.StatusFailed && s.NextRetryAt != nil)
 }
 
 // tri is yes, no or unknown.
@@ -588,18 +599,17 @@ func (t *TranscoderRules) hevcRequired() (bool, string) {
 		}
 		switch {
 		case codec != "hevc":
-			return false, "The transcoder makes the source’s rendition in H.264, so an H.264 video breaks no rule."
+			return false, "The transcoder makes the rendition at the original’s size in H.264, so H.264 breaks no rule."
 		case named:
 			return true, ""
 		case t.Encoder.Codec == nil:
 			return false, "The transcoder doesn’t report its encoder, so the video format can’t be checked."
 		case strings.EqualFold(strings.TrimSpace(*t.Encoder.Codec), "libx265"):
-			return false, "With " + strings.TrimSpace(*t.Encoder.Codec) + " the transcoder keeps a browser-friendly H.264 video " +
-				"as it is, so an H.264 video breaks no rule."
+			return false, "This transcoder keeps H.264 video as it is when browsers can play it, so H.264 breaks no rule."
 		}
 		return true, ""
 	}
-	return false, "The transcoder makes no rendition at the source’s size, so the video format can’t be checked."
+	return false, "The transcoder makes no rendition at the original’s size, so the video format can’t be checked."
 }
 
 // surroundOn reports whether the packager makes a 5.1 companion.
@@ -656,18 +666,21 @@ func languageOf(codes ...*string) string {
 	return languages.Unknown
 }
 
-// missingImageSubtitles are the image subtitles of the source of a form the
-// packager carries (carried) that the package carries none of in their
-// language: the languages of each form, and every language, sorted. A
-// package's image subtitle carries the language its record gives it, and the
-// language of the source stream it was made from.
+// missingImageSubtitles are the image subtitles of the original of a form
+// the packager carries (carried) that the package carries none of in their
+// language: the language tags of each form ("pt-BR", with the script and the
+// region the original's stream names), and every tag, sorted. A language is
+// held by the language alone: a package's image subtitle carries the
+// language its record gives it, and the language of the original's stream
+// it was made from.
 func missingImageSubtitles(r records, carried []string) (map[string][]string, []string) {
 	carries := map[string]bool{}
 	for _, f := range carried {
 		carries[strings.ToLower(strings.TrimSpace(f))] = true
 	}
 	langOfStream := map[int]string{}
-	wanted := map[string]map[string]bool{} // language -> forms
+	wanted := map[string]map[string]bool{}            // language -> forms
+	tagsOf := map[string]map[string]map[string]bool{} // language -> form -> tags
 	for _, s := range r.src.Streams {
 		if s.Type != "subtitle" {
 			continue
@@ -680,7 +693,11 @@ func missingImageSubtitles(r records, carried []string) (map[string][]string, []
 		if s.Form != nil && strings.EqualFold(*s.Form, "text") {
 			image = false
 		}
-		lang := languageOf(s.Language, s.LanguageRaw)
+		tag := library.StreamLanguage(s.Language, s.LanguageRaw, s.Variant)
+		lang, _, _ := strings.Cut(tag, "-")
+		if tag == "" {
+			tag, lang = languages.Unknown, languages.Unknown
+		}
 		if s.Index != nil {
 			langOfStream[int(*s.Index)] = lang
 		}
@@ -688,9 +705,13 @@ func missingImageSubtitles(r records, carried []string) (map[string][]string, []
 			continue
 		}
 		if wanted[lang] == nil {
-			wanted[lang] = map[string]bool{}
+			wanted[lang], tagsOf[lang] = map[string]bool{}, map[string]map[string]bool{}
 		}
 		wanted[lang][form] = true
+		if tagsOf[lang][form] == nil {
+			tagsOf[lang][form] = map[string]bool{}
+		}
+		tagsOf[lang][form][tag] = true
 	}
 	if len(wanted) == 0 {
 		return nil, nil
@@ -708,15 +729,21 @@ func missingImageSubtitles(r records, carried []string) (map[string][]string, []
 		}
 	}
 	byForm := map[string][]string{}
-	var langs []string
+	all := map[string]bool{}
 	for lang, forms := range wanted {
 		if has[lang] {
 			continue
 		}
-		langs = append(langs, lang)
 		for f := range forms {
-			byForm[f] = append(byForm[f], lang)
+			for tag := range tagsOf[lang][f] {
+				byForm[f] = append(byForm[f], tag)
+				all[tag] = true
+			}
 		}
+	}
+	langs := make([]string, 0, len(all))
+	for tag := range all {
+		langs = append(langs, tag)
 	}
 	sort.Strings(langs)
 	for f := range byForm {

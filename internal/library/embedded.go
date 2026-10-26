@@ -234,6 +234,14 @@ func embeddedLanguage(language, raw, variant *string) string {
 
 func isDigit(c byte) bool { return '0' <= c && c <= '9' }
 
+// StreamLanguage is the language tag of a stream as a source record lists it
+// (its language, the code its file carried, its variant), as a title's own
+// subtitles are tagged (embeddedLanguage): "de", "pt-BR", "zh-Hans"; "" for
+// a stream of no language.
+func StreamLanguage(language, raw, variant *string) string {
+	return embeddedLanguage(language, raw, variant)
+}
+
 // embeddedIn reports whether sub is the id of a subtitle stream embedded in
 // an original of the item id (EmbeddedID: one of its sources'), a subtitle
 // of its own, which no caller removes from the file.

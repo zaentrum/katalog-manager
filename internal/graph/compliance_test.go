@@ -56,6 +56,9 @@ extend type ComplianceReport { matching: ComplianceTotals!  queue: ComplianceQue
 type ComplianceSkip { itemId: ID! title: String! reason: String! }
 extend type ComplianceQueued { skippedTitles: [ComplianceSkip!]! }
 extend type ComplianceReport { queueable: ComplianceTotals! }   # the matching titles NOT queued or processing: what "select all N matching" queues
+extend type ComplianceFinding { detail: String }   # tool output or ids, e.g. "ffmpeg exited 1", "avc1.640028"; never in the text
+extend type ComplianceRow { queueDetail: String }   # the queue reason's technical part
+extend type RuleSetting { detail: String }   # raw config, e.g. "source:hevc", "libx265"
 `
 
 var (
@@ -112,8 +115,8 @@ func TestTheComplianceContract(t *testing.T) {
 		types[ty.Name] = ty
 	}
 	blocks := contractBlockRE.FindAllStringSubmatch(complianceContract, -1)
-	if len(blocks) != 18 {
-		t.Fatalf("the contract reads as %d blocks, want 18", len(blocks))
+	if len(blocks) != 21 {
+		t.Fatalf("the contract reads as %d blocks, want 21", len(blocks))
 	}
 	for _, b := range blocks {
 		kind, name, body := b[1], b[2], b[3]

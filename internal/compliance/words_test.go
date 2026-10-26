@@ -26,8 +26,9 @@ type text struct{ section, source, field, words string }
 func serverTexts(t *testing.T) []text {
 	t.Helper()
 	rs := stateOf(t, transcoderReport, packagerReport)
+	rs.retries = true // the sweep retries a failed step
 	var out []text
-	find := func(source string, ti title, r records) {
+	findIn := func(rs rulesState, source string, ti title, r records) {
 		t.Helper()
 		res := evaluate(ti, r, rs)
 		if len(res.Findings) == 0 {
@@ -41,7 +42,14 @@ func serverTexts(t *testing.T) []text {
 			if f.Limit != nil {
 				out = append(out, text{"finding", source, f.Rule + " limit", *f.Limit})
 			}
+			if f.Detail != nil {
+				out = append(out, text{"finding", source, f.Rule + " detail", *f.Detail})
+			}
 		}
+	}
+	find := func(source string, ti title, r records) {
+		t.Helper()
+		findIn(rs, source, ti, r)
 	}
 	remux := packagedTitle("movie")
 	remux.VersionBytes = i64(63_400_000_000)
@@ -75,6 +83,11 @@ func serverTexts(t *testing.T) []text {
 		"essence": {"surround": true, "maxAudioChannels": 6}}`))
 	find("a source with surround of no known channels", packagedTitle("movie"), recordsOf(t, stereo,
 		`{"streams": [{"index": 0, "type": "video", "width": 1920, "height": 1080}], "essence": {"surround": true}}`))
+	find("an original whose PGS subtitles in Portuguese of Brazil and simplified Chinese are missing", packagedTitle("movie"),
+		recordsOf(t, pkgJSON(1920, 1080, 5e6, "copy"), `{"streams": [{"index": 0, "type": "video", "width": 1920, "height": 1080},
+		{"index": 1, "type": "subtitle", "codec": "hdmv_pgs_subtitle", "language": "por", "variant": "Brazilian"},
+		{"index": 2, "type": "subtitle", "codec": "hdmv_pgs_subtitle", "language": "chi", "variant": "Simplified"}],
+		"essence": {"surround": false, "maxAudioChannels": 2}}`))
 	h264 := `{"renditions": {"video": [{"codec": "avc1.640028", "width": 1920, "height": 1080, "bitrateBps": 6200000,
 		"encoder": "copy"}]}, "essence": {}}`
 	find("an H.264 package", packagedTitle("movie"), recordsOf(t, h264, srcJSON(1920, 1080)))
@@ -97,14 +110,30 @@ func serverTexts(t *testing.T) []text {
 		ti.Transcode = step{Status: strp(processing.StatusFailed),
 			Error: strp("Dolby Vision profile 7 needs a tone-mapping encode; kept the original")}
 	}), records{})
+	find("a film whose transcode was refused for its colours on this transcoder", unpackaged(func(ti *title) {
+		ti.Transcode = step{Status: strp(processing.StatusFailed),
+			Error: strp("Dolby Vision profile 5 is reshaped to HDR10 on a Vulkan device, and this host has none " +
+				"(no Vulkan loader); kept the original")}
+	}), records{})
+	find("a film whose transcode failed in ffprobe", unpackaged(func(ti *title) {
+		ti.Transcode = step{Status: strp(processing.StatusFailed), Error: strp("ffprobe: exit status 1")}
+	}), records{})
 	at := mustTime(t, "2026-10-26T10:00:00Z")
-	find("a film whose package failed, a retry scheduled", unpackaged(func(ti *title) {
+	retried := func(ti *title) {
 		ti.Transcode = status(processing.StatusDone)
 		ti.Package = step{Status: strp(processing.StatusFailed), Error: strp("shaka-packager exited 1"), NextRetryAt: &at}
-	}), records{})
+	}
+	find("a film whose package failed, a retry scheduled", unpackaged(retried), records{})
+	noSweep := rs
+	noSweep.retries = false
+	findIn(noSweep, "a film whose package failed, a retry scheduled and no sweep to send it", unpackaged(retried), records{})
 	find("a film whose package was skipped", unpackaged(func(ti *title) {
 		ti.Transcode = status(processing.StatusDone)
 		ti.Package = step{Status: strp(processing.StatusSkipped), Error: strp("the source has no video stream")}
+	}), records{})
+	find("a film whose package was skipped for a reason the words don’t know", unpackaged(func(ti *title) {
+		ti.Transcode = status(processing.StatusDone)
+		ti.Package = step{Status: strp(processing.StatusSkipped), Error: strp("handoff v0 has no keyframe in its first 10s")}
 	}), records{})
 	find("a film whose file is a disc image", unpackaged(func(ti *title) { *ti.Path = "/library/arrivals/a-film.iso" }), records{})
 
@@ -128,9 +157,9 @@ func serverTexts(t *testing.T) []text {
 		packagerReport, true, 0)
 	notEval("the transcoder on libx265 with the default ladder", strings.NewReplacer(`"ladder": "source:hevc"`, `"ladder": "source"`,
 		`"codec": "hevc_nvenc"`, `"codec": "libx265"`).Replace(transcoderReport), packagerReport, true, 0)
-	notEval("the transcoder makes H.264 at the source’s size", strings.Replace(transcoderReport, `"ladder": "source:hevc"`,
+	notEval("the transcoder makes H.264 at the original’s size", strings.Replace(transcoderReport, `"ladder": "source:hevc"`,
 		`"ladder": "source:h264"`, 1), packagerReport, true, 0)
-	notEval("the transcoder makes no rendition at the source’s size", strings.Replace(transcoderReport, `"ladder": "source:hevc"`,
+	notEval("the transcoder makes no rendition at the original’s size", strings.Replace(transcoderReport, `"ladder": "source:hevc"`,
 		`"ladder": "720p:hevc"`, 1), packagerReport, true, 0)
 	notEval("the transcoder reports no ladder", strings.Replace(transcoderReport, `"ladder": "source:hevc", `, ``, 1), packagerReport, true, 0)
 	notEval("the transcoder reports no encoder, its ladder the default", strings.NewReplacer(`"ladder": "source:hevc"`, `"ladder": "source"`,
@@ -145,11 +174,14 @@ func serverTexts(t *testing.T) []text {
 
 	queue := func(state, reason, source string) {
 		t.Helper()
-		w := queueWords(state, reason)
+		w, d := queueWords(state, reason)
 		if w == nil {
 			t.Fatalf("the queue's %s reason %q says nothing", state, reason)
 		}
 		out = append(out, text{"queueReason", source, state, *w})
+		if d != nil {
+			out = append(out, text{"queueReason", source, state + " detail", *d})
+		}
 	}
 	queue("queued", "transcode is running: its worker last reported at 2026-10-26T09:40:00Z, and encoding it again would run it "+
 		"twice; wait for it, or for its timeout of 6h", "queued, its transcode running")
@@ -162,6 +194,8 @@ func serverTexts(t *testing.T) []text {
 	queue("queued", "the re-encode could not be sent: broker: not the leader", "queued, its event not sent")
 	queue("failed", "transcode failed: ffmpeg exited 1", "failed in its transcode")
 	queue("failed", "package failed: shaka-packager exited 1", "failed in its package")
+	queue("failed", "transcode failed: Dolby Vision profile 7 needs a tone-mapping encode; kept the original", "failed, its transcode refused")
+	queue("failed", "transcode failed: no error given", "failed in its transcode, saying nothing")
 	queue("failed", "package skipped: the source has no video stream", "failed, its package skipped")
 	queue("failed", "package not applicable", "failed, its package not applicable")
 	queue("failed", "its transcode and package are gone", "failed, its steps removed")
@@ -224,10 +258,24 @@ func serverTexts(t *testing.T) []text {
 		out = append(out, text{"ComplianceSkip", n.source, "title", titleText(uuid(99), n.typ, n.title, n.series, n.year, n.season, n.episode)})
 	}
 
-	for _, w := range []struct{ name, raw string }{{Transcoder, transcoderReport}, {Packager, packagerReport}} {
+	for _, w := range []struct{ name, raw string }{
+		{Transcoder, transcoderReport},
+		{Packager, packagerReport},
+		{"transcoder on libx265, with a ladder of three and the extras’ default", strings.NewReplacer(
+			`"codec": "hevc_nvenc", "preset": "p5", "cq": 23`, `"codec": "libx265", "preset": "medium", "cq": null, "crf": 28`,
+			`"ladder": "source:hevc"`, `"ladder": "source,720p:h264:2500k,480p"`, `"extraLadder": "source:hevc"`,
+			`"extraLadder": "720p:h264,480p:h264"`, `"episode1080Mbps": 6`, `"episode1080Mbps": 0`,
+			`"maxrate2160Mbps": null`, `"maxrate2160Mbps": 18`).Replace(transcoderReport)},
+		{"packager making no surround track, its stereo codec reported", strings.NewReplacer(`"surroundAudio": "eac3"`,
+			`"surroundAudio": "off"`, `"stereoBitrate": "192k"`, `"stereoAudio": "aac", "stereoBitrate": "192k"`,
+			`["pgs", "vobsub"]`, `[]`).Replace(packagerReport)},
+	} {
 		for _, r := range settingsOf([]byte(w.raw)) {
 			out = append(out, text{"pipelineRules", w.name + " " + r.Key, "label", r.Label})
 			out = append(out, text{"pipelineRules", w.name + " " + r.Key, "value", r.Value})
+			if r.Detail != nil {
+				out = append(out, text{"pipelineRules", w.name + " " + r.Key, "detail", *r.Detail})
+			}
 		}
 	}
 	return out
@@ -274,21 +322,30 @@ var (
 	// "process again", and none promises, hedges or speaks the system's
 	// words.
 	leaks = regexp.MustCompile(`(?i)\b(rework\w*|re-?encod\w*|yet|saves?|saving|optimi[sz]\w*|seamless\w*|effortless\w*|simply|` +
-		`successfully|please|pipeline|instance|deployment|candidate|may|might|cap)\b`)
+		`successfully|please|pipeline|instance|deployment|candidate|may|might|cap|sources?|bitrates?|ffmpeg|ffprobe|shaka\S*|` +
+		`(?:240|360|480|540|576|720|1080|1440|2160|4320))\b`)
 	// unitRE is a number and a unit, kept on one line.
-	unitRE = regexp.MustCompile(`\d (GB|MB|Mbit/s|kbit/s)\b`)
+	unitRE = regexp.MustCompile(`\d (GB|GiB|MB|Mbit/s|kbit/s|pixels)\b`)
 )
 
 // Every text the check writes for a reader is a sentence in sentence case
 // that ends as one, in the reader's words, with no word that promises,
-// hedges, or names the queue's work otherwise than "process again"; a
-// number keeps its unit on its line, and an apostrophe is the typographic
-// one. With COMPLIANCE_TEXTS set, the list of them goes to that file, for a
-// review of the words.
+// hedges, or names the queue's work otherwise than "process again", no
+// "source" for the original, no "bitrate" in one word, no height without
+// its p and no tool's name; a number keeps its unit on its line, and an
+// apostrophe is the typographic one. A detail is what a tool said, as it
+// said it, and none of that holds of it. With COMPLIANCE_TEXTS set, the
+// list of them goes to that file, for a review of the words.
 func TestTheServerTexts(t *testing.T) {
 	texts := serverTexts(t)
 	for _, x := range texts {
-		sentenceText := x.section != "pipelineRules" && x.section != "ComplianceSkip" &&
+		if strings.HasSuffix(x.field, "detail") {
+			if strings.TrimSpace(x.words) == "" {
+				t.Errorf("%s, %s: an empty detail", x.section, x.source)
+			}
+			continue
+		}
+		sentenceText := x.section != "pipelineRules" && x.section != "ComplianceSkip" && x.section != "ComplianceQueued" &&
 			!strings.HasSuffix(x.field, "measured") && !strings.HasSuffix(x.field, "limit")
 		if x.section == "ComplianceSkip" && x.field == "reason" {
 			// a clause the console says after a colon: no capital, no full stop
@@ -304,7 +361,7 @@ func TestTheServerTexts(t *testing.T) {
 				t.Errorf("%s, %s: %q does not end as a sentence", x.section, x.source, x.words)
 			}
 		}
-		if m := leaks.FindString(x.words); m != "" && !(x.section == "pipelineRules" && x.field == "value") {
+		if m := leaks.FindString(x.words); m != "" {
 			t.Errorf("%s, %s: %q says %q", x.section, x.source, x.words, m)
 		}
 		if m := unitRE.FindString(x.words); m != "" {
@@ -360,11 +417,11 @@ func TestTheLimitsAreTheReported(t *testing.T) {
 		"encoder": "copy"}]}, "essence": {"surround": false, "maxAudioChannels": 2}}`
 	got := found(evaluate(ti, recordsOf(t, pkg, src), stateOf(t, other, otherP)))
 	for _, want := range []string{
-		"The video runs at 38 Mbit/s, above the 20 Mbit/s the transcoder allows for a 2160 movie.",
+		"The video runs at 38 Mbit/s, above the 20 Mbit/s the transcoder allows for a 2160p movie.",
 		"The original is larger than the 32.2 GB the transcoder allows for a movie",
 		"The 7.1 AC-3 track the packager makes is missing.",
 		"[2 channels / 7.1 AC-3]",
-		"The source’s PGS subtitles in German are missing from the package. The packager keeps PGS subtitles.",
+		"The original’s PGS subtitles in German are missing from the package. The packager keeps PGS subtitles.",
 		"[German / PGS]",
 	} {
 		if !strings.Contains(got, want) {
@@ -395,9 +452,43 @@ func TestTheUnits(t *testing.T) {
 		{joinAnd([]string{"German"}), "German"}, {joinAnd([]string{"German", "French"}), "German and French"},
 		{joinAnd([]string{"German", "French", "Italian"}), "German, French and Italian"},
 		{languageName("de"), "German"}, {languageName("zh"), "Chinese"}, {languageName("und"), "an unknown language"},
+		{languageName("ger"), "German"}, {languageName("pt-BR"), "Portuguese (Brazil)"}, {languageName("zh-Hans"), "Chinese (Simplified)"},
+		{languageName("zh-Hant-TW"), "Chinese (Traditional, Taiwan)"}, {languageName("es-419"), "Spanish (Latin America)"},
+		{languageName("de-CH"), "German (Switzerland)"}, {languageName("sr-Latn"), "Serbian (Latin)"},
 	} {
 		if got := strings.ReplaceAll(tc.got, nbsp, " "); got != tc.want {
 			t.Errorf("%q, want %q", got, tc.want)
+		}
+	}
+}
+
+// A ladder is said in words where its spec reads as one: how many
+// renditions, at which size and in which format, and a maxrate a rung sets;
+// on a CPU encoder, the rendition at the original's size that leaves its
+// format to the default keeps H.264 as it is when browsers can play it. A
+// spec the words can't read is said as it is.
+func TestTheRenditionsInWords(t *testing.T) {
+	for _, tc := range []struct {
+		spec string
+		cpu  bool
+		want string
+		ok   bool
+	}{
+		{"source:hevc", false, "one, at the original’s size, in HEVC", true},
+		{"source", false, "one, at the original’s size, in HEVC", true},
+		{"source", true, "one, at the original’s size, in HEVC (or H.264 as it is when browsers can play it)", true},
+		{"source:hevc", true, "one, at the original’s size, in HEVC", true},
+		{"source,720p", false, "two: at the original’s size in HEVC and 720p in H.264", true},
+		{"720p:h264,480p:h264", false, "two, 720p and 480p, in H.264", true},
+		{"source,720p:h264:2500k,480p", false,
+			"three: at the original’s size in HEVC, 720p in H.264 (at most 2.5 Mbit/s) and 480p in H.264", true},
+		{"1080p:hevc", false, "one, 1080p, in HEVC", true},
+		{"source:av1", false, "", false},
+		{"4k", false, "", false},
+	} {
+		got, ok := ladderWords(tc.spec, tc.cpu)
+		if got = strings.ReplaceAll(got, nbsp, " "); got != tc.want || ok != tc.ok {
+			t.Errorf("%s (cpu %v): %q, %v; want %q, %v", tc.spec, tc.cpu, got, ok, tc.want, tc.ok)
 		}
 	}
 }

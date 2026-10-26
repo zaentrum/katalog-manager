@@ -2,6 +2,7 @@ package compliance
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,7 +21,9 @@ import (
 // is the one a worker reports, read when the text is built and named by the
 // worker that allows it, and every value is one a record or a row gives. A
 // size the report's columns show (the original's, the package's) is not
-// said again.
+// said again. A title's file is its original, never its "source"; a height
+// has its p ("2160p"); a bit rate is two words; and what a tool said (an
+// exit code, a codec id, an event) is a detail, never in the text.
 
 // nbsp keeps a number on the line of its unit: "1.4 GB", "73 Mbit/s".
 const nbsp = " "
@@ -160,60 +163,95 @@ func formNames(forms []string) []string {
 	return out
 }
 
-// audioCodecName names the codec of the packager's 5.1 track: "E-AC-3".
+// audioCodecName names the codec of a track the packager makes as people
+// know it: "E-AC-3", "AAC".
 func audioCodecName(codec string) string {
 	switch strings.ToLower(strings.TrimSpace(codec)) {
 	case "eac3", "ec-3":
 		return "E-AC-3"
 	case "ac3", "ac-3":
 		return "AC-3"
+	case "aac", "mp4a":
+		return "AAC"
+	case "opus":
+		return "Opus"
 	}
 	return codec
 }
 
-// languageName names a language in English, as the clients name one:
-// "German", "Chinese"; "an unknown language" for und or a code it does not
-// know.
+// languageName names a language in English as the clients name one: the
+// language, and the script and the region a tag names in brackets
+// ("German", "Portuguese (Brazil)", "Chinese (Simplified)"), never a
+// dialect's own name ("Brazilian Portuguese"); "an unknown language" for und
+// or a code it doesn't know.
 func languageName(code string) string {
-	if code == "" || code == "und" {
+	c := strings.TrimSpace(code)
+	if c == "" || strings.EqualFold(c, "und") {
 		return "an unknown language"
 	}
-	tag, err := language.Parse(code)
+	tag, err := language.Parse(c)
 	if err != nil {
 		return code
 	}
-	if name := display.English.Languages().Name(tag); name != "" && !strings.EqualFold(name, "unknown language") {
-		return name
+	base, _ := tag.Base()
+	name := display.English.Languages().Name(language.Make(base.String()))
+	if name == "" || strings.EqualFold(name, "unknown language") {
+		return code
 	}
-	return code
+	var more []string
+	if script, conf := tag.Script(); conf == language.Exact {
+		more = append(more, scriptName(script))
+	}
+	if region, conf := tag.Region(); conf == language.Exact {
+		more = append(more, display.English.Regions().Name(region))
+	}
+	if len(more) > 0 {
+		name += " (" + strings.Join(more, ", ") + ")"
+	}
+	return name
+}
+
+// scriptName names a script as a language's brackets do: Chinese's
+// "Simplified" and "Traditional", any other by its name ("Latin").
+func scriptName(s language.Script) string {
+	switch s.String() {
+	case "Hans":
+		return "Simplified"
+	case "Hant":
+		return "Traditional"
+	}
+	return display.English.Scripts().Name(s)
 }
 
 // The findings, each the reason a title breaks its rule.
 
 // bitrateWords is what a title whose video is above the transcoder's limit is
-// found to be: its bit rate, approximate when it was read off the package's
+// found to be: its bit rate, about one when it was read off the package's
 // size, and the limit the transcoder allows for its kind and bucket.
 func bitrateWords(rate float64, approx bool, limit float64, bucket int, kind string) (string, *string, *string) {
-	about := ""
+	measured := rateText(rate)
 	if approx {
-		about = "about "
+		measured = "about " + measured
 	}
-	text := fmt.Sprintf("The video runs at %s%s, above the %s the transcoder allows for a %d %s.", about, rateText(rate),
-		rateText(limit), bucket, kind)
-	return text, strp(rateText(rate)), strp(rateText(limit))
+	text := fmt.Sprintf("The video runs at %s, above the %s the transcoder allows for a %s %s.", measured,
+		rateText(limit), heightText(bucket), kind)
+	return text, strp(measured), strp(rateText(limit))
 }
 
+// heightText is a height as the clients write one: "2160p".
+func heightText(lines int) string { return strconv.Itoa(lines) + "p" }
+
 // sizeWords is what a movie whose original is larger than the transcoder
-// allows, and whose package keeps its video as it is, is found to be. The
+// allows, and whose package copied its video, is found to be. The
 // original's size is the report's column, not said again.
 func sizeWords(limit float64) (string, *string, *string) {
-	text := fmt.Sprintf("The original is larger than the %s the transcoder allows for a movie, and the package keeps its video as it is.",
+	text := fmt.Sprintf("The original is larger than the %s the transcoder allows for a movie, and the package copied its video.",
 		sizeText(limit))
 	return text, nil, strp(sizeText(limit))
 }
 
-// surroundTrack names the track the packager makes of a surround source, as
-// it reports it: "5.1 E-AC-3", or "E-AC-3 surround" when it reports no
+// surroundTrack names the track the packager makes of a surround original,
+// as it reports it: "5.1 E-AC-3", or "E-AC-3 surround" when it reports no
 // layout.
 func surroundTrack(p *PackagerRules) string {
 	codec := ""
@@ -226,23 +264,24 @@ func surroundTrack(p *PackagerRules) string {
 	return strings.TrimSpace(codec + " surround")
 }
 
-// surroundWords is what a package that lacks its source's surround is found
-// to be: the channels of both, and the track the packager makes, missing.
+// surroundWords is what a package that lacks its original's surround is
+// found to be: the channels of both, and the track the packager makes,
+// missing.
 func surroundWords(had, kept float64, hadOK, keptOK bool, p *PackagerRules) (string, *string, *string) {
 	track := surroundTrack(p)
 	switch {
 	case hadOK && had > 2 && keptOK:
-		return fmt.Sprintf("The package has %d audio %s, and the source has %d. The %s track the packager makes is missing.",
+		return fmt.Sprintf("The package has %d audio %s, and the original has %d. The %s track the packager makes is missing.",
 			int(kept), plural(int(kept), "channel", "channels"), int(had), track), strp(channels(kept)), strp(track)
 	case hadOK && had > 2:
-		return fmt.Sprintf("The source has %d-channel sound. The %s track the packager makes is missing from the package.",
+		return fmt.Sprintf("The original has %d-channel sound. The %s track the packager makes is missing from the package.",
 			int(had), track), nil, strp(track)
 	}
-	return fmt.Sprintf("The source has surround sound. The %s track the packager makes is missing from the package.", track),
+	return fmt.Sprintf("The original has surround sound. The %s track the packager makes is missing from the package.", track),
 		nil, strp(track)
 }
 
-// imageSubtitleWords is what a package without the source's image subtitles
+// imageSubtitleWords is what a package without the original's image subtitles
 // in some languages is found to be: each form's languages missing, and the
 // forms the packager keeps of them; measured are the languages, the limit
 // every form the packager keeps.
@@ -260,7 +299,7 @@ func imageSubtitleWords(byForm map[string][]string, langs, kept []string) (strin
 		}
 		part := formName(f) + " subtitles in " + joinAnd(names)
 		if i == 0 {
-			part = "The source’s " + part
+			part = "The original’s " + part
 		} else {
 			part = "its " + part
 		}
@@ -279,14 +318,15 @@ func imageSubtitleWords(byForm map[string][]string, langs, kept []string) (strin
 }
 
 // codecWords is what a package whose video is not HEVC is found to be, where
-// the transcoder makes every video HEVC.
-func codecWords(codec string) (string, *string, *string) {
-	text := fmt.Sprintf("The video is %s, and the transcoder makes every video HEVC.", codecName(codec))
-	measured := codecName(codec)
-	if measured != codec {
-		measured += " (" + codec + ")"
+// the transcoder makes every video HEVC; the codec's id, when it isn't its
+// name, is the detail.
+func codecWords(codec string) (text string, measured, limit, detail *string) {
+	name := codecName(codec)
+	text = fmt.Sprintf("The video is %s, and the transcoder makes every video HEVC.", name)
+	if name != codec {
+		detail = strp(codec)
 	}
-	return text, strp(measured), strp("HEVC")
+	return text, strp(name), strp("HEVC"), detail
 }
 
 // What a title without a package is found to be.
@@ -300,23 +340,60 @@ const (
 var discImageText = asSentence(skipClauses[graph.SkipDiscImage])
 
 // stepWords is what a title whose transcode or package failed or was skipped
-// is found to be: who did, why, and whether a retry is scheduled.
-func stepWords(worker, status, reason string, retry bool) string {
-	var text string
-	switch status {
-	case "skipped":
-		text = "The " + worker + " skipped it"
-	default:
-		text = "The " + worker + " failed"
+// is found to be: which worker, and what it did; the worker's own reason is
+// the detail, unless the words say it (a reason they know, as knownReasons
+// tells). A step that failed with a retry really scheduled says that it is
+// tried again.
+func stepWords(worker, status, reason string, retry bool) (string, *string) {
+	r := strings.TrimSpace(reason)
+	var detail *string
+	if r != "" {
+		detail = strp(r)
 	}
-	if r := strings.TrimSpace(reason); r != "" {
-		text += ": " + r
+	if status == "skipped" {
+		if clause, ok := knownReason(r); ok {
+			return "The " + worker + " skipped it: " + clause + ".", nil
+		}
+		return "The " + worker + " skipped it.", detail
 	}
-	text = sentence(text)
+	if head, ok := strings.CutSuffix(r, keptTheOriginal); ok {
+		head = strings.TrimSpace(head)
+		if clause, ok := knownReason(head); ok {
+			return "The " + worker + " left it as it is: " + clause + ".", nil
+		}
+		return "The " + worker + " left it as it is.", strp(head)
+	}
 	if retry {
-		text += " A retry is scheduled."
+		return "The " + worker + " failed, and tries again by itself.", detail
 	}
-	return text
+	return "The " + worker + " failed.", detail
+}
+
+// keptTheOriginal ends the reason of a transcode the transcoder refused, and
+// left the title as it is.
+const keptTheOriginal = "; kept the original"
+
+// knownReasons are reasons a worker gives that the words say in the
+// reader's own: a Dolby Vision profile only a tone-mapping encode plays
+// right, an original without video.
+var knownReasons = []struct {
+	re    *regexp.Regexp
+	words func(m []string) string
+}{
+	{regexp.MustCompile(`^Dolby Vision (profile [0-9]+(?:\.[0-9]+)?) needs a tone-mapping encode$`),
+		func(m []string) string { return "Dolby Vision " + m[1] + " needs a tone-mapping encode" }},
+	{regexp.MustCompile(`(?i)^(?:(?:the )?(?:source|original|file) has )?no video(?: stream)?$`),
+		func([]string) string { return "the original has no video" }},
+}
+
+// knownReason is reason in the reader's words, for a reason the words know.
+func knownReason(reason string) (string, bool) {
+	for _, k := range knownReasons {
+		if m := k.re.FindStringSubmatch(reason); m != nil {
+			return k.words(m), true
+		}
+	}
+	return "", false
 }
 
 // Why a title can't be processed again, or why the queue didn't take one, of
@@ -325,12 +402,12 @@ func stepWords(worker, status, reason string, retry bool) string {
 // disc image, which the transcoder doesn’t encode."); a row's reworkBlocked
 // is the clause as a sentence.
 var skipClauses = map[string]string{
-	graph.SkipDeleted:    "its original was deleted from disk after packaging",
-	graph.SkipDeleting:   "its original is being deleted from disk after packaging",
+	graph.SkipDeleted:    "its original was deleted after packaging",
+	graph.SkipDeleting:   "its original is being deleted after packaging",
 	graph.SkipNoFile:     "it has no file",
 	graph.SkipDiscImage:  "its file is a disc image, which the transcoder doesn’t encode",
 	graph.SkipNoEpisodes: "the series has no episodes",
-	graph.SkipUnknown:    "it’s no longer in the catalog",
+	graph.SkipUnknown:    "it is not in the catalog",
 	graph.SkipType:       "it isn’t a movie, an episode or a series",
 }
 
@@ -358,56 +435,102 @@ var (
 )
 
 // queueWords is where a title stands in the re-encode queue, in words, from
-// the reason the queue keeps of a title waiting or failed; nil for a reason
-// of no shape the queue writes (and for none).
-func queueWords(state, reason string) *string {
+// the reason the queue keeps of a title waiting or failed, and the reason's
+// technical part, its detail (what a worker said, when its worker last
+// reported, an event); nil for a reason of no shape the queue writes (and
+// for none).
+func queueWords(state, reason string) (text, detail *string) {
 	r := strings.TrimSpace(reason)
 	if r == "" {
-		return nil
+		return nil, nil
 	}
 	after := func(prefix string) (string, bool) {
 		rest, ok := strings.CutPrefix(r, prefix)
 		return strings.TrimSpace(strings.TrimPrefix(rest, ":")), ok
 	}
+	some := func(s string) *string {
+		if s = strings.TrimSpace(s); s == "" {
+			return nil
+		}
+		return &s
+	}
 	switch state {
 	case "queued":
-		for _, w := range []struct{ prefix, text string }{
-			{"transcode is running", "The transcoder is working on it."},
-			{"package is running", "The packager is working on it."},
-			{"transcode is waiting for its worker", "It is waiting for the transcoder to start it."},
-			{"package is waiting for its worker", "It is waiting for the packager to start it."},
-			{"the re-encode could not be sent", "It couldn’t be handed to the transcoder."},
-		} {
-			if strings.HasPrefix(r, w.prefix) {
-				return strp(w.text)
+		for _, w := range []struct{ worker, step string }{{"transcoder", "transcode"}, {"packager", "package"}} {
+			if rest, ok := after(w.step + " is running"); ok {
+				detail := some(rest)
+				if m := runningRE.FindStringSubmatch(r); m != nil {
+					detail = strp("its worker last reported at " + m[1] + "; timeout " + m[2])
+				}
+				return strp("The " + w.worker + " is working on it."), detail
 			}
+			if rest, ok := after(w.step + " is waiting for its worker"); ok {
+				detail := some(rest)
+				if m := waitingRE.FindStringSubmatch(r); m != nil {
+					detail = strp("waiting since " + m[1] + "; timeout " + m[2])
+				}
+				return strp("It is waiting for the " + w.worker + "."), detail
+			}
+		}
+		if rest, ok := after("the re-encode could not be sent"); ok {
+			return strp("It couldn’t be handed to the transcoder."), some(rest)
 		}
 	case "failed":
 		if rest, ok := after("transcode failed"); ok {
-			return strp(stepWords("transcoder", "failed", rest, false))
+			text, detail := stepWords("transcoder", "failed", noErrorGiven(rest), false)
+			return &text, detail
 		}
 		if rest, ok := after("package failed"); ok {
-			return strp(stepWords("packager", "failed", rest, false))
+			text, detail := stepWords("packager", "failed", noErrorGiven(rest), false)
+			return &text, detail
 		}
 		if rest, ok := after("package skipped"); ok {
-			return strp(stepWords("packager", "skipped", rest, false))
+			text, detail := stepWords("packager", "skipped", rest, false)
+			return &text, detail
+		}
+		if rest, ok := after("package not applicable"); ok {
+			return strp("The packager found nothing to package."), some(rest)
 		}
 		switch {
-		case strings.HasPrefix(r, "package not applicable"):
-			return strp("The packager found nothing to package.")
 		case strings.HasPrefix(r, "its transcode and package are gone"):
-			return strp("Its transcode and package steps were removed.")
+			return strp("Its transcode and package steps were removed."), nil
 		case r == "unknown item":
-			return strp(asSentence(skipReason(graph.SkipUnknown)))
+			return strp(asSentence(skipReason(graph.SkipUnknown))), nil
 		case strings.Contains(r, "is being deleted after packaging"):
-			return strp(deletingText)
+			return strp(deletingText), eventOf(r)
 		case strings.Contains(r, "deleted after packaging"):
-			return strp(deletedText)
+			return strp(deletedText), eventOf(r)
 		case strings.HasSuffix(r, "has no file to encode"):
-			return strp(noFileText)
+			return strp(noFileText), nil
 		case strings.HasPrefix(r, "its file is a disc image"):
-			return strp(discText)
+			return strp(discText), nil
 		}
+	}
+	return nil, nil
+}
+
+// The shapes of the reasons the queue keeps of a title it holds back while
+// its step runs or waits for its worker (retry's busy reasons).
+var (
+	runningRE = regexp.MustCompile(`^(?:transcode|package) is running: its worker last reported at (\S+), .*timeout of (\S+)$`)
+	waitingRE = regexp.MustCompile(`^(?:transcode|package) is waiting for its worker since (\S+), .*timeout of (\S+)$`)
+	eventRE   = regexp.MustCompile(`\((event [^)]*)\)`)
+)
+
+// noErrorGiven is a step's reason as the queue keeps it, none when it says
+// its step gave none.
+func noErrorGiven(reason string) string {
+	if reason == "no error given" {
+		return ""
+	}
+	return reason
+}
+
+// eventOf is the event a reason names of an original deleted after
+// packaging ("event <id>, <when>"), nil for none.
+func eventOf(reason string) *string {
+	if m := eventRE.FindStringSubmatch(reason); m != nil {
+		return strp(m[1])
 	}
 	return nil
 }
@@ -422,22 +545,22 @@ var skipKinds = []string{graph.SkipDeleted, graph.SkipDeleting, graph.SkipNoFile
 // among others. Of one title alone, the message says its skipReason.
 var (
 	skipAll = map[string]string{
-		graph.SkipDeleted:    "their originals were deleted from disk after packaging",
-		graph.SkipDeleting:   "their originals are being deleted from disk after packaging",
+		graph.SkipDeleted:    "their originals were deleted after packaging",
+		graph.SkipDeleting:   "their originals are being deleted after packaging",
 		graph.SkipNoFile:     "they have no file",
 		graph.SkipDiscImage:  "their files are disc images, which the transcoder doesn’t encode",
 		graph.SkipNoEpisodes: "the series have no episodes",
-		graph.SkipUnknown:    "they’re no longer in the catalog",
+		graph.SkipUnknown:    "they are not in the catalog",
 		graph.SkipType:       "they aren’t movies, episodes or series",
 		skipOther:            "they can’t be processed again",
 	}
 	skipSome = map[string][2]string{ // of 1, of %s
-		graph.SkipDeleted:    {"the original of 1 was deleted from disk after packaging", "the originals of %s were deleted from disk after packaging"},
-		graph.SkipDeleting:   {"the original of 1 is being deleted from disk after packaging", "the originals of %s are being deleted from disk after packaging"},
+		graph.SkipDeleted:    {"the original of 1 was deleted after packaging", "the originals of %s were deleted after packaging"},
+		graph.SkipDeleting:   {"the original of 1 is being deleted after packaging", "the originals of %s are being deleted after packaging"},
 		graph.SkipNoFile:     {"1 has no file", "%s have no file"},
 		graph.SkipDiscImage:  {"1 is a disc image", "%s are disc images"},
 		graph.SkipNoEpisodes: {"1 is a series without episodes", "%s are series without episodes"},
-		graph.SkipUnknown:    {"1 is no longer in the catalog", "%s are no longer in the catalog"},
+		graph.SkipUnknown:    {"1 is not in the catalog", "%s are not in the catalog"},
 		graph.SkipType:       {"1 isn’t a movie, an episode or a series", "%s aren’t movies, episodes or series"},
 		skipOther:            {"1 can’t be processed again", "%s can’t be processed again"},
 	}

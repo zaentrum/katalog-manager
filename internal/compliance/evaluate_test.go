@@ -129,6 +129,9 @@ func foundRaw(r result) string {
 			}
 			s += " [" + m + " / " + l + "]"
 		}
+		if f.Detail != nil {
+			s += " {" + *f.Detail + "}"
+		}
 		out = append(out, s)
 	}
 	return strings.Join(out, "\n")
@@ -149,23 +152,23 @@ func TestTheBitrateCapsByKindAndBucket(t *testing.T) {
 	}{
 		{"a 1080 movie within", "movie", 1920, 1080, 7.9e6, ""},
 		{"a 1080 movie over", "movie", 1920, 800, 9.4e6,
-			"OVER_BITRATE_CAP The video runs at 9.4 Mbit/s, above the 8 Mbit/s the transcoder allows for a 1080 movie. [9.4 Mbit/s / 8 Mbit/s]"},
+			"OVER_BITRATE_CAP The video runs at 9.4 Mbit/s, above the 8 Mbit/s the transcoder allows for a 1080p movie. [9.4 Mbit/s / 8 Mbit/s]"},
 		{"a 2160 movie within", "movie", 3840, 2160, 13.9e6, ""},
 		{"a 2160 movie over", "movie", 3840, 2160, 73e6,
-			"OVER_BITRATE_CAP The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie. [73 Mbit/s / 14 Mbit/s]"},
+			"OVER_BITRATE_CAP The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160p movie. [73 Mbit/s / 14 Mbit/s]"},
 		{"a scope picture is 2160 by its width", "movie", 3840, 1600, 20e6,
-			"OVER_BITRATE_CAP The video runs at 20 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie. [20 Mbit/s / 14 Mbit/s]"},
+			"OVER_BITRATE_CAP The video runs at 20 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160p movie. [20 Mbit/s / 14 Mbit/s]"},
 		{"a 2560 wide picture is 1080", "movie", 2560, 1440, 12e6,
-			"OVER_BITRATE_CAP The video runs at 12 Mbit/s, above the 8 Mbit/s the transcoder allows for a 1080 movie. [12 Mbit/s / 8 Mbit/s]"},
+			"OVER_BITRATE_CAP The video runs at 12 Mbit/s, above the 8 Mbit/s the transcoder allows for a 1080p movie. [12 Mbit/s / 8 Mbit/s]"},
 		{"a 1080 episode within", "episode", 1920, 1080, 5.9e6, ""},
 		{"a 1080 episode over", "episode", 1920, 1080, 7e6,
-			"OVER_BITRATE_CAP The video runs at 7 Mbit/s, above the 6 Mbit/s the transcoder allows for a 1080 episode. [7 Mbit/s / 6 Mbit/s]"},
+			"OVER_BITRATE_CAP The video runs at 7 Mbit/s, above the 6 Mbit/s the transcoder allows for a 1080p episode. [7 Mbit/s / 6 Mbit/s]"},
 		{"a 2160 episode within", "episode", 3840, 2160, 7.9e6, ""},
 		{"a 2160 episode over", "episode", 3840, 2160, 12.5e6,
-			"OVER_BITRATE_CAP The video runs at 12.5 Mbit/s, above the 8 Mbit/s the transcoder allows for a 2160 episode. [12.5 Mbit/s / 8 Mbit/s]"},
+			"OVER_BITRATE_CAP The video runs at 12.5 Mbit/s, above the 8 Mbit/s the transcoder allows for a 2160p episode. [12.5 Mbit/s / 8 Mbit/s]"},
 		{"a copy just above the cap, within the tolerance", "movie", 3840, 2160, 14.3e6, ""},
 		{"a copy above the tolerance", "movie", 3840, 2160, 14.5e6,
-			"OVER_BITRATE_CAP The video runs at 14.5 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie. [14.5 Mbit/s / 14 Mbit/s]"},
+			"OVER_BITRATE_CAP The video runs at 14.5 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160p movie. [14.5 Mbit/s / 14 Mbit/s]"},
 	} {
 		got := found(evaluate(packagedTitle(tc.kind), recordsOf(t, pkgJSON(tc.width, tc.height, tc.rate, "copy"),
 			srcJSON(tc.width, tc.height)), rs))
@@ -183,7 +186,7 @@ func TestTheBucketIsTheSources(t *testing.T) {
 	cover := `{"streams": [{"index": 0, "type": "video", "width": 1920, "height": 1080},
 		{"index": 1, "type": "video", "width": 4000, "height": 4000, "dispositions": {"attachedPic": true}}], "essence": {}}`
 	if got := found(evaluate(packagedTitle("movie"), recordsOf(t, pkgJSON(1920, 1080, 12e6, "copy"), cover), rs)); got !=
-		"OVER_BITRATE_CAP The video runs at 12 Mbit/s, above the 8 Mbit/s the transcoder allows for a 1080 movie. [12 Mbit/s / 8 Mbit/s]" {
+		"OVER_BITRATE_CAP The video runs at 12 Mbit/s, above the 8 Mbit/s the transcoder allows for a 1080p movie. [12 Mbit/s / 8 Mbit/s]" {
 		t.Errorf("a 1080 source with large cover art: %q, want it in the 1080 bucket", got)
 	}
 	wide := `{"streams": [{"index": 0, "type": "video", "width": 1920, "height": 1080},
@@ -236,14 +239,14 @@ func TestTheVideoIsMeasuredByTheMostReliableRecord(t *testing.T) {
 		"essence": {}}`
 	src := `{"streams": [{"index": 0, "type": "video", "width": 3840, "height": 2160, "bitrate": 30000000}], "essence": {}}`
 	got := found(evaluate(packagedTitle("movie"), recordsOf(t, pkg, src), rs))
-	if want := "OVER_BITRATE_CAP The video runs at 30 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie. " +
+	if want := "OVER_BITRATE_CAP The video runs at 30 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160p movie. " +
 		"[30 Mbit/s / 14 Mbit/s]"; got != want {
 		t.Errorf("a copy measured by its source's stream:\n got  %q\n want %q", got, want)
 	}
 	got = found(evaluate(packagedTitle("movie"), recordsOf(t, pkg, `{"streams": [], "essence": {}}`), rs))
 	// 31.5 GB over two hours is 35 Mbit/s, less 0.832 of audio
-	if want := "OVER_BITRATE_CAP The video runs at about 34.2 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie. " +
-		"[34.2 Mbit/s / 14 Mbit/s]"; got != want {
+	if want := "OVER_BITRATE_CAP The video runs at about 34.2 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160p movie. " +
+		"[about 34.2 Mbit/s / 14 Mbit/s]"; got != want {
 		t.Errorf("a package measured by its size:\n got  %q\n want %q", got, want)
 	}
 	if got := found(evaluate(packagedTitle("movie"), records{}, rs)); got != "" {
@@ -267,8 +270,8 @@ func TestTheFileSizeCap(t *testing.T) {
 		want    string
 	}{
 		{"a copied movie of 20 GiB", "movie", big, "copy", transcoderReport,
-			"OVER_SIZE_CAP The original is larger than the 16.1 GB the transcoder allows for a movie, and the package keeps " +
-				"its video as it is. [- / 16.1 GB]"},
+			"OVER_SIZE_CAP The original is larger than the 16.1 GB the transcoder allows for a movie, and the package copied " +
+				"its video. [- / 16.1 GB]"},
 		{"an encoded movie of 20 GiB", "movie", big, "hevc_nvenc", transcoderReport, ""},
 		{"a copied movie of 10 GiB", "movie", small, "copy", transcoderReport, ""},
 		{"a copied episode of 20 GiB", "episode", big, "copy", transcoderReport, ""},
@@ -314,10 +317,10 @@ func TestSurroundLostVersusKept(t *testing.T) {
 		want     string
 	}{
 		{"a 5.1 source, a stereo package", 6, 2,
-			"NO_SURROUND The package has 2 audio channels, and the source has 6. The 5.1 E-AC-3 track the packager makes is missing. " +
+			"NO_SURROUND The package has 2 audio channels, and the original has 6. The 5.1 E-AC-3 track the packager makes is missing. " +
 				"[2 channels / 5.1 E-AC-3]"},
 		{"a 7.1 source, a stereo package", 8, 2,
-			"NO_SURROUND The package has 2 audio channels, and the source has 8. The 5.1 E-AC-3 track the packager makes is missing. " +
+			"NO_SURROUND The package has 2 audio channels, and the original has 8. The 5.1 E-AC-3 track the packager makes is missing. " +
 				"[2 channels / 5.1 E-AC-3]"},
 		{"a 5.1 source, its 5.1 kept", 6, 6, ""},
 		{"a 7.1 source, a 5.1 kept", 8, 6, ""},
@@ -351,14 +354,14 @@ func TestImageSubtitles(t *testing.T) {
 	rs := stateOf(t, transcoderReport, packagerReport)
 	for _, tc := range []struct{ name, subs, want string }{
 		{"only the english pgs carried", `{"format": "pgs", "language": "eng"}, {"format": "webvtt", "language": "spa"}`,
-			"IMAGE_SUBTITLES_MISSING The source’s PGS subtitles in German, and its VobSub subtitles in French, are missing from " +
+			"IMAGE_SUBTITLES_MISSING The original’s PGS subtitles in German, and its VobSub subtitles in French, are missing from " +
 				"the package. The packager keeps PGS and VobSub subtitles. [German, French / PGS, VobSub]"},
 		{"every image subtitle carried", `{"format": "pgs", "language": "eng"}, {"format": "pgs", "language": "ger"},
 			{"format": "vobsub", "language": "fre"}`, ""},
 		{"a subtitle by its source stream", `{"format": "pgs", "language": "eng"}, {"format": "pgs", "language": "und", "sourceStreamIndex": 3},
 			{"format": "vobsub", "language": "fre"}`, ""},
 		{"a text track is no image subtitle", `{"format": "webvtt", "language": "eng"}, {"format": "webvtt", "language": "ger"},
-			{"format": "webvtt", "language": "fre"}`, "IMAGE_SUBTITLES_MISSING The source’s PGS subtitles in German and English, and " +
+			{"format": "webvtt", "language": "fre"}`, "IMAGE_SUBTITLES_MISSING The original’s PGS subtitles in German and English, and " +
 			"its VobSub subtitles in French, are missing from the package. The packager keeps PGS and VobSub subtitles. " +
 			"[German, English, French / PGS, VobSub]"},
 	} {
@@ -368,7 +371,7 @@ func TestImageSubtitles(t *testing.T) {
 	}
 	pgsOnly := stateOf(t, transcoderReport, strings.Replace(packagerReport, `["pgs", "vobsub"]`, `["pgs"]`, 1))
 	got := found(evaluate(packagedTitle("movie"), recordsOf(t, pkg(`{"format": "pgs", "language": "eng"}`), src), pgsOnly))
-	if want := "IMAGE_SUBTITLES_MISSING The source’s PGS subtitles in German are missing from the package. The packager keeps " +
+	if want := "IMAGE_SUBTITLES_MISSING The original’s PGS subtitles in German are missing from the package. The packager keeps " +
 		"PGS subtitles. [German / PGS]"; got != want {
 		t.Errorf("a packager that carries pgs alone:\n got  %q\n want %q", got, want)
 	}
@@ -380,6 +383,7 @@ func TestImageSubtitles(t *testing.T) {
 // encoded.
 func TestATitleWithoutAPackage(t *testing.T) {
 	rs := stateOf(t, transcoderReport, packagerReport)
+	rs.retries = true
 	base := func() title {
 		p := "/library/arrivals/a-film.mkv"
 		return title{ID: "a1", Kind: "movie", Path: &p, Original: library.Original{State: library.OriginalPresent}}
@@ -391,6 +395,13 @@ func TestATitleWithoutAPackage(t *testing.T) {
 	retried.Package = step{Status: strp(processing.StatusFailed), Error: strp("shaka exited 2"), NextRetryAt: &at}
 	skipped := base()
 	skipped.Package = step{Status: strp(processing.StatusSkipped), Error: strp("no video stream")}
+	skippedWhy := base()
+	skippedWhy.Package = step{Status: strp(processing.StatusSkipped), Error: strp("handoff v0 has no keyframe")}
+	refused := base()
+	refused.Transcode = step{Status: strp(processing.StatusFailed), Error: strp("Dolby Vision profile 8.0 needs a tone-mapping encode; kept the original")}
+	reshaped := base()
+	reshaped.Transcode = step{Status: strp(processing.StatusFailed),
+		Error: strp("Dolby Vision profile 5: 3 of the first 10 decoded frames carry the RPU that libplacebo reshapes them with; kept the original")}
 	disc := base()
 	*disc.Path = "/library/arrivals/a-film.iso"
 	pending := base()
@@ -413,15 +424,27 @@ func TestATitleWithoutAPackage(t *testing.T) {
 		{"its package running", running, ""},
 		{"taken in", taken, "NOT_PACKAGED It was taken in without a package and plays from its original."},
 		{"done, and no package", doneNoVersion, "NOT_PACKAGED Its transcode and packaging finished, and no package is recorded."},
-		{"its transcode failed", failed, "PACKAGING_FAILED The transcoder failed: ffmpeg exited 1."},
-		{"its package failed, retried", retried, "PACKAGING_FAILED The packager failed: shaka exited 2. A retry is scheduled."},
-		{"its package skipped", skipped, "PACKAGING_FAILED The packager skipped it: no video stream."},
+		{"its transcode failed", failed, "PACKAGING_FAILED The transcoder failed. {ffmpeg exited 1}"},
+		{"its transcode refused, a profile it needs to tone-map", refused,
+			"PACKAGING_FAILED The transcoder left it as it is: Dolby Vision profile 8.0 needs a tone-mapping encode."},
+		{"its transcode refused, for frames without their metadata", reshaped, "PACKAGING_FAILED The transcoder left it as it is. " +
+			"{Dolby Vision profile 5: 3 of the first 10 decoded frames carry the RPU that libplacebo reshapes them with}"},
+		{"its package failed, retried", retried, "PACKAGING_FAILED The packager failed, and tries again by itself. {shaka exited 2}"},
+		{"its package skipped", skipped, "PACKAGING_FAILED The packager skipped it: the original has no video."},
+		{"its package skipped, for a reason the words don’t know", skippedWhy, "PACKAGING_FAILED The packager skipped it. " +
+			"{handoff v0 has no keyframe}"},
 		{"a disc image", disc, "PACKAGING_FAILED " + discImageText},
 		{"no original and no package", retired, ""},
 	} {
 		if got := found(evaluate(tc.t, records{}, rs)); got != tc.want {
 			t.Errorf("%s:\n got  %q\n want %q", tc.name, got, tc.want)
 		}
+	}
+	// a retry is said only while one is really scheduled: not with no sweep
+	// to send it
+	rs.retries = false
+	if got := found(evaluate(retried, records{}, rs)); got != "PACKAGING_FAILED The packager failed. {shaka exited 2}" {
+		t.Errorf("a retry scheduled and no sweep: %q", got)
 	}
 }
 
@@ -527,7 +550,7 @@ func i64(n int64) *int64 { return &n }
 
 // h264Found is what an H.264 package is found to be where every video is to
 // be HEVC.
-const h264Found = "The video is H.264, and the transcoder makes every video HEVC. [H.264 (avc1.640028) / HEVC]"
+const h264Found = "The video is H.264, and the transcoder makes every video HEVC. [H.264 / HEVC] {avc1.640028}"
 
 func mustTime(t *testing.T, s string) time.Time {
 	t.Helper()

@@ -93,12 +93,15 @@ type Service struct {
 	// changes (under mu).
 	mu   sync.Mutex
 	said string
+	// retries says the sweep that retries a failed step runs.
+	retries bool
 }
 
 // New is the compliance check of st's catalog, reading the library's records
 // where cfg puts them.
 func New(st *store.Store, cfg config.Config) *Service {
-	return &Service{st: st, pool: st.Pool(), paths: library.PathsOf(cfg), now: time.Now, pokes: make(chan struct{}, 1)}
+	return &Service{st: st, pool: st.Pool(), paths: library.PathsOf(cfg), now: time.Now, pokes: make(chan struct{}, 1),
+		retries: cfg.RetryInterval > 0}
 }
 
 var _ graph.Compliance = (*Service)(nil)

@@ -1329,12 +1329,16 @@ enum ComplianceKind {
   EPISODE
 }
 
-# One rule a worker reported: its key in the report ("caps.movie2160Mbps"),
-# what it is, and its value written out ("14 Mbit/s", "off").
+# One rule a worker reported, a row of the rules panel: its key in the report
+# ("caps.movie2160Mbps"; of a row that says several, the first it gives), what
+# it is ("Video bit rate, 2160p movies"), its value in words ("at most
+# 14 Mbit/s"), and the configuration as reported where the value says it in
+# words ("source:hevc"; null where the value is it).
 type RuleSetting {
   key: String!
   label: String!
   value: String!
+  detail: String
 }
 
 # What a worker last reported of the rules it runs with: its version (its
@@ -1354,21 +1358,25 @@ type PipelineRules {
 }
 
 # A rule a title breaks: the reason, in a sentence ("The video runs at
-# 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie."),
+# 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160p movie."),
 # what was measured and the limit the worker allows (null where a rule has
-# none, or the row's columns show it).
+# none, or the row's columns show it), and what a tool said of it, an exit
+# code or a codec id ("ffmpeg exited 1", "avc1.640028"), never in the text
+# (null for nothing).
 type ComplianceFinding {
   rule: ComplianceRule!
   text: String!
   measured: String
   limit: String
+  detail: String
 }
 
 # A title that breaks a rule. originalBytes is the size of its original,
 # packageBytes of its package; estimatedBytes what its package is to be at
 # most once it is processed again, null when that cannot be told. queue is
 # where it stands in the re-encode queue (queued, sent, done or failed; null
-# when it was never queued), and queueReason why it waits or failed there.
+# when it was never queued), queueReason why it waits or failed there, and
+# queueDetail that reason's technical part (what a worker said, an event).
 # reworkBlocked says why processing it again cannot help (its original
 # deleted after packaging, no file, a disc image), null when it can.
 # evaluatedAt is when the check found it so (RFC 3339).
@@ -1387,6 +1395,7 @@ type ComplianceRow {
   estimatedBytes: Float
   queue: String
   queueReason: String
+  queueDetail: String
   reworkBlocked: String
   evaluatedAt: String!
 }

@@ -225,7 +225,7 @@ A Disc Image: PACKAGING_FAILED`
 		t.Errorf("not evaluated, with both workers' rules: %q", rep.NotEvaluated)
 	}
 	top := rep.Rows[0]
-	if spaced(top.Findings[0].Text) != "The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie." ||
+	if spaced(top.Findings[0].Text) != "The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160p movie." ||
 		*top.PackageBytes != 59e9 || *top.OriginalBytes != 63e9 || top.Kind != "movie" || top.Queue != nil || top.ReworkBlocked != nil {
 		t.Errorf("the 4K remux: %+v", top)
 	}
@@ -240,7 +240,8 @@ A Disc Image: PACKAGING_FAILED`
 		*disc.ReworkBlocked != "Its file is a disc image, which the transcoder doesn’t encode." || disc.EstimatedBytes != nil {
 		t.Errorf("the disc image: %+v", disc)
 	}
-	if failed := rep.Rows[4]; failed.Findings[0].Text != "The transcoder failed: ffmpeg exited 1." {
+	if failed := rep.Rows[4]; failed.Findings[0].Text != "The transcoder failed." || failed.Findings[0].Detail == nil ||
+		*failed.Findings[0].Detail != "ffmpeg exited 1" {
 		t.Errorf("the failed transcode: %+v", failed.Findings)
 	}
 	summary := map[string]graph.ComplianceSummary{}
@@ -396,6 +397,9 @@ func TestTheQueuesReasonsInWords(t *testing.T) {
 		t.Helper()
 		for _, r := range reportOf(t, s, graph.ComplianceFilter{Search: "remux"}, 100, "").Rows {
 			if r.Queue != nil && r.QueueReason != nil {
+				if r.QueueDetail != nil {
+					return *r.Queue + ": " + *r.QueueReason + " {" + *r.QueueDetail + "}"
+				}
 				return *r.Queue + ": " + *r.QueueReason
 			}
 			if r.Queue != nil {
@@ -409,7 +413,8 @@ func TestTheQueuesReasonsInWords(t *testing.T) {
 	if _, err := q.DrainQueue(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := reason(); got != "queued: The transcoder is working on it." {
+	if got := reason(); !strings.HasPrefix(got, "queued: The transcoder is working on it. {its worker last reported at ") ||
+		!strings.HasSuffix(got, "; timeout 6h}") {
 		t.Errorf("a title waiting while its transcode runs: %q", got)
 	}
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemprocessingsteps SET status = 'done' WHERE item_id = $1 AND step = 'transcode'`, uuid(1))
@@ -424,7 +429,7 @@ func TestTheQueuesReasonsInWords(t *testing.T) {
 	if _, err := q.DrainQueue(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := reason(); got != "failed: The transcoder failed: ffmpeg exited 1." {
+	if got := reason(); got != "failed: The transcoder failed. {ffmpeg exited 1}" {
 		t.Errorf("a title whose transcode failed: %q", got)
 	}
 }
@@ -462,8 +467,8 @@ func TestWhatARequestDidInWords(t *testing.T) {
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET year = 2004 WHERE id = $1`, uuid(7))
 	// the film whose transcode failed, the disc image and a title there is not
 	msg, skips := say(uuid(6), uuid(7), uuid(99))
-	if msg != "1 title queued to be processed again. 2 titles weren’t queued: 1 is a disc image and 1 is no longer in the catalog." ||
-		skips != uuid(99)+": it’s no longer in the catalog\n"+
+	if msg != "1 title queued to be processed again. 2 titles weren’t queued: 1 is a disc image and 1 is not in the catalog." ||
+		skips != uuid(99)+": it is not in the catalog\n"+
 			"A Disc Image (2004): its file is a disc image, which the transcoder doesn’t encode" {
 		t.Errorf("one queued, two skipped: %q\n%s", msg, skips)
 	}
@@ -485,16 +490,16 @@ func TestWhatARequestDidInWords(t *testing.T) {
 	storetest.AddItem(t, st, uuid(902), "season", "Season 1", uuid(900))
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET seasonnumber = 1 WHERE id = $1`, uuid(902))
 	msg, skips = say(uuid(5), uuid(2), uuid(4), uuid(3), uuid(901), uuid(902), uuid(1))
-	if want := "1 title queued to be processed again. 6 titles weren’t queued: the original of 1 was deleted from disk " +
-		"after packaging, the original of 1 is being deleted from disk after packaging, 2 have no file, 1 is a series without " +
+	if want := "1 title queued to be processed again. 6 titles weren’t queued: the original of 1 was deleted " +
+		"after packaging, the original of 1 is being deleted after packaging, 2 have no file, 1 is a series without " +
 		"episodes and 1 isn’t a movie, an episode or a series."; msg != want {
 		t.Errorf("one queued, six skipped:\n%q\nwant\n%q", msg, want)
 	}
 	if want := `An Empty Show: the series has no episodes
 A Coastal Show · S01: it isn’t a movie, an episode or a series
 A Film Never Packaged: it has no file
-A Film Within Its Caps: its original was deleted from disk after packaging
-A Film That Lost Its Tracks: its original is being deleted from disk after packaging
+A Film Within Its Caps: its original was deleted after packaging
+A Film That Lost Its Tracks: its original is being deleted after packaging
 A Coastal Show · S01E02 · An Episode Over Its Cap: it has no file`; skips != want {
 		t.Errorf("the titles skipped:\n%s\nwant:\n%s", skips, want)
 	}
@@ -663,7 +668,8 @@ func TestTheRulesHashMakesRowsStale(t *testing.T) {
 	for _, r := range rep.Rules.Transcoder.Rules {
 		keys = append(keys, r.Key+"="+r.Value)
 	}
-	if got := spaced(strings.Join(keys, " ")); !strings.Contains(got, "caps.movie2160Mbps=80 Mbit/s") || !strings.Contains(got, "encoder.preset=p5") {
+	if got := spaced(strings.Join(keys, " ")); !strings.Contains(got, "caps.movie2160Mbps=at most 80 Mbit/s") ||
+		!strings.Contains(got, "encoder.preset=p5") {
 		t.Errorf("the transcoder's rules in the report: %s", got)
 	}
 }
@@ -686,7 +692,7 @@ func TestUnreportedRulesAreNotEvaluated(t *testing.T) {
 	if got := rowsOf(rep); got != "A Film Never Packaged: NOT_PACKAGED" {
 		t.Errorf("no rules reported:\n%s", got)
 	}
-	want := []string{"The transcoder hasn’t reported its limits, so bit rates, file sizes and the video format can’t be checked.",
+	want := []string{"The transcoder hasn’t reported its rules, so bit rates, file sizes and the video format can’t be checked.",
 		"The packager hasn’t reported what it keeps, so surround and image subtitles can’t be checked."}
 	if strings.Join(rep.NotEvaluated, "\n") != strings.Join(want, "\n") || rep.Rules.Transcoder != nil || rep.Rules.Packager != nil {
 		t.Errorf("not evaluated:\n%s\nrules %+v", strings.Join(rep.NotEvaluated, "\n"), rep.Rules)
@@ -862,23 +868,30 @@ func TestTheRulesAWorkerReports(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got []string
-	for _, r := range rules.Transcoder.Rules {
-		got = append(got, r.Key+" | "+r.Label+" | "+spaced(r.Value))
+	row := func(r graph.RuleSetting) string {
+		s := r.Key + " | " + r.Label + " | " + spaced(r.Value)
+		if r.Detail != nil {
+			s += " {" + *r.Detail + "}"
+		}
+		return s
 	}
-	want := `caps.movie1080Mbps | Video bit rate allowed for a 1080 movie | 8 Mbit/s
-caps.movie2160Mbps | Video bit rate allowed for a 2160 movie | 14 Mbit/s
-caps.movieMaxGiB | File size allowed for a movie | 16.1 GB
-caps.episode1080Mbps | Video bit rate allowed for a 1080 episode | 6 Mbit/s
-caps.episode2160Mbps | Video bit rate allowed for a 2160 episode | 8 Mbit/s
-bucket2160.minHeight | 2160 from a height of | 2,000 lines
-bucket2160.minWidth | 2160 from a width of | 3,200 pixels
-encoder.codec | HEVC encoder | hevc_nvenc
+	for _, r := range rules.Transcoder.Rules {
+		got = append(got, row(r))
+	}
+	want := `caps.movie1080Mbps | Video bit rate, 1080p movies | at most 8 Mbit/s
+caps.movie2160Mbps | Video bit rate, 2160p movies | at most 14 Mbit/s
+caps.movieMaxGiB | File size, movies | at most 16.1 GB (15 GiB)
+caps.episode1080Mbps | Video bit rate, 1080p episodes | at most 6 Mbit/s
+caps.episode2160Mbps | Video bit rate, 2160p episodes | at most 8 Mbit/s
+bucket2160.minHeight | 2160p from a height of | 2,000 pixels
+bucket2160.minWidth | 2160p from a width of | 3,200 pixels
+encoder.codec | Encoder | hevc_nvenc
 encoder.preset | Encoder preset | p5
 encoder.cq | Constant quality | 23
-encoder.maxrate1080Mbps | Encode bit rate for 1080 | as allowed
-encoder.maxrate2160Mbps | Encode bit rate for 2160 | as allowed
-ladder | Renditions | source:hevc
-extraLadder | Renditions of extras | source:hevc`
+encoder.maxrate1080Mbps | Encode bit rate, 1080p | up to the caps above
+encoder.maxrate2160Mbps | Encode bit rate, 2160p | up to the caps above
+ladder | Renditions | one, at the original’s size, in HEVC {source:hevc}
+extraLadder | Renditions of extras | one, at the original’s size, in HEVC {source:hevc}`
 	if strings.Join(got, "\n") != want {
 		t.Errorf("the transcoder's rules:\n%s\nwant:\n%s", strings.Join(got, "\n"), want)
 	}
@@ -887,11 +900,12 @@ extraLadder | Renditions of extras | source:hevc`
 	}
 	got = nil
 	for _, r := range rules.Packager.Rules {
-		got = append(got, r.Key+"="+spaced(r.Value))
+		got = append(got, row(r))
 	}
-	if strings.Join(got, " ") != "surroundAudio=E-AC-3 surroundLayout=5.1 surroundBitrate=448 kbit/s stereoBitrate=192 kbit/s "+
-		"imageSubtitles=PGS, VobSub" {
-		t.Errorf("the packager's rules: %v", got)
+	if want := `surroundAudio | Surround track | 5.1 E-AC-3, 448 kbit/s {surroundAudio=eac3, surroundLayout=5.1, surroundBitrate=448k}
+stereoBitrate | Stereo track | 192 kbit/s {stereoBitrate=192k}
+imageSubtitles | Image subtitles kept | PGS, VobSub`; strings.Join(got, "\n") != want {
+		t.Errorf("the packager's rules:\n%s\nwant:\n%s", strings.Join(got, "\n"), want)
 	}
 
 	before := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_workerrules WHERE rules::text LIKE '%"movie1080Mbps": 8%'`)

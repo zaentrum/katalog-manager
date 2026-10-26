@@ -289,19 +289,26 @@ type workerReport struct {
 type rulesState struct {
 	transcoder, packager *workerReport
 	v2                   bool
+	// retries says the sweep that retries a failed step runs (the
+	// service's KATALOG_RETRY_INTERVAL): a step's next retry is one.
+	retries bool
 }
 
 // version is the check's own: a check that reads its findings otherwise, or
 // writes them in other words, gets a new one, and every title is checked
 // again.
-const version = "compliance/2"
+const version = "compliance/3"
 
 // hash is the hash a title checked against s is kept under: both workers'
-// rules, the layout and the check's version.
+// rules, the layout, whether failed steps are retried, and the check's
+// version.
 func (s rulesState) hash() string {
-	parts := []string{version, "legacy", "-", "-"}
+	parts := []string{version, "legacy", "-", "-", "no retries"}
 	if s.v2 {
 		parts[1] = "v2"
+	}
+	if s.retries {
+		parts[4] = "retries"
 	}
 	if s.transcoder != nil {
 		parts[2] = s.transcoder.hash
@@ -371,72 +378,240 @@ func pipelineRulesOf(st rulesState) graph.PipelineRules {
 	return out
 }
 
-// A rule's label and how its value is written, by its key in a report: in
-// the words the check's findings use, sizes and bit rates as the clients
-// write them.
+// A row of the rules panel: the key of the report it is listed by, its
+// label, the other keys of the report it says too (with), and its value in
+// words, with the configuration as reported for its detail where the words
+// aren't it (nil where they are). The value gets every value of the report
+// by its key (got).
 type setting struct {
 	key, label string
-	unit       func(v any) string
+	with       []string
+	words      func(got func(key string) (any, bool)) (string, *string)
+	// unlessNull leaves the row out when its key is reported as null: a
+	// knob of another encoder than the one reported (NVENC's cq on
+	// libx265).
+	unlessNull bool
 }
 
-// allowedRate writes a bit rate a worker allows, given in Mbit/s; 0 allows
-// any.
+// one is a row of one key whose value is unit's words of it, no detail.
+func one(key, label string, unit func(v any) string) setting {
+	return setting{key: key, label: label, words: func(got func(string) (any, bool)) (string, *string) {
+		v, _ := got(key)
+		return unit(v), nil
+	}}
+}
+
+// unlessNull is s, left out when its key is reported as null.
+func unlessNull(s setting) setting {
+	s.unlessNull = true
+	return s
+}
+
+// allowedRate writes a bit rate a worker allows, given in Mbit/s, as a
+// bound: "at most 8 Mbit/s"; 0 allows any.
 func allowedRate(v any) string {
 	if f, ok := v.(float64); ok {
 		if f == 0 {
 			return "any"
 		}
-		return rateText(f * 1e6)
+		return "at most " + rateText(f*1e6)
 	}
 	return plain(v)
 }
 
-// allowedSize writes a file size a worker allows, given in GiB; 0 allows any.
+// allowedSize writes a file size the transcoder allows, given in GiB, as a
+// bound in the clients' decimal units with the GiB as set: "at most 16.1 GB
+// (15 GiB)"; 0 allows any.
 func allowedSize(v any) string {
 	if f, ok := v.(float64); ok {
 		if f == 0 {
 			return "any"
 		}
-		return sizeText(f * gib)
+		return "at most " + sizeText(f*gib) + " (" + number(f) + nbsp + "GiB)"
 	}
 	return plain(v)
 }
 
-func countOf(unit string) func(v any) string {
-	return func(v any) string {
-		if f, ok := v.(float64); ok && f == float64(int(f)) {
-			return countText(int(f)) + " " + unit
-		}
-		return plain(v)
+// pixels writes a count of pixels: "2,000 pixels".
+func pixels(v any) string {
+	if f, ok := v.(float64); ok && f == float64(int(f)) {
+		return countText(int(f)) + nbsp + plural(int(f), "pixel", "pixels")
 	}
+	return plain(v)
 }
 
-// encodeRate writes the bit rate an encode is made at: as allowed, unless
-// the transcoder sets one of its own.
+// encodeRate writes the bit rate an encode is made at: up to the caps the
+// panel lists above it, unless the transcoder sets one of its own.
 func encodeRate(v any) string {
 	if v == nil {
-		return "as allowed"
+		return "up to the caps above"
 	}
 	return allowedRate(v)
 }
 
-// ladder writes a ladder as the transcoder reports it, a spec.
-func ladder(v any) string {
-	if s, ok := v.(string); ok && strings.TrimSpace(s) == "" {
-		return "source"
-	}
-	return plain(v)
+// renditions is a row of a ladder in words, its spec the detail: "one, at
+// the original’s size, in HEVC" of source:hevc; a spec the words can't read
+// is said as it is. On a CPU encoder, a rendition at the original's size
+// that leaves its codec to the default keeps an H.264 original as it is
+// when browsers can play it (the transcoder's CPU rule).
+func renditions(key, label string) setting {
+	return setting{key: key, label: label, words: func(got func(string) (any, bool)) (string, *string) {
+		v, _ := got(key)
+		spec, ok := v.(string)
+		if !ok {
+			return plain(v), nil
+		}
+		if strings.TrimSpace(spec) == "" {
+			spec = "source"
+		}
+		codec, _ := got("encoder.codec")
+		cpu := false
+		if c, ok := codec.(string); ok && strings.EqualFold(strings.TrimSpace(c), "libx265") {
+			cpu = true
+		}
+		if words, ok := ladderWords(spec, cpu); ok {
+			return words, strp(spec)
+		}
+		return spec, nil
+	}}
 }
 
-// surroundCodec writes the packager's surround companion: its codec, or none.
-func surroundCodec(v any) string {
-	if s, ok := v.(string); ok {
-		if strings.EqualFold(strings.TrimSpace(s), "off") || strings.TrimSpace(s) == "" {
-			return "none"
+// rung is a rendition a ladder plans: at the original's size or a height,
+// in a codec (named, or the default), at a maxrate of its own (0: none).
+type rung struct {
+	size, codec   string
+	named         bool
+	maxrate       float64
+	originalsSize bool
+}
+
+// ladderWords says a ladder spec (<source|NNNp>[:<hevc|h264>][:<maxrate>],
+// comma-separated) in words; ok false for one it can't read.
+func ladderWords(spec string, cpu bool) (string, bool) {
+	var rungs []rung
+	for _, tok := range strings.Split(spec, ",") {
+		parts := strings.Split(strings.TrimSpace(tok), ":")
+		name := strings.ToLower(strings.TrimSpace(parts[0]))
+		r := rung{}
+		switch {
+		case name == "source":
+			r.size, r.codec, r.originalsSize = "at the original’s size", "HEVC", true
+		case heightRE.MatchString(name):
+			r.size, r.codec = name, "H.264"
+		default:
+			return "", false
 		}
-		return audioCodecName(s)
+		for _, p := range parts[1:] {
+			switch p = strings.ToLower(strings.TrimSpace(p)); {
+			case p == "hevc":
+				r.codec, r.named = "HEVC", true
+			case p == "h264":
+				r.codec, r.named = "H.264", true
+			default:
+				bps, ok := parseBitrate(p)
+				if !ok || bps <= 0 {
+					return "", false
+				}
+				r.maxrate = bps
+			}
+		}
+		rungs = append(rungs, r)
 	}
-	return plain(v)
+	if len(rungs) == 0 {
+		return "", false
+	}
+	codecOf := func(r rung) string {
+		if cpu && r.originalsSize && !r.named && r.codec == "HEVC" {
+			return "HEVC (or H.264 as it is when browsers can play it)"
+		}
+		return r.codec
+	}
+	same, sizes := true, make([]string, 0, len(rungs))
+	for _, r := range rungs {
+		sizes = append(sizes, r.size)
+		if codecOf(r) != codecOf(rungs[0]) || r.maxrate > 0 {
+			same = false
+		}
+	}
+	count := countWord(len(rungs))
+	if same {
+		return count + ", " + joinAnd(sizes) + ", in " + codecOf(rungs[0]), true
+	}
+	var each []string
+	for _, r := range rungs {
+		w := r.size + " in " + codecOf(r)
+		if r.maxrate > 0 {
+			w += " (at most " + rateText(r.maxrate) + ")"
+		}
+		each = append(each, w)
+	}
+	return count + ": " + joinAnd(each), true
+}
+
+// heightRE is a rung's height: "720p".
+var heightRE = regexp.MustCompile(`^[0-9]{3,4}p$`)
+
+// countWord is a count in words to ten: "one", "two"; above, in digits.
+func countWord(n int) string {
+	if n >= 1 && n <= 10 {
+		return []string{"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"}[n-1]
+	}
+	return countText(n)
+}
+
+// surroundTrackRow is the packager's surround track in words: "5.1 E-AC-3,
+// 448 kbit/s" (its layout, its codec, the bit rate it's encoded at), none
+// when it makes none; the report's values its detail.
+func surroundTrackRow(got func(string) (any, bool)) (string, *string) {
+	codec, _ := got("surroundAudio")
+	c, ok := codec.(string)
+	if !ok {
+		return plain(codec), nil
+	}
+	detail := rawOf(got, "surroundAudio", "surroundLayout", "surroundBitrate")
+	if strings.EqualFold(strings.TrimSpace(c), "off") || strings.TrimSpace(c) == "" {
+		return "none", detail
+	}
+	words := audioCodecName(c)
+	if layout, ok := got("surroundLayout"); ok {
+		if l, ok := layout.(string); ok && strings.TrimSpace(l) != "" {
+			words = strings.TrimSpace(l) + " " + words
+		}
+	}
+	if rate, ok := got("surroundBitrate"); ok {
+		words += ", " + bitrate(rate)
+	}
+	return words, detail
+}
+
+// stereoTrackRow is the packager's stereo track in words: its codec where it
+// reports it, and its bit rate ("AAC, 192 kbit/s"); the report's values its
+// detail.
+func stereoTrackRow(got func(string) (any, bool)) (string, *string) {
+	var words []string
+	if codec, ok := got("stereoAudio"); ok {
+		if c, ok := codec.(string); ok && strings.TrimSpace(c) != "" {
+			words = append(words, audioCodecName(c))
+		}
+	}
+	if rate, ok := got("stereoBitrate"); ok {
+		words = append(words, bitrate(rate))
+	}
+	return strings.Join(words, ", "), rawOf(got, "stereoAudio", "stereoBitrate")
+}
+
+// rawOf is the values of keys as the report gives them, "key=value" each.
+func rawOf(got func(string) (any, bool), keys ...string) *string {
+	var parts []string
+	for _, k := range keys {
+		if v, ok := got(k); ok {
+			parts = append(parts, k+"="+plain(v))
+		}
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return strp(strings.Join(parts, ", "))
 }
 
 // bitrate writes a bit rate the packager writes as 448k.
@@ -467,37 +642,36 @@ func forms(v any) string {
 	return strings.Join(names, ", ")
 }
 
-// settings are the rules a report holds that the console names, in the
-// order it lists them; any other key follows, by name.
+// settings are the rows of the rules panel, in the order it lists them; any
+// other key a report holds follows, by name, as it is.
 var settings = []setting{
-	{"caps.movie1080Mbps", "Video bit rate allowed for a 1080 movie", allowedRate},
-	{"caps.movie2160Mbps", "Video bit rate allowed for a 2160 movie", allowedRate},
-	{"caps.movieMaxGiB", "File size allowed for a movie", allowedSize},
-	{"caps.episode1080Mbps", "Video bit rate allowed for a 1080 episode", allowedRate},
-	{"caps.episode2160Mbps", "Video bit rate allowed for a 2160 episode", allowedRate},
-	{"bucket2160.minHeight", "2160 from a height of", countOf("lines")},
-	{"bucket2160.minWidth", "2160 from a width of", countOf("pixels")},
-	{"encoder.codec", "HEVC encoder", plain},
-	{"encoder.preset", "Encoder preset", plain},
-	{"encoder.cq", "Constant quality", plain},
-	{"encoder.crf", "Constant rate factor", plain},
-	{"encoder.maxrate1080Mbps", "Encode bit rate for 1080", encodeRate},
-	{"encoder.maxrate2160Mbps", "Encode bit rate for 2160", encodeRate},
-	{"ladder", "Renditions", ladder},
-	{"extraLadder", "Renditions of extras", ladder},
-	{"surroundAudio", "Surround track", surroundCodec},
-	{"surroundLayout", "Surround layout", plain},
-	{"surroundBitrate", "Surround bit rate", bitrate},
-	{"stereoBitrate", "Stereo bit rate", bitrate},
-	{"imageSubtitles", "Image subtitles kept", forms},
+	one("caps.movie1080Mbps", "Video bit rate, 1080p movies", allowedRate),
+	one("caps.movie2160Mbps", "Video bit rate, 2160p movies", allowedRate),
+	one("caps.movieMaxGiB", "File size, movies", allowedSize),
+	one("caps.episode1080Mbps", "Video bit rate, 1080p episodes", allowedRate),
+	one("caps.episode2160Mbps", "Video bit rate, 2160p episodes", allowedRate),
+	one("bucket2160.minHeight", "2160p from a height of", pixels),
+	one("bucket2160.minWidth", "2160p from a width of", pixels),
+	one("encoder.codec", "Encoder", plain),
+	one("encoder.preset", "Encoder preset", plain),
+	unlessNull(one("encoder.cq", "Constant quality", plain)),
+	unlessNull(one("encoder.crf", "Constant rate factor", plain)),
+	one("encoder.maxrate1080Mbps", "Encode bit rate, 1080p", encodeRate),
+	one("encoder.maxrate2160Mbps", "Encode bit rate, 2160p", encodeRate),
+	renditions("ladder", "Renditions"),
+	renditions("extraLadder", "Renditions of extras"),
+	{key: "surroundAudio", label: "Surround track", with: []string{"surroundLayout", "surroundBitrate"}, words: surroundTrackRow},
+	{key: "stereoAudio", label: "Stereo track", with: []string{"stereoBitrate"}, words: stereoTrackRow},
+	one("imageSubtitles", "Image subtitles kept", forms),
 }
 
-// skipped are keys a report carries that the console does not list: the
-// transcoder's ladder in parts, which ladder says.
+// skipped are keys a report carries that the panel does not list: the
+// transcoder's ladder in parts, which its spec says.
 var skipped = map[string]bool{"ladderRungs": true}
 
-// settingsOf writes out each rule of a report's rules raw: one a value,
-// nested objects by their dotted key.
+// settingsOf writes out the rules of a report's rules raw, a row each, in
+// the panel's order: a row is listed when the report gives any of its keys,
+// by the first it gives; nested objects by their dotted key.
 func settingsOf(raw []byte) []graph.RuleSetting {
 	var doc map[string]any
 	if json.Unmarshal(raw, &doc) != nil {
@@ -519,16 +693,38 @@ func settingsOf(raw []byte) []graph.RuleSetting {
 		}
 	}
 	walk("", doc)
+	got := func(key string) (any, bool) {
+		v, ok := leaves[key]
+		return v, ok
+	}
 	out := []graph.RuleSetting{}
+	said := map[string]bool{}
 	for _, s := range settings {
-		if v, ok := leaves[s.key]; ok {
-			out = append(out, graph.RuleSetting{Key: s.key, Label: s.label, Value: s.unit(v)})
-			delete(leaves, s.key)
+		keys := append([]string{s.key}, s.with...)
+		first := ""
+		for _, k := range keys {
+			if _, ok := leaves[k]; ok {
+				first = k
+				break
+			}
+		}
+		if first == "" || s.unlessNull && leaves[s.key] == nil {
+			for _, k := range keys {
+				said[k] = true
+			}
+			continue
+		}
+		value, detail := s.words(got)
+		out = append(out, graph.RuleSetting{Key: first, Label: s.label, Value: value, Detail: detail})
+		for _, k := range keys {
+			said[k] = true
 		}
 	}
 	rest := make([]string, 0, len(leaves))
 	for k := range leaves {
-		rest = append(rest, k)
+		if !said[k] {
+			rest = append(rest, k)
+		}
 	}
 	sort.Strings(rest)
 	for _, k := range rest {

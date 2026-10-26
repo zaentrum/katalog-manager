@@ -238,14 +238,15 @@ func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []st
 			return nil, nil, err
 		}
 		if r.Queue != nil && reason != nil {
-			r.QueueReason = queueWords(*r.Queue, *reason)
+			r.QueueReason, r.QueueDetail = queueWords(*r.Queue, *reason)
 		}
 		var fs []finding
 		if err := json.Unmarshal([]byte(findings), &fs); err != nil {
 			return nil, nil, fmt.Errorf("the findings of %s: %w", r.ItemID, err)
 		}
 		for _, x := range fs {
-			r.Findings = append(r.Findings, graph.ComplianceFinding{Rule: x.Rule, Text: x.Text, Measured: x.Measured, Limit: x.Limit})
+			r.Findings = append(r.Findings, graph.ComplianceFinding{Rule: x.Rule, Text: x.Text, Measured: x.Measured, Limit: x.Limit,
+				Detail: x.Detail})
 		}
 		r.OriginalBytes, r.PackageBytes, r.EstimatedBytes = floatOf(orig), floatOf(pkg), floatOf(est)
 		out = append(out, r)
@@ -515,8 +516,8 @@ func floatOf(v *int64) *float64 {
 // capNames are the transcoder's caps by their key in its report, and what
 // each is the limit for.
 var capNames = []struct{ key, of string }{
-	{"movie1080Mbps", "a 1080 movie"}, {"movie2160Mbps", "a 2160 movie"},
-	{"episode1080Mbps", "a 1080 episode"}, {"episode2160Mbps", "a 2160 episode"},
+	{"movie1080Mbps", "a 1080p movie"}, {"movie2160Mbps", "a 2160p movie"},
+	{"episode1080Mbps", "a 1080p episode"}, {"episode2160Mbps", "a 2160p episode"},
 }
 
 // notEvaluated says of each rule the check does not hold the titles against
@@ -526,13 +527,13 @@ var capNames = []struct{ key, of string }{
 func notEvaluated(rs rulesState, unchecked int32) []string {
 	out := []string{}
 	if rs.transcoder == nil || rs.transcoder.t == nil {
-		out = append(out, "The transcoder hasn’t reported its limits, so bit rates, file sizes and the video format can’t be checked.")
+		out = append(out, "The transcoder hasn’t reported its rules, so bit rates, file sizes and the video format can’t be checked.")
 	} else {
 		t := rs.transcoder.t
 		caps := map[string]*float64{"movie1080Mbps": t.Caps.Movie1080Mbps, "movie2160Mbps": t.Caps.Movie2160Mbps,
 			"episode1080Mbps": t.Caps.Episode1080Mbps, "episode2160Mbps": t.Caps.Episode2160Mbps}
 		if t.Bucket2160.MinHeight == nil || t.Bucket2160.MinWidth == nil {
-			out = append(out, "The transcoder doesn’t report where 2160 begins, so bit rates can’t be checked.")
+			out = append(out, "The transcoder doesn’t report where 2160p begins, so bit rates can’t be checked.")
 		} else {
 			for _, c := range capNames {
 				switch v := caps[c.key]; {
@@ -571,7 +572,7 @@ func notEvaluated(rs rulesState, unchecked int32) []string {
 		}
 	}
 	if !rs.v2 {
-		out = append(out, "The library uses the legacy layout, which keeps no records of sources and packages, "+
+		out = append(out, "The library uses the older layout, which keeps no records of originals and packages, "+
 			"so bit rates, surround and image subtitles can’t be checked.")
 	}
 	switch {

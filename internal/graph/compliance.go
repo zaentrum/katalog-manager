@@ -73,7 +73,12 @@ type ComplianceFilter struct {
 
 // RuleSetting is one rule a worker reported: where it is in the report
 // (key), what it is (label) and its value, written out.
-type RuleSetting struct{ Key, Label, Value string }
+type RuleSetting struct {
+	Key, Label, Value string
+	// Detail is the configuration as the worker reported it, where the
+	// value says it in words ("source:hevc"); nil where the value is it.
+	Detail *string
+}
 
 // WorkerRules is what a worker last reported of the rules it runs with.
 type WorkerRules struct {
@@ -88,10 +93,11 @@ type WorkerRules struct {
 type PipelineRules struct{ Transcoder, Packager *WorkerRules }
 
 // ComplianceFinding is a rule a title breaks: the rule, what the check
-// found, in words, what it measured and the rule's limit.
+// found, in words, what it measured and the rule's limit, and what a tool
+// said of it (Detail), never in the words.
 type ComplianceFinding struct {
-	Rule, Text      string
-	Measured, Limit *string
+	Rule, Text              string
+	Measured, Limit, Detail *string
 }
 
 // ComplianceRow is a title that breaks a rule, as the check last found it.
@@ -105,6 +111,7 @@ type ComplianceRow struct {
 	OriginalBytes, PackageBytes *float64
 	EstimatedBytes              *float64
 	Queue, QueueReason          *string
+	QueueDetail                 *string
 	ReworkBlocked               *string
 	EvaluatedAt                 time.Time
 }
@@ -328,9 +335,10 @@ func (r *workerRulesResolver) Rules() []*ruleSettingResolver {
 
 type ruleSettingResolver struct{ m RuleSetting }
 
-func (r *ruleSettingResolver) Key() string   { return r.m.Key }
-func (r *ruleSettingResolver) Label() string { return r.m.Label }
-func (r *ruleSettingResolver) Value() string { return r.m.Value }
+func (r *ruleSettingResolver) Key() string     { return r.m.Key }
+func (r *ruleSettingResolver) Label() string   { return r.m.Label }
+func (r *ruleSettingResolver) Value() string   { return r.m.Value }
+func (r *ruleSettingResolver) Detail() *string { return r.m.Detail }
 
 type complianceReportResolver struct{ m ComplianceReport }
 
@@ -416,6 +424,7 @@ func (r *complianceRowResolver) EstimatedBytes() *float64 {
 }
 func (r *complianceRowResolver) Queue() *string         { return r.m.Queue }
 func (r *complianceRowResolver) QueueReason() *string   { return r.m.QueueReason }
+func (r *complianceRowResolver) QueueDetail() *string   { return r.m.QueueDetail }
 func (r *complianceRowResolver) ReworkBlocked() *string { return r.m.ReworkBlocked }
 func (r *complianceRowResolver) EvaluatedAt() string    { return stamp(r.m.EvaluatedAt) }
 func (r *complianceRowResolver) Findings() []*complianceFindingResolver {
@@ -432,6 +441,7 @@ func (r *complianceFindingResolver) Rule() string      { return r.m.Rule }
 func (r *complianceFindingResolver) Text() string      { return r.m.Text }
 func (r *complianceFindingResolver) Measured() *string { return r.m.Measured }
 func (r *complianceFindingResolver) Limit() *string    { return r.m.Limit }
+func (r *complianceFindingResolver) Detail() *string   { return r.m.Detail }
 
 type complianceQueuedResolver struct{ m ComplianceQueued }
 
