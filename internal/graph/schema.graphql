@@ -1479,13 +1479,13 @@ type ComplianceQueueCounts {
   failed: Int!
 }
 
-# A page of the titles that break a rule, the largest package first (then
-# the largest original). total counts the titles the filter matches, and
-# matching sums them up; queueable sums up those of them a request to
-# process them again queues, what queueReworkMatching queues: none queued
-# already (queued or sent), none that processing again can't help
-# (reworkBlocked). nextCursor, passed as after, reads the next page (null on
-# the last). notEvaluated says each rule that is not checked, and
+# A page of the titles that break a rule, in the order asked (the largest
+# package first, then the largest original, by default). total counts the
+# titles the filter matches, and matching sums them up; queueable sums up
+# those of them a request to process them again queues, what
+# queueReworkMatching queues: none queued already (queued or sent), none
+# that processing again can't help (reworkBlocked). nextCursor, passed as
+# after, reads the next page (null on the last). notEvaluated says each rule that is not checked, and
 # why. evaluatedAt is the oldest check of the titles of the report's kind
 # and search (null when none was ever checked); evaluating, whether a pass
 # runs; pending, how many titles of the kind wait for the next pass (never

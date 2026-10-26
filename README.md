@@ -655,7 +655,10 @@ processed again by name the same way, see
 It answers `{"queued", "alreadyQueued", "skipped": [{"itemId", "reason"}]}`:
 a title queued already, waiting or sent, stays as it is; one with nothing to
 encode (unknown, no file, its original deleted after packaging, no movie,
-episode or series) is skipped, saying why. A body that names none is 400.
+episode or series) is skipped, saying why, and so is one the compliance
+check found the transcoder can't encode (an original without video, or of a
+Dolby Vision profile it leaves as it is; see
+[Library compliance](#library-compliance)). A body that names none is 400.
 `GET /api/library/reencode` answers the queue's titles by state, `{"queued",
 "sent", "done", "failed"}`, of those waiting or sent the one queued first and
 the one queued last (`"oldest"`, `"newest"`: `{"itemId", "state",
@@ -769,8 +772,9 @@ allows for the title's kind and bucket, or its `NVENC_MAXRATE_*` override)
 with the packager's stereo and surround audio for one language, for the
 title's duration; processing that only adds tracks keeps the package and
 adds the surround track. A title that processing again can't help has none,
-is no queueable one, and says why as the clause the console says after a
-colon (`reworkBlocked`, "its original was deleted after packaging"): as the
+is no queueable one (and the queue skips it when a request names it), and
+says why as the clause the console says after a colon (`reworkBlocked`,
+"its original was deleted after packaging"): as the
 queue would skip it (its original deleted after packaging or being deleted,
 no file, a disc image), or as the transcoder is certain to refuse it again,
 which its original's record (`sources/<id>/source.json`: its streams, its
@@ -849,15 +853,34 @@ nor package) leaves the report.
   detail; "Surround track", "5.1 E-AC-3, 448 kbit/s"; "Stereo track",
   "AAC, 192 kbit/s" (the codec where the packager reports it); the
   configuration as reported the detail where the value says it in words.
-- `libraryCompliance(kind, rules, search, first, after)` — a page of the
-  titles that break a rule (any of `rules` when given), of `kind`, whose
-  title or series' title holds `search`, the largest package first, then
-  the largest original: `first` (100, at most 500) after the cursor
-  `after` (the last page's `nextCursor`). Each row has its findings
+- `libraryCompliance(kind, rules, search, first, after, sort, descending)`
+  — a page of the titles that break a rule (any of `rules` when given), of
+  `kind`, whose title or series' title holds `search`, sorted by `sort`:
+  `PACKAGE_SIZE` (the default; then the original's size), `ORIGINAL_SIZE`
+  (then the package's), `SAVING` (the package's size less its estimate),
+  `VIDEO_BITRATE` or `TITLE` (an episode by its series' title, its season
+  and its number), `descending` (the default) or not, a title without the
+  key last either way and a tie by the title's id: `first` (100, at most
+  500) after the cursor `after` (the last page's `nextCursor`, of the same
+  sort and direction; one of another is refused). Each row has its findings
   (`{rule, text, measured, limit, detail}`), sizes, its place in the
   re-encode queue (`queued`, `sent`, `done` or `failed`, why in words,
-  `queueReason`, and that reason's technical part, `queueDetail`) and when
-  it was checked. `total` counts the titles the whole filter (`kind`, `rules`,
+  `queueReason`, and that reason's technical part, `queueDetail`), when it
+  was checked, and the columns of a technical report, as the check measured
+  them: `resolution` ("3840×2160") and `videoCodec` ("HEVC", "H.264") of
+  the package's video, else the original's; `videoBitrate` (bit/s, as
+  `OVER_BITRATE_CAP` measures it; of a title without a package, its
+  original's file over its duration) and `videoBitrateEstimated`, true
+  when it was read off a size and a duration; `bitrateCap` (bit/s, of its
+  kind and bucket) and `sizeCap` (bytes, a movie's file), null where the
+  transcoder reports none or allows any; `durationSeconds`;
+  `packageAudio` and `originalAudio`, of their records ("5.1 E‑AC‑3 + 2.0
+  AAC", "7.1 TrueHD"), null without one; and `outcome`, what processing it
+  again does: `BLOCKED` when that can't help (`reworkBlocked`),
+  `FIRST_PACKAGE` for a title never packaged (or whose packaging failed,
+  and that has no package), `REENCODE` over a cap or not HEVC, `REPACKAGE`
+  for a track missing (or a packaging that failed, of a title with a
+  package), null for none of them. `total` counts the titles the whole filter (`kind`, `rules`,
   `search`) matches, and `matching` sums them up, every one of them and not
   only the page's (`{titles, originalBytes, packageBytes,
   estimatedBytes}`); `summary`, for every rule, those of `kind` and `search`
@@ -881,7 +904,8 @@ nor package) leaves the report.
   message}`, a title waiting or sent already counted in `alreadyQueued`,
   one the queue does not take (not in the catalog, no movie, episode or
   series, a series without episodes, no file, its original deleted after
-  packaging, a disc image) in `skipped` and, each of them, in
+  packaging, a disc image, an original the check found the transcoder
+  can't encode) in `skipped` and, each of them, in
   `skippedTitles` (`{itemId, title, reason}`: the title as a list names it,
   "A Film (1991)" or "A Show · S01E02 · Its Title", an id the catalog
   doesn't hold as it is, and the reason as the queue tells it, in the
@@ -899,6 +923,27 @@ nor package) leaves the report.
   (`notQueuedText`); `message` is the three in one text.
 - `refreshCompliance(kind)` — the titles of `kind` (every kind when
   omitted) checked again by the next pass, at once.
+
+**CSV.** `GET /api/manage/compliance.csv?kind=&rules=&search=&sort=&descending=`
+(admins, as `libraryCompliance`) is the report's rows as a file: every
+title the filter matches, not a page, in its order, the filter and the
+order as GraphQL names their values (`kind=MOVIE`,
+`rules=OVER_BITRATE_CAP,NO_SURROUND` or the parameter repeated,
+`sort=TITLE`, `descending=false`). It is RFC 4180 (a header row, each row
+ended by CRLF, a field quoted where it must be) in UTF-8, read and written
+500 titles at a time, and named by its kind and when the check found its
+titles, in UTC (`Content-Disposition`: `rules-movies-2026-10-26T1343Z.csv`;
+`rules-all-…` of both kinds). Its columns are `item_id`, `kind`, `title`,
+`year`, `series`, `season`, `episode`, `resolution`, `video_codec`,
+`video_bitrate_bps`, `bitrate_estimated`, `bitrate_cap_bps`,
+`size_cap_bytes`, `duration_s`, `original_bytes`, `package_bytes`,
+`estimated_bytes`, `package_audio`, `original_audio`, `rules` (their codes,
+by `;`), `outcome`, `blocked_reason` (`reworkBlocked`), `queue` (the
+title's state in the re-encode queue) and `checked_at` (RFC 3339): numbers
+as they are, bytes and bit/s whole, an empty field for none, and the
+no-break hyphens and spaces of the console's texts as plain ones
+("E-AC-3"). A filter or an order it doesn't know is 400, and a CSV that
+can't be read to its end is cut off, never ended as if it were whole.
 
 The check never queues a title: only these mutations do.
 
