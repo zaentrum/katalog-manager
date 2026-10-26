@@ -566,32 +566,27 @@ var (
 	}
 )
 
-// queuedWords is what a request to process titles again did: how many it
-// queued, how many were queued already, how many it skipped and why; with
-// none at all, that no title was named, that none fits the filter, or why
-// none of those that fit it is queued.
-func queuedWords(queued, already int, skipped map[string]int, by graph.QueuedBy) string {
+// requestTexts are what a request to process titles again did, as the
+// console says it: a toast of the titles it queued, without a full stop
+// ("12 titles queued to be processed again"), a plain one of those already
+// in the queue ("3 titles already in the queue"), and a banner line of those
+// it didn't queue, with why ("2 titles weren’t queued: their originals were
+// deleted after packaging."), or why it queued nothing at all ("Nothing was
+// queued: no title was selected."); each nil when it has nothing to say.
+// matching says the request named its titles by a filter.
+func requestTexts(queued, already int, skipped map[string]int, matching bool) (queuedText, alreadyText, notQueuedText *string) {
+	if queued > 0 {
+		queuedText = strp(titlesText(queued) + " queued to be processed again")
+	}
+	if already > 0 {
+		alreadyText = strp(titlesText(already) + " already in the queue")
+	}
 	total := 0
 	for _, n := range skipped {
 		total += n
 	}
-	if queued == 0 && already == 0 && total == 0 {
-		if !by.Matching {
-			return "No title is named, so none is queued."
-		}
-		return leftOutWords(int(by.InQueue), int(by.Blocked))
-	}
-	parts := []string{"No title queued to be processed again."}
-	if queued > 0 {
-		parts[0] = titlesText(queued) + " queued to be processed again."
-	}
 	switch {
-	case already == 1:
-		parts = append(parts, "1 title is queued already.")
-	case already > 1:
-		parts = append(parts, titlesText(already)+" are queued already.")
-	}
-	if total > 0 {
+	case total > 0:
 		var kinds []string
 		for _, k := range skipKinds {
 			if skipped[k] > 0 {
@@ -615,30 +610,28 @@ func queuedWords(queued, already int, skipped map[string]int, by graph.QueuedBy)
 			}
 			why = joinAnd(some)
 		}
-		parts = append(parts, titlesText(total)+" "+plural(total, "wasn’t", "weren’t")+" queued: "+why+".")
+		notQueuedText = strp(titlesText(total) + " " + plural(total, "wasn’t", "weren’t") + " queued: " + why + ".")
+	case queued == 0 && already == 0 && matching:
+		notQueuedText = strp("Nothing was queued: no title fits the filter anymore.")
+	case queued == 0 && already == 0:
+		notQueuedText = strp("Nothing was queued: no title was selected.")
 	}
-	return strings.Join(parts, " ")
+	return queuedText, alreadyText, notQueuedText
 }
 
-// leftOutWords is why a request by a filter queued no title: none fits it,
-// or each that fits it is queued already (inQueue) or can't be processed
-// again (blocked).
-func leftOutWords(inQueue, blocked int) string {
-	const none = "No title queued to be processed again. "
-	switch n := inQueue + blocked; {
-	case n == 0:
-		return "No title fits the filter, so none is queued."
-	case blocked == 0 && n == 1:
-		return none + "The title that fits the filter is queued already."
-	case blocked == 0:
-		return none + "The " + titlesText(n) + " that fit the filter are queued already."
-	case inQueue == 0 && n == 1:
-		return none + "The title that fits the filter can’t be processed again."
-	case inQueue == 0:
-		return none + "The " + titlesText(n) + " that fit the filter can’t be processed again."
+// requestMessage is what a request did in one text, as its three say it:
+// "12 titles queued to be processed again. 3 titles already in the queue."
+func requestMessage(queuedText, alreadyText, notQueuedText *string) string {
+	var parts []string
+	for _, t := range []*string{queuedText, alreadyText} {
+		if t != nil {
+			parts = append(parts, *t+".")
+		}
 	}
-	return none + "Of the " + titlesText(inQueue+blocked) + " that fit the filter, " + countText(inQueue) + " " +
-		plural(inQueue, "is", "are") + " queued already and " + countText(blocked) + " can’t be processed again."
+	if notQueuedText != nil {
+		parts = append(parts, *notQueuedText)
+	}
+	return strings.Join(parts, " ")
 }
 
 // titleText names a title as a list of them does: a movie or a series by its

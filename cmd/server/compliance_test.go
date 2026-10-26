@@ -241,9 +241,10 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	}
 	var queued struct {
 		Q struct {
-			Queued, AlreadyQueued, Skipped int
-			SkippedTitles                  []struct{ ItemID, Title, Reason string }
-			Message                        string
+			Queued, AlreadyQueued, Skipped         int
+			SkippedTitles                          []struct{ ItemID, Title, Reason string }
+			QueuedText, AlreadyText, NotQueuedText *string
+			Message                                string
 		}
 	}
 	mutate := func(doc string) {
@@ -256,19 +257,29 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	said := func(s *string) string {
+		if s == nil {
+			return "-"
+		}
+		return *s
+	}
+	const texts = "queuedText alreadyText notQueuedText"
 	mutate(`mutation { q: queueReworkMatching(kind: MOVIE, rules: [OVER_BITRATE_CAP, VIDEO_NOT_HEVC], search: "remux") {
-		queued alreadyQueued skipped message } }`)
-	if q := queued.Q; q.Queued != 1 || q.AlreadyQueued != 0 || q.Skipped != 0 || q.Message != "1 title queued to be processed again." {
+		queued alreadyQueued skipped message ` + texts + ` } }`)
+	if q := queued.Q; q.Queued != 1 || q.AlreadyQueued != 0 || q.Skipped != 0 || q.Message != "1 title queued to be processed again." ||
+		said(q.QueuedText) != "1 title queued to be processed again" || q.AlreadyText != nil || q.NotQueuedText != nil {
 		t.Errorf("queueReworkMatching: %+v", q)
 	}
 	// a title the catalog doesn't hold is named with its id, and why
 	const goneID = "0c0c0c0c-0000-4000-8000-000000000199"
 	mutate(`mutation { q: queueRework(items: ["` + remuxID + `", "` + neverID + `", "` + showID + `", "` + goneID + `"]) {
-		queued alreadyQueued skipped skippedTitles { itemId title reason } message } }`)
+		queued alreadyQueued skipped skippedTitles { itemId title reason } message ` + texts + ` } }`)
 	if q := queued.Q; q.Queued != 2 || q.AlreadyQueued != 1 || q.Skipped != 1 || len(q.SkippedTitles) != 1 ||
 		q.SkippedTitles[0].ItemID != goneID || q.SkippedTitles[0].Title != goneID ||
 		q.SkippedTitles[0].Reason != "it is not in the catalog" ||
-		q.Message != "2 titles queued to be processed again. 1 title is queued already. 1 title wasn’t queued: it is not in the catalog." {
+		said(q.QueuedText) != "2 titles queued to be processed again" || said(q.AlreadyText) != "1 title already in the queue" ||
+		said(q.NotQueuedText) != "1 title wasn’t queued: it is not in the catalog." ||
+		q.Message != "2 titles queued to be processed again. 1 title already in the queue. 1 title wasn’t queued: it is not in the catalog." {
 		t.Errorf("queueRework: %+v", q)
 	}
 	if got := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue WHERE state = 'queued' AND selection = 'items'`); got != 3 {
@@ -314,11 +325,14 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	if q := data.LibraryCompliance.Queueable; q.Titles != 0 {
 		t.Errorf("queueable once queued: %+v", q)
 	}
-	mutate(`mutation { q: queueReworkMatching { queued alreadyQueued skipped message } }`)
-	if q := queued.Q; q.Queued != 0 || q.AlreadyQueued != 0 || q.Skipped != 0 ||
-		q.Message != "No title queued to be processed again. Of the 4 titles that fit the filter, 3 are queued already and 1 "+
-			"can’t be processed again." {
+	mutate(`mutation { q: queueReworkMatching { queued alreadyQueued skipped message ` + texts + ` } }`)
+	if q := queued.Q; q.Queued != 0 || q.AlreadyQueued != 0 || q.Skipped != 0 || q.QueuedText != nil || q.AlreadyText != nil ||
+		said(q.NotQueuedText) != "Nothing was queued: no title fits the filter anymore." || q.Message != said(q.NotQueuedText) {
 		t.Errorf("queueReworkMatching, none left: %+v", q)
+	}
+	mutate(`mutation { q: queueRework(items: []) { queued alreadyQueued skipped message ` + texts + ` } }`)
+	if q := queued.Q; q.Queued != 0 || said(q.NotQueuedText) != "Nothing was queued: no title was selected." {
+		t.Errorf("queueRework of no title: %+v", q)
 	}
 	mutate(`mutation { q: queueRework(items: ["` + discID + `"]) { queued alreadyQueued skipped skippedTitles { itemId title reason } message } }`)
 	if q := queued.Q; q.Queued != 0 || q.Skipped != 1 || len(q.SkippedTitles) != 1 || q.SkippedTitles[0].Title != "A Disc Image" ||
@@ -326,7 +340,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		t.Errorf("queueRework of the disc image: %+v", q)
 	}
 	mutate(`mutation { q: queueReworkMatching(rules: [IMAGE_SUBTITLES_MISSING]) { queued alreadyQueued skipped message } }`)
-	if q := queued.Q; q.Queued != 0 || q.Message != "No title fits the filter, so none is queued." {
+	if q := queued.Q; q.Queued != 0 || q.Message != "Nothing was queued: no title fits the filter anymore." {
 		t.Errorf("a filter no title matches: %+v", q)
 	}
 

@@ -143,9 +143,9 @@ func (f *fakes) Report(_ context.Context, c graph.ComplianceFilter, first int32,
 	f.called(fmt.Sprintf("compliance report %s %s %q %d %q", c.Kind, strings.Join(c.Rules, ","), c.Search, first, after))
 	return graph.ComplianceReport{}, nil
 }
-func (f *fakes) Queueable(_ context.Context, c graph.ComplianceFilter) (graph.QueueableTitles, error) {
+func (f *fakes) Queueable(_ context.Context, c graph.ComplianceFilter) ([]string, error) {
 	f.called(fmt.Sprintf("compliance queueable %s %s %q", c.Kind, strings.Join(c.Rules, ","), c.Search))
-	return graph.QueueableTitles{IDs: []string{"m1"}, InQueue: 2, Blocked: 1}, nil
+	return []string{"m1"}, nil
 }
 func (f *fakes) Refresh(_ context.Context, kind string) (bool, error) {
 	f.called("refresh compliance " + kind)
@@ -155,8 +155,8 @@ func (f *fakes) EnqueueReencode(_ context.Context, req graph.ReencodeRequest) (g
 	f.called("rework " + strings.Join(req.Items, ","))
 	return graph.ReencodeEnqueued{Queued: int32(len(req.Items))}, nil
 }
-func (f *fakes) Queued(_ context.Context, res graph.ReencodeEnqueued, by graph.QueuedBy) (graph.ComplianceQueued, error) {
-	f.called(fmt.Sprintf("say %d queued, by %+v", res.Queued, by))
+func (f *fakes) Queued(_ context.Context, res graph.ReencodeEnqueued, matching bool) (graph.ComplianceQueued, error) {
+	f.called(fmt.Sprintf("say %d queued, matching %v", res.Queued, matching))
 	return graph.ComplianceQueued{Queued: res.Queued, Message: "queued"}, nil
 }
 
@@ -441,10 +441,10 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { retryFailed(step: "package") { retried message } }`, "retry the failed package"},
 	{`mutation { reencodeItem(id: "m1") { itemId titles reencoded busy notSent message } }`, "reencode m1"},
 	{`mutation { clearReencodeQueue(states: ["done", "failed"]) }`, "clear the re-encode queue done,failed"},
-	{`mutation { queueRework(items: ["m1"]) { queued alreadyQueued skipped skippedTitles { itemId title reason } message } }`,
-		"rework m1; say 1 queued, by {Matching:false InQueue:0 Blocked:0}"},
+	{`mutation { queueRework(items: ["m1"]) { queued alreadyQueued skipped skippedTitles { itemId title reason } message
+		queuedText alreadyText notQueuedText } }`, "rework m1; say 1 queued, matching false"},
 	{`mutation { queueReworkMatching(kind: EPISODE, rules: [NO_SURROUND]) { queued alreadyQueued skipped message } }`,
-		`compliance queueable episode NO_SURROUND ""; rework m1; say 1 queued, by {Matching:true InQueue:2 Blocked:1}`},
+		`compliance queueable episode NO_SURROUND ""; rework m1; say 1 queued, matching true`},
 	{`mutation { refreshCompliance(kind: MOVIE) }`, "refresh compliance movie"},
 	{`mutation { replaceSource(itemId: "m1", path: "/media/a-film-1080p.mkv", deleteOldFile: true) { itemId oldPath path
 		replaced oldFileDeleted oldSidecars reencode { reencoded busy notSent message } message } }`,

@@ -1470,12 +1470,22 @@ type ComplianceSkip {
 # What a request to process titles again did: those queued, those queued
 # already (waiting or sent), those skipped (no file, the original deleted
 # after packaging, a disc image, no movie, episode or series), each of them
-# in skippedTitles with why, and what happened, in a sentence.
+# in skippedTitles with why, and what happened as the console says it: a
+# toast of the titles queued, without a full stop ("12 titles queued to be
+# processed again"; null when none was), a plain one of those already in the
+# queue ("3 titles already in the queue"; null when none was), and a banner
+# line of those not queued, with why when they share one ("2 titles weren’t
+# queued: their originals were deleted after packaging."), or of nothing
+# queued at all ("Nothing was queued: no title was selected."; null when
+# there is nothing to say). message is the three in one text.
 type ComplianceQueued {
   queued: Int!
   alreadyQueued: Int!
   skipped: Int!
   skippedTitles: [ComplianceSkip!]!
+  queuedText: String
+  alreadyText: String
+  notQueuedText: String
   message: String!
 }
 

@@ -448,9 +448,12 @@ func TestWhatARequestDidInWords(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		m, err := s.Queued(ctx, res, graph.QueuedBy{})
+		m, err := s.Queued(ctx, res, false)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if m.Message != requestMessage(m.QueuedText, m.AlreadyText, m.NotQueuedText) {
+			t.Errorf("the message %q says other than its three texts", m.Message)
 		}
 		if int(m.Skipped) != len(m.SkippedTitles) {
 			t.Errorf("%d skipped, and %d of them named", m.Skipped, len(m.SkippedTitles))
@@ -472,7 +475,7 @@ func TestWhatARequestDidInWords(t *testing.T) {
 			"A Disc Image (2004): its file is a disc image, which the transcoder doesn’t encode" {
 		t.Errorf("one queued, two skipped: %q\n%s", msg, skips)
 	}
-	if msg, skips := say(uuid(6)); msg != "No title queued to be processed again. 1 title is queued already." || skips != "" {
+	if msg, skips := say(uuid(6)); msg != "1 title already in the queue." || skips != "" {
 		t.Errorf("one queued already: %q\n%s", msg, skips)
 	}
 
@@ -503,9 +506,14 @@ A Film That Lost Its Tracks: its original is being deleted after packaging
 A Coastal Show · S01E02 · An Episode Over Its Cap: it has no file`; skips != want {
 		t.Errorf("the titles skipped:\n%s\nwant:\n%s", skips, want)
 	}
-	if m, err := s.Queued(ctx, graph.ReencodeEnqueued{}, graph.QueuedBy{Matching: true}); err != nil || m.Message != "No title fits the filter, so none is queued." ||
-		m.SkippedTitles == nil || len(m.SkippedTitles) != 0 {
+	if m, err := s.Queued(ctx, graph.ReencodeEnqueued{}, true); err != nil || m.QueuedText != nil || m.AlreadyText != nil ||
+		m.NotQueuedText == nil || *m.NotQueuedText != "Nothing was queued: no title fits the filter anymore." ||
+		m.Message != *m.NotQueuedText || m.SkippedTitles == nil || len(m.SkippedTitles) != 0 {
 		t.Errorf("nothing matched: %+v, %v", m, err)
+	}
+	if m, err := s.Queued(ctx, graph.ReencodeEnqueued{}, false); err != nil || m.NotQueuedText == nil ||
+		*m.NotQueuedText != "Nothing was queued: no title was selected." {
+		t.Errorf("nothing named: %+v, %v", m, err)
 	}
 }
 
@@ -582,13 +590,13 @@ A Disc Image: PACKAGING_FAILED` {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(got.IDs, " ") != uuid(1)+" "+uuid(4)+" "+uuid(3) || got.InQueue != 2 || got.Blocked != 3 {
-		t.Errorf("the queueable: %+v; want the remux, the film that lost its tracks and the episode, 2 in the queue, 3 blocked", got)
+	if strings.Join(got, " ") != uuid(1)+" "+uuid(4)+" "+uuid(3) {
+		t.Errorf("the queueable: %v; want the remux, the film that lost its tracks and the episode", got)
 	}
 	// a filter: the movies over a cap, of which only the remux can be
 	// processed again
 	movies, err := s.Queueable(ctx, graph.ComplianceFilter{Kind: "movie", Rules: []string{OverBitrateCap}})
-	if err != nil || strings.Join(movies.IDs, " ") != uuid(1) || movies.InQueue != 0 || movies.Blocked != 2 {
+	if err != nil || strings.Join(movies, " ") != uuid(1) {
 		t.Errorf("the movies over a cap: %+v, %v", movies, err)
 	}
 	if r := reportOf(t, s, graph.ComplianceFilter{Kind: "movie", Rules: []string{OverBitrateCap}}, 1, ""); r.Queueable.Titles != 1 ||
@@ -597,12 +605,13 @@ A Disc Image: PACKAGING_FAILED` {
 	}
 
 	// what the request queues is what was offered
-	res, err := q.EnqueueReencode(ctx, graph.ReencodeRequest{Items: got.IDs})
+	res, err := q.EnqueueReencode(ctx, graph.ReencodeRequest{Items: got})
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := s.Queued(ctx, res, graph.QueuedBy{Matching: true, InQueue: got.InQueue, Blocked: got.Blocked})
-	if err != nil || m.Queued != rep.Queueable.Titles || m.AlreadyQueued != 0 || m.Skipped != 0 ||
+	m, err := s.Queued(ctx, res, true)
+	if err != nil || m.Queued != rep.Queueable.Titles || m.AlreadyQueued != 0 || m.Skipped != 0 || m.QueuedText == nil ||
+		*m.QueuedText != "3 titles queued to be processed again" || m.AlreadyText != nil || m.NotQueuedText != nil ||
 		m.Message != "3 titles queued to be processed again." {
 		t.Errorf("the request: %+v, %v", m, err)
 	}
@@ -624,13 +633,12 @@ A Disc Image: PACKAGING_FAILED` {
 		t.Errorf("queueable once queued: %+v", r.Queueable)
 	}
 	left, err := s.Queueable(ctx, all)
-	if err != nil || len(left.IDs) != 0 || left.InQueue != 5 || left.Blocked != 3 {
-		t.Fatalf("the queueable once queued: %+v, %v", left, err)
+	if err != nil || len(left) != 0 {
+		t.Fatalf("the queueable once queued: %v, %v", left, err)
 	}
-	m, err = s.Queued(ctx, graph.ReencodeEnqueued{}, graph.QueuedBy{Matching: true, InQueue: left.InQueue, Blocked: left.Blocked})
-	if want := "No title queued to be processed again. Of the 8 titles that fit the filter, 5 are queued already and 3 " +
-		"can’t be processed again."; err != nil || m.Message != want {
-		t.Errorf("a request with none left: %q, %v\nwant %q", m.Message, err, want)
+	m, err = s.Queued(ctx, graph.ReencodeEnqueued{}, true)
+	if err != nil || m.NotQueuedText == nil || *m.NotQueuedText != "Nothing was queued: no title fits the filter anymore." {
+		t.Errorf("a request with none left: %+v, %v", m, err)
 	}
 }
 
