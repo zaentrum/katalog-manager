@@ -550,16 +550,24 @@ func surroundLost(itemDir, vid, sid string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	return SurroundLost(src, pkg), nil
+}
+
+// SurroundLost reports whether a package whose essence is pkg lacks the
+// surround of the source whose essence is src, as surroundLost reads the
+// two records: the source had surround and the package has none, or the
+// package carries fewer channels than a 5.1 companion of the source's would.
+func SurroundLost(src, pkg Doc) bool {
 	srcSurround, _ := src.Get("surround")
 	pkgSurround, _ := pkg.Get("surround")
 	if truthy(srcSurround) && !truthy(pkgSurround) {
-		return true, nil
+		return true
 	}
 	had, _ := src.Get("maxAudioChannels")
 	kept, _ := pkg.Get("maxAudioChannels")
 	n, ok := toFloat(had)
 	k, _ := toFloat(kept)
-	return ok && n > 2 && k < min(n, 6), nil
+	return ok && n > 2 && k < min(n, 6)
 }
 
 // hold keeps the original of rt, whose version's package has no 5.1 of its

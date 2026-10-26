@@ -148,9 +148,19 @@ func Essence(path string) (Doc, error) {
 	if err != nil {
 		return nil, err
 	}
-	d, err := DecodeDoc(b)
+	ed, err := EssenceOf(b)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return ed, nil
+}
+
+// EssenceOf is the essence of the record b, a record read already: {} when
+// it holds none.
+func EssenceOf(b []byte) (Doc, error) {
+	d, err := DecodeDoc(b)
+	if err != nil {
+		return nil, err
 	}
 	e, _ := d.Get("essence")
 	ed, _ := e.(Doc)
