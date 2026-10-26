@@ -2,7 +2,6 @@ package compliance
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -42,41 +41,10 @@ const filtered = `WITH f AS (
 // when it names some.
 const breaking = `f.rules <> '{}' AND (cardinality($3::varchar[]) = 0 OR f.rules && $3::varchar[])`
 
-// order is the report's order: the largest package first, then the largest
-// original, a title without either last.
+// order is the order of the titles a request by a filter queues: the
+// largest package first, then the largest original, a title without either
+// last, whatever the report is sorted by.
 const order = `COALESCE(f.packagebytes, -1) DESC, COALESCE(f.originalbytes, -1) DESC, f.item_id`
-
-// cursor is where a page of the report ended: its last title's package and
-// original sizes (-1 for none) and id.
-type cursor struct {
-	pkg, orig int64
-	id        string
-}
-
-func (c cursor) String() string {
-	return base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("c1:%d:%d:%s", c.pkg, c.orig, c.id)))
-}
-
-func parseCursor(s string) (*cursor, error) {
-	if s == "" {
-		return nil, nil
-	}
-	bad := fmt.Errorf("after is %q, which is no cursor of the report: pass a page's nextCursor", s)
-	b, err := base64.RawURLEncoding.DecodeString(s)
-	if err != nil {
-		return nil, bad
-	}
-	parts := strings.SplitN(string(b), ":", 4)
-	if len(parts) != 4 || parts[0] != "c1" || parts[3] == "" {
-		return nil, bad
-	}
-	pkg, err1 := strconv.ParseInt(parts[1], 10, 64)
-	orig, err2 := strconv.ParseInt(parts[2], 10, 64)
-	if err1 != nil || err2 != nil {
-		return nil, bad
-	}
-	return &cursor{pkg: pkg, orig: orig, id: parts[3]}, nil
-}
 
 // rulesOf are the rules a filter names, each one of Rules.
 func rulesOf(f graph.ComplianceFilter) ([]string, error) {
@@ -97,7 +65,8 @@ func rulesOf(f graph.ComplianceFilter) ([]string, error) {
 // process them again queues (queueable), of the titles of f's kind and
 // search those that break each rule, whichever rules f names, and the
 // re-encode queue by state.
-func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, first int32, after string) (graph.ComplianceReport, error) {
+func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, o graph.ComplianceOrder, first int32,
+	after string) (graph.ComplianceReport, error) {
 	out := graph.ComplianceReport{NotEvaluated: []string{}, Summary: []graph.ComplianceSummary{}, Rows: []graph.ComplianceRow{}}
 	if why := s.ready(ctx); why != nil {
 		return out, why
@@ -106,7 +75,11 @@ func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, first in
 	if err != nil {
 		return out, err
 	}
-	cur, err := parseCursor(after)
+	sorted, err := sortingOf(o)
+	if err != nil {
+		return out, err
+	}
+	cur, err := sorted.parse(after)
 	if err != nil {
 		return out, err
 	}
@@ -151,7 +124,7 @@ func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, first in
 	if out.Summary, err = s.summary(ctx, f); err != nil {
 		return out, err
 	}
-	if out.Rows, out.NextCursor, err = s.rows(ctx, f, rules, cur, first); err != nil {
+	if out.Rows, out.NextCursor, err = s.rows(ctx, f, rules, sorted, cur, first); err != nil {
 		return out, err
 	}
 	return out, nil
@@ -202,46 +175,54 @@ func (s *Service) summary(ctx context.Context, f graph.ComplianceFilter) ([]grap
 	return out, nil
 }
 
-// rows is a page of the titles f matches that break a rule, at most first of
-// them after cur, and the cursor of the next page (nil on the last).
-func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []string, cur *cursor, first int32) (
-	[]graph.ComplianceRow, *string, error) {
+// rows is a page of the titles f matches that break a rule, in the order
+// sorted, at most first of them after the cursor's (cur, its arguments; nil
+// from the first), and the cursor of the next page (nil on the last).
+func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []string, sorted sorting, cur []any,
+	first int32) ([]graph.ComplianceRow, *string, error) {
 	out := []graph.ComplianceRow{}
 	if first == 0 {
 		return out, nil, nil
 	}
-	var cp, co *int64
-	var cid string
+	args := []any{f.Kind, f.Search, rules}
+	where := breaking
 	if cur != nil {
-		cp, co, cid = &cur.pkg, &cur.orig, cur.id
+		where += " AND " + sorted.after(len(args)+1)
+		args = append(args, cur...)
 	}
+	args = append(args, first+1)
 	rows, err := s.pool.Query(ctx, filtered+`SELECT f.item_id, f.title, f.year, f.kind, f.series_id, f.series_title,
 			f.seasonnumber, f.episodenumber, f.findings::text, f.originalbytes, f.packagebytes, f.estimatedbytes,
 			f.evaluatedat, q.state, q.reason, f.blocked, f.resolution, f.videocodec, f.videobitrate, f.bitrateestimated,
-			f.bitratecap, f.sizecap::float8, f.durationseconds, f.packageaudio, f.originalaudio
+			f.bitratecap, f.sizecap::float8, f.durationseconds, f.packageaudio, f.originalaudio, `+
+		strings.Join(sorted.cols, ", ")+`
 		FROM f
 		LEFT JOIN LATERAL (SELECT q.state, q.reason FROM `+store.ReencodeQueueTable+` q WHERE q.item_id = f.item_id
 			ORDER BY q.seq DESC LIMIT 1) q ON true
-		WHERE `+breaking+`
-		  AND ($4::bigint IS NULL OR (COALESCE(f.packagebytes, -1), COALESCE(f.originalbytes, -1)) < ($4::bigint, $5::bigint)
-		       OR ((COALESCE(f.packagebytes, -1), COALESCE(f.originalbytes, -1)) = ($4::bigint, $5::bigint) AND f.item_id > $6))
-		ORDER BY `+order+`
-		LIMIT $7`, f.Kind, f.Search, rules, cp, co, cid, first+1)
+		WHERE `+where+`
+		ORDER BY `+sorted.orderBy+`
+		LIMIT $`+strconv.Itoa(len(args)), args...)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer rows.Close()
 	var kept []string // each row's blocked kind, as the pass kept it ("" for none)
+	var lastCols []any
 	for rows.Next() {
 		var r graph.ComplianceRow
 		var findings string
 		var orig, pkg, est *int64
 		var reason, blocked *string
-		if err := rows.Scan(&r.ItemID, &r.Title, &r.Year, &r.Kind, &r.SeriesID, &r.SeriesTitle, &r.Season, &r.Episode,
+		dest := []any{&r.ItemID, &r.Title, &r.Year, &r.Kind, &r.SeriesID, &r.SeriesTitle, &r.Season, &r.Episode,
 			&findings, &orig, &pkg, &est, &r.EvaluatedAt, &r.Queue, &reason, &blocked, &r.Resolution, &r.VideoCodec,
 			&r.VideoBitrate, &r.VideoBitrateEstimated, &r.BitrateCap, &r.SizeCap, &r.DurationSeconds, &r.PackageAudio,
-			&r.OriginalAudio); err != nil {
+			&r.OriginalAudio}
+		cols := sorted.columns()
+		if err := rows.Scan(append(dest, cols...)...); err != nil {
 			return nil, nil, err
+		}
+		if len(out) < int(first) {
+			lastCols = cols
 		}
 		k := ""
 		if blocked != nil {
@@ -268,16 +249,8 @@ func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []st
 	var next *string
 	if len(out) > int(first) {
 		out, kept = out[:first], kept[:first]
-		last := out[len(out)-1]
-		c := cursor{pkg: -1, orig: -1, id: last.ItemID}
-		if last.PackageBytes != nil {
-			c.pkg = int64(*last.PackageBytes)
-		}
-		if last.OriginalBytes != nil {
-			c.orig = int64(*last.OriginalBytes)
-		}
-		s := c.String()
-		next = &s
+		c := sorted.cursorOf(sorted.values(lastCols))
+		next = &c
 	}
 	if err := s.blocked(ctx, out, kept); err != nil {
 		return nil, nil, err

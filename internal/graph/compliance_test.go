@@ -43,7 +43,7 @@ type ComplianceReport {
 type ComplianceQueued { queued: Int! alreadyQueued: Int! skipped: Int! message: String! }
 extend type Query {
   pipelineRules: PipelineRules!
-  libraryCompliance(kind: ComplianceKind, rules: [ComplianceRule!], search: String, first: Int = 100, after: String): ComplianceReport!
+  libraryCompliance(kind: ComplianceKind, rules: [ComplianceRule!], search: String, first: Int = 100, after: String, sort: ComplianceSort = PACKAGE_SIZE, descending: Boolean = true): ComplianceReport!
 }
 extend type Mutation {
   queueRework(items: [ID!]!): ComplianceQueued!
@@ -77,6 +77,7 @@ extend type ComplianceRow {
   outcome: ComplianceOutcome
 }
 enum ComplianceOutcome { REENCODE REPACKAGE FIRST_PACKAGE BLOCKED }
+enum ComplianceSort { PACKAGE_SIZE ORIGINAL_SIZE SAVING VIDEO_BITRATE TITLE }
 `
 
 var (
@@ -133,8 +134,8 @@ func TestTheComplianceContract(t *testing.T) {
 		types[ty.Name] = ty
 	}
 	blocks := contractBlockRE.FindAllStringSubmatch(complianceContract, -1)
-	if len(blocks) != 24 {
-		t.Fatalf("the contract reads as %d blocks, want 24", len(blocks))
+	if len(blocks) != 25 {
+		t.Fatalf("the contract reads as %d blocks, want 25", len(blocks))
 	}
 	for _, b := range blocks {
 		kind, name, body := b[1], b[2], b[3]

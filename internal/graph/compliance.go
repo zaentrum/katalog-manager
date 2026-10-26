@@ -14,9 +14,10 @@ import (
 // check last found (implemented by compliance).
 type Compliance interface {
 	PipelineRules(ctx context.Context) (PipelineRules, error)
-	// Report is a page of the titles f matches that break a rule, first of
-	// them after the cursor after ("" from the first).
-	Report(ctx context.Context, f ComplianceFilter, first int32, after string) (ComplianceReport, error)
+	// Report is a page of the titles f matches that break a rule, in the
+	// order o, first of them after the cursor after ("" from the first; a
+	// cursor of the same order).
+	Report(ctx context.Context, f ComplianceFilter, o ComplianceOrder, first int32, after string) (ComplianceReport, error)
 	// Queueable are the titles f matches that break a rule and that a
 	// request to process them again queues, in the report's order: none
 	// waiting or sent in the re-encode queue, which keeps such a title as it
@@ -51,6 +52,13 @@ type ComplianceFilter struct {
 	Kind   string
 	Rules  []string
 	Search string
+}
+
+// ComplianceOrder is the order a report's rows are in: a ComplianceSort
+// ("" the default, PACKAGE_SIZE), descending or not.
+type ComplianceOrder struct {
+	Sort       string
+	Descending bool
 }
 
 // RuleSetting is one rule a worker reported: where it is in the report
@@ -204,11 +212,13 @@ func (r *Resolver) PipelineRules(ctx context.Context) (*pipelineRulesResolver, e
 // LibraryCompliance is a page of the movies and episodes that break a rule
 // the workers report, as the check last found them.
 func (r *Resolver) LibraryCompliance(ctx context.Context, args struct {
-	Kind   *string
-	Rules  *[]string
-	Search *string
-	First  int32
-	After  *string
+	Kind       *string
+	Rules      *[]string
+	Search     *string
+	First      int32
+	After      *string
+	Sort       string
+	Descending bool
 }) (*complianceReportResolver, error) {
 	if err := r.allow(ctx, "Query.libraryCompliance"); err != nil {
 		return nil, err
@@ -219,7 +229,8 @@ func (r *Resolver) LibraryCompliance(ctx context.Context, args struct {
 	if args.First < 0 {
 		return nil, fmt.Errorf("first is %d: a page holds 0 titles or more", args.First)
 	}
-	rep, err := r.svc.Compliance.Report(ctx, filterOf(args.Kind, args.Rules, args.Search), args.First, strDeref(args.After))
+	rep, err := r.svc.Compliance.Report(ctx, filterOf(args.Kind, args.Rules, args.Search),
+		ComplianceOrder{Sort: args.Sort, Descending: args.Descending}, args.First, strDeref(args.After))
 	if err != nil {
 		return nil, err
 	}

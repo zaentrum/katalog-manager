@@ -1329,6 +1329,19 @@ enum ComplianceKind {
   EPISODE
 }
 
+# The orders of the report's rows: by the size of their package (then of
+# their original), of their original (then of their package), by what
+# processing them again saves (their package's size less their estimate),
+# by their video's bit rate, and by their title (an episode by its series',
+# its season and its number).
+enum ComplianceSort {
+  PACKAGE_SIZE
+  ORIGINAL_SIZE
+  SAVING
+  VIDEO_BITRATE
+  TITLE
+}
+
 # One rule a worker reported, a row of the rules panel: its key in the report
 # ("caps.movie2160Mbps"; of a row that says several, the first it gives), what
 # it is ("Video bit rate, 2160p movies"), its value in words ("at most
@@ -1530,9 +1543,12 @@ extend type Query {
   # The rules the transcoder and the packager last reported.
   pipelineRules: PipelineRules!
   # A page of the movies and episodes that break a rule (any of rules, when
-  # given), of kind, whose title or series' title holds search: at most
-  # first (default 100, at most 500), after the cursor after.
-  libraryCompliance(kind: ComplianceKind, rules: [ComplianceRule!], search: String, first: Int = 100, after: String): ComplianceReport!
+  # given), of kind, whose title or series' title holds search, sorted by
+  # sort, descending or not (a null key last either way): at most first
+  # (default 100, at most 500), after the cursor after, a nextCursor of the
+  # same sort and direction.
+  libraryCompliance(kind: ComplianceKind, rules: [ComplianceRule!], search: String, first: Int = 100, after: String,
+    sort: ComplianceSort = PACKAGE_SIZE, descending: Boolean = true): ComplianceReport!
 }
 
 extend type Mutation {

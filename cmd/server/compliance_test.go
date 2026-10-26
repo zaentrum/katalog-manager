@@ -224,6 +224,15 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		r.Detail == nil || *r.Detail != "source:hevc" {
 		t.Errorf("the transcoder's renditions: %+v", r)
 	}
+	// sorted by title, ascending, through GraphQL
+	_, sorted := in.gql(t, "/api/manage/query", admin, `{ libraryCompliance(sort: TITLE, descending: false) { rows { title } } }`)
+	var byTitle struct {
+		LibraryCompliance struct{ Rows []struct{ Title string } }
+	}
+	if len(sorted.Errors) > 0 || json.Unmarshal(sorted.Data, &byTitle) != nil || len(byTitle.LibraryCompliance.Rows) != 3 ||
+		byTitle.LibraryCompliance.Rows[0].Title != "A Film" || byTitle.LibraryCompliance.Rows[2].Title != "A Remux Kept As It Was" {
+		t.Errorf("sorted by title: %s %v", sorted.Data, sorted.Errors)
+	}
 	if _, err := time.Parse(time.RFC3339, remux.EvaluatedAt); err != nil {
 		t.Errorf("evaluatedAt %q: %v", remux.EvaluatedAt, err)
 	}

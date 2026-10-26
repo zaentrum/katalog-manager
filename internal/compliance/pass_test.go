@@ -188,7 +188,7 @@ func library4(t *testing.T) (*Service, *store.Store, string) {
 
 func reportOf(t *testing.T, s *Service, f graph.ComplianceFilter, first int32, after string) graph.ComplianceReport {
 	t.Helper()
-	rep, err := s.Report(context.Background(), f, first, after)
+	rep, err := s.Report(context.Background(), f, graph.ComplianceOrder{Sort: SortPackageSize, Descending: true}, first, after)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,14 +349,154 @@ func TestTheReportFiltersAndPages(t *testing.T) {
 	if got := strings.Join(pages, "\n"); got != rowsOf(reportOf(t, s, graph.ComplianceFilter{}, 100, "")) || len(pages) != 3 {
 		t.Errorf("3 pages of 2:\n%s", got)
 	}
-	if _, err := s.Report(context.Background(), graph.ComplianceFilter{}, 2, "not-a-cursor"); err == nil {
+	if _, err := s.Report(context.Background(), graph.ComplianceFilter{}, graph.ComplianceOrder{}, 2, "not-a-cursor"); err == nil {
 		t.Error("a cursor of no page was taken")
 	}
-	if _, err := s.Report(context.Background(), graph.ComplianceFilter{Rules: []string{"TOO_LOUD"}}, 2, ""); err == nil {
+	if _, err := s.Report(context.Background(), graph.ComplianceFilter{Rules: []string{"TOO_LOUD"}}, graph.ComplianceOrder{}, 2, ""); err == nil {
 		t.Error("an unknown rule was taken")
 	}
 	if rep := reportOf(t, s, graph.ComplianceFilter{}, 0, ""); len(rep.Rows) != 0 || rep.Total != 6 {
 		t.Errorf("a page of none: %d rows, total %d", len(rep.Rows), rep.Total)
+	}
+}
+
+// The report sorts its rows in every order, either way, a null key last
+// either way and a tie by the title's id; its pages, each after the one
+// before by a cursor of that order, are the order whole, and a cursor of
+// another order is refused.
+func TestTheReportSortsInEveryOrder(t *testing.T) {
+	s, _, _ := library4(t)
+	ctx := context.Background()
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// key is a row's value of a sort, nil for none (a null)
+	key := func(sort string, r graph.ComplianceRow) []any {
+		f := func(p *float64) any {
+			if p == nil {
+				return nil
+			}
+			return *p
+		}
+		switch sort {
+		case SortPackageSize:
+			return []any{f(r.PackageBytes), f(r.OriginalBytes)}
+		case SortOriginalSize:
+			return []any{f(r.OriginalBytes), f(r.PackageBytes)}
+		case SortSaving:
+			if r.PackageBytes == nil || r.EstimatedBytes == nil {
+				return []any{nil, f(r.PackageBytes)}
+			}
+			return []any{*r.PackageBytes - *r.EstimatedBytes, f(r.PackageBytes)}
+		case SortVideoBitrate:
+			return []any{f(r.VideoBitrate), f(r.PackageBytes)}
+		}
+		series := r.Title
+		if r.SeriesTitle != nil {
+			series = *r.SeriesTitle
+		}
+		i := func(p *int32) any {
+			if p == nil {
+				return nil
+			}
+			return float64(*p)
+		}
+		return []any{strings.ToLower(series), i(r.Season), i(r.Episode), strings.ToLower(r.Title)}
+	}
+	// before says a sorts before b: each key in the direction, a null last
+	before := func(a, b []any, desc bool) int {
+		for i := range a {
+			switch x, y := a[i], b[i]; {
+			case x == nil && y == nil:
+				continue
+			case x == nil:
+				return 1
+			case y == nil:
+				return -1
+			default:
+				c := 0
+				if xs, ok := x.(string); ok {
+					c = strings.Compare(xs, y.(string))
+				} else if xf, yf := x.(float64), y.(float64); xf < yf {
+					c = -1
+				} else if xf > yf {
+					c = 1
+				}
+				if desc {
+					c = -c
+				}
+				if c != 0 {
+					return c
+				}
+			}
+		}
+		return 0
+	}
+	ids := func(rows []graph.ComplianceRow) string {
+		var out []string
+		for _, r := range rows {
+			out = append(out, r.ItemID[len(r.ItemID)-2:])
+		}
+		return strings.Join(out, " ")
+	}
+	for _, sort := range Sorts {
+		for _, desc := range []bool{true, false} {
+			o := graph.ComplianceOrder{Sort: sort, Descending: desc}
+			whole, err := s.Report(ctx, graph.ComplianceFilter{}, o, 100, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(whole.Rows) != 6 {
+				t.Fatalf("%s %v: %d rows", sort, desc, len(whole.Rows))
+			}
+			for i := 1; i < len(whole.Rows); i++ {
+				a, b := whole.Rows[i-1], whole.Rows[i]
+				if c := before(key(sort, a), key(sort, b), desc); c > 0 || c == 0 && a.ItemID > b.ItemID {
+					t.Errorf("%s %v: %s before %s (%v, %v)", sort, desc, a.Title, b.Title, key(sort, a), key(sort, b))
+				}
+			}
+			var paged []graph.ComplianceRow
+			after := ""
+			for page := 0; page < 10; page++ {
+				rep, err := s.Report(ctx, graph.ComplianceFilter{}, o, 2, after)
+				if err != nil {
+					t.Fatalf("%s %v, page %d: %v", sort, desc, page, err)
+				}
+				paged = append(paged, rep.Rows...)
+				if rep.NextCursor == nil {
+					break
+				}
+				after = *rep.NextCursor
+			}
+			if ids(paged) != ids(whole.Rows) {
+				t.Errorf("%s %v: the pages %s, the order whole %s", sort, desc, ids(paged), ids(whole.Rows))
+			}
+		}
+	}
+	// by title, from A: an episode by its series
+	byTitle, err := s.Report(ctx, graph.ComplianceFilter{}, graph.ComplianceOrder{Sort: SortTitle}, 100, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rowsOf(byTitle); got != `An Episode Over Its Cap: OVER_BITRATE_CAP
+A Disc Image: PACKAGING_FAILED
+A Film Never Packaged: NOT_PACKAGED
+A Film That Lost Its Tracks: NO_SURROUND, IMAGE_SUBTITLES_MISSING
+A Film Whose Transcode Failed: PACKAGING_FAILED
+A Remux Kept As It Was: OVER_BITRATE_CAP, OVER_SIZE_CAP` {
+		t.Errorf("by title:\n%s", got)
+	}
+	// a cursor of one order is none of another's
+	first, err := s.Report(ctx, graph.ComplianceFilter{}, graph.ComplianceOrder{Sort: SortSaving, Descending: true}, 2, "")
+	if err != nil || first.NextCursor == nil {
+		t.Fatalf("a first page: %v, %v", first.NextCursor, err)
+	}
+	if _, err := s.Report(ctx, graph.ComplianceFilter{}, graph.ComplianceOrder{Sort: SortTitle}, 2, *first.NextCursor); err == nil ||
+		!strings.Contains(err.Error(), "another order") {
+		t.Errorf("a cursor of another order: %v", err)
+	}
+	if _, err := s.Report(ctx, graph.ComplianceFilter{}, graph.ComplianceOrder{Sort: "LOUDNESS"}, 2, ""); err == nil {
+		t.Error("an unknown sort: no error")
 	}
 }
 

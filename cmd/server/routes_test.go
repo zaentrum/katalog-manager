@@ -139,8 +139,10 @@ func (f *fakes) PipelineRules(context.Context) (graph.PipelineRules, error) {
 	f.called("pipeline rules")
 	return graph.PipelineRules{}, nil
 }
-func (f *fakes) Report(_ context.Context, c graph.ComplianceFilter, first int32, after string) (graph.ComplianceReport, error) {
-	f.called(fmt.Sprintf("compliance report %s %s %q %d %q", c.Kind, strings.Join(c.Rules, ","), c.Search, first, after))
+func (f *fakes) Report(_ context.Context, c graph.ComplianceFilter, o graph.ComplianceOrder, first int32, after string) (
+	graph.ComplianceReport, error) {
+	f.called(fmt.Sprintf("compliance report %s %s %q %s %v %d %q", c.Kind, strings.Join(c.Rules, ","), c.Search, o.Sort,
+		o.Descending, first, after))
 	return graph.ComplianceReport{}, nil
 }
 func (f *fakes) Queueable(_ context.Context, c graph.ComplianceFilter) ([]string, error) {
@@ -422,7 +424,7 @@ var operations = []struct{ doc, calls string }{
 		notEvaluated evaluatedAt evaluating pending total nextCursor summary { rule titles } rows { itemId findings { rule } }
 		matching { titles originalBytes packageBytes estimatedBytes } queueable { titles originalBytes packageBytes estimatedBytes }
 		queue { queued processing processed failed } } }`,
-		`compliance report movie OVER_BITRATE_CAP "Film" 10 ""`},
+		`compliance report movie OVER_BITRATE_CAP "Film" PACKAGE_SIZE true 10 ""`},
 
 	{`mutation { triggerScan(source: "nfs") { id status } }`, "scan nfs"},
 	{`mutation { enrichOne(id: "m1") { status } }`, "enrich m1"},
