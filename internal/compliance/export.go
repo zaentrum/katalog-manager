@@ -9,21 +9,30 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/zaentrum/katalog-manager/internal/graph"
 )
 
 // CSVColumns are the columns of the report's CSV, in order: a title's id,
 // kind (MOVIE, EPISODE), title, year, series, season and number; its video's
-// size, codec and bit rate (bit/s), whether that was estimated, and the caps
-// that hold for it (bit/s, bytes); its duration (s); its original's, its
-// package's and its estimated sizes (bytes); its package's and its
-// original's audio; the rules it breaks (their codes, by ";"), what
-// processing it again does, why that can't help, its state in the re-encode
-// queue, and when the check found it (RFC 3339, UTC).
-var CSVColumns = []string{"item_id", "kind", "title", "year", "series", "season", "episode", "resolution",
+// width and height (pixels), codec and bit rate (bit/s), whether that was
+// estimated, and the caps that hold for it (bit/s, bytes); its duration (s);
+// its original's and its package's sizes and the estimate of its package
+// once processed again (bytes); its package's and its original's audio; the
+// rules it breaks (their codes, by ";"), what processing it again does, why
+// that can't help, where it stands in the re-encode queue (QUEUED,
+// PROCESSING, NEEDS_ATTENTION; none once done), and when the check found it
+// (RFC 3339, UTC).
+var CSVColumns = []string{"item_id", "kind", "title", "year", "series", "season", "episode", "width", "height",
 	"video_codec", "video_bitrate_bps", "bitrate_estimated", "bitrate_cap_bps", "size_cap_bytes", "duration_s",
 	"original_bytes", "package_bytes", "estimated_bytes", "package_audio", "original_audio", "rules", "outcome",
 	"blocked_reason", "queue", "checked_at"}
+
+// csvQueue is where a title stands in the re-encode queue, as the CSV says
+// it: waiting, being processed, or failed (an admin to look at it); done, or
+// never queued, is none.
+var csvQueue = map[string]string{"queued": "QUEUED", "sent": "PROCESSING", "failed": "NEEDS_ATTENTION"}
 
 // exportBatch is how many rows the CSV reads at a time.
 const exportBatch = maxPage
@@ -90,9 +99,16 @@ func csvName(kind string, when time.Time) string {
 
 // Write writes the CSV to w (RFC 4180: a header row of CSVColumns, then a
 // row of each title, each ended by CRLF, quoted where it must be, in UTF-8),
-// reading exportBatch titles at a time, and calls flush, when not nil, after
-// each of them: it holds no more of the report than that.
+// reading exportBatch titles at a time, all of them of one snapshot of the
+// catalog (one read-only transaction, repeatable read), and calls flush,
+// when not nil, after each of them: it holds no more of the report than
+// that.
 func (e Export) Write(ctx context.Context, w io.Writer, flush func()) error {
+	tx, err := e.s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	cw := csv.NewWriter(w)
 	cw.UseCRLF = true
 	if err := cw.Write(CSVColumns); err != nil {
@@ -100,7 +116,7 @@ func (e Export) Write(ctx context.Context, w io.Writer, flush func()) error {
 	}
 	var cur []any
 	for {
-		rows, next, err := e.s.rows(ctx, e.f, e.rules, e.sorted, cur, exportBatch)
+		rows, next, err := e.s.rows(ctx, tx, e.f, e.rules, e.sorted, cur, exportBatch)
 		if err != nil {
 			return err
 		}
@@ -126,19 +142,48 @@ func (e Export) Write(ctx context.Context, w io.Writer, flush func()) error {
 }
 
 // csvRecord is a row of the report as the CSV writes it: numbers as they
-// are, bytes and bit/s whole, nothing for none, and the console's no-break
-// hyphens and spaces as plain ones.
+// are, bytes and bit/s whole, a picture's width and height as two, nothing
+// for none; a text with the console's no-break hyphens and spaces as plain
+// ones, and a ' before one that begins as a spreadsheet's formula does.
 func csvRecord(r graph.ComplianceRow) []string {
 	rules := make([]string, len(r.Findings))
 	for i, f := range r.Findings {
 		rules[i] = f.Rule
 	}
-	return []string{r.ItemID, strings.ToUpper(r.Kind), plainText(r.Title), intText(r.Year), textOf(r.SeriesTitle),
-		intText(r.Season), intText(r.Episode), textOf(r.Resolution), textOf(r.VideoCodec), wholeText(r.VideoBitrate),
+	width, height := "", ""
+	if r.Resolution != nil {
+		if w, h, ok := strings.Cut(*r.Resolution, "×"); ok {
+			width, height = w, h
+		}
+	}
+	queue := ""
+	if r.Queue != nil {
+		queue = csvQueue[*r.Queue]
+	}
+	return []string{r.ItemID, strings.ToUpper(r.Kind), cell(r.Title), intText(r.Year), cellOf(r.SeriesTitle),
+		intText(r.Season), intText(r.Episode), width, height, cellOf(r.VideoCodec), wholeText(r.VideoBitrate),
 		strconv.FormatBool(r.VideoBitrateEstimated), wholeText(r.BitrateCap), wholeText(r.SizeCap),
 		numberText(r.DurationSeconds), wholeText(r.OriginalBytes), wholeText(r.PackageBytes), wholeText(r.EstimatedBytes),
-		textOf(r.PackageAudio), textOf(r.OriginalAudio), strings.Join(rules, ";"), textOf(r.Outcome),
-		textOf(r.ReworkBlocked), textOf(r.Queue), r.EvaluatedAt.UTC().Format(time.RFC3339)}
+		cellOf(r.PackageAudio), cellOf(r.OriginalAudio), strings.Join(rules, ";"), textOf(r.Outcome),
+		cellOf(r.ReworkBlocked), queue, r.EvaluatedAt.UTC().Format(time.RFC3339)}
+}
+
+// cell is a text as the CSV writes it (plainText), with a ' before one that
+// begins as a spreadsheet's formula does (=, +, -, @, a tab, a carriage
+// return), so that a spreadsheet takes it for the text it is.
+func cell(s string) string {
+	s = plainText(s)
+	if s != "" && strings.ContainsRune("=+-@\t\r", rune(s[0])) {
+		return "'" + s
+	}
+	return s
+}
+
+func cellOf(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return cell(*s)
 }
 
 // plainText is s with the no-break hyphens and spaces the console's texts

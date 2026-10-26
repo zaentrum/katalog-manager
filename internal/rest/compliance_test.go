@@ -23,13 +23,15 @@ func TestTheReportIsACSV(t *testing.T) {
 	admin := iss.Admin(t)
 	storetest.AddItem(t, st, "m1", "movie", `Dinner, "Again"`, "")
 	storetest.AddItem(t, st, "m2", "movie", "A Disc", "")
+	storetest.AddItem(t, st, "m3", "movie", "=Cut Above", "")
 	storetest.AddItem(t, st, "s1", "series", "A Show", "")
 	storetest.AddItem(t, st, "p1", "season", "Season 1", "s1")
 	storetest.AddItem(t, st, "e1", "episode", "The First", "p1")
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET year = 2019 WHERE id = 'm1'`)
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET seasonnumber = 1, episodenumber = 2 WHERE id = 'e1'`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary) VALUES
-		('a1', 'm1', '/media/m1.mkv', true), ('a2', 'm2', '/media/m2.iso', true), ('a3', 'e1', '/media/e1.mkv', true)`)
+		('a1', 'm1', '/media/m1.mkv', true), ('a2', 'm2', '/media/m2.iso', true), ('a3', 'e1', '/media/e1.mkv', true),
+		('a4', 'm3', '/media/m3.mkv', true)`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_compliance (item_id, kind, rules, findings, originalbytes,
 			packagebytes, estimatedbytes, resolution, videocodec, videobitrate, bitrateestimated, bitratecap, sizecap,
 			durationseconds, packageaudio, originalaudio, ruleshash, evaluatedat) VALUES
@@ -39,9 +41,12 @@ func TestTheReportIsACSV(t *testing.T) {
 		('m2', 'movie', '{PACKAGING_FAILED}', '[{"rule": "PACKAGING_FAILED", "text": "-"}]', 40000000000, NULL, NULL,
 			NULL, NULL, NULL, false, NULL, 16106127360, NULL, NULL, NULL, 'h', '2026-10-26T14:00:00Z'),
 		('e1', 'episode', '{NOT_PACKAGED}', '[{"rule": "NOT_PACKAGED", "text": "-"}]', 1500000000, NULL, NULL,
-			'1920×1080', 'H.264', 4539942.5, true, 8000000, NULL, 2643.5, NULL, $2, 'h', '2026-10-26T14:30:00Z')`,
+			'1920×1080', 'H.264', 4539942.5, true, 8000000, NULL, 2643.5, NULL, $2, 'h', '2026-10-26T14:30:00Z'),
+		('m3', 'movie', '{VIDEO_NOT_HEVC}', '[{"rule": "VIDEO_NOT_HEVC", "text": "-"}]', NULL, 2000000000, NULL,
+			NULL, 'H.264', NULL, false, NULL, NULL, NULL, '-2.0 AAC', NULL, 'h', '2026-10-26T15:30:00Z')`,
 		"7.1 TrueHD", "5.1 E‑AC‑3 + 2.0 AAC")
-	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_reencodequeue (id, item_id, state) VALUES ('q1', 'm1', 'queued')`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_reencodequeue (id, item_id, state) VALUES ('q1', 'm1', 'queued'),
+		('q2', 'e1', 'sent'), ('q3', 'm3', 'failed')`)
 	// More titles than a batch holds, twice over: a film each, its package
 	// the smaller the lower its number.
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_items (id, type, title, createdat, modifiedat)
@@ -54,18 +59,21 @@ func TestTheReportIsACSV(t *testing.T) {
 			n * 1000, 'h', '2026-10-26T15:00:00Z' FROM generate_series(1, 1200) n`)
 
 	header := strings.Join(compliance.CSVColumns, ",") + "\r\n"
-	if header != "item_id,kind,title,year,series,season,episode,resolution,video_codec,video_bitrate_bps,"+
+	if header != "item_id,kind,title,year,series,season,episode,width,height,video_codec,video_bitrate_bps,"+
 		"bitrate_estimated,bitrate_cap_bps,size_cap_bytes,duration_s,original_bytes,package_bytes,estimated_bytes,"+
 		"package_audio,original_audio,rules,outcome,blocked_reason,queue,checked_at\r\n" {
 		t.Errorf("the header row is %q", header)
 	}
 	rows := map[string]string{
-		"m1": `m1,MOVIE,"Dinner, ""Again""",2019,,,,3840×2160,HEVC,73000000,false,14000000,16106127360,7200,70000000000,` +
-			`65700000000,12600000000,2.0 AAC,7.1 TrueHD,OVER_BITRATE_CAP;NO_SURROUND,REENCODE,,queued,2026-10-26T13:43:05Z`,
-		"m2": `m2,MOVIE,A Disc,,,,,,,,false,,16106127360,,40000000000,,,,,PACKAGING_FAILED,BLOCKED,` +
+		"m1": `m1,MOVIE,"Dinner, ""Again""",2019,,,,3840,2160,HEVC,73000000,false,14000000,16106127360,7200,70000000000,` +
+			`65700000000,12600000000,2.0 AAC,7.1 TrueHD,OVER_BITRATE_CAP;NO_SURROUND,REENCODE,,QUEUED,2026-10-26T13:43:05Z`,
+		"m2": `m2,MOVIE,A Disc,,,,,,,,,false,,16106127360,,40000000000,,,,,PACKAGING_FAILED,BLOCKED,` +
 			`"its file is a disc image, which the transcoder doesn’t encode",,2026-10-26T14:00:00Z`,
-		"e1": `e1,EPISODE,The First,,A Show,1,2,1920×1080,H.264,4539943,true,8000000,,2643.5,1500000000,,,,` +
-			`5.1 E-AC-3 + 2.0 AAC,NOT_PACKAGED,FIRST_PACKAGE,,,2026-10-26T14:30:00Z`,
+		"e1": `e1,EPISODE,The First,,A Show,1,2,1920,1080,H.264,4539943,true,8000000,,2643.5,1500000000,,,,` +
+			`5.1 E-AC-3 + 2.0 AAC,NOT_PACKAGED,FIRST_PACKAGE,,PROCESSING,2026-10-26T14:30:00Z`,
+		// a text that begins as a formula does is a text, a ' before it
+		"m3": `m3,MOVIE,'=Cut Above,,,,,,,H.264,,false,,,,,2000000000,,'-2.0 AAC,,VIDEO_NOT_HEVC,REENCODE,,NEEDS_ATTENTION,` +
+			`2026-10-26T15:30:00Z`,
 	}
 	// ids reads a CSV's rows, each title's id in turn, and checks them.
 	ids := func(what, body string) []string {
@@ -101,7 +109,7 @@ func TestTheReportIsACSV(t *testing.T) {
 		w.Header().Get("Content-Disposition") != "attachment; filename=rules-all-2026-10-26T1343Z.csv" {
 		t.Fatalf("GET: %d %q %q", w.Code, w.Header().Get("Content-Type"), w.Header().Get("Content-Disposition"))
 	}
-	want := []string{"m1"}
+	want := []string{"m1", "m3"}
 	for n := 1200; n >= 1; n-- {
 		want = append(want, fmt.Sprintf("f%04d", n))
 	}
@@ -125,7 +133,7 @@ func TestTheReportIsACSV(t *testing.T) {
 		{"search=dinner", "rules-all-2026-10-26T1343Z.csv", []string{"m1"}, 1},
 		{"search=filler%201&sort=TITLE&descending=false", "rules-all-2026-10-26T1500Z.csv",
 			[]string{"f0001", "f0010", "f0100", "f1000", "f1001", "f1002"}, 312},
-		{"sort=title&search=A", "rules-all-2026-10-26T1343Z.csv", []string{"m1", "e1", "m2"}, 3},
+		{"sort=title&search=A", "rules-all-2026-10-26T1343Z.csv", []string{"m1", "e1", "m2", "m3"}, 4},
 	} {
 		w := do(h, http.MethodGet, "/api/manage/compliance.csv?"+tc.query, "", admin)
 		if w.Code != http.StatusOK || w.Header().Get("Content-Disposition") != "attachment; filename="+tc.name {

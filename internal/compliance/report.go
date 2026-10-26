@@ -130,7 +130,7 @@ func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, o graph.
 	if out.Summary, err = s.summary(ctx, f); err != nil {
 		return out, err
 	}
-	if out.Rows, out.NextCursor, err = s.rows(ctx, f, rules, sorted, cur, first); err != nil {
+	if out.Rows, out.NextCursor, err = s.rows(ctx, s.pool, f, rules, sorted, cur, first); err != nil {
 		return out, err
 	}
 	return out, nil
@@ -233,7 +233,7 @@ func (s *Service) summary(ctx context.Context, f graph.ComplianceFilter) ([]grap
 // rows is a page of the titles f matches that break a rule, in the order
 // sorted, at most first of them after the cursor's (cur, its arguments; nil
 // from the first), and the cursor of the next page (nil on the last).
-func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []string, sorted sorting, cur []any,
+func (s *Service) rows(ctx context.Context, q library.Querier, f graph.ComplianceFilter, rules []string, sorted sorting, cur []any,
 	first int32) ([]graph.ComplianceRow, *string, error) {
 	out := []graph.ComplianceRow{}
 	if first == 0 {
@@ -246,7 +246,7 @@ func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []st
 		args = append(args, cur...)
 	}
 	args = append(args, first+1)
-	rows, err := s.pool.Query(ctx, filtered+`SELECT f.item_id, f.title, f.year, f.kind, f.series_id, f.series_title,
+	rows, err := q.Query(ctx, filtered+`SELECT f.item_id, f.title, f.year, f.kind, f.series_id, f.series_title,
 			f.seasonnumber, f.episodenumber, f.findings::text, f.originalbytes, f.packagebytes, f.estimatedbytes,
 			f.evaluatedat, q.state, q.reason, f.blocked, f.resolution, f.videocodec, f.videobitrate, f.bitrateestimated,
 			f.bitratecap, f.sizecap::float8, f.durationseconds, f.packageaudio, f.originalaudio, `+
@@ -311,7 +311,7 @@ func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []st
 		c := sorted.cursorOf(sorted.values(lastCols))
 		next = &c
 	}
-	if err := s.blocked(ctx, out, kept); err != nil {
+	if err := s.blocked(ctx, q, out, kept); err != nil {
 		return nil, nil, err
 	}
 	return out, next, nil
@@ -321,7 +321,7 @@ func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []st
 // clause the console says after a colon: as the re-encode queue skips it
 // (its original deleted, no file, a disc image), else as the pass found it
 // of its original's record or its failed step (kept).
-func (s *Service) blocked(ctx context.Context, rows []graph.ComplianceRow, kept []string) error {
+func (s *Service) blocked(ctx context.Context, q library.Querier, rows []graph.ComplianceRow, kept []string) error {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -329,7 +329,7 @@ func (s *Service) blocked(ctx context.Context, rows []graph.ComplianceRow, kept 
 	for i, r := range rows {
 		ids[i] = r.ItemID
 	}
-	kinds, err := s.blockedOf(ctx, ids)
+	kinds, err := s.blockedOf(ctx, q, ids)
 	if err != nil {
 		return err
 	}
@@ -389,27 +389,27 @@ func outcomeOf(r graph.ComplianceRow) *string {
 // why, a kind of skip (graph.Skip*), as the re-encode queue tells
 // (retry's unencodable): its original being deleted after packaging, or
 // deleted, no file to encode, its file a disc image.
-func (s *Service) blockedOf(ctx context.Context, ids []string) (map[string]string, error) {
+func (s *Service) blockedOf(ctx context.Context, q library.Querier, ids []string) (map[string]string, error) {
 	out := map[string]string{}
 	if len(ids) == 0 {
 		return out, nil
 	}
-	originals, err := library.OriginalsOf(ctx, s.pool, ids)
+	originals, err := library.OriginalsOf(ctx, q, ids)
 	if err != nil {
 		return nil, err
 	}
-	q, err := s.pool.Query(ctx, `SELECT x.id,
+	found, err := q.Query(ctx, `SELECT x.id,
 			EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets p WHERE p.item_id = x.id AND p.isprimary = true),
 			`+processing.DiscImageOf("x.id")+`
 		FROM unnest($1::text[]) AS x(id)`, ids)
 	if err != nil {
 		return nil, err
 	}
-	defer q.Close()
-	for q.Next() {
+	defer found.Close()
+	for found.Next() {
 		var id string
 		var file, disc bool
-		if err := q.Scan(&id, &file, &disc); err != nil {
+		if err := found.Scan(&id, &file, &disc); err != nil {
 			return nil, err
 		}
 		switch o := originals[id]; {
@@ -423,7 +423,7 @@ func (s *Service) blockedOf(ctx context.Context, ids []string) (map[string]strin
 			out[id] = graph.SkipDiscImage
 		}
 	}
-	return out, q.Err()
+	return out, found.Err()
 }
 
 // Blocked says of each title of ids that processing it again can't help, as
@@ -576,7 +576,7 @@ func (s *Service) matching(ctx context.Context, f graph.ComplianceFilter, rules 
 	for i, t := range titles {
 		ids[i] = t.id
 	}
-	kinds, err := s.blockedOf(ctx, ids)
+	kinds, err := s.blockedOf(ctx, s.pool, ids)
 	if err != nil {
 		return out, err
 	}
