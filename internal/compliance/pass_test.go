@@ -288,6 +288,16 @@ func TestTheReportFiltersAndPages(t *testing.T) {
 		}
 	}
 	rep := reportOf(t, s, graph.ComplianceFilter{Kind: "movie", Rules: []string{OverBitrateCap}}, 100, "")
+	// the totals are the whole filter's, the rules too
+	if m := rep.Matching; m.Titles != 1 || m.OriginalBytes != 63e9 || m.PackageBytes != 59e9 || m.EstimatedBytes == nil ||
+		*m.EstimatedBytes != float64(int64((14e6+192e3+448e3)*7200/8)) {
+		t.Errorf("the totals of movies over a cap: %+v", m)
+	}
+	all := reportOf(t, s, graph.ComplianceFilter{}, 2, "")
+	if m := all.Matching; m.Titles != 6 || m.Titles != all.Total || m.PackageBytes != 59e9+3.9e9+2.7e9 ||
+		m.OriginalBytes != 63e9+4e9+3e9+3*4e9 || m.EstimatedBytes == nil {
+		t.Errorf("the totals of every title, a page of 2: %+v", m)
+	}
 	for _, c := range rep.Summary {
 		if c.Rule == PackagingFailed && c.Titles != 2 {
 			t.Errorf("the summary of movies, asked for the bitrate cap: %d failed, want the 2 movies' whatever the rules", c.Titles)
@@ -345,6 +355,9 @@ func TestARowSaysItsPlaceInTheQueue(t *testing.T) {
 		if got != want {
 			t.Errorf("%s: queue %q, want %q", r.Title, got, want)
 		}
+	}
+	if q := rep.Queue; q != (graph.ComplianceQueueCounts{Queued: 1, Processing: 1, Processed: 0, Failed: 1}) {
+		t.Errorf("the queue's counts: %+v", q)
 	}
 }
 

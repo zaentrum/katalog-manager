@@ -415,7 +415,8 @@ var operations = []struct{ doc, calls string }{
 	{`{ retryPolicy { available automatic maxAttempts reason } }`, "retry policy"},
 	{`{ pipelineRules { transcoder { worker version reportedAt rules { key label value } } packager { worker } } }`, "pipeline rules"},
 	{`{ libraryCompliance(kind: MOVIE, rules: [OVER_BITRATE_CAP], search: "Film", first: 10) { rules { transcoder { worker } }
-		notEvaluated evaluatedAt evaluating pending total nextCursor summary { rule titles } rows { itemId findings { rule } } } }`,
+		notEvaluated evaluatedAt evaluating pending total nextCursor summary { rule titles } rows { itemId findings { rule } }
+		matching { titles originalBytes packageBytes estimatedBytes } queue { queued processing processed failed } } }`,
 		`compliance report movie OVER_BITRATE_CAP "Film" 10 ""`},
 
 	{`mutation { triggerScan(source: "nfs") { id status } }`, "scan nfs"},

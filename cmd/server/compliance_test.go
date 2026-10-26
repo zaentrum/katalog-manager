@@ -112,6 +112,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	const report = `{ libraryCompliance {
 		rules { transcoder { worker version reportedAt rules { key label value } } packager { worker version } }
 		notEvaluated evaluatedAt evaluating pending total nextCursor
+		matching { titles originalBytes packageBytes estimatedBytes } queue { queued processing processed failed }
 		summary { rule titles packageBytes estimatedBytes }
 		rows { itemId title year kind seriesId seriesTitle season episode findings { rule text measured limit }
 			originalBytes packageBytes estimatedBytes queue queueReason reworkBlocked evaluatedAt } } }`
@@ -142,7 +143,13 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 			Pending      int
 			Total        int
 			NextCursor   *string
-			Summary      []struct {
+			Matching     struct {
+				Titles                      int
+				OriginalBytes, PackageBytes float64
+				EstimatedBytes              *float64
+			}
+			Queue   struct{ Queued, Processing, Processed, Failed int }
+			Summary []struct {
 				Rule           string
 				Titles         int
 				PackageBytes   float64
@@ -193,6 +200,9 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	}
 	if _, err := time.Parse(time.RFC3339, remux.EvaluatedAt); err != nil {
 		t.Errorf("evaluatedAt %q: %v", remux.EvaluatedAt, err)
+	}
+	if m := rep.Matching; m.Titles != 3 || m.OriginalBytes != 63e9+4e9 || m.PackageBytes != 59e9 || m.EstimatedBytes == nil {
+		t.Errorf("the totals: %+v", m)
 	}
 	if rep.Total != 3 || rep.Pending != 0 || rep.Evaluating || rep.EvaluatedAt == nil || rep.NextCursor != nil ||
 		len(rep.NotEvaluated) != 0 || len(rep.Summary) != len(compliance7) {
@@ -247,6 +257,9 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	query(report)
 	if q := data.LibraryCompliance.Rows[0].Queue; q == nil || *q != "queued" {
 		t.Errorf("the remux's place in the queue: %v", q)
+	}
+	if q := data.LibraryCompliance.Queue; q.Queued != 3 || q.Processing != 0 || q.Processed != 0 || q.Failed != 0 {
+		t.Errorf("the queue's counts: %+v", q)
 	}
 	mutate(`mutation { q: queueReworkMatching(rules: [IMAGE_SUBTITLES_MISSING]) { queued alreadyQueued skipped message } }`)
 	if q := queued.Q; q.Queued != 0 || q.Message != "no title that breaks a rule matches: nothing queued" {

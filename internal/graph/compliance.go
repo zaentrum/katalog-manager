@@ -94,6 +94,21 @@ type ComplianceSummary struct {
 	EstimatedBytes *float64
 }
 
+// ComplianceTotals are the titles a report's whole filter matches: how many,
+// the sizes of their originals and packages, and what those packages are to
+// be after they are processed again (nil when that is known of none).
+type ComplianceTotals struct {
+	Titles                      int32
+	OriginalBytes, PackageBytes float64
+	EstimatedBytes              *float64
+}
+
+// ComplianceQueueCounts are the re-encode queue's titles by state: queued,
+// processing (sent), processed (done) and failed.
+type ComplianceQueueCounts struct {
+	Queued, Processing, Processed, Failed int32
+}
+
 // ComplianceReport is a page of the titles that break a rule.
 type ComplianceReport struct {
 	Rules        PipelineRules
@@ -102,6 +117,8 @@ type ComplianceReport struct {
 	Evaluating   bool
 	Pending      int32
 	Total        int32
+	Matching     ComplianceTotals
+	Queue        ComplianceQueueCounts
 	Summary      []ComplianceSummary
 	Rows         []ComplianceRow
 	NextCursor   *string
@@ -339,6 +356,26 @@ func (r *complianceReportResolver) Rows() []*complianceRowResolver {
 	return out
 }
 func (r *complianceReportResolver) NextCursor() *string { return r.m.NextCursor }
+func (r *complianceReportResolver) Matching() *complianceTotalsResolver {
+	return &complianceTotalsResolver{m: r.m.Matching}
+}
+func (r *complianceReportResolver) Queue() *complianceQueueCountsResolver {
+	return &complianceQueueCountsResolver{m: r.m.Queue}
+}
+
+type complianceTotalsResolver struct{ m ComplianceTotals }
+
+func (r *complianceTotalsResolver) Titles() int32            { return r.m.Titles }
+func (r *complianceTotalsResolver) OriginalBytes() float64   { return r.m.OriginalBytes }
+func (r *complianceTotalsResolver) PackageBytes() float64    { return r.m.PackageBytes }
+func (r *complianceTotalsResolver) EstimatedBytes() *float64 { return r.m.EstimatedBytes }
+
+type complianceQueueCountsResolver struct{ m ComplianceQueueCounts }
+
+func (r *complianceQueueCountsResolver) Queued() int32     { return r.m.Queued }
+func (r *complianceQueueCountsResolver) Processing() int32 { return r.m.Processing }
+func (r *complianceQueueCountsResolver) Processed() int32  { return r.m.Processed }
+func (r *complianceQueueCountsResolver) Failed() int32     { return r.m.Failed }
 
 type complianceSummaryResolver struct{ m ComplianceSummary }
 

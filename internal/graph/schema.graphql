@@ -1399,14 +1399,34 @@ type ComplianceSummary {
   estimatedBytes: Float
 }
 
+# The titles a report's whole filter (kind, rules, search) matches: how
+# many, the sizes of their originals and packages, and what those packages
+# are to be at most once processed again (null when that is known of none).
+type ComplianceTotals {
+  titles: Int!
+  originalBytes: Float!
+  packageBytes: Float!
+  estimatedBytes: Float
+}
+
+# The re-encode queue, all its titles, by state: queued, processing (sent),
+# processed (done) and failed.
+type ComplianceQueueCounts {
+  queued: Int!
+  processing: Int!
+  processed: Int!
+  failed: Int!
+}
+
 # A page of the titles that break a rule, the largest package first (then
 # the largest original). total counts the titles the filter matches, and
-# nextCursor, passed as after, reads the next page (null on the last).
-# notEvaluated says each rule that is not checked, and why. evaluatedAt is
-# the oldest check of the titles of the report's kind and search (null when
-# none was ever checked); evaluating, whether a pass runs; pending, how many
-# titles of the kind wait for the next pass (never checked, or checked
-# before a change of the rules or of the title).
+# matching sums them up; nextCursor, passed as after, reads the next page
+# (null on the last). notEvaluated says each rule that is not checked, and
+# why. evaluatedAt is the oldest check of the titles of the report's kind
+# and search (null when none was ever checked); evaluating, whether a pass
+# runs; pending, how many titles of the kind wait for the next pass (never
+# checked, or checked before a change of the rules or of the title). queue
+# counts the re-encode queue.
 type ComplianceReport {
   rules: PipelineRules!
   notEvaluated: [String!]!
@@ -1414,6 +1434,8 @@ type ComplianceReport {
   evaluating: Boolean!
   pending: Int!
   total: Int!
+  matching: ComplianceTotals!
+  queue: ComplianceQueueCounts!
   summary: [ComplianceSummary!]!
   rows: [ComplianceRow!]!
   nextCursor: String

@@ -10,8 +10,9 @@ import (
 )
 
 // complianceContract is the library compliance's GraphQL contract, as the
-// console is built against it: the schema may add to it, and may rename or
-// remove nothing of it.
+// console is built against it, with what was added to it since (the totals
+// of the whole filter and the queue's counts): the schema may add to it, and
+// may rename or remove nothing of it.
 const complianceContract = `
 enum ComplianceRule { NOT_PACKAGED PACKAGING_FAILED OVER_BITRATE_CAP OVER_SIZE_CAP NO_SURROUND IMAGE_SUBTITLES_MISSING VIDEO_NOT_HEVC }
 enum ComplianceKind { MOVIE EPISODE }
@@ -48,6 +49,9 @@ extend type Mutation {
   queueReworkMatching(kind: ComplianceKind, rules: [ComplianceRule!], search: String): ComplianceQueued!
   refreshCompliance(kind: ComplianceKind): Boolean!
 }
+type ComplianceTotals { titles: Int! originalBytes: Float! packageBytes: Float! estimatedBytes: Float }
+type ComplianceQueueCounts { queued: Int! processing: Int! processed: Int! failed: Int! }   # the re-encode queue, all titles
+extend type ComplianceReport { matching: ComplianceTotals!  queue: ComplianceQueueCounts! }
 `
 
 var (
@@ -104,8 +108,8 @@ func TestTheComplianceContract(t *testing.T) {
 		types[ty.Name] = ty
 	}
 	blocks := contractBlockRE.FindAllStringSubmatch(complianceContract, -1)
-	if len(blocks) != 12 {
-		t.Fatalf("the contract reads as %d blocks, want 12", len(blocks))
+	if len(blocks) != 15 {
+		t.Fatalf("the contract reads as %d blocks, want 15", len(blocks))
 	}
 	for _, b := range blocks {
 		kind, name, body := b[1], b[2], b[3]
