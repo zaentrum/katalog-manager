@@ -488,6 +488,18 @@ func TestTheChecksSettings(t *testing.T) {
 	if got := set.cutoff(at); !got.Equal(time.Date(2026, 10, 25, 1, 30, 0, 0, time.Local)) {
 		t.Errorf("at 01:00, the nightly check of 01:30 last fell due at %v", got)
 	}
+	// a setting that can't be read is said in the log, once while it holds
+	var logged bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logged)
+	defer log.SetOutput(prev)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_settings SET valuetext = 'lots' WHERE id = 'c-readers'`)
+	s.round(ctx)
+	s.round(ctx)
+	if n := strings.Count(logged.String(), `compliance: compliance.readers is "lots", which is not a number of records from 1 to 64; `+
+		`it is 4`); n != 1 {
+		t.Errorf("a setting that can't be read, said %d times:\n%s", n, logged.String())
+	}
 	var bad passSettings
 	bad = passSettings{on: true, readers: defaultReaders, nightly: defaultNightly}
 	for k, v := range map[string]string{SettingReaders: "a hundred", SettingNightly: "25:00", SettingPass: "maybe"} {

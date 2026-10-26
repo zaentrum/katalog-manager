@@ -47,6 +47,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -88,10 +89,12 @@ type Service struct {
 	// reads counts the records the check read of the library, which the
 	// log of a pass says.
 	reads atomic.Int64
-	// said is what the pass last said went wrong, said once each time it
-	// changes (under mu).
-	mu   sync.Mutex
-	said string
+	// said is what the pass last said went wrong, and unread what it last
+	// said of the check's settings it can't read, each said once each time
+	// it changes (under mu).
+	mu     sync.Mutex
+	said   string
+	unread string
 	// retries says the sweep that retries a failed step runs.
 	retries bool
 }
@@ -220,9 +223,12 @@ func (s *Service) round(ctx context.Context) {
 		s.say("compliance: the library's compliance is not checked: " + why.Error())
 		return
 	}
-	if set, err := readPassSettings(ctx, s.pool); err == nil && !set.on {
-		s.say("compliance: " + SettingPass + " is off, so no title is checked until it is on")
-		return
+	if set, err := readPassSettings(ctx, s.pool); err == nil {
+		s.sayUnread(set.problems)
+		if !set.on {
+			s.say("compliance: " + SettingPass + " is off, so no title is checked until it is on")
+			return
+		}
 	}
 	before := s.reads.Load()
 	n, err := s.Pass(ctx)
@@ -235,6 +241,18 @@ func (s *Service) round(ctx context.Context) {
 		log.Printf("compliance: %d titles checked against the workers' rules, %d records read of the library",
 			n, s.reads.Load()-before)
 	}
+}
+
+// sayUnread logs each of the check's settings that can't be read, what it
+// holds and what holds instead, once each time they change.
+func (s *Service) sayUnread(problems []string) {
+	msg := strings.Join(problems, "; ")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if msg != s.unread && msg != "" {
+		log.Print("compliance: " + msg)
+	}
+	s.unread = msg
 }
 
 // say logs msg once each time it changes; "" clears it.
