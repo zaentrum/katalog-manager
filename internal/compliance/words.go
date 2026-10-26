@@ -398,7 +398,7 @@ func queueWords(state, reason string) *string {
 		case strings.HasPrefix(r, "its transcode and package are gone"):
 			return strp("Its transcode and package steps were removed.")
 		case r == "unknown item":
-			return strp("It is no longer in the catalog.")
+			return strp(asSentence(skipReason(graph.SkipUnknown)))
 		case strings.Contains(r, "is being deleted after packaging"):
 			return strp(deletingText)
 		case strings.Contains(r, "deleted after packaging"):

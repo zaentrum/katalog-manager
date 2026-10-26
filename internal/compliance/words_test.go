@@ -202,7 +202,7 @@ func serverTexts(t *testing.T) []text {
 		{"none queued, 1 skipped, not in the catalog", 0, 0, map[string]int{graph.SkipUnknown: 1}, graph.QueuedBy{}},
 		{"none queued, 2 skipped, a season and a title not in the catalog", 0, 0,
 			map[string]int{graph.SkipType: 1, graph.SkipUnknown: 1}, graph.QueuedBy{}},
-		{"none queued, 1 skipped for a reason the words don't know", 0, 0, map[string]int{skipOther: 1}, graph.QueuedBy{}},
+		{"none queued, 1 skipped for a reason the words don’t know", 0, 0, map[string]int{skipOther: 1}, graph.QueuedBy{}},
 		{"no title named", 0, 0, nil, graph.QueuedBy{}},
 		{"no title fits the filter", 0, 0, nil, graph.QueuedBy{Matching: true}},
 		{"none queued by a filter, the 1 that fits queued already", 0, 0, nil, graph.QueuedBy{Matching: true, InQueue: 1}},
