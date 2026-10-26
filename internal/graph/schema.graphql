@@ -1554,7 +1554,11 @@ extend type Query {
 extend type Mutation {
   # Queues titles to be processed again under the rules the workers run
   # with now, through the re-encode queue, which sends them at its pace (a
-  # series is its episodes). Nothing else queues a title the check found.
+  # series is its episodes). A title named that processing again can't help
+  # is not queued, and skippedTitles says why: one the queue can't encode
+  # (no file, a disc image, its original deleted after packaging) and one
+  # the check found the transcoder can't (a row's reworkBlocked). Nothing
+  # else queues a title the check found.
   queueRework(items: [ID!]!): ComplianceQueued!
   # Queues the titles the filter matches that break a rule and that a
   # request queues, the report's queueable: none queued already, none that

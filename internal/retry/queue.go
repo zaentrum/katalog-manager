@@ -77,9 +77,11 @@ func (s *Service) queueTable(ctx context.Context) string {
 // An episode another episode's file covers is that episode: its holder is
 // queued. A title with no file to encode, whose original was deleted after
 // packaging, or whose file is a disc image, is skipped, saying why, and so is
-// a name that is no movie, episode or series. A title queued already,
-// waiting or sent, stays as it is (alreadyQueued). The caller's subject is
-// noted as who queued them.
+// a name that is no movie, episode or series, and a title the library's
+// compliance check found the transcoder can't encode (an original without
+// video, or of a Dolby Vision profile it leaves as it is; WithCompliance). A
+// title queued already, waiting or sent, stays as it is (alreadyQueued). The
+// caller's subject is noted as who queued them.
 func (s *Service) EnqueueReencode(ctx context.Context, req graph.ReencodeRequest) (graph.ReencodeEnqueued, error) {
 	out := graph.ReencodeEnqueued{Skipped: []graph.ReencodeSkipped{}}
 	if why := s.queueTable(ctx); why != "" {
@@ -170,9 +172,13 @@ func (s *Service) EnqueueReencode(ctx context.Context, req graph.ReencodeRequest
 		}
 	}
 
-	// Of the titles picked, those with nothing to encode are skipped.
+	// Of the titles picked, those with nothing to encode are skipped, and
+	// those the compliance check found the transcoder can't encode.
 	why, err := s.unencodable(ctx, titles)
 	if err != nil {
+		return out, err
+	}
+	if err := s.blocked(ctx, titles, why); err != nil {
 		return out, err
 	}
 	var queue, of []string
@@ -286,6 +292,47 @@ func (s *Service) unencodable(ctx context.Context, ids []string) (map[string]unq
 	return why, nil
 }
 
+// blocked adds to why each title of ids, kept out of the queue by nothing
+// else, that the library's compliance check found the transcoder can't
+// encode (Compliance.Blocked).
+func (s *Service) blocked(ctx context.Context, ids []string, why map[string]unqueueable) error {
+	if s.compliance == nil {
+		return nil
+	}
+	var free []string
+	for _, id := range ids {
+		if why[id].why == "" {
+			free = append(free, id)
+		}
+	}
+	if len(free) == 0 {
+		return nil
+	}
+	kinds, err := s.compliance.Blocked(ctx, free)
+	if err != nil {
+		return fmt.Errorf("what the library's compliance check found: %w", err)
+	}
+	for _, id := range free {
+		if k := kinds[id]; k != "" {
+			why[id] = unqueueable{k, blockedWhy(k)}
+		}
+	}
+	return nil
+}
+
+// blockedWhy is why the queue doesn't take a title the compliance check
+// found the transcoder can't encode, of its kind.
+func blockedWhy(kind string) string {
+	if profile, ok := strings.CutPrefix(kind, graph.SkipDolbyVision); ok {
+		return "the library's compliance check found that its original is Dolby Vision profile " + profile +
+			", which the transcoder leaves as it is"
+	}
+	if kind == graph.SkipNoVideo {
+		return "the library's compliance check found that its original has no video"
+	}
+	return "the library's compliance check found that encoding it again can't help (" + kind + ")"
+}
+
 // ReencodeQueue says what the queue holds: its titles by state, the one
 // waiting or sent that was queued first and the one queued last, and why the
 // sweep sends none now ("" when it may).
@@ -346,15 +393,20 @@ func (s *Service) ClearReencodeQueue(ctx context.Context, states []string) (int3
 	return int32(tag.RowsAffected()), nil
 }
 
-// Toucher has titles checked again: the library's compliance check
-// (compliance.Service).
-type Toucher interface {
+// Compliance is the library's compliance check (compliance.Service): it
+// checks titles again (Touch), and says of titles that encoding again can't
+// help, as it found them of their original's record or their failed step,
+// of which kind (Blocked: graph.SkipNoVideo, graph.SkipDolbyVision and the
+// profile).
+type Compliance interface {
 	Touch(ctx context.Context, ids ...string)
+	Blocked(ctx context.Context, ids []string) (map[string]string, error)
 }
 
 // WithCompliance has the queue tell c of each title whose re-encode is done
-// or failed, which its compliance check looks at again.
-func (s *Service) WithCompliance(c Toucher) *Service {
+// or failed, which its compliance check looks at again, and skip each title
+// a request names that c found encoding again can't help.
+func (s *Service) WithCompliance(c Compliance) *Service {
 	s.compliance = c
 	return s
 }

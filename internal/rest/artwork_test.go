@@ -77,10 +77,11 @@ func serverWith(t *testing.T, st *store.Store, cfg config.Config, pub retry.Publ
 	r.Group(func(pr chi.Router) {
 		pr.Use(auth.NewMiddleware(jwt, stream).Handler)
 		steps := processing.New(st.Pool())
-		retries := retry.New(st, steps.Policy(), pub, 0)
+		check := compliance.New(st, cfg)
+		retries := retry.New(st, steps.Policy(), pub, 0).WithCompliance(check)
 		New(Deps{Store: st, Cfg: cfg, Steps: steps, Packager: itemactions.New(st, cfg, steps, nil),
 			Extras: extras.New(st, cfg, steps.Policy(), nil), Reencode: retries, TakeIn: retries,
-			Compliance: compliance.New(st, cfg)}).Register(pr)
+			Compliance: check}).Register(pr)
 	})
 	return r, iss
 }

@@ -3,6 +3,7 @@ package compliance
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -531,13 +532,13 @@ var skipClauses = map[string]string{
 const skipOther = "other"
 
 // The kinds of title processing again can't help that the check finds of a
-// title's record or its failed step (blockedBy), kept with its row, beside
-// those the queue skips (graph.Skip*): an original without video, and one
-// of a Dolby Vision profile the transcoder leaves as it is (the kind and
-// the profile: "dolbyvision:7").
+// title's record or its failed step (blockedBy), kept with its row, which the
+// queue skips as well (Blocked): an original without video, and one of a
+// Dolby Vision profile the transcoder leaves as it is (the kind and the
+// profile: "dolbyvision:7").
 const (
-	blockedNoVideo     = "novideo"
-	blockedDolbyVision = "dolbyvision:"
+	blockedNoVideo     = graph.SkipNoVideo
+	blockedDolbyVision = graph.SkipDolbyVision
 )
 
 // skipReason is why a title of kind wasn't queued, or can't be processed
@@ -668,9 +669,23 @@ func eventOf(reason string) *string {
 }
 
 // skipKinds are the kinds of skip, in the order a request's message says
-// them.
+// them; the kinds of a Dolby Vision profile come after an original without
+// video, by profile (dolbyVisionKinds).
 var skipKinds = []string{graph.SkipDeleted, graph.SkipDeleting, graph.SkipNoFile, graph.SkipDiscImage,
-	graph.SkipNoEpisodes, graph.SkipUnknown, graph.SkipType, skipOther}
+	graph.SkipNoVideo, graph.SkipNoEpisodes, graph.SkipUnknown, graph.SkipType, skipOther}
+
+// dolbyVisionKinds are the kinds of skip of skipped that are a Dolby Vision
+// profile's, by profile.
+func dolbyVisionKinds(skipped map[string]int) []string {
+	var out []string
+	for k, n := range skipped {
+		if n > 0 && strings.HasPrefix(k, blockedDolbyVision) {
+			out = append(out, k)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
 
 // skipAll is why the titles of a request's message were not queued when all
 // of them weren't for one reason; skipSome says it of a number of them,
@@ -681,6 +696,7 @@ var (
 		graph.SkipDeleting:   "their originals are being deleted after packaging",
 		graph.SkipNoFile:     "they have no file",
 		graph.SkipDiscImage:  "their files are disc images, which the transcoder doesn’t encode",
+		graph.SkipNoVideo:    "their originals have no video",
 		graph.SkipNoEpisodes: "the series have no episodes",
 		graph.SkipUnknown:    "they are not in the catalog",
 		graph.SkipType:       "they aren’t movies, episodes or series",
@@ -691,12 +707,37 @@ var (
 		graph.SkipDeleting:   {"the original of 1 is being deleted after packaging", "the originals of %s are being deleted after packaging"},
 		graph.SkipNoFile:     {"1 has no file", "%s have no file"},
 		graph.SkipDiscImage:  {"1 is a disc image", "%s are disc images"},
+		graph.SkipNoVideo:    {"the original of 1 has no video", "the originals of %s have no video"},
 		graph.SkipNoEpisodes: {"1 is a series without episodes", "%s are series without episodes"},
 		graph.SkipUnknown:    {"1 is not in the catalog", "%s are not in the catalog"},
 		graph.SkipType:       {"1 isn’t a movie, an episode or a series", "%s aren’t movies, episodes or series"},
 		skipOther:            {"1 can’t be processed again", "%s can’t be processed again"},
 	}
 )
+
+// allSkipped is why the titles a request's message counts weren't queued,
+// all of them of kind: of a Dolby Vision profile, what it needs, whatever
+// their number.
+func allSkipped(kind string) string {
+	if strings.HasPrefix(kind, blockedDolbyVision) {
+		return skipReason(kind)
+	}
+	return skipAll[kind]
+}
+
+// someSkipped is why n titles of kind weren't queued, among others.
+func someSkipped(kind string, n int) string {
+	if profile, ok := strings.CutPrefix(kind, blockedDolbyVision); ok {
+		if n == 1 {
+			return "1 is Dolby Vision profile " + profile
+		}
+		return countText(n) + " are Dolby Vision profile " + profile
+	}
+	if n == 1 {
+		return skipSome[kind][0]
+	}
+	return fmt.Sprintf(skipSome[kind][1], countText(n))
+}
 
 // requestTexts are what a request to process titles again did, as the
 // console says it: a toast of the titles it queued, without a full stop
@@ -724,21 +765,20 @@ func requestTexts(queued, already int, skipped map[string]int, matching bool) (q
 			if skipped[k] > 0 {
 				kinds = append(kinds, k)
 			}
+			if k == graph.SkipNoVideo {
+				kinds = append(kinds, dolbyVisionKinds(skipped)...)
+			}
 		}
 		var why string
 		if len(kinds) == 1 {
-			why = skipAll[kinds[0]]
+			why = allSkipped(kinds[0])
 			if total == 1 {
 				why = skipReason(kinds[0])
 			}
 		} else {
 			var some []string
 			for _, k := range kinds {
-				if n := skipped[k]; n == 1 {
-					some = append(some, skipSome[k][0])
-				} else {
-					some = append(some, fmt.Sprintf(skipSome[k][1], countText(n)))
-				}
+				some = append(some, someSkipped(k, skipped[k]))
 			}
 			why = joinAnd(some)
 		}

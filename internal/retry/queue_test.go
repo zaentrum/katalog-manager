@@ -569,10 +569,67 @@ func TestAPassThatCannotNoteATitleStillSendsWhatItReset(t *testing.T) {
 	}
 }
 
-// touched records the titles the queue tells the compliance check of.
-type touched struct{ ids []string }
+// touched records the titles the queue tells the compliance check of, and
+// says of the titles of blocked that encoding them again can't help, of
+// which kind.
+type touched struct {
+	ids     []string
+	blocked map[string]string
+}
 
 func (t *touched) Touch(_ context.Context, ids ...string) { t.ids = append(t.ids, ids...) }
+
+func (t *touched) Blocked(_ context.Context, ids []string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, id := range ids {
+		if k, ok := t.blocked[id]; ok {
+			out[id] = k
+		}
+	}
+	return out, nil
+}
+
+// A title the library's compliance check found the transcoder can't encode
+// (its original without video, or of a Dolby Vision profile it leaves as it
+// is) is not queued when a request names it, by its id or by its series: it
+// is skipped, of its kind, saying why; a title its file keeps out says that
+// first. Without the check, nothing it found keeps a title out.
+func TestATitleTheCheckFoundBlockedIsNotQueued(t *testing.T) {
+	st := storetest.Open(t)
+	storetest.AddItem(t, st, "b1", "movie", "A Film Of Sound Alone", "")
+	storetest.AddItem(t, st, "b2", "movie", "A Film In Profile Seven", "")
+	storetest.AddItem(t, st, "b3", "movie", "A Film Without A File", "")
+	storetest.AddItem(t, st, "ok", "movie", "A Film To Encode", "")
+	storetest.AddItem(t, st, "s9", "series", "A Quiet Show", "")
+	storetest.AddItem(t, st, "e9", "episode", "An Episode Of Sound Alone", "s9")
+	file(t, st, "b1", "b2", "ok", "e9")
+	check := &touched{blocked: map[string]string{"b1": graph.SkipNoVideo, "b2": graph.SkipDolbyVision + "7",
+		"b3": graph.SkipNoVideo, "e9": graph.SkipNoVideo}}
+	ctx := context.Background()
+	res, err := newService(t, st, &bus{}).WithCompliance(check).EnqueueReencode(ctx,
+		graph.ReencodeRequest{Items: []string{"b1", "b2", "b3", "ok", "s9"}})
+	if err != nil || res.Queued != 1 || res.AlreadyQueued != 0 {
+		t.Fatalf("queue them: %+v, %v", res, err)
+	}
+	var skipped []string
+	for _, sk := range res.Skipped {
+		skipped = append(skipped, sk.ItemID+" "+sk.Kind+": "+sk.Reason)
+	}
+	if got := strings.Join(skipped, "\n"); got != "b1 novideo: the library's compliance check found that its original has no video\n"+
+		"b2 dolbyvision:7: the library's compliance check found that its original is Dolby Vision profile 7, "+
+		"which the transcoder leaves as it is\n"+
+		"b3 nofile: the movie has no file to encode\n"+
+		"e9 novideo: the library's compliance check found that its original has no video" {
+		t.Errorf("skipped:\n%s", got)
+	}
+	if got := queueOf(t, st); got != "ok queued items by=katalog-manager sent=false done=false reason=-" {
+		t.Errorf("the queue:\n%s", got)
+	}
+	if res, err := newService(t, st, &bus{}).EnqueueReencode(ctx, graph.ReencodeRequest{Items: []string{"b1"}}); err != nil ||
+		res.Queued != 1 || len(res.Skipped) != 0 {
+		t.Errorf("without the check: %+v, %v; want it queued", res, err)
+	}
+}
 
 // A title never packaged, with no step yet (a film taken in, or one whose
 // pipeline never ran), goes through the queue as any other: queued, it gets

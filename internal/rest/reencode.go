@@ -65,7 +65,10 @@ type queuedTitle struct {
 // them together, each title once. It answers {queued, alreadyQueued,
 // skipped: [{itemId, reason}]}: a title queued already, waiting or sent, is
 // not queued again, and one with nothing to encode (unknown, no file, its
-// original deleted after packaging, no movie, episode or series) is skipped.
+// original deleted after packaging, no movie, episode or series) is skipped,
+// and so is one the library's compliance check found the transcoder can't
+// encode (an original without video, or of a Dolby Vision profile it leaves
+// as it is).
 // 400 for a body that names none; 503 without the queue (migration 043).
 func (h *Handlers) postReencode(w http.ResponseWriter, r *http.Request) {
 	if h.d.Reencode == nil {

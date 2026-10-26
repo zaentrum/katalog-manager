@@ -366,13 +366,43 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		t.Errorf("a filter no title matches: %+v", q)
 	}
 
+	// a film whose original is Dolby Vision profile 7, which the transcoder
+	// leaves as it is: the check finds it so, and named by its id it is not
+	// queued, through GraphQL or the REST route
+	const dvID, dvVer, dvSrc = "0c0c0c0c-0000-4000-8000-000000000106", "0c0c0c0c-0000-4000-8000-000000000206",
+		"0c0c0c0c-0000-4000-8000-000000000306"
+	layOut(t, in, dvID, "movie", "A Film In Profile Seven", "", dvVer, dvSrc, 3840, 2160, 70e6, 60e9, 58e9)
+	librarytest.WriteSource(t, library.SourceDir(library.PathsOf(in.cfg).ItemDir(library.Place{ID: dvID, Type: "movie"}), dvSrc),
+		map[string]any{"sourceId": dvSrc, "streams": []any{map[string]any{"index": 0, "type": "video", "codec": "hevc",
+			"width": 3840, "height": 2160, "hdr": map[string]any{"dolbyVision": map[string]any{"profile": 7}}}},
+			"essence": map[string]any{"surround": false, "maxAudioChannels": 2}}, nil)
+	if n, err := in.check.Pass(ctx); err != nil || n != 1 {
+		t.Fatalf("the pass checked %d titles, %v; want the film in profile 7", n, err)
+	}
+	mutate(`mutation { q: queueRework(items: ["` + dvID + `"]) { queued alreadyQueued skipped skippedTitles { itemId title reason }
+		message ` + texts + ` } }`)
+	if q := queued.Q; q.Queued != 0 || q.Skipped != 1 || len(q.SkippedTitles) != 1 || q.SkippedTitles[0].ItemID != dvID ||
+		q.SkippedTitles[0].Title != "A Film In Profile Seven" ||
+		q.SkippedTitles[0].Reason != "Dolby Vision profile 7 needs a tone-mapping encode" ||
+		said(q.NotQueuedText) != "1 title wasn’t queued: Dolby Vision profile 7 needs a tone-mapping encode." {
+		t.Errorf("queueRework of the film in profile 7: %+v", q)
+	}
+	if code, body := in.post(t, "/api/library/reencode", service, `{"items": ["`+dvID+`"]}`); code != http.StatusOK ||
+		!strings.Contains(body, `"queued":0`) ||
+		!strings.Contains(body, "its original is Dolby Vision profile 7, which the transcoder leaves as it is") {
+		t.Errorf("POST /api/library/reencode of the film in profile 7: %d %s", code, body)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue WHERE item_id = $1`, dvID); n != 0 {
+		t.Errorf("the film in profile 7 was queued %d times", n)
+	}
+
 	_, a := in.gql(t, "/api/manage/query", admin, `mutation { refreshCompliance(kind: MOVIE) }`)
 	if len(a.Errors) > 0 || string(a.Data) != `{"refreshCompliance":true}` {
 		t.Errorf("refreshCompliance: %s %v", a.Data, a.Errors)
 	}
 	query(report)
-	if p := data.LibraryCompliance.Pending; p != 4 {
-		t.Errorf("after a refresh of the movies: %d pending, want the 4 movies", p)
+	if p := data.LibraryCompliance.Pending; p != 5 {
+		t.Errorf("after a refresh of the movies: %d pending, want the 5 movies", p)
 	}
 	_, a = in.gql(t, "/api/manage/query", admin, `{ pipelineRules { packager { worker version reportedAt rules { key value } } } }`)
 	var rules struct {

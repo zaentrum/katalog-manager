@@ -367,6 +367,33 @@ func (s *Service) blockedOf(ctx context.Context, ids []string) (map[string]strin
 	return out, q.Err()
 }
 
+// Blocked says of each title of ids that processing it again can't help, as
+// the check last found it of its original's record or its failed step
+// (blockedBy, a row's reworkBlocked), of which kind: an original without
+// video (graph.SkipNoVideo), or one of a Dolby Vision profile the transcoder
+// leaves as it is (graph.SkipDolbyVision and the profile). The re-encode
+// queue skips them (retry.Compliance). None without migration 051.
+func (s *Service) Blocked(ctx context.Context, ids []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(ids) == 0 || s.ready(ctx) != nil {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT item_id, blocked FROM `+store.ComplianceTable+`
+		WHERE item_id = ANY($1) AND blocked IS NOT NULL`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, kind string
+		if err := rows.Scan(&id, &kind); err != nil {
+			return nil, err
+		}
+		out[id] = kind
+	}
+	return out, rows.Err()
+}
+
 // Queued says what a request to process titles again did, as the queue
 // answered it (res): how many it queued and how many were queued already,
 // each title it skipped, named, with why, in the reader's words, and all of
@@ -387,7 +414,7 @@ func (s *Service) Queued(ctx context.Context, res graph.ReencodeEnqueued, matchi
 		}
 		for _, sk := range res.Skipped {
 			kind := sk.Kind
-			if _, ok := skipClauses[kind]; !ok {
+			if _, ok := skipClauses[kind]; !ok && !strings.HasPrefix(kind, blockedDolbyVision) {
 				kind = skipOther
 			}
 			kinds[kind]++

@@ -49,6 +49,14 @@ const (
 	SkipNoFile = "nofile"
 	// SkipDiscImage: its file is a disc image, which nothing encodes.
 	SkipDiscImage = "disc"
+	// SkipNoVideo: its original has no video, as the library's compliance
+	// check found of its record or its failed step.
+	SkipNoVideo = "novideo"
+	// SkipDolbyVision, followed by the profile ("dolbyvision:7"): its
+	// original's Dolby Vision profile is one the transcoder leaves as it is,
+	// as the library's compliance check found of its record or its failed
+	// step.
+	SkipDolbyVision = "dolbyvision:"
 )
 
 // ReencodeEnqueued is what a request to the queue did: the titles queued,

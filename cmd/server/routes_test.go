@@ -28,6 +28,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/rest"
+	"github.com/zaentrum/katalog-manager/internal/retry"
 	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 	"github.com/zaentrum/katalog-manager/internal/stream"
@@ -311,6 +312,9 @@ func newInstanceWired(t *testing.T, w wiring) *instance {
 		services.Compliance, deps.Compliance = check, check
 		if q, ok := pipe.(graph.Rework); ok {
 			services.Rework = q
+		}
+		if r, ok := pipe.(*retry.Service); ok {
+			r.WithCompliance(check)
 		}
 	}
 	schema := graph.MustSchema(graph.NewResolver(st, cfg, services))

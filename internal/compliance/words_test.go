@@ -253,6 +253,13 @@ func serverTexts(t *testing.T) []text {
 		{"none queued, 1 not, not in the catalog", 0, 0, map[string]int{graph.SkipUnknown: 1}, false},
 		{"none queued, 2 not, a season and a title not in the catalog", 0, 0,
 			map[string]int{graph.SkipType: 1, graph.SkipUnknown: 1}, false},
+		{"none queued, 1 not, an original without video", 0, 0, map[string]int{graph.SkipNoVideo: 1}, false},
+		{"none queued, 2 not, originals without video", 0, 0, map[string]int{graph.SkipNoVideo: 2}, false},
+		{"none queued, 3 not, Dolby Vision profile 7", 0, 0, map[string]int{graph.SkipDolbyVision + "7": 3}, false},
+		{"none queued, 1 not, Dolby Vision profile 5 on a transcoder without a GPU", 0, 0,
+			map[string]int{graph.SkipDolbyVision + "5": 1}, false},
+		{"2 queued, 5 not: a disc image, no video, Dolby Vision profiles 5 and 7", 2, 0, map[string]int{graph.SkipDiscImage: 1,
+			graph.SkipNoVideo: 1, graph.SkipDolbyVision + "7": 2, graph.SkipDolbyVision + "5": 1}, false},
 		{"none queued, 1 not for a reason the words don’t know", 0, 0, map[string]int{skipOther: 1}, false},
 		{"no title selected", 0, 0, nil, false},
 		{"no title fits the filter any more", 0, 0, nil, true},
@@ -323,6 +330,30 @@ func i32p(n int32) *int32 { return &n }
 // year, an episode by its series, its number and its title, a season by its
 // series and its number; a part the catalog doesn't hold is left out, and a
 // title of which it holds nothing is its id.
+// A request's line of the titles it didn't queue says those the check found
+// the transcoder can't encode as it says the others: an original without
+// video, and a Dolby Vision profile, said of the profile whatever the
+// number of its titles.
+func TestARequestSaysWhatTheCheckFoundBlocked(t *testing.T) {
+	for _, tc := range []struct {
+		skipped map[string]int
+		want    string
+	}{
+		{map[string]int{graph.SkipNoVideo: 1}, "1 title wasn’t queued: the original has no video."},
+		{map[string]int{graph.SkipNoVideo: 2}, "2 titles weren’t queued: their originals have no video."},
+		{map[string]int{graph.SkipDolbyVision + "7": 3}, "3 titles weren’t queued: Dolby Vision profile 7 needs a tone-mapping encode."},
+		{map[string]int{graph.SkipDolbyVision + "5": 1}, "1 title wasn’t queued: Dolby Vision profile 5 needs a GPU to " +
+			"reshape its colours, and this transcoder has none."},
+		{map[string]int{graph.SkipDiscImage: 1, graph.SkipNoVideo: 1, graph.SkipDolbyVision + "7": 2, graph.SkipDolbyVision + "5": 1},
+			"5 titles weren’t queued: 1 is a disc image, the original of 1 has no video, 1 is Dolby Vision profile 5 " +
+				"and 2 are Dolby Vision profile 7."},
+	} {
+		if _, _, got := requestTexts(0, 0, tc.skipped, false); got == nil || *got != tc.want {
+			t.Errorf("%v: %v, want %q", tc.skipped, got, tc.want)
+		}
+	}
+}
+
 func TestTheTitlesASkipNames(t *testing.T) {
 	for _, n := range titleCases {
 		if got := titleText(uuid(99), n.typ, n.title, n.series, n.year, n.season, n.episode); got != n.want {
