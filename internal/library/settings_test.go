@@ -85,6 +85,56 @@ func TestAWindowIsADailySpan(t *testing.T) {
 	}
 }
 
+// A window carries the offset of the zone it is read in, at each of its
+// ends, as a reader in another zone reads it: those of the window that holds
+// now, else of the next one, a night the clocks change in with both; any
+// time has none.
+func TestAWindowCarriesItsZone(t *testing.T) {
+	cet, est := time.FixedZone("CET", 3600), time.FixedZone("EST", -5*3600)
+	for _, tc := range []struct {
+		window string
+		now    time.Time
+		loc    *time.Location
+		want   string
+	}{
+		{"23:00-07:00", time.Date(2026, 10, 26, 10, 0, 0, 0, cet), cet, "23:00+01:00-07:00+01:00"},
+		{" 01:00 - 06:00 ", time.Date(2026, 10, 26, 3, 0, 0, 0, time.UTC), time.UTC, "01:00Z-06:00Z"},
+		{"08:30-17:00", time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), est, "08:30-05:00-17:00-05:00"},
+	} {
+		w, _ := ParseWindow(tc.window)
+		if got, ok := w.Zoned(tc.now, tc.loc); !ok || got != tc.want {
+			t.Errorf("%q at %s: %q %v, want %q", tc.window, tc.now, got, ok, tc.want)
+		}
+	}
+	for _, v := range []string{"", "08:15-08:15"} {
+		w, _ := ParseWindow(v)
+		if got, ok := w.Zoned(time.Now(), time.UTC); ok {
+			t.Errorf("%q: %q, want any time", v, got)
+		}
+	}
+	zurich, err := time.LoadLocation("Europe/Zurich")
+	if err != nil {
+		t.Skipf("no zone database: %v", err)
+	}
+	// the night of 28 to 29 March 2026 the clocks go from +01:00 to +02:00
+	for _, tc := range []struct {
+		window string
+		now    time.Time
+		want   string
+	}{
+		{"23:00-07:00", time.Date(2026, 3, 28, 12, 0, 0, 0, zurich), "23:00+01:00-07:00+02:00"},
+		{"23:00-07:00", time.Date(2026, 3, 29, 3, 30, 0, 0, zurich), "23:00+01:00-07:00+02:00"},
+		{"23:00-07:00", time.Date(2026, 3, 29, 12, 0, 0, 0, zurich), "23:00+02:00-07:00+02:00"},
+		{"01:00-06:00", time.Date(2026, 3, 28, 10, 0, 0, 0, zurich), "01:00+01:00-06:00+02:00"},
+		{"01:00-06:00", time.Date(2026, 3, 28, 0, 30, 0, 0, zurich), "01:00+01:00-06:00+01:00"},
+	} {
+		w, _ := ParseWindow(tc.window)
+		if got, ok := w.Zoned(tc.now, zurich); !ok || got != tc.want {
+			t.Errorf("%q at %s: %q %v, want %q", tc.window, tc.now, got, ok, tc.want)
+		}
+	}
+}
+
 // A duration is a Go duration, days, or both; 0 is none.
 func TestParseDuration(t *testing.T) {
 	for v, want := range map[string]time.Duration{"0": 0, "10m": 10 * time.Minute, " 24h ": 24 * time.Hour,

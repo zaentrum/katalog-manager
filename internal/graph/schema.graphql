@@ -1532,8 +1532,10 @@ type ComplianceReport {
 # (originals, library.originals: keep, or delete-after-package, when it is
 # deleted), how many titles the re-encode queue has encoded at once at most
 # (inflight, library.reencode.inflight; null where it is not set), and when
-# it sends them (window, library.reencode.window, "23:00-07:00" of the
-# service's time; null where it is not set, or is none, any time).
+# it sends them (window, library.reencode.window, which the queue reads in
+# the service's local time: each end with that time's offset from UTC then,
+# "23:00+01:00-07:00+01:00", "01:00Z-06:00Z" in UTC, of the window that holds
+# now, else of the next one; null where it is not set, or is none, any time).
 type ComplianceProcessing {
   originals: String!
   inflight: Int

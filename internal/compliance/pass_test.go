@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -536,8 +537,17 @@ func TestTheReportSaysHowProcessingGoes(t *testing.T) {
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES
 		('o', 'library.originals', 'delete-after-package'), ('i', 'library.reencode.inflight', '2'),
 		('w', 'library.reencode.window', '23:00-07:00')`)
-	if got := said(); got != "delete-after-package 2 23:00-07:00" {
+	// the window with the offsets of the service's local time, which the
+	// queue reads it in (library.Window.Zoned)
+	w, _ := library.ParseWindow("23:00-07:00")
+	zoned, _ := w.Zoned(time.Now(), time.Local)
+	if got := said(); got != "delete-after-package 2 "+zoned || !regexp.MustCompile(
+		`^delete-after-package 2 23:00(Z|[+-]\d\d:\d\d)-07:00(Z|[+-]\d\d:\d\d)$`).MatchString(got) {
 		t.Errorf("each set: %s", got)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_settings SET valuetext = '08:00-08:00' WHERE id = 'w'`)
+	if got := said(); got != "delete-after-package 2 -" {
+		t.Errorf("a window of the whole day: %s, want any time", got)
 	}
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_settings SET valuetext = 'some time' WHERE id IN ('i', 'w')`)
 	if got := said(); got != "delete-after-package - -" {

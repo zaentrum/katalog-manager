@@ -256,6 +256,34 @@ func ParseWindow(v string) (Window, error) {
 	return Window{set: true, start: at(m[1], m[2]), end: at(m[3], m[4])}, nil
 }
 
+// Zoned is w as a reader in another zone reads it: each end with the offset
+// from UTC that the zone w is read in (loc, the service's local time) has
+// then, "23:00+01:00-07:00+01:00", "01:00Z-06:00Z" in UTC. The ends are those
+// of the window that holds at now, else of the next one, so that a night the
+// clocks change has the two offsets it has. False for any time: no window,
+// or one that starts where it ends (the whole day).
+func (w Window) Zoned(now time.Time, loc *time.Location) (string, bool) {
+	if !w.set || w.start == w.end {
+		return "", false
+	}
+	l := now.In(loc)
+	from := l
+	switch m := l.Hour()*60 + l.Minute(); {
+	case w.start < w.end && m >= w.end:
+		from = l.AddDate(0, 0, 1) // today's is over: tomorrow's is next
+	case w.start > w.end && m < w.end:
+		from = l.AddDate(0, 0, -1) // the one that began yesterday holds
+	}
+	to := from
+	if w.start > w.end {
+		to = from.AddDate(0, 0, 1)
+	}
+	at := func(d time.Time, minutes int) string {
+		return time.Date(d.Year(), d.Month(), d.Day(), minutes/60, minutes%60, 0, 0, loc).Format("15:04Z07:00")
+	}
+	return at(from, w.start) + "-" + at(to, w.end), true
+}
+
 // Contains reports whether t, in the service's local time, lies in w.
 func (w Window) Contains(t time.Time) bool {
 	if !w.set || w.start == w.end {

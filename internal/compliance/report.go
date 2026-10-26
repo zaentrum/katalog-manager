@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/graph"
 	"github.com/zaentrum/katalog-manager/internal/library"
@@ -140,7 +141,9 @@ func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, o graph.
 // processing is how processing a title again goes now, from the library's
 // settings as they are set: library.originals (keep unless it is
 // delete-after-package), library.reencode.inflight and .window where they
-// are set to one (nil where they are not, or to none).
+// are set to one (nil where they are not, or to none), the window with the
+// offsets of the service's local time, which the queue reads it in
+// (library.Window.Zoned).
 func (s *Service) processing(ctx context.Context) (graph.ComplianceProcessing, error) {
 	set, err := library.ReadSettings(ctx, s.pool)
 	if err != nil {
@@ -171,8 +174,10 @@ func (s *Service) processing(ctx context.Context) (graph.ComplianceProcessing, e
 				out.Inflight = &i
 			}
 		case library.SettingReencodeWindow:
-			if _, err := library.ParseWindow(v); err == nil && v != "" {
-				out.Window = &v
+			if w, err := library.ParseWindow(v); err == nil {
+				if zoned, ok := w.Zoned(time.Now(), time.Local); ok {
+					out.Window = &zoned
+				}
 			}
 		}
 	}
