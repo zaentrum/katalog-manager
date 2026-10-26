@@ -780,7 +780,7 @@ no video but cover art ("the original has no video"), Dolby Vision profile
 7, which it never plans, or a base layer of compatibility 0 its step says
 it refused ("Dolby Vision profile 7 needs a tone-mapping encode"), and
 profile 5 only while the transcoder reports it can't reshape it (a
-transcoder that doesn't report it is taken to). When the facts are in doubt
+transcoder that doesn't report it is taken to reshape it). When the facts are in doubt
 (a record never probed, a profile the transcoder reports nothing of), the
 title is offered.
 
