@@ -568,3 +568,76 @@ func TestAPassThatCannotNoteATitleStillSendsWhatItReset(t *testing.T) {
 		t.Errorf("the queue:\n%s", got)
 	}
 }
+
+// touched records the titles the queue tells the compliance check of.
+type touched struct{ ids []string }
+
+func (t *touched) Touch(_ context.Context, ids ...string) { t.ids = append(t.ids, ids...) }
+
+// A title never packaged, with no step yet (a film taken in, or one whose
+// pipeline never ran), goes through the queue as any other: queued, it gets
+// its transcode and its package when it is sent, both waiting for their
+// workers, and the transcoder's trigger goes; the workers' reports carry it
+// on as they carry any title, and once its package is done so is its place
+// in the queue, which tells the compliance check to look at it again.
+func TestANeverPackagedTitleGoesThroughTheQueue(t *testing.T) {
+	st := catalog(t)
+	storetest.AddItem(t, st, "n1", "movie", "A Film Never Encoded", "")
+	file(t, st, "n1")
+	b := &bus{}
+	seen := &touched{}
+	s := newService(t, st, b).WithCompliance(seen)
+	ctx := context.Background()
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemprocessingsteps WHERE item_id = 'n1'`); n != 0 {
+		t.Fatalf("the title has %d steps, want none", n)
+	}
+	res, err := s.EnqueueReencode(ctx, graph.ReencodeRequest{Items: []string{"n1"}})
+	if err != nil || res.Queued != 1 || len(res.Skipped) != 0 {
+		t.Fatalf("queue it: %+v, %v", res, err)
+	}
+	p, err := s.DrainQueue(ctx)
+	if err != nil || p.Sent != 1 {
+		t.Fatalf("the pass: %+v, %v", p, err)
+	}
+	if got := strings.Join(b.take(), "\n"); got != events.TopicAnalyzed+" n1 transcode reencode reencode movie" {
+		t.Errorf("sent %q, want the transcoder's trigger", got)
+	}
+	if got := chainState(t, st, "n1", "transcode"); got != "pending 0 attempts=0 error=- last=- retry=false sent=true times=false" {
+		t.Errorf("its transcode: %s", got)
+	}
+	if got := chainState(t, st, "n1", "package"); got != "pending 0 attempts=0 error=- last=- retry=false sent=false times=false" {
+		t.Errorf("its package: %s", got)
+	}
+
+	// the workers carry it on, as the step routes do: the transcoder runs
+	// and is done (the package promoted), the packager runs and is done
+	steps := processing.New(st.Pool()).WithPolicy(testPolicy)
+	for _, r := range []struct{ step, status string }{
+		{"transcode", processing.StatusInProgress}, {"transcode", processing.StatusDone},
+		{"package", processing.StatusInProgress},
+	} {
+		if err := steps.Upsert(ctx, "n1", r.step, r.status, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if r.step == "transcode" && r.status == processing.StatusDone {
+			if err := steps.PromoteTranscodeToPackage(ctx, "n1", r.status); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if p, err := s.DrainQueue(ctx); err != nil || p.Done != 0 || p.Sent != 0 {
+		t.Errorf("a pass while it is packaged: %+v, %v", p, err)
+	}
+	if err := steps.Upsert(ctx, "n1", "package", processing.StatusDone, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := s.DrainQueue(ctx); err != nil || p.Done != 1 {
+		t.Errorf("the pass after its package: %+v, %v", p, err)
+	}
+	if got := queueOf(t, st); got != "n1 done items by=katalog-manager sent=true done=true reason=-" {
+		t.Errorf("the queue:\n%s", got)
+	}
+	if strings.Join(seen.ids, " ") != "n1" {
+		t.Errorf("the compliance check was told of %v, want n1", seen.ids)
+	}
+}

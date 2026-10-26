@@ -233,6 +233,9 @@ func (h *Handlers) packagingCompleteV2(w http.ResponseWriter, r *http.Request, i
 		writeError(w, http.StatusInternalServerError, "the version could not be recorded: "+err.Error())
 		return
 	}
+	// The title's package completed (or its original was taken in): the
+	// library's compliance check looks at it again.
+	h.touch(ctx, itemID)
 	writeJSON(w, http.StatusOK, answer)
 }
 

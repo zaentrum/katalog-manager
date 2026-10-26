@@ -2,7 +2,9 @@ package retry
 
 // The re-encode queue (migration 043) holds the titles to encode again under
 // the pipeline's current settings, as a migration's job or an admin asks
-// (POST /api/library/reencode): titles named (a series its episodes), the
+// (POST /api/library/reencode, and GraphQL queueRework and
+// queueReworkMatching, which rework what the library's compliance check
+// found): titles named (a series its episodes), the
 // titles whose retire is held for their surround (library.HeldForSurround),
 // or every packaged movie and episode. The sweep sends them at the pace the
 // settings allow: at most library.reencode.rate titles a pass, no more while
@@ -338,6 +340,19 @@ func (s *Service) ClearReencodeQueue(ctx context.Context, states []string) (int3
 	return int32(tag.RowsAffected()), nil
 }
 
+// Toucher has titles checked again: the library's compliance check
+// (compliance.Service).
+type Toucher interface {
+	Touch(ctx context.Context, ids ...string)
+}
+
+// WithCompliance has the queue tell c of each title whose re-encode is done
+// or failed, which its compliance check looks at again.
+func (s *Service) WithCompliance(c Toucher) *Service {
+	s.compliance = c
+	return s
+}
+
 // QueuePass is what a pass over the queue did: the titles sent done or
 // failed since, the titles sent now, those that wait, being busy, and those
 // whose event could not be sent (both stay queued), the titles failed before
@@ -436,7 +451,8 @@ func (s *Service) DrainQueue(ctx context.Context) (QueuePass, error) {
 // transcode or the package failed with no retry scheduled (the pipeline
 // tries it no more), or the package was skipped, or the steps are gone. The
 // reset of a sent title left its package waiting, so a package done since is
-// the one it was sent for.
+// the one it was sent for. The compliance check looks at each title ended
+// again.
 func (s *Service) finishSent(ctx context.Context) (done, failed int, err error) {
 	rows, err := s.st.Pool().Query(ctx, `WITH ends AS (
 			SELECT q.id,
@@ -462,23 +478,32 @@ func (s *Service) finishSent(ctx context.Context) (done, failed int, err error) 
 		UPDATE `+queueTbl+` q SET state = CASE WHEN ends.reason IS NULL THEN 'done' ELSE 'failed' END,
 			doneat = now(), reason = left(ends.reason, 500)
 		FROM ends WHERE q.id = ends.id
-		RETURNING q.state`)
+		RETURNING q.item_id, q.state`)
 	if err != nil {
 		return 0, 0, fmt.Errorf("end the titles sent: %w", err)
 	}
-	defer rows.Close()
+	var ended []string
 	for rows.Next() {
-		var st string
-		if err := rows.Scan(&st); err != nil {
+		var item, st string
+		if err := rows.Scan(&item, &st); err != nil {
+			rows.Close()
 			return done, failed, err
 		}
+		ended = append(ended, item)
 		if st == QueueDone {
 			done++
 		} else {
 			failed++
 		}
 	}
-	return done, failed, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return done, failed, err
+	}
+	if s.compliance != nil && len(ended) > 0 {
+		s.compliance.Touch(ctx, ended...)
+	}
+	return done, failed, nil
 }
 
 // sendQueued sends the titles queued first, as many as set allows now.

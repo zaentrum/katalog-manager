@@ -709,6 +709,12 @@ func (h *Handlers) putStep(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A transcode, a package or a take-in that ended changes what the
+	// library's compliance check finds of the title.
+	if (step == "transcode" || step == "package" || step == processing.StepTakeIn) && ended(status) {
+		h.touch(ctx, id)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"itemId": id, "step": step, "status": status})
 }
 

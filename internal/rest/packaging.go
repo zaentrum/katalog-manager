@@ -228,6 +228,7 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 			ev.Identity = h.d.Store.EventIdentity(ctx, itemID)
 		}
 		h.d.Events.EmitItem(ctx, events.TopicPackaged, ev)
+		h.touch(ctx, itemID)
 	}
 
 	sourceEnriched := src.Codec != nil || src.Resolution != nil || src.BitrateKbps != nil ||

@@ -98,6 +98,9 @@ type Service struct {
 	takeInMigrated atomic.Bool
 	// queueSaid is why the sweep last said the queue waits (Run's alone).
 	queueSaid string
+	// compliance is told of the titles of the queue that are done or failed,
+	// to check them again (nil: nothing is told).
+	compliance Toucher
 	// now is the clock the queue's window is read by.
 	now func() time.Time
 }

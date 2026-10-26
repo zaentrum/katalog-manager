@@ -279,7 +279,7 @@ func run() error {
 	// a title's original once its package is recorded and verified, and it
 	// removes superseded versions and empties the trash after their grace.
 	retries := retry.New(st, cfg.RetryPolicy(), eventProducer, cfg.RetryInterval).WithExtras(extrasSvc).
-		WithLibrary(library.NewRetirer(st.Pool(), cfg, steps))
+		WithLibrary(library.NewRetirer(st.Pool(), cfg, steps)).WithCompliance(check)
 	// A title given another file (replaceSource) is encoded again from it as
 	// reencodeItem encodes one.
 	actions.WithReencoder(retries)
