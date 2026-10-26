@@ -286,9 +286,11 @@ func evaluate(t title, r records, rs rulesState) result {
 
 	copied := t.copied(r)
 	bucket, bucketed := t.bucket(r, rs)
-	if tr := rs.transcoder; tr != nil && tr.t != nil {
+	// a browser-friendly H.264 video copied as it is, which today's
+	// transcoder copies again whatever its bit rate or size, breaks no cap
+	if tr := rs.transcoder; tr != nil && tr.t != nil && !(copied == yes && isH264(t.videoCodec(r)) && tr.t.copiesH264()) {
 		if bucketed {
-			if limit, ok := tr.t.capOf(t.Kind, bucket); ok && limit > 0 {
+			if limit, ok := tr.t.limitOf(t.Kind, bucket); ok {
 				if rate, approx, ok := videoRate(r, copied); ok && rate > limit*1e6*(1+tolerance) &&
 					!(copied == no && encodedWithin(t.Transcode, limit)) {
 					text, measured, allowed := bitrateWords(rate, approx, limit*1e6, bucket, t.Kind)
@@ -303,7 +305,8 @@ func evaluate(t title, r records, rs rulesState) result {
 		}
 	}
 	if pr := rs.packager; pr != nil && pr.p != nil {
-		if surroundOn(pr.p) && r.srcEssence != nil && r.pkgEssence != nil && library.SurroundLost(r.srcEssence, r.pkgEssence) {
+		if surroundOn(pr.p) && r.srcEssence != nil && r.pkgEssence != nil && library.SurroundLost(r.srcEssence, r.pkgEssence) &&
+			!noCompanion(t, r, pr.p) {
 			had, hadOK := essenceNumber(r.srcEssence, "maxAudioChannels")
 			kept, keptOK := essenceNumber(r.pkgEssence, "maxAudioChannels")
 			text, measured, allowed := surroundWords(had, kept, hadOK, keptOK, pr.p)
@@ -361,7 +364,7 @@ func measure(t title, r records, rs rulesState, copied tri) measures {
 	}
 	if tr := rs.transcoder; tr != nil && tr.t != nil {
 		if bucket, ok := t.bucket(r, rs); ok {
-			if c, ok := tr.t.capOf(t.Kind, bucket); ok && c > 0 {
+			if c, ok := tr.t.limitOf(t.Kind, bucket); ok {
 				m.BitrateCap = roundp(c*1e6, 0)
 			}
 		}
@@ -450,9 +453,8 @@ func roundp(v float64, places int) *float64 {
 //     version of a packaged title): its streams, probed, hold no video but
 //     cover art, or its video stream's hdr.dolbyVision.profile is one the
 //     transcoder leaves as it is (refusesDolbyVision);
-//   - its failed or skipped step: the worker's reason says the original has
-//     no video, or the transcoder refused its Dolby Vision profile, as it
-//     still does.
+//   - its failed or skipped step: the transcoder refused its Dolby Vision
+//     profile, as it still does.
 func blockedBy(t title, r records, rs rulesState) string {
 	var tr *TranscoderRules
 	if rs.transcoder != nil {
@@ -463,9 +465,6 @@ func blockedBy(t title, r records, rs rulesState) string {
 			continue
 		}
 		reason := strings.TrimSpace(*s.Error)
-		if clause, ok := knownReason(reason); ok && clause == noVideoClause {
-			return blockedNoVideo
-		}
 		if m := refusedProfileRE.FindStringSubmatch(reason); m != nil && tr.refusesDolbyVision(m[1]) {
 			return blockedDolbyVision + m[1]
 		}
@@ -828,6 +827,15 @@ func isH264(codec string) bool {
 	return false
 }
 
+// noCompanion reports whether the packager makes no 5.1 companion of the
+// title's original, as its record lists the original's tracks: it has no
+// track of more than two channels that is no commentary (planAudio), so a
+// package without one lacks nothing.
+func noCompanion(t title, r records, p *PackagerRules) bool {
+	plan := planAudio(t, r, p)
+	return plan.from == planOriginal && len(plan.companions) == 0
+}
+
 // hevcRequired reports whether the transcoder's rules make a package's video
 // HEVC whatever its source, and why not, in a sentence the report shows: its
 // ladder's source rung is HEVC, and either names its codec (source:hevc) or
@@ -934,6 +942,8 @@ func missingImageSubtitles(r records, carried []string) (map[string][]string, []
 	for _, f := range carried {
 		carries[strings.ToLower(strings.TrimSpace(f))] = true
 	}
+	// the packager extracts VobSub of a Matroska original alone (mkvextract)
+	matroska := r.src.Container.Format != nil && strings.Contains(strings.ToLower(*r.src.Container.Format), "matroska")
 	langOfStream := map[int]string{}
 	wanted := map[string]map[string]bool{}            // language -> forms
 	tagsOf := map[string]map[string]map[string]bool{} // language -> form -> tags
@@ -957,7 +967,7 @@ func missingImageSubtitles(r records, carried []string) (map[string][]string, []
 		if s.Index != nil {
 			langOfStream[int(*s.Index)] = lang
 		}
-		if !image || !carries[form] {
+		if !image || !carries[form] || (form == "vobsub" && !matroska) {
 			continue
 		}
 		if wanted[lang] == nil {

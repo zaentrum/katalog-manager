@@ -202,6 +202,79 @@ func TestTheBucketIsTheSources(t *testing.T) {
 	}
 }
 
+// A movie's original over the file size cap breaks it only where its
+// package copies its video as it is: of a package that doesn't say whether
+// it did, nothing is found.
+func TestTheSizeCapNeedsACopy(t *testing.T) {
+	rs := stateOf(t, transcoderReport, packagerReport)
+	ti := packagedTitle("movie")
+	big := int64(60e9)
+	ti.VersionBytes = &big
+	pkg := pkgJSON(1920, 1080, 6e6, "copy")
+	if got := evaluate(ti, recordsOf(t, pkg, srcJSON(1920, 1080)), rs); !got.breaks(OverSizeCap) {
+		t.Errorf("a copy of a 60 GB original: %q, want it over the size cap", found(got))
+	}
+	ti.Transcode = step{}
+	unsaid := strings.Replace(pkg, `, "encoder": "copy"`, ``, 1)
+	if got := evaluate(ti, recordsOf(t, unsaid, srcJSON(1920, 1080)), rs); got.breaks(OverSizeCap) {
+		t.Errorf("a package that doesn't say it copied: %q, want no size cap", found(got))
+	}
+}
+
+// What the transcoder makes again breaks no rule of its own: a CPU
+// transcoder whose ladder leaves the original's codec to the default keeps a
+// browser-friendly H.264 original as it is, whatever its bit rate or its
+// size (decision.py's CPU rule), and an encode at the transcoder's
+// override of the cap (NVENC_MAXRATE_*) is within what it allows; a 5.1
+// track that is only a commentary gets no companion, so a package without
+// one lacks no surround.
+func TestWhatTheTranscoderMakesAgainBreaksNoRule(t *testing.T) {
+	cpu := strings.NewReplacer(`"codec": "hevc_nvenc", "preset": "p5", "cq": 23`, `"codec": "libx265", "preset": "medium", "cq": null, "crf": 24`,
+		`"ladder": "source:hevc"`, `"ladder": "source"`).Replace(transcoderReport)
+	pkg := `{"sizeBytes": 20000000000, "durationMs": 7200000,
+		"renditions": {"video": [{"codec": "avc1.640028", "width": 1920, "height": 1080, "bitrateBps": 20000000, "encoder": "copy"}],
+		"audio": [{"channels": 2, "bitrateBps": 192000}]}, "essence": {"surround": false, "maxAudioChannels": 2}}`
+	src := `{"file": {"sizeBytes": 18000000000}, "container": {"durationMs": 7200000},
+		"streams": [{"index": 0, "type": "video", "codec": "h264", "profile": "High", "pixelFormat": "yuv420p", "width": 1920, "height": 1080},
+		{"index": 1, "type": "audio", "codec": "aac", "channels": 2}], "essence": {"surround": false, "maxAudioChannels": 2}}`
+	ti := packagedTitle("movie")
+	big := int64(18e9)
+	ti.VersionBytes = &big
+	if got := evaluate(ti, recordsOf(t, pkg, src), stateOf(t, cpu, packagerReport)); len(got.Findings) != 0 {
+		t.Errorf("an H.264 copy a CPU transcoder keeps: %q, want nothing", found(got))
+	}
+	if got := evaluate(ti, recordsOf(t, pkg, src), stateOf(t, transcoderReport, packagerReport)); !got.breaks(OverBitrateCap) ||
+		!got.breaks(OverSizeCap) || !got.breaks(VideoNotHEVC) {
+		t.Errorf("the same H.264 copy, an NVENC transcoder that makes HEVC: %q, want it over both caps and not HEVC", found(got))
+	}
+
+	override := stateOf(t, strings.Replace(transcoderReport, `"maxrate2160Mbps": null`, `"maxrate2160Mbps": 20`, 1), packagerReport)
+	enc := packagedTitle("movie")
+	enc.Transcode = step{Status: strp(processing.StatusDone),
+		Details: strp("profile=nvenc-2160p src_codec=hevc res=3840x2160 maxrate=20Mbps rate=40.0Mbps(stream) cap=movie-2160:14Mbps over=bitrate")}
+	if got := evaluate(enc, recordsOf(t, pkgJSON(3840, 2160, 16.5e6, "hevc_nvenc"), srcJSON(3840, 2160)), override); got.breaks(OverBitrateCap) ||
+		got.Measures.BitrateCap == nil || *got.Measures.BitrateCap != 20e6 {
+		t.Errorf("an encode at the 20 Mbit/s override: %q, cap %v; want none over it, the limit 20 Mbit/s", found(got),
+			got.Measures.BitrateCap)
+	}
+	if got := evaluate(packagedTitle("movie"), recordsOf(t, pkgJSON(3840, 2160, 25e6, "copy"), srcJSON(3840, 2160)), override); !got.breaks(OverBitrateCap) {
+		t.Errorf("a copy at 25 Mbit/s, over the override: %q", found(got))
+	}
+
+	commentaryOnly := `{"container": {"durationMs": 7200000},
+		"streams": [{"index": 0, "type": "video", "codec": "hevc", "width": 1920, "height": 1080},
+		{"index": 1, "type": "audio", "codec": "aac", "channels": 2, "language": "en"},
+		{"index": 2, "type": "audio", "codec": "ac3", "channels": 6, "language": "en", "title": "Director's commentary"}],
+		"essence": {"surround": true, "maxAudioChannels": 6}}`
+	stereo := `{"sizeBytes": 4000000000, "durationMs": 7200000,
+		"renditions": {"video": [{"codec": "hvc1.1.6.L120.B0", "width": 1920, "height": 1080, "bitrateBps": 4000000, "encoder": "copy"}],
+		"audio": [{"channels": 2, "bitrateBps": 192000}, {"channels": 2, "bitrateBps": 192000}]},
+		"essence": {"surround": false, "maxAudioChannels": 2}}`
+	if got := evaluate(packagedTitle("movie"), recordsOf(t, stereo, commentaryOnly), stateOf(t, transcoderReport, packagerReport)); got.breaks(NoSurround) {
+		t.Errorf("a 5.1 that is only a commentary: %q, want no surround missing", found(got))
+	}
+}
+
 // A package the transcoder encoded is never flagged as over the cap it was
 // encoded under: an encode capped at the cap is within it on average, and one
 // whose details say its maxrate was the cap is within it whatever a measure
@@ -340,8 +413,10 @@ func TestSurroundLostVersusKept(t *testing.T) {
 
 // The source's image subtitles of a form the packager carries are found
 // missing in each language the package carries none of them in; a form it
-// does not carry (DVB) is not looked for, and a package subtitle made from a
-// source stream counts for that stream's language whatever its own tag.
+// does not carry (DVB) is not looked for, nor VobSub of an original that is
+// no Matroska one, which the packager can't extract; and a package subtitle
+// made from a source stream counts for that stream's language whatever its
+// own tag.
 func TestImageSubtitles(t *testing.T) {
 	src := `{"container": {"format": "matroska,webm"}, "streams": [{"index": 0, "type": "video", "width": 1920, "height": 1080},
 		{"index": 2, "type": "subtitle", "codec": "hdmv_pgs_subtitle", "language": "en", "languageRaw": "eng", "form": "image"},
@@ -372,8 +447,14 @@ func TestImageSubtitles(t *testing.T) {
 			t.Errorf("%s:\n got  %q\n want %q", tc.name, got, tc.want)
 		}
 	}
+	mp4 := strings.Replace(src, `"matroska,webm"`, `"mov,mp4,m4a,3gp,3g2,mj2"`, 1)
+	got := found(evaluate(packagedTitle("movie"), recordsOf(t, pkg(`{"format": "pgs", "language": "eng"}, {"format": "pgs", "language": "ger"}`),
+		mp4), rs))
+	if got != "" {
+		t.Errorf("VobSub of an MP4 original: %q, want nothing", got)
+	}
 	pgsOnly := stateOf(t, transcoderReport, strings.Replace(packagerReport, `["pgs", "vobsub"]`, `["pgs"]`, 1))
-	got := found(evaluate(packagedTitle("movie"), recordsOf(t, pkg(`{"format": "pgs", "language": "eng"}`), src), pgsOnly))
+	got = found(evaluate(packagedTitle("movie"), recordsOf(t, pkg(`{"format": "pgs", "language": "eng"}`), src), pgsOnly))
 	if want := "IMAGE_SUBTITLES_MISSING The original’s PGS subtitles in German are missing from the package. The packager keeps " +
 		"PGS subtitles. [German / PGS]"; got != want {
 		t.Errorf("a packager that carries pgs alone:\n got  %q\n want %q", got, want)
@@ -433,7 +514,7 @@ func TestATitleWithoutAPackage(t *testing.T) {
 		{"its transcode refused, for frames without their metadata", reshaped, "PACKAGING_FAILED The transcoder left it as it is. " +
 			"{Dolby Vision profile 5: 3 of the first 10 decoded frames carry the RPU that libplacebo reshapes them with}"},
 		{"its package failed, retried", retried, "PACKAGING_FAILED The packager failed, and tries again by itself. {shaka exited 2}"},
-		{"its package skipped", skipped, "PACKAGING_FAILED The packager skipped it: the original has no video."},
+		{"its package skipped", skipped, "PACKAGING_FAILED The packager skipped it. {no video stream}"},
 		{"its package skipped, for a reason the words don’t know", skippedWhy, "PACKAGING_FAILED The packager skipped it. " +
 			"{handoff v0 has no keyframe}"},
 		{"a disc image", disc, "PACKAGING_FAILED " + discImageText},
@@ -508,8 +589,8 @@ func TestWhatTheTranscoderWouldRefuseAgain(t *testing.T) {
 			processing.StatusFailed, noVulkan), records{}, reshapes, ""},
 		{"a transcode refused without a Vulkan device, the transcoder refusing still", stepped("transcode",
 			processing.StatusFailed, noVulkan), records{}, refuses, "dolbyvision:5"},
-		{"a package skipped, its original without video", stepped("package", processing.StatusSkipped,
-			"the source has no video stream"), records{}, reshapes, "novideo"},
+		{"a title never packaged whose original's record holds no video but its cover art", stepped("package",
+			processing.StatusSkipped, "skipped by an admin"), recordsOf(t, "", coverArtOnly), reshapes, "novideo"},
 		{"a transcode that failed otherwise", stepped("transcode", processing.StatusFailed, "ffmpeg exited 1"), records{},
 			reshapes, ""},
 	} {

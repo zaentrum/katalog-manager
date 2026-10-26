@@ -488,15 +488,13 @@ const keptTheOriginal = "; kept the original"
 
 // knownReasons are reasons a worker gives that the words say in the
 // reader's own: a Dolby Vision profile only a tone-mapping encode plays
-// right, an original without video.
+// right.
 var knownReasons = []struct {
 	re    *regexp.Regexp
 	words func(m []string) string
 }{
 	{regexp.MustCompile(`^Dolby Vision (profile [0-9]+(?:\.[0-9]+)?) needs a tone-mapping encode$`),
 		func(m []string) string { return "Dolby Vision " + m[1] + " needs a tone-mapping encode" }},
-	{regexp.MustCompile(`(?i)^(?:(?:the )?(?:source|original|file) has )?no video(?: stream)?$`),
-		func([]string) string { return noVideoClause }},
 }
 
 // noVideoClause is what a title whose original has no video is.

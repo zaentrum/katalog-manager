@@ -928,6 +928,16 @@ func TestTheRulesHashMakesRowsStale(t *testing.T) {
 	if rep := reportOf(t, s, graph.ComplianceFilter{}, 100, ""); rep.Pending != 0 {
 		t.Errorf("after the same rules: %d titles pending, want none", rep.Pending)
 	}
+	// what it does with a Dolby Vision profile is of the rules too
+	if r := reportFor(t, s, Transcoder, strings.Replace(transcoderReport, `"profile5": "reshaped"`, `"profile5": "refused"`, 1)); !r.Changed {
+		t.Fatal("a Dolby Vision profile the transcoder refuses now was not taken for a change")
+	}
+	if r := reportFor(t, s, Transcoder, transcoderReport); !r.Changed {
+		t.Fatal("a Dolby Vision profile the transcoder reshapes again was not taken for a change")
+	}
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if r := reportFor(t, s, Transcoder, strings.Replace(transcoderReport, `"movie2160Mbps": 14`, `"movie2160Mbps": 80`, 1)); !r.Changed {
 		t.Fatal("a cap that changed was not taken for a change")
 	}
