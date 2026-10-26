@@ -267,9 +267,8 @@ func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []st
 	return out, next, nil
 }
 
-// blocked says of each row why processing it again cannot help, as the re-encode
-// queue skips it: its original deleted after packaging, no file to encode,
-// its file a disc image.
+// blocked says of each row why processing it again can't help, as the
+// re-encode queue skips it.
 func (s *Service) blocked(ctx context.Context, rows []graph.ComplianceRow) error {
 	if len(rows) == 0 {
 		return nil
@@ -278,86 +277,103 @@ func (s *Service) blocked(ctx context.Context, rows []graph.ComplianceRow) error
 	for i, r := range rows {
 		ids[i] = r.ItemID
 	}
-	originals, err := library.OriginalsOf(ctx, s.pool, ids)
+	kinds, err := s.blockedOf(ctx, ids)
 	if err != nil {
 		return err
+	}
+	for i := range rows {
+		if k, ok := kinds[rows[i].ItemID]; ok {
+			rows[i].ReworkBlocked = strp(asSentence(skipReason(k)))
+		}
+	}
+	return nil
+}
+
+// blockedOf says of each title of ids that processing it again can't help
+// why, a kind of skip (graph.Skip*), as the re-encode queue tells
+// (retry's unencodable): its original being deleted after packaging, or
+// deleted, no file to encode, its file a disc image.
+func (s *Service) blockedOf(ctx context.Context, ids []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	originals, err := library.OriginalsOf(ctx, s.pool, ids)
+	if err != nil {
+		return nil, err
 	}
 	q, err := s.pool.Query(ctx, `SELECT x.id,
 			EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets p WHERE p.item_id = x.id AND p.isprimary = true),
 			`+processing.DiscImageOf("x.id")+`
 		FROM unnest($1::text[]) AS x(id)`, ids)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer q.Close()
-	file, disc := map[string]bool{}, map[string]bool{}
 	for q.Next() {
 		var id string
-		var f, d bool
-		if err := q.Scan(&id, &f, &d); err != nil {
-			return err
+		var file, disc bool
+		if err := q.Scan(&id, &file, &disc); err != nil {
+			return nil, err
 		}
-		file[id], disc[id] = f, d
-	}
-	if err := q.Err(); err != nil {
-		return err
-	}
-	for i := range rows {
-		id := rows[i].ItemID
 		switch o := originals[id]; {
 		case o.State == library.OriginalRetiring:
-			rows[i].ReworkBlocked = strp(deletingText)
+			out[id] = graph.SkipDeleting
 		case o.Gone():
-			rows[i].ReworkBlocked = strp(deletedText)
-		case !file[id]:
-			rows[i].ReworkBlocked = strp(noFileText)
-		case disc[id]:
-			rows[i].ReworkBlocked = strp(discText)
+			out[id] = graph.SkipDeleted
+		case !file:
+			out[id] = graph.SkipNoFile
+		case disc:
+			out[id] = graph.SkipDiscImage
 		}
 	}
-	return nil
+	return out, q.Err()
 }
 
 // Queued says what a request to process titles again did, as the queue
-// answered it (res), in words: how many it queued, how many were queued
-// already, and why it skipped any, as the catalog holds each now; matching
-// says the request named its titles by a filter.
+// answered it (res): how many it queued and how many were queued already,
+// each title it skipped, named, with why, in the reader's words, and all of
+// it in a sentence; matching says the request named its titles by a filter.
 func (s *Service) Queued(ctx context.Context, res graph.ReencodeEnqueued, matching bool) (graph.ComplianceQueued, error) {
-	out := graph.ComplianceQueued{Queued: res.Queued, AlreadyQueued: res.AlreadyQueued, Skipped: int32(len(res.Skipped))}
+	out := graph.ComplianceQueued{Queued: res.Queued, AlreadyQueued: res.AlreadyQueued, Skipped: int32(len(res.Skipped)),
+		SkippedTitles: []graph.ComplianceSkip{}}
 	kinds := map[string]int{}
 	if len(res.Skipped) > 0 {
-		if why := s.ready(ctx); why != nil {
-			return out, why
-		}
 		ids := make([]string, len(res.Skipped))
 		for i, sk := range res.Skipped {
 			ids[i] = sk.ItemID
 		}
-		of, err := s.skipKinds(ctx, ids)
+		names, err := s.titlesOf(ctx, ids)
 		if err != nil {
 			return out, err
 		}
-		for _, id := range ids {
-			kinds[of[id]]++
+		for _, sk := range res.Skipped {
+			kind := sk.Kind
+			if _, ok := skipClauses[kind]; !ok {
+				kind = skipOther
+			}
+			kinds[kind]++
+			name, ok := names[sk.ItemID]
+			if !ok {
+				name = sk.ItemID
+			}
+			out.SkippedTitles = append(out.SkippedTitles, graph.ComplianceSkip{ItemID: sk.ItemID, Title: name,
+				Reason: skipReason(sk.Kind)})
 		}
 	}
 	out.Message = queuedWords(int(res.Queued), int(res.AlreadyQueued), kinds, matching)
 	return out, nil
 }
 
-// skipKinds says of each title of ids why the queue skips it, as the queue
-// tells (retry's unencodable and EnqueueReencode): not in the catalog, a
-// series without episodes, no movie, episode or series, its original deleted
-// after packaging or being deleted, no file, a disc image.
-func (s *Service) skipKinds(ctx context.Context, ids []string) (map[string]string, error) {
-	originals, err := library.OriginalsOf(ctx, s.pool, ids)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.pool.Query(ctx, `SELECT x.id, lower(i.type),
-			EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets p WHERE p.item_id = x.id AND p.isprimary = true),
-			`+processing.DiscImageOf("x.id")+`
-		FROM unnest($1::text[]) AS x(id) LEFT JOIN com_nalet_katalog_items i ON i.id = x.id`, ids)
+// titlesOf names each title of ids the catalog holds as a list of them does
+// (titleText); one it doesn't hold has no name.
+func (s *Service) titlesOf(ctx context.Context, ids []string) (map[string]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT x.id, lower(i.type), i.title, i.year, i.seasonnumber, i.episodenumber,
+			CASE WHEN lower(p.type) = 'series' THEN p.title WHEN lower(g.type) = 'series' THEN g.title END
+		FROM unnest($1::text[]) AS x(id)
+		JOIN com_nalet_katalog_items i ON i.id = x.id
+		LEFT JOIN com_nalet_katalog_items p ON p.id = i.parent_id
+		LEFT JOIN com_nalet_katalog_items g ON g.id = p.parent_id`, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -365,30 +381,12 @@ func (s *Service) skipKinds(ctx context.Context, ids []string) (map[string]strin
 	out := map[string]string{}
 	for rows.Next() {
 		var id string
-		var typ *string
-		var file, disc bool
-		if err := rows.Scan(&id, &typ, &file, &disc); err != nil {
+		var typ, title, series *string
+		var year, season, episode *int32
+		if err := rows.Scan(&id, &typ, &title, &year, &season, &episode, &series); err != nil {
 			return nil, err
 		}
-		o := originals[id]
-		switch {
-		case typ == nil:
-			out[id] = skipUnknown
-		case *typ == "series":
-			out[id] = skipNoEpisodes
-		case *typ != "movie" && *typ != "episode":
-			out[id] = skipOther
-		case o.State == library.OriginalRetiring:
-			out[id] = skipDeleting
-		case o.Gone():
-			out[id] = skipDeleted
-		case disc:
-			out[id] = skipDisc
-		case !file:
-			out[id] = skipNoFile
-		default:
-			out[id] = skipOther
-		}
+		out[id] = titleText(id, typ, title, series, year, season, episode)
 	}
 	return out, rows.Err()
 }

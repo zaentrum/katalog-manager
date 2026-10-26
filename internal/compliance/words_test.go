@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zaentrum/katalog-manager/internal/graph"
 	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 )
@@ -190,18 +191,29 @@ func serverTexts(t *testing.T) []text {
 		{"1,284 queued by a filter", 1284, 0, nil, true},
 		{"12 queued, 3 queued already", 12, 3, nil, false},
 		{"none queued, 1 queued already", 0, 1, nil, false},
-		{"12 queued, 2 skipped, their originals deleted", 12, 0, map[string]int{skipDeleted: 2}, false},
-		{"1 queued, 1 skipped, its original being deleted", 1, 0, map[string]int{skipDeleting: 1}, false},
-		{"5 queued, 2 queued already, 4 skipped for three reasons", 5, 2, map[string]int{skipDeleted: 2, skipNoFile: 1, skipDisc: 1}, true},
-		{"none queued, 1 skipped, a disc image", 0, 0, map[string]int{skipDisc: 1}, false},
-		{"none queued, 2 skipped, no file", 0, 0, map[string]int{skipNoFile: 2}, false},
-		{"none queued, 1 skipped, a series without episodes", 0, 0, map[string]int{skipNoEpisodes: 1}, false},
-		{"none queued, 1 skipped, not in the catalog", 0, 0, map[string]int{skipUnknown: 1}, false},
-		{"none queued, 2 skipped, a season and something unknown", 0, 0, map[string]int{skipOther: 1, skipUnknown: 1}, false},
+		{"12 queued, 2 skipped, their originals deleted", 12, 0, map[string]int{graph.SkipDeleted: 2}, false},
+		{"1 queued, 1 skipped, its original being deleted", 1, 0, map[string]int{graph.SkipDeleting: 1}, false},
+		{"5 queued, 2 queued already, 4 skipped for three reasons", 5, 2,
+			map[string]int{graph.SkipDeleted: 2, graph.SkipNoFile: 1, graph.SkipDiscImage: 1}, true},
+		{"none queued, 1 skipped, a disc image", 0, 0, map[string]int{graph.SkipDiscImage: 1}, false},
+		{"none queued, 2 skipped, disc images", 0, 0, map[string]int{graph.SkipDiscImage: 2}, false},
+		{"none queued, 2 skipped, no file", 0, 0, map[string]int{graph.SkipNoFile: 2}, false},
+		{"none queued, 1 skipped, a series without episodes", 0, 0, map[string]int{graph.SkipNoEpisodes: 1}, false},
+		{"none queued, 1 skipped, not in the catalog", 0, 0, map[string]int{graph.SkipUnknown: 1}, false},
+		{"none queued, 2 skipped, a season and a title not in the catalog", 0, 0,
+			map[string]int{graph.SkipType: 1, graph.SkipUnknown: 1}, false},
+		{"none queued, 1 skipped for a reason the words don't know", 0, 0, map[string]int{skipOther: 1}, false},
 		{"no title named", 0, 0, nil, false},
 		{"no title fits the filter", 0, 0, nil, true},
 	} {
 		out = append(out, text{"ComplianceQueued.message", m.source, "message", queuedWords(m.queued, m.already, m.skipped, m.matching)})
+	}
+
+	for _, k := range skipKinds {
+		out = append(out, text{"ComplianceSkip", "a title skipped: " + k, "reason", skipReason(k)})
+	}
+	for _, n := range titleCases {
+		out = append(out, text{"ComplianceSkip", n.source, "title", titleText(uuid(99), n.typ, n.title, n.series, n.year, n.season, n.episode)})
 	}
 
 	for _, w := range []struct{ name, raw string }{{Transcoder, transcoderReport}, {Packager, packagerReport}} {
@@ -211,6 +223,38 @@ func serverTexts(t *testing.T) []text {
 		}
 	}
 	return out
+}
+
+// titleCases are the titles a skip names, as the catalog holds them, and
+// what each is called.
+var titleCases = []struct {
+	source                string
+	typ, title, series    *string
+	year, season, episode *int32
+	want                  string
+}{
+	{"a movie", strp("movie"), strp("A Harbour in Winter"), nil, i32p(1991), nil, nil, "A Harbour in Winter (1991)"},
+	{"a movie of no known year", strp("movie"), strp("A Harbour in Winter"), nil, nil, nil, nil, "A Harbour in Winter"},
+	{"an episode", strp("episode"), strp("The Storm"), strp("A Coastal Show"), nil, i32p(1), i32p(2), "A Coastal Show · S01E02 · The Storm"},
+	{"an episode of no known season", strp("episode"), strp("The Storm"), strp("A Coastal Show"), nil, nil, i32p(2), "A Coastal Show · E02 · The Storm"},
+	{"an episode of no known number or series", strp("episode"), strp("The Storm"), nil, nil, nil, nil, "The Storm"},
+	{"a season", strp("season"), strp("Season 1"), strp("A Coastal Show"), nil, i32p(1), nil, "A Coastal Show · S01"},
+	{"a series", strp("series"), strp("A Coastal Show"), nil, i32p(2019), nil, nil, "A Coastal Show (2019)"},
+	{"a title the catalog holds nothing of", nil, nil, nil, nil, nil, nil, uuid(99)},
+}
+
+func i32p(n int32) *int32 { return &n }
+
+// A skipped title is named as a list names it: a movie by its title and
+// year, an episode by its series, its number and its title, a season by its
+// series and its number; a part the catalog doesn't hold is left out, and a
+// title of which it holds nothing is its id.
+func TestTheTitlesASkipNames(t *testing.T) {
+	for _, n := range titleCases {
+		if got := titleText(uuid(99), n.typ, n.title, n.series, n.year, n.season, n.episode); got != n.want {
+			t.Errorf("%s: %q, want %q", n.source, got, n.want)
+		}
+	}
 }
 
 // newArrivalText ends the reason the queue keeps of a title whose original
@@ -236,7 +280,14 @@ var (
 func TestTheServerTexts(t *testing.T) {
 	texts := serverTexts(t)
 	for _, x := range texts {
-		sentenceText := x.section != "pipelineRules" && !strings.HasSuffix(x.field, "measured") && !strings.HasSuffix(x.field, "limit")
+		sentenceText := x.section != "pipelineRules" && x.section != "ComplianceSkip" &&
+			!strings.HasSuffix(x.field, "measured") && !strings.HasSuffix(x.field, "limit")
+		if x.section == "ComplianceSkip" && x.field == "reason" {
+			// a clause the console says after a colon: no capital, no full stop
+			if first := []rune(x.words)[0]; strings.ToLower(string(first)) != string(first) || strings.HasSuffix(x.words, ".") {
+				t.Errorf("%s, %s: %q is no clause to say after a colon", x.section, x.source, x.words)
+			}
+		}
 		if sentenceText {
 			if first := []rune(x.words)[0]; strings.ToUpper(string(first)) != string(first) {
 				t.Errorf("%s, %s: %q does not start as a sentence", x.section, x.source, x.words)

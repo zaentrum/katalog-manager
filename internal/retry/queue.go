@@ -98,10 +98,10 @@ func (s *Service) EnqueueReencode(ctx context.Context, req graph.ReencodeRequest
 			titles, selections = append(titles, id), append(selections, selection)
 		}
 	}
-	skip := func(id, why string) {
+	skip := func(id, kind, why string) {
 		if !picked[id] && !skipped[id] {
 			skipped[id] = true
-			out.Skipped = append(out.Skipped, graph.ReencodeSkipped{ItemID: id, Reason: why})
+			out.Skipped = append(out.Skipped, graph.ReencodeSkipped{ItemID: id, Kind: kind, Reason: why})
 		}
 	}
 
@@ -127,7 +127,7 @@ func (s *Service) EnqueueReencode(ctx context.Context, req graph.ReencodeRequest
 			switch {
 			case picked[id] || skipped[id]:
 			case !ok:
-				skip(id, "unknown item")
+				skip(id, graph.SkipUnknown, "unknown item")
 			case typ == "movie" || typ == "episode":
 				pick(id, "items")
 			case typ == "series":
@@ -136,13 +136,13 @@ func (s *Service) EnqueueReencode(ctx context.Context, req graph.ReencodeRequest
 					return out, err
 				}
 				if len(episodes) == 0 {
-					skip(id, "the series has no episode to encode")
+					skip(id, graph.SkipNoEpisodes, "the series has no episode to encode")
 				}
 				for _, e := range episodes {
 					pick(e, "items")
 				}
 			default:
-				skip(id, "only a movie, an episode or a series is encoded again, and it is of type "+typ)
+				skip(id, graph.SkipType, "only a movie, an episode or a series is encoded again, and it is of type "+typ)
 			}
 		}
 	}
@@ -177,8 +177,8 @@ func (s *Service) EnqueueReencode(ctx context.Context, req graph.ReencodeRequest
 	}
 	var queue, of []string
 	for i, id := range titles {
-		if w := why[id]; w != "" {
-			out.Skipped = append(out.Skipped, graph.ReencodeSkipped{ItemID: id, Reason: w})
+		if w := why[id]; w.why != "" {
+			out.Skipped = append(out.Skipped, graph.ReencodeSkipped{ItemID: id, Kind: w.kind, Reason: w.why})
 			continue
 		}
 		queue, of = append(queue, id), append(of, selections[i])
@@ -226,11 +226,15 @@ func (s *Service) ids(ctx context.Context, sql string, args ...any) ([]string, e
 	return out, rows.Err()
 }
 
+// unqueueable is why the queue takes no title: of which kind (graph.Skip*),
+// and in its own words.
+type unqueueable struct{ kind, why string }
+
 // unencodable says of each title of ids that has nothing to encode why:
 // gone from the catalog, its original deleted after packaging (or being
 // deleted), no file (a primary asset), or a disc image for one.
-func (s *Service) unencodable(ctx context.Context, ids []string) (map[string]string, error) {
-	why := map[string]string{}
+func (s *Service) unencodable(ctx context.Context, ids []string) (map[string]unqueueable, error) {
+	why := map[string]unqueueable{}
 	if len(ids) == 0 {
 		return why, nil
 	}
@@ -268,13 +272,15 @@ func (s *Service) unencodable(ctx context.Context, ids []string) (map[string]str
 		t := of[id]
 		switch o := originals[id]; {
 		case t.typ == nil:
-			why[id] = "unknown item"
+			why[id] = unqueueable{graph.SkipUnknown, "unknown item"}
+		case o.State == library.OriginalRetiring:
+			why[id] = unqueueable{graph.SkipDeleting, o.Why() + "; " + newArrival}
 		case o.Gone():
-			why[id] = o.Why() + "; " + newArrival
+			why[id] = unqueueable{graph.SkipDeleted, o.Why() + "; " + newArrival}
 		case !t.file:
-			why[id] = "the " + *t.typ + " has no file to encode"
+			why[id] = unqueueable{graph.SkipNoFile, "the " + *t.typ + " has no file to encode"}
 		case t.disc:
-			why[id] = "its file is a " + processing.DiscImageReason
+			why[id] = unqueueable{graph.SkipDiscImage, "its file is a " + processing.DiscImageReason}
 		}
 	}
 	return why, nil
@@ -561,8 +567,8 @@ func (s *Service) sendQueued(ctx context.Context, set library.Settings, p *Queue
 		if len(reset) == budget {
 			break
 		}
-		if w := why[r.item]; w != "" {
-			if failed = s.markQueued(ctx, r.id, QueueFailed, w); failed != nil {
+		if w := why[r.item]; w.why != "" {
+			if failed = s.markQueued(ctx, r.id, QueueFailed, w.why); failed != nil {
 				break
 			}
 			p.Refused++

@@ -237,7 +237,7 @@ A Disc Image: PACKAGING_FAILED`
 		t.Errorf("the episode: %+v", storm)
 	}
 	if disc := rep.Rows[5]; disc.Findings[0].Text != discImageText || disc.ReworkBlocked == nil ||
-		*disc.ReworkBlocked != "Its file is a disc image." || disc.EstimatedBytes != nil {
+		*disc.ReworkBlocked != "Its file is a disc image, which the transcoder doesn’t encode." || disc.EstimatedBytes != nil {
 		t.Errorf("the disc image: %+v", disc)
 	}
 	if failed := rep.Rows[4]; failed.Findings[0].Text != "The transcoder failed: ffmpeg exited 1." {
@@ -430,13 +430,14 @@ func TestTheQueuesReasonsInWords(t *testing.T) {
 }
 
 // What a request to process titles again did is said in a sentence each:
-// those queued, those queued already, and those skipped, by why, as the
-// catalog holds them.
+// those queued, those queued already, and those skipped, by why; and every
+// title it skipped is named, as a list names it, with its reason, in the
+// reader's words: as the queue tells, not in the queue's.
 func TestWhatARequestDidInWords(t *testing.T) {
 	s, st, _ := library4(t)
 	ctx := context.Background()
 	q := retry.New(st, processing.DefaultPolicy(), &bus{}, time.Minute)
-	say := func(items ...string) string {
+	say := func(items ...string) (string, string) {
 		t.Helper()
 		res, err := q.EnqueueReencode(ctx, graph.ReencodeRequest{Items: items})
 		if err != nil {
@@ -446,25 +447,59 @@ func TestWhatARequestDidInWords(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return m.Message
+		if int(m.Skipped) != len(m.SkippedTitles) {
+			t.Errorf("%d skipped, and %d of them named", m.Skipped, len(m.SkippedTitles))
+		}
+		var skips []string
+		for _, sk := range m.SkippedTitles {
+			skips = append(skips, sk.Title+": "+sk.Reason)
+			if sk.ItemID == "" {
+				t.Errorf("a skip without its id: %+v", sk)
+			}
+		}
+		return m.Message, strings.Join(skips, "\n")
 	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET year = 2004 WHERE id = $1`, uuid(7))
 	// the film whose transcode failed, the disc image and a title there is not
-	if got := say(uuid(6), uuid(7), uuid(99)); got != "1 title queued to be processed again. "+
-		"2 titles skipped: 1 is a disc image and 1 is not in the catalog." {
-		t.Errorf("one queued, two skipped: %q", got)
+	msg, skips := say(uuid(6), uuid(7), uuid(99))
+	if msg != "1 title queued to be processed again. 2 titles weren’t queued: 1 is a disc image and 1 is no longer in the catalog." ||
+		skips != uuid(99)+": it’s no longer in the catalog\n"+
+			"A Disc Image (2004): its file is a disc image, which the transcoder doesn’t encode" {
+		t.Errorf("one queued, two skipped: %q\n%s", msg, skips)
 	}
-	if got := say(uuid(6)); got != "No title queued to be processed again. 1 title is queued already." {
-		t.Errorf("one queued already: %q", got)
+	if msg, skips := say(uuid(6)); msg != "No title queued to be processed again. 1 title is queued already." || skips != "" {
+		t.Errorf("one queued already: %q\n%s", msg, skips)
 	}
+
+	// no file; the original deleted after packaging; the original being
+	// deleted; an episode without its file; a series without episodes; a
+	// season
 	storetest.Exec(t, st, `DELETE FROM com_nalet_katalog_playbackassets WHERE item_id = $1 AND isprimary = true`, uuid(5))
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state, deletedat)
 		VALUES ('gone', $1, 'original.mkv', 1, 'deleted', now())`, uuid(2))
 	storetest.Exec(t, st, `DELETE FROM com_nalet_katalog_playbackassets WHERE item_id = $1 AND isprimary = true`, uuid(2))
-	if got := say(uuid(5), uuid(2), uuid(1)); got != "1 title queued to be processed again. 2 titles skipped: "+
-		"the original of 1 was deleted after packaging and 1 has no file." {
-		t.Errorf("one with its original deleted, one without a file: %q", got)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemsources SET state = 'retiring' WHERE item_id = $1`, uuid(4))
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET seasonnumber = 1, episodenumber = 2 WHERE id = $1`, uuid(3))
+	storetest.Exec(t, st, `DELETE FROM com_nalet_katalog_playbackassets WHERE item_id = $1 AND isprimary = true`, uuid(3))
+	storetest.AddItem(t, st, uuid(901), "series", "An Empty Show", "")
+	storetest.AddItem(t, st, uuid(902), "season", "Season 1", uuid(900))
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET seasonnumber = 1 WHERE id = $1`, uuid(902))
+	msg, skips = say(uuid(5), uuid(2), uuid(4), uuid(3), uuid(901), uuid(902), uuid(1))
+	if want := "1 title queued to be processed again. 6 titles weren’t queued: the original of 1 was deleted from disk " +
+		"after packaging, the original of 1 is being deleted from disk after packaging, 2 have no file, 1 is a series without " +
+		"episodes and 1 isn’t a movie, an episode or a series."; msg != want {
+		t.Errorf("one queued, six skipped:\n%q\nwant\n%q", msg, want)
 	}
-	if m, err := s.Queued(ctx, graph.ReencodeEnqueued{}, true); err != nil || m.Message != "No title fits the filter, so none is queued." {
+	if want := `An Empty Show: the series has no episodes
+A Coastal Show · S01: it isn’t a movie, an episode or a series
+A Film Never Packaged: it has no file
+A Film Within Its Caps: its original was deleted from disk after packaging
+A Film That Lost Its Tracks: its original is being deleted from disk after packaging
+A Coastal Show · S01E02 · An Episode Over Its Cap: it has no file`; skips != want {
+		t.Errorf("the titles skipped:\n%s\nwant:\n%s", skips, want)
+	}
+	if m, err := s.Queued(ctx, graph.ReencodeEnqueued{}, true); err != nil || m.Message != "No title fits the filter, so none is queued." ||
+		m.SkippedTitles == nil || len(m.SkippedTitles) != 0 {
 		t.Errorf("nothing matched: %+v, %v", m, err)
 	}
 }

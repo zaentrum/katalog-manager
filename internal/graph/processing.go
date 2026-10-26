@@ -28,9 +28,28 @@ type ReencodeRequest struct {
 	Held, All bool
 }
 
-// ReencodeSkipped is a title a request named that the queue does not take,
-// and why.
-type ReencodeSkipped struct{ ItemID, Reason string }
+// ReencodeSkipped is a title a request named that the queue does not take:
+// why, in the queue's words (Reason), and of which kind (Kind, a Skip*), for
+// a caller that says it in its own.
+type ReencodeSkipped struct{ ItemID, Kind, Reason string }
+
+// The kinds of title the re-encode queue does not take.
+const (
+	// SkipUnknown: no item of the catalog.
+	SkipUnknown = "unknown"
+	// SkipNoEpisodes: a series without an episode.
+	SkipNoEpisodes = "noepisodes"
+	// SkipType: no movie, episode or series (a season, say).
+	SkipType = "type"
+	// SkipDeleted: its original was deleted after packaging.
+	SkipDeleted = "deleted"
+	// SkipDeleting: its original is being deleted after packaging.
+	SkipDeleting = "deleting"
+	// SkipNoFile: it has no file.
+	SkipNoFile = "nofile"
+	// SkipDiscImage: its file is a disc image, which nothing encodes.
+	SkipDiscImage = "disc"
+)
 
 // ReencodeEnqueued is what a request to the queue did: the titles queued,
 // those that were queued already (waiting or sent), and those skipped.

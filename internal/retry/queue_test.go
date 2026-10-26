@@ -89,7 +89,7 @@ func queueCatalog(t *testing.T) *store.Store {
 func skippedOf(r graph.ReencodeEnqueued) string {
 	var out []string
 	for _, s := range r.Skipped {
-		out = append(out, s.ItemID+": "+s.Reason)
+		out = append(out, s.ItemID+" ("+s.Kind+"): "+s.Reason)
 	}
 	return strings.Join(out, "\n")
 }
@@ -110,11 +110,11 @@ func TestTheQueueTakesTheTitlesARequestNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantSkipped := `nobody: unknown item
-sn1: only a movie, an episode or a series is encoded again, and it is of type season
-s2: the series has no episode to encode
-e3: the episode has no file to encode
-m3: the original was deleted after packaging (event ev-retired, 2026-10-06T10:00:00Z); ` + newArrival
+	wantSkipped := `nobody (unknown): unknown item
+sn1 (type): only a movie, an episode or a series is encoded again, and it is of type season
+s2 (noepisodes): the series has no episode to encode
+e3 (nofile): the episode has no file to encode
+m3 (deleted): the original was deleted after packaging (event ev-retired, 2026-10-06T10:00:00Z); ` + newArrival
 	if res.Queued != 3 || res.AlreadyQueued != 0 || skippedOf(res) != wantSkipped {
 		t.Errorf("queued %d, already %d, skipped:\n%s\nwant 3, 0 and:\n%s", res.Queued, res.AlreadyQueued, skippedOf(res), wantSkipped)
 	}
@@ -171,7 +171,7 @@ func TestTheQueueTakesTheHeldAndEveryPackagedTitle(t *testing.T) {
 	}
 	res, err = s.EnqueueReencode(context.Background(), graph.ReencodeRequest{All: true})
 	if err != nil || res.Queued != 2 || res.AlreadyQueued != 1 ||
-		skippedOf(res) != "m3: the original was deleted after packaging (event ev-retired, 2026-10-06T10:00:00Z); "+newArrival {
+		skippedOf(res) != "m3 (deleted): the original was deleted after packaging (event ev-retired, 2026-10-06T10:00:00Z); "+newArrival {
 		t.Fatalf("all: %+v, %v", res, err)
 	}
 	if got := queueOf(t, st); got != `m2 queued held by=katalog-manager sent=false done=false reason=-

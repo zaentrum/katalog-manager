@@ -1443,14 +1443,26 @@ type ComplianceReport {
   nextCursor: String
 }
 
+# A title a request to process titles again didn't queue: its id, its name
+# as a list names it ("A Film (1991)", "A Show · S01E02 · Its Title"; a name
+# the catalog doesn't hold is its id), and why, in the reader's words, as
+# the clause a sentence says after a colon ("its file is a disc image, which
+# the transcoder doesn’t encode").
+type ComplianceSkip {
+  itemId: ID!
+  title: String!
+  reason: String!
+}
+
 # What a request to process titles again did: those queued, those queued
 # already (waiting or sent), those skipped (no file, the original deleted
-# after packaging, a disc image, no movie, episode or series), and what
-# happened, in a sentence.
+# after packaging, a disc image, no movie, episode or series), each of them
+# in skippedTitles with why, and what happened, in a sentence.
 type ComplianceQueued {
   queued: Int!
   alreadyQueued: Int!
   skipped: Int!
+  skippedTitles: [ComplianceSkip!]!
   message: String!
 }
 

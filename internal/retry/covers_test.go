@@ -98,7 +98,7 @@ func TestNothingRunsOfADiscImage(t *testing.T) {
 		t.Errorf("reencodeItem of a disc image: %+v, %v", res, err)
 	}
 	q, err := s.EnqueueReencode(ctx, graph.ReencodeRequest{Items: []string{"m1"}})
-	if err != nil || q.Queued != 0 || skippedOf(q) != "m1: its file is a "+processing.DiscImageReason {
+	if err != nil || q.Queued != 0 || skippedOf(q) != "m1 (disc): its file is a "+processing.DiscImageReason {
 		t.Errorf("queue a disc image: %+v, %v", q, err)
 	}
 	put(t, st, "m1", "transcode", "failed", due)

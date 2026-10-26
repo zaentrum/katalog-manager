@@ -8,6 +8,8 @@ import (
 
 	"golang.org/x/text/language"
 	"golang.org/x/text/language/display"
+
+	"github.com/zaentrum/katalog-manager/internal/graph"
 )
 
 // The words the check writes for the person who runs the server: what it
@@ -292,8 +294,10 @@ const (
 	notPackagedText = "It has no package, and none is being made."
 	takenInText     = "It was taken in without a package and plays from its original."
 	finishedText    = "Its transcode and packaging finished, and no package is recorded."
-	discImageText   = "Its file is a disc image, which the transcoder doesn’t encode."
 )
+
+// discImageText is what a title whose file is a disc image is found to be.
+var discImageText = asSentence(skipClauses[graph.SkipDiscImage])
 
 // stepWords is what a title whose transcode or package failed or was skipped
 // is found to be: who did, why, and whether a retry is scheduled.
@@ -315,12 +319,42 @@ func stepWords(worker, status, reason string, retry bool) string {
 	return text
 }
 
-// The reasons processing a title again cannot help.
-const (
-	deletedText  = "Its original was deleted after packaging."
-	deletingText = "Its original is being deleted after packaging."
-	noFileText   = "It has no file."
-	discText     = "Its file is a disc image."
+// Why a title can't be processed again, or why the queue didn't take one, of
+// each kind of skip, as a clause: what is true of the title. The console
+// says a skip's reason after a colon ("1 title wasn’t queued: its file is a
+// disc image, which the transcoder doesn’t encode."); a row's reworkBlocked
+// is the clause as a sentence.
+var skipClauses = map[string]string{
+	graph.SkipDeleted:    "its original was deleted from disk after packaging",
+	graph.SkipDeleting:   "its original is being deleted from disk after packaging",
+	graph.SkipNoFile:     "it has no file",
+	graph.SkipDiscImage:  "its file is a disc image, which the transcoder doesn’t encode",
+	graph.SkipNoEpisodes: "the series has no episodes",
+	graph.SkipUnknown:    "it’s no longer in the catalog",
+	graph.SkipType:       "it isn’t a movie, an episode or a series",
+}
+
+// skipOther is a skip of a kind the words don't know.
+const skipOther = "other"
+
+// skipReason is why a title of kind wasn't queued, a clause; of a kind the
+// words don't know, only that it can't be.
+func skipReason(kind string) string {
+	if c, ok := skipClauses[kind]; ok {
+		return c
+	}
+	return "it can’t be processed again"
+}
+
+// asSentence is a clause as a sentence of its own.
+func asSentence(clause string) string { return sentence(capital(clause)) }
+
+// The reasons processing a title again can't help, as a row says them.
+var (
+	deletedText  = asSentence(skipClauses[graph.SkipDeleted])
+	deletingText = asSentence(skipClauses[graph.SkipDeleting])
+	noFileText   = asSentence(skipClauses[graph.SkipNoFile])
+	discText     = discImageText
 )
 
 // queueWords is where a title stands in the re-encode queue, in words, from
@@ -378,40 +412,34 @@ func queueWords(state, reason string) *string {
 	return nil
 }
 
-// Why the queue skipped a title a request named, in the words of a request's
-// message: the kinds, in the order the message says them.
-const (
-	skipDeleted    = "deleted"
-	skipDeleting   = "deleting"
-	skipNoFile     = "nofile"
-	skipDisc       = "disc"
-	skipUnknown    = "unknown"
-	skipNoEpisodes = "noepisodes"
-	skipOther      = "other"
-)
+// skipKinds are the kinds of skip, in the order a request's message says
+// them.
+var skipKinds = []string{graph.SkipDeleted, graph.SkipDeleting, graph.SkipNoFile, graph.SkipDiscImage,
+	graph.SkipNoEpisodes, graph.SkipUnknown, graph.SkipType, skipOther}
 
-var skipKinds = []string{skipDeleted, skipDeleting, skipNoFile, skipDisc, skipNoEpisodes, skipUnknown, skipOther}
-
-// skipAll is why every title of a kind was skipped, said of them all; skipSome
-// says it of a number of them, among others.
+// skipAll is why the titles of a request's message were not queued when all
+// of them weren't for one reason; skipSome says it of a number of them,
+// among others. Of one title alone, the message says its skipReason.
 var (
-	skipAll = map[string][2]string{ // of one, of several
-		skipDeleted:    {"its original was deleted after packaging", "their originals were deleted after packaging"},
-		skipDeleting:   {"its original is being deleted after packaging", "their originals are being deleted after packaging"},
-		skipNoFile:     {"it has no file", "they have no file"},
-		skipDisc:       {"its file is a disc image", "their files are disc images"},
-		skipNoEpisodes: {"the series has no episodes", "the series have no episodes"},
-		skipUnknown:    {"it is not in the catalog", "they are not in the catalog"},
-		skipOther:      {"it is not a movie, an episode or a series", "they are not movies, episodes or series"},
+	skipAll = map[string]string{
+		graph.SkipDeleted:    "their originals were deleted from disk after packaging",
+		graph.SkipDeleting:   "their originals are being deleted from disk after packaging",
+		graph.SkipNoFile:     "they have no file",
+		graph.SkipDiscImage:  "their files are disc images, which the transcoder doesn’t encode",
+		graph.SkipNoEpisodes: "the series have no episodes",
+		graph.SkipUnknown:    "they’re no longer in the catalog",
+		graph.SkipType:       "they aren’t movies, episodes or series",
+		skipOther:            "they can’t be processed again",
 	}
 	skipSome = map[string][2]string{ // of 1, of %s
-		skipDeleted:    {"the original of 1 was deleted after packaging", "the originals of %s were deleted after packaging"},
-		skipDeleting:   {"the original of 1 is being deleted after packaging", "the originals of %s are being deleted after packaging"},
-		skipNoFile:     {"1 has no file", "%s have no file"},
-		skipDisc:       {"1 is a disc image", "%s are disc images"},
-		skipNoEpisodes: {"1 is a series without episodes", "%s are series without episodes"},
-		skipUnknown:    {"1 is not in the catalog", "%s are not in the catalog"},
-		skipOther:      {"1 is not a movie, an episode or a series", "%s are not movies, episodes or series"},
+		graph.SkipDeleted:    {"the original of 1 was deleted from disk after packaging", "the originals of %s were deleted from disk after packaging"},
+		graph.SkipDeleting:   {"the original of 1 is being deleted from disk after packaging", "the originals of %s are being deleted from disk after packaging"},
+		graph.SkipNoFile:     {"1 has no file", "%s have no file"},
+		graph.SkipDiscImage:  {"1 is a disc image", "%s are disc images"},
+		graph.SkipNoEpisodes: {"1 is a series without episodes", "%s are series without episodes"},
+		graph.SkipUnknown:    {"1 is no longer in the catalog", "%s are no longer in the catalog"},
+		graph.SkipType:       {"1 isn’t a movie, an episode or a series", "%s aren’t movies, episodes or series"},
+		skipOther:            {"1 can’t be processed again", "%s can’t be processed again"},
 	}
 )
 
@@ -448,9 +476,9 @@ func queuedWords(queued, already int, skipped map[string]int, matching bool) str
 		}
 		var why string
 		if len(kinds) == 1 {
-			why = skipAll[kinds[0]][1]
+			why = skipAll[kinds[0]]
 			if total == 1 {
-				why = skipAll[kinds[0]][0]
+				why = skipReason(kinds[0])
 			}
 		} else {
 			var some []string
@@ -463,7 +491,55 @@ func queuedWords(queued, already int, skipped map[string]int, matching bool) str
 			}
 			why = joinAnd(some)
 		}
-		parts = append(parts, titlesText(total)+" skipped: "+why+".")
+		parts = append(parts, titlesText(total)+" "+plural(total, "wasn’t", "weren’t")+" queued: "+why+".")
 	}
 	return strings.Join(parts, " ")
+}
+
+// titleText names a title as a list of them does: a movie or a series by its
+// title and year ("A Film (1991)"), an episode by its series, its number and
+// its title ("A Show · S01E02 · Its Title"), a season by its series and its
+// number ("A Show · S01"). A part the catalog doesn't hold is left out, and a
+// title of which it holds nothing is its id.
+func titleText(id string, typ, title, series *string, year, season, episode *int32) string {
+	str := func(s *string) string {
+		if s == nil {
+			return ""
+		}
+		return strings.TrimSpace(*s)
+	}
+	name := str(title)
+	var parts []string
+	add := func(p string) {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	switch str(typ) {
+	case "episode":
+		add(str(series))
+		switch {
+		case season != nil && episode != nil:
+			add(fmt.Sprintf("S%02dE%02d", *season, *episode))
+		case episode != nil:
+			add(fmt.Sprintf("E%02d", *episode))
+		}
+		add(name)
+	case "season":
+		add(str(series))
+		if season != nil {
+			add(fmt.Sprintf("S%02d", *season))
+		} else {
+			add(name)
+		}
+	default:
+		if name != "" && year != nil && *year > 0 {
+			name += " (" + strconv.Itoa(int(*year)) + ")"
+		}
+		add(name)
+	}
+	if len(parts) == 0 {
+		return id
+	}
+	return strings.Join(parts, " · ")
 }

@@ -128,9 +128,16 @@ type ComplianceReport struct {
 	NextCursor   *string
 }
 
-// ComplianceQueued is what a request to process titles again did.
+// ComplianceSkip is a title a request to process titles again didn't queue:
+// its id, its name as a list names it, and why, the clause a sentence says
+// after a colon.
+type ComplianceSkip struct{ ItemID, Title, Reason string }
+
+// ComplianceQueued is what a request to process titles again did, each title
+// it skipped among SkippedTitles.
 type ComplianceQueued struct {
 	Queued, AlreadyQueued, Skipped int32
+	SkippedTitles                  []ComplianceSkip
 	Message                        string
 }
 
@@ -406,3 +413,16 @@ func (r *complianceQueuedResolver) Queued() int32        { return r.m.Queued }
 func (r *complianceQueuedResolver) AlreadyQueued() int32 { return r.m.AlreadyQueued }
 func (r *complianceQueuedResolver) Skipped() int32       { return r.m.Skipped }
 func (r *complianceQueuedResolver) Message() string      { return r.m.Message }
+func (r *complianceQueuedResolver) SkippedTitles() []*complianceSkipResolver {
+	out := make([]*complianceSkipResolver, len(r.m.SkippedTitles))
+	for i, s := range r.m.SkippedTitles {
+		out[i] = &complianceSkipResolver{m: s}
+	}
+	return out
+}
+
+type complianceSkipResolver struct{ m ComplianceSkip }
+
+func (r *complianceSkipResolver) ItemID() graphql.ID { return gid(r.m.ItemID) }
+func (r *complianceSkipResolver) Title() string      { return r.m.Title }
+func (r *complianceSkipResolver) Reason() string     { return r.m.Reason }
