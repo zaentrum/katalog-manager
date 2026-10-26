@@ -56,6 +56,7 @@ var routes = []route{
 	{http.MethodPost, "/api/analyze/items/m1/fail", `{"reason": "a test"}`, "worker"},
 	{http.MethodGet, "/api/analyze/items/m1/siblings", "", "worker"},
 	{http.MethodPost, "/api/analyze/series/s1/reset", "", "worker"},
+	{http.MethodPut, "/api/analyze/rules/packager", `{"version": "1.0.0", "rules": {"surroundAudio": "eac3"}}`, "worker"},
 	{http.MethodPut, "/api/segments/items/m1", `{"segments": []}`, "worker"},
 	{http.MethodDelete, "/api/segments/items/m1", "", "worker"},
 	{http.MethodPut, "/api/chapters/items/m1", `{"chapters": []}`, "worker"},
@@ -176,6 +177,7 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 		"the extra's report": storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemextras
 			WHERE state <> 'queued' OR heartbeatat IS NOT NULL`),
 		"a title queued to be encoded again": storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue`),
+		"a worker's rules":                   storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_workerrules`),
 		"a subtitle attached": storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_subtitleassets
 			WHERE origin IS NOT NULL`),
 	} {
@@ -216,6 +218,9 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue WHERE item_id = 'm1'`); n != 1 {
 		t.Errorf("the film queued by the service account and the admins: %d rows, want the one", n)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_workerrules WHERE worker = 'packager'`); n != 1 {
+		t.Errorf("the packager's rules reported by the service account and the admins: %d rows, want the one", n)
 	}
 }
 

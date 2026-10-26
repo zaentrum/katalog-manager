@@ -21,6 +21,7 @@ import (
 
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/chaptersdb"
+	"github.com/zaentrum/katalog-manager/internal/compliance"
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/extras"
@@ -265,6 +266,11 @@ func run() error {
 		log.Printf("catalog: %d scans a previous process left running are failed (%s)", n, scanner.InterruptedReason)
 	}
 	actions := itemactions.New(st, cfg, steps, eventProducer)
+	// The library's compliance check: every movie and episode held against
+	// the rules the transcoder and the packager report, in the background,
+	// reading the library's records a few at a time. It queues nothing: an
+	// admin reworks what it finds through the re-encode queue.
+	check := compliance.New(st, cfg)
 	// The pipeline heals itself: a failed step is retried by sending its
 	// trigger event again, after a backoff, a bounded number of times, and a
 	// step whose worker went silent past its timeout is reaped into a failure.
@@ -284,6 +290,7 @@ func run() error {
 	// idle while there is no TMDB key.
 	go enricher.RunChangeSync(bgCtx, cfg.TMDBRefreshInterval)
 	go retries.Run(bgCtx)
+	go check.Run(bgCtx)
 	// The library's projections (metadata.json, person.json) follow the
 	// database, with library.layout=v2, in one instance at a time.
 	go library.NewProjector(st.Pool(), cfg).Run(bgCtx)
@@ -341,6 +348,9 @@ func run() error {
 		Secrets: enricher,
 		Extras:  extrasSvc,
 		Sources: actions,
+		// The library's compliance, and the queue that reworks what it finds.
+		Compliance: check,
+		Rework:     retries,
 	})
 	schema := graph.MustSchema(resolver)
 

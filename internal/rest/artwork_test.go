@@ -17,6 +17,7 @@ import (
 
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/auth/authtest"
+	"github.com/zaentrum/katalog-manager/internal/compliance"
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/extras"
 	"github.com/zaentrum/katalog-manager/internal/itemactions"
@@ -78,7 +79,8 @@ func serverWith(t *testing.T, st *store.Store, cfg config.Config, pub retry.Publ
 		steps := processing.New(st.Pool())
 		retries := retry.New(st, steps.Policy(), pub, 0)
 		New(Deps{Store: st, Cfg: cfg, Steps: steps, Packager: itemactions.New(st, cfg, steps, nil),
-			Extras: extras.New(st, cfg, steps.Policy(), nil), Reencode: retries, TakeIn: retries}).Register(pr)
+			Extras: extras.New(st, cfg, steps.Policy(), nil), Reencode: retries, TakeIn: retries,
+			Compliance: compliance.New(st, cfg)}).Register(pr)
 	})
 	return r, iss
 }

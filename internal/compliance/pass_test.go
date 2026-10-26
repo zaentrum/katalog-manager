@@ -1,0 +1,639 @@
+package compliance
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/graph"
+	"github.com/zaentrum/katalog-manager/internal/library"
+	"github.com/zaentrum/katalog-manager/internal/library/librarytest"
+	"github.com/zaentrum/katalog-manager/internal/store"
+	"github.com/zaentrum/katalog-manager/internal/store/storetest"
+)
+
+// checkOf is the check of a catalog on the library's v2 layout, whose library
+// lies in a folder of the test's, with both workers' rules reported.
+func checkOf(t *testing.T) (*Service, *store.Store, string) {
+	t.Helper()
+	st := storetest.Open(t)
+	dir := t.TempDir()
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES (gen_random_uuid()::varchar, 'library.layout', 'v2')`)
+	s := New(st, config.Config{LibraryRoot: dir})
+	reportFor(t, s, Transcoder, transcoderReport)
+	reportFor(t, s, Packager, packagerReport)
+	return s, st, dir
+}
+
+// reportFor reports rules for worker as the worker does.
+func reportFor(t *testing.T, s *Service, worker, rules string) Reported {
+	t.Helper()
+	r, err := s.ReportRules(context.Background(), worker, []byte(`{"version": "1.4.0", "rules": `+rules+`}`))
+	if err != nil {
+		t.Fatalf("the %s's report: %v", worker, err)
+	}
+	return r
+}
+
+// The titles of the tests, by a name: an id as the library names a folder.
+func uuid(n int) string { return fmt.Sprintf("0c0c0c0c-0000-4000-8000-%012d", n) }
+
+// packaged is a packaged title as a test lays it out.
+type packaged struct {
+	n              int    // its number: its id is uuid(n), its version's and source's are of it too
+	kind, title    string // movie or episode
+	series         string // an episode's series' id
+	width, height  int
+	rate           float64 // the package's video, bit/s
+	encoder        string
+	original, size int64 // the original's and the package's size
+	srcCh, pkgCh   int   // the most audio channels of the source and of the package
+	srcSubs        []string
+	pkgSubs        []string
+}
+
+func (p packaged) id() string      { return uuid(p.n) }
+func (p packaged) version() string { return uuid(1000 + p.n) }
+func (p packaged) source() string  { return uuid(2000 + p.n) }
+
+// add lays the title out: its item, its file, its source and complete
+// version in the catalog, and in the library the records of both.
+func (p packaged) add(t *testing.T, st *store.Store, dir string) {
+	t.Helper()
+	parent := ""
+	if p.kind == "episode" {
+		parent = p.series
+	}
+	storetest.AddItem(t, st, p.id(), p.kind, p.title, parent)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET durationms = 7200000 WHERE id = $1`, p.id())
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state, recordedat)
+		VALUES ($1, $2, 'original.mkv', $3, 'present', now())`, p.source(), p.id(), p.original)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, sizebytes, sourceid)
+		VALUES (gen_random_uuid()::varchar, $1, $2, true, 'primary', $3, $4)`, p.id(), dir+"/versions/"+p.id()+"/original.mkv", p.original, p.source())
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, completedat)
+		VALUES ($1, $2, ARRAY[$3]::varchar[], 'complete', $4, now())`, p.version(), p.id(), p.source(), uuid(3000+p.n))
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, codec, sizebytes, versionid)
+		VALUES (gen_random_uuid()::varchar, $1, 'package.json', false, 'packaged', 'hvc1.2.4.L153.B0', $2, $3)`, p.id(), p.size, p.version())
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemprocessingsteps (id, createdat, modifiedat, item_id, step, status, attempts)
+		VALUES (gen_random_uuid()::varchar, now(), now(), $1, 'transcode', 'not_applicable', 1),
+		       (gen_random_uuid()::varchar, now(), now(), $1, 'package', 'done', 1)`, p.id())
+
+	paths := library.Paths{Root: dir}
+	itemDir := paths.ItemDir(library.Place{ID: p.id(), Type: p.kind, SeriesID: p.series})
+	var subs []any
+	for _, s := range p.pkgSubs {
+		form, lang, _ := strings.Cut(s, ":")
+		subs = append(subs, map[string]any{"format": form, "language": lang})
+	}
+	audio := []any{map[string]any{"channels": 2, "bitrateBps": 192000}}
+	var surround []any
+	if p.pkgCh > 2 {
+		surround = append(surround, map[string]any{"channels": p.pkgCh, "bitrateBps": 448000})
+	}
+	librarytest.WriteVersion(t, library.VersionDir(itemDir, p.version()), librarytest.Version{
+		VersionID: p.version(), PackageID: uuid(3000 + p.n), SourceIDs: []string{p.source()}, CreatedAt: "2026-10-01T08:00:00Z",
+		Package: map[string]any{"sizeBytes": p.size, "durationMs": 7200000,
+			"renditions": map[string]any{"video": []any{map[string]any{"id": "v0", "codec": "hvc1.2.4.L153.B0",
+				"width": p.width, "height": p.height, "bitrateBps": p.rate, "encoder": p.encoder}},
+				"audio": audio, "audioSurround": surround},
+			"subtitles": subs,
+			"essence":   map[string]any{"surround": p.pkgCh > 2, "maxAudioChannels": p.pkgCh}},
+	})
+	streams := []any{map[string]any{"index": 0, "type": "video", "codec": "hevc", "width": p.width, "height": p.height,
+		"dispositions": map[string]any{"default": true}},
+		map[string]any{"index": 1, "type": "audio", "codec": "eac3", "channels": p.srcCh}}
+	for i, s := range p.srcSubs {
+		codec, lang, _ := strings.Cut(s, ":")
+		streams = append(streams, map[string]any{"index": 2 + i, "type": "subtitle", "codec": codec, "language": lang})
+	}
+	librarytest.WriteSource(t, library.SourceDir(itemDir, p.source()), map[string]any{"sourceId": p.source(),
+		"file": map[string]any{"name": "original.mkv", "sizeBytes": p.original}, "container": map[string]any{"durationMs": 7200000},
+		"streams": streams, "essence": map[string]any{"surround": p.srcCh > 2, "maxAudioChannels": p.srcCh}}, nil)
+}
+
+// unpackaged adds a title with a file and no package; steps are its
+// transcode's status and its package's ("" for none).
+func unpackaged(t *testing.T, st *store.Store, n int, title, file, transcode, pkg string) string {
+	t.Helper()
+	id := uuid(n)
+	storetest.AddItem(t, st, id, "movie", title, "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, sizebytes, resolution)
+		VALUES (gen_random_uuid()::varchar, $1, $2, true, 'primary', 4000000000, '1920x1080')`, id, file)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET durationms = 6000000 WHERE id = $1`, id)
+	for step, status := range map[string]string{"transcode": transcode, "package": pkg} {
+		if status != "" {
+			storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemprocessingsteps (id, createdat, modifiedat, item_id, step, status,
+				attempts, error) VALUES (gen_random_uuid()::varchar, now(), now(), $1, $2, $3::varchar, 1,
+				CASE WHEN $3::varchar = 'failed' THEN 'ffmpeg exited 1' END)`, id, step, status)
+		}
+	}
+	return id
+}
+
+// rowsOf writes a report's rows, one a line: "title: RULE, RULE".
+func rowsOf(rep graph.ComplianceReport) string {
+	var out []string
+	for _, r := range rep.Rows {
+		var rules []string
+		for _, f := range r.Findings {
+			rules = append(rules, f.Rule)
+		}
+		out = append(out, r.Title+": "+strings.Join(rules, ", "))
+	}
+	return strings.Join(out, "\n")
+}
+
+// library is the catalog of the tests: a 4K remux copied 1:1, a film within
+// its caps, an episode over its cap in a series, a film never packaged, one
+// whose transcode failed, a disc image, and a film whose package lost its
+// source's 5.1 and its German image subtitles.
+func library4(t *testing.T) (*Service, *store.Store, string) {
+	t.Helper()
+	s, st, dir := checkOf(t)
+	series := uuid(900)
+	storetest.AddItem(t, st, series, "series", "A Coastal Show", "")
+	for _, p := range []packaged{
+		{n: 1, kind: "movie", title: "A Remux Kept As It Was", width: 3840, height: 2160, rate: 73e6, encoder: "copy",
+			original: 63e9, size: 59e9, srcCh: 6, pkgCh: 6},
+		{n: 2, kind: "movie", title: "A Film Within Its Caps", width: 1920, height: 1080, rate: 5e6, encoder: "copy",
+			original: 5e9, size: 4.6e9, srcCh: 2, pkgCh: 2},
+		{n: 3, kind: "episode", title: "An Episode Over Its Cap", series: series, width: 1920, height: 1080, rate: 7e6, encoder: "copy",
+			original: 3e9, size: 2.7e9, srcCh: 2, pkgCh: 2},
+		{n: 4, kind: "movie", title: "A Film That Lost Its Tracks", width: 1920, height: 1080, rate: 4e6, encoder: "copy",
+			original: 4e9, size: 3.9e9, srcCh: 6, pkgCh: 2, srcSubs: []string{"hdmv_pgs_subtitle:de", "hdmv_pgs_subtitle:en"},
+			pkgSubs: []string{"pgs:eng"}},
+	} {
+		p.add(t, st, dir)
+	}
+	unpackaged(t, st, 5, "A Film Never Packaged", dir+"/arrivals/a-film-never-packaged.mkv", "", "")
+	unpackaged(t, st, 6, "A Film Whose Transcode Failed", dir+"/arrivals/a-film-whose-transcode-failed.mkv", "failed", "")
+	unpackaged(t, st, 7, "A Disc Image", dir+"/arrivals/a-disc-image.iso", "", "")
+	unpackaged(t, st, 8, "A Film Being Encoded", dir+"/arrivals/a-film-being-encoded.mkv", "pending", "")
+	return s, st, dir
+}
+
+func reportOf(t *testing.T, s *Service, f graph.ComplianceFilter, first int32, after string) graph.ComplianceReport {
+	t.Helper()
+	rep, err := s.Report(context.Background(), f, first, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rep
+}
+
+// A pass checks every title once, keeps what it found, and the report reads
+// it: the titles that break a rule, the largest package first (then the
+// largest original), each with its findings, sizes and estimate; a title
+// within the rules is no row, and one whose pipeline runs is none either.
+func TestAPassChecksTheLibraryAndTheReportReadsIt(t *testing.T) {
+	s, st, _ := library4(t)
+	ctx := context.Background()
+	if rep := reportOf(t, s, graph.ComplianceFilter{}, 100, ""); rep.EvaluatedAt != nil || rep.Total != 0 || rep.Pending != 8 {
+		t.Fatalf("before a pass: evaluated %v, total %d, pending %d; want never, none and the 8 titles", rep.EvaluatedAt, rep.Total, rep.Pending)
+	}
+	n, err := s.Pass(ctx)
+	if err != nil || n != 8 {
+		t.Fatalf("the first pass checked %d titles, %v; want the 8 with a file or a package", n, err)
+	}
+	rep := reportOf(t, s, graph.ComplianceFilter{}, 100, "")
+	want := `A Remux Kept As It Was: OVER_BITRATE_CAP, OVER_SIZE_CAP
+A Film That Lost Its Tracks: NO_SURROUND, IMAGE_SUBTITLES_MISSING
+An Episode Over Its Cap: OVER_BITRATE_CAP
+A Film Never Packaged: NOT_PACKAGED
+A Film Whose Transcode Failed: PACKAGING_FAILED
+A Disc Image: PACKAGING_FAILED`
+	if got := rowsOf(rep); got != want {
+		t.Errorf("the report:\n%s\nwant:\n%s", got, want)
+	}
+	if rep.Total != 6 || rep.Pending != 0 || rep.EvaluatedAt == nil || rep.Evaluating || rep.NextCursor != nil {
+		t.Errorf("total %d, pending %d, evaluated %v, evaluating %v, next %v", rep.Total, rep.Pending, rep.EvaluatedAt, rep.Evaluating, rep.NextCursor)
+	}
+	if len(rep.NotEvaluated) != 0 {
+		t.Errorf("not evaluated, with both workers' rules: %q", rep.NotEvaluated)
+	}
+	top := rep.Rows[0]
+	if top.Findings[0].Text != "video 73 Mbit/s, over the 14 Mbit/s cap for a 2160 movie" ||
+		*top.PackageBytes != 59e9 || *top.OriginalBytes != 63e9 || top.Kind != "movie" || top.Queue != nil || top.ReworkBlocked != nil {
+		t.Errorf("the 4K remux: %+v", top)
+	}
+	if want := float64(int64((14e6 + 192e3 + 448e3) * 7200 / 8)); top.EstimatedBytes == nil || *top.EstimatedBytes != want {
+		t.Errorf("the 4K remux's estimate: %v, want %v", top.EstimatedBytes, want)
+	}
+	storm := rep.Rows[2]
+	if storm.SeriesTitle == nil || *storm.SeriesTitle != "A Coastal Show" || storm.Kind != "episode" {
+		t.Errorf("the episode: %+v", storm)
+	}
+	if disc := rep.Rows[5]; disc.Findings[0].Text != DiscImageText || disc.ReworkBlocked == nil ||
+		*disc.ReworkBlocked != "its file is a disc image: convert it to a single file" || disc.EstimatedBytes != nil {
+		t.Errorf("the disc image: %+v", disc)
+	}
+	if failed := rep.Rows[4]; failed.Findings[0].Text != "transcode failed: ffmpeg exited 1" {
+		t.Errorf("the failed transcode: %+v", failed.Findings)
+	}
+	summary := map[string]graph.ComplianceSummary{}
+	var order []string
+	for _, c := range rep.Summary {
+		summary[c.Rule] = c
+		order = append(order, c.Rule)
+	}
+	if strings.Join(order, " ") != strings.Join(Rules, " ") {
+		t.Errorf("the summary's rules: %v, want every rule in order", order)
+	}
+	if c := summary[OverBitrateCap]; c.Titles != 2 || c.PackageBytes != 59e9+2.7e9 || c.EstimatedBytes == nil {
+		t.Errorf("the summary of the bitrate cap: %+v", c)
+	}
+	if c := summary[VideoNotHEVC]; c.Titles != 0 || c.PackageBytes != 0 || c.EstimatedBytes != nil {
+		t.Errorf("the summary of a rule no title breaks: %+v", c)
+	}
+
+	// a second pass finds nothing to do
+	if n, err := s.Pass(ctx); err != nil || n != 0 {
+		t.Errorf("a second pass checked %d titles, %v; want none", n, err)
+	}
+	if got := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_compliance WHERE rules = '{}'`); got != 2 {
+		t.Errorf("%d titles found within the rules, want the film within its caps and the one being encoded", got)
+	}
+}
+
+// The report narrows to a kind, to titles that break any of some rules, and
+// to a title or a series whose title holds a search, and pages: each page
+// after the one before, none twice; the summary counts the titles of the
+// kind and the search, whichever rules are asked for.
+func TestTheReportFiltersAndPages(t *testing.T) {
+	s, _, _ := library4(t)
+	if _, err := s.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		f    graph.ComplianceFilter
+		want string
+	}{
+		{"episodes", graph.ComplianceFilter{Kind: "episode"}, "An Episode Over Its Cap: OVER_BITRATE_CAP"},
+		{"not packaged or failed", graph.ComplianceFilter{Rules: []string{NotPackaged, PackagingFailed}},
+			"A Film Never Packaged: NOT_PACKAGED\nA Film Whose Transcode Failed: PACKAGING_FAILED\nA Disc Image: PACKAGING_FAILED"},
+		{"by the series' title", graph.ComplianceFilter{Search: "COASTAL"}, "An Episode Over Its Cap: OVER_BITRATE_CAP"},
+		{"by the title", graph.ComplianceFilter{Search: "remux"}, "A Remux Kept As It Was: OVER_BITRATE_CAP, OVER_SIZE_CAP"},
+		{"movies over a cap", graph.ComplianceFilter{Kind: "movie", Rules: []string{OverBitrateCap}},
+			"A Remux Kept As It Was: OVER_BITRATE_CAP, OVER_SIZE_CAP"},
+		{"nothing", graph.ComplianceFilter{Search: "no such title"}, ""},
+	} {
+		rep := reportOf(t, s, tc.f, 100, "")
+		if got := rowsOf(rep); got != tc.want || int(rep.Total) != len(rep.Rows) {
+			t.Errorf("%s: total %d\n%s\nwant:\n%s", tc.name, rep.Total, got, tc.want)
+		}
+	}
+	rep := reportOf(t, s, graph.ComplianceFilter{Kind: "movie", Rules: []string{OverBitrateCap}}, 100, "")
+	for _, c := range rep.Summary {
+		if c.Rule == PackagingFailed && c.Titles != 2 {
+			t.Errorf("the summary of movies, asked for the bitrate cap: %d failed, want the 2 movies' whatever the rules", c.Titles)
+		}
+	}
+
+	var pages []string
+	after := ""
+	for i := 0; i < 10; i++ {
+		rep := reportOf(t, s, graph.ComplianceFilter{}, 2, after)
+		if rep.Total != 6 {
+			t.Errorf("page %d: total %d, want 6", i, rep.Total)
+		}
+		pages = append(pages, rowsOf(rep))
+		if rep.NextCursor == nil {
+			break
+		}
+		after = *rep.NextCursor
+	}
+	if got := strings.Join(pages, "\n"); got != rowsOf(reportOf(t, s, graph.ComplianceFilter{}, 100, "")) || len(pages) != 3 {
+		t.Errorf("3 pages of 2:\n%s", got)
+	}
+	if _, err := s.Report(context.Background(), graph.ComplianceFilter{}, 2, "not-a-cursor"); err == nil {
+		t.Error("a cursor of no page was taken")
+	}
+	if _, err := s.Report(context.Background(), graph.ComplianceFilter{Rules: []string{"TOO_LOUD"}}, 2, ""); err == nil {
+		t.Error("an unknown rule was taken")
+	}
+	if rep := reportOf(t, s, graph.ComplianceFilter{}, 0, ""); len(rep.Rows) != 0 || rep.Total != 6 {
+		t.Errorf("a page of none: %d rows, total %d", len(rep.Rows), rep.Total)
+	}
+}
+
+// A row says where its title stands in the re-encode queue, the latest
+// place it had there, and why it waits or failed.
+func TestARowSaysItsPlaceInTheQueue(t *testing.T) {
+	s, st, _ := library4(t)
+	if _, err := s.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_reencodequeue (id, item_id, state, selection, reason)
+		VALUES ('q1', $1, 'failed', 'items', 'transcode failed: out of memory'), ('q2', $1, 'queued', 'items', 'transcode is running')`, uuid(1))
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_reencodequeue (id, item_id, state, selection, sentat)
+		VALUES ('q3', $1, 'sent', 'items', now())`, uuid(3))
+	rep := reportOf(t, s, graph.ComplianceFilter{}, 100, "")
+	for _, r := range rep.Rows {
+		want := map[string]string{uuid(1): "queued: transcode is running", uuid(3): "sent: "}[r.ItemID]
+		got := ""
+		if r.Queue != nil {
+			got = *r.Queue + ": "
+			if r.QueueReason != nil {
+				got += *r.QueueReason
+			}
+		}
+		if got != want {
+			t.Errorf("%s: queue %q, want %q", r.Title, got, want)
+		}
+	}
+}
+
+// The rows are checked against the rules they were found by: a report of the
+// same rules by another version changes nothing, and rules that changed have
+// every title checked again by the next pass, against them.
+func TestTheRulesHashMakesRowsStale(t *testing.T) {
+	s, _, _ := library4(t)
+	ctx := context.Background()
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.ReportRules(ctx, Transcoder, []byte(`{"version": "1.5.0", "rules": `+
+		strings.Replace(transcoderReport, `"preset": "p5"`, `"preset": "p6"`, 1)+`}`))
+	if err != nil || again.Changed {
+		t.Fatalf("the same rules by another version, another preset: %+v, %v; want them unchanged", again, err)
+	}
+	if rep := reportOf(t, s, graph.ComplianceFilter{}, 100, ""); rep.Pending != 0 {
+		t.Errorf("after the same rules: %d titles pending, want none", rep.Pending)
+	}
+	if r := reportFor(t, s, Transcoder, strings.Replace(transcoderReport, `"movie2160Mbps": 14`, `"movie2160Mbps": 80`, 1)); !r.Changed {
+		t.Fatal("a cap that changed was not taken for a change")
+	}
+	if rep := reportOf(t, s, graph.ComplianceFilter{}, 100, ""); rep.Pending != 8 {
+		t.Errorf("after a cap changed: %d titles pending, want every one", rep.Pending)
+	}
+	if n, err := s.Pass(ctx); err != nil || n != 8 {
+		t.Fatalf("the pass after the change checked %d, %v", n, err)
+	}
+	rep := reportOf(t, s, graph.ComplianceFilter{Search: "remux"}, 100, "")
+	if got := rowsOf(rep); got != "A Remux Kept As It Was: OVER_SIZE_CAP" {
+		t.Errorf("the 4K remux against a cap of 80 Mbit/s: %q", got)
+	}
+	var keys []string
+	for _, r := range rep.Rules.Transcoder.Rules {
+		keys = append(keys, r.Key+"="+r.Value)
+	}
+	if got := strings.Join(keys, " "); !strings.Contains(got, "caps.movie2160Mbps=80 Mbit/s") || !strings.Contains(got, "encoder.preset=p5") {
+		t.Errorf("the transcoder's rules in the report: %s", got)
+	}
+}
+
+// Without a worker's report its rules are not held against a title, and the
+// report says what is not checked: only what the catalog's tables tell (not
+// packaged, failed) is found.
+func TestUnreportedRulesAreNotEvaluated(t *testing.T) {
+	st := storetest.Open(t)
+	dir := t.TempDir()
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('l', 'library.layout', 'v2')`)
+	s := New(st, config.Config{LibraryRoot: dir})
+	packaged{n: 1, kind: "movie", title: "A Remux Kept As It Was", width: 3840, height: 2160, rate: 73e6, encoder: "copy",
+		original: 63e9, size: 59e9, srcCh: 6, pkgCh: 2}.add(t, st, dir)
+	unpackaged(t, st, 5, "A Film Never Packaged", dir+"/arrivals/a-film-never-packaged.mkv", "", "")
+	if _, err := s.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rep := reportOf(t, s, graph.ComplianceFilter{}, 100, "")
+	if got := rowsOf(rep); got != "A Film Never Packaged: NOT_PACKAGED" {
+		t.Errorf("no rules reported:\n%s", got)
+	}
+	want := []string{"the transcoder has not reported its rules, so the caps and the video codec are not checked",
+		"the packager has not reported its rules, so surround and image subtitles are not checked"}
+	if strings.Join(rep.NotEvaluated, "\n") != strings.Join(want, "\n") || rep.Rules.Transcoder != nil || rep.Rules.Packager != nil {
+		t.Errorf("not evaluated:\n%s\nrules %+v", strings.Join(rep.NotEvaluated, "\n"), rep.Rules)
+	}
+	if rep.Rows[0].EstimatedBytes != nil {
+		t.Errorf("an estimate without the workers' rules: %v", *rep.Rows[0].EstimatedBytes)
+	}
+
+	// the packager reports: its rules are checked from the next pass on, the
+	// transcoder's still not
+	reportFor(t, s, Packager, strings.Replace(packagerReport, `"eac3"`, `"off"`, 1))
+	if _, err := s.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rep = reportOf(t, s, graph.ComplianceFilter{}, 100, "")
+	if got := rowsOf(rep); got != "A Film Never Packaged: NOT_PACKAGED" {
+		t.Errorf("a packager that makes no 5.1:\n%s", got)
+	}
+	if got := strings.Join(rep.NotEvaluated, "\n"); got != want[0]+"\nthe packager makes no 5.1 companion (surroundAudio off), so surround is not checked" {
+		t.Errorf("not evaluated:\n%s", got)
+	}
+	reportFor(t, s, Packager, packagerReport)
+	if _, err := s.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := rowsOf(reportOf(t, s, graph.ComplianceFilter{}, 100, "")); got != "A Remux Kept As It Was: NO_SURROUND\nA Film Never Packaged: NOT_PACKAGED" {
+		t.Errorf("the packager's 5.1 reported:\n%s", got)
+	}
+}
+
+// A title whose package completed is checked again by the next pass (Touch),
+// one the check held no row of too; refreshCompliance has every title of a
+// kind checked again.
+func TestATitleTouchedIsCheckedAgain(t *testing.T) {
+	s, st, dir := library4(t)
+	ctx := context.Background()
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// the film within its caps is packaged again, its 5.1 lost
+	p := packaged{n: 2, kind: "movie", title: "A Film Within Its Caps", width: 1920, height: 1080, rate: 5e6, encoder: "copy",
+		original: 5e9, size: 4.6e9, srcCh: 6, pkgCh: 2}
+	itemDir := library.Paths{Root: dir}.MovieDir(p.id())
+	librarytest.WriteSource(t, library.SourceDir(itemDir, p.source()), map[string]any{"sourceId": p.source(),
+		"streams": []any{}, "essence": map[string]any{"surround": true, "maxAudioChannels": 6}}, nil)
+	if n, err := s.Pass(ctx); err != nil || n != 0 {
+		t.Fatalf("a pass before the title is touched checked %d, %v", n, err)
+	}
+	s.Touch(ctx, p.id())
+	if rep := reportOf(t, s, graph.ComplianceFilter{}, 100, ""); rep.Pending != 1 {
+		t.Errorf("a title touched: %d pending, want it", rep.Pending)
+	}
+	if n, err := s.Pass(ctx); err != nil || n != 1 {
+		t.Fatalf("the pass after a touch checked %d, %v", n, err)
+	}
+	if got := rowsOf(reportOf(t, s, graph.ComplianceFilter{Search: "within its"}, 100, "")); got != "A Film Within Its Caps: NO_SURROUND" {
+		t.Errorf("the title packaged again: %q", got)
+	}
+
+	// a title the catalog gained, touched before any pass: it waits, and is
+	// no row of the report until then
+	id := unpackaged(t, st, 9, "A Film Just Taken In", dir+"/arrivals/a-film-just-taken-in.mkv", "", "")
+	s.Touch(ctx, id)
+	if rep := reportOf(t, s, graph.ComplianceFilter{Search: "just taken"}, 100, ""); rep.Total != 0 || rep.Pending != 1 {
+		t.Errorf("a new title touched: total %d, pending %d", rep.Total, rep.Pending)
+	}
+	if n, err := s.Pass(ctx); err != nil || n != 1 {
+		t.Fatalf("the pass after the new title checked %d, %v", n, err)
+	}
+
+	ok, err := s.Refresh(ctx, graph.ComplianceEpisode)
+	if err != nil || !ok {
+		t.Fatalf("refresh: %v, %v", ok, err)
+	}
+	if rep := reportOf(t, s, graph.ComplianceFilter{}, 100, ""); rep.Pending != 1 {
+		t.Errorf("after a refresh of the episodes: %d pending, want the one episode", rep.Pending)
+	}
+	if n, err := s.Pass(ctx); err != nil || n != 1 {
+		t.Errorf("the pass after a refresh of the episodes checked %d, %v", n, err)
+	}
+}
+
+// A pass runs in one instance at a time: while another holds the lock, a
+// pass checks nothing and the report says one runs. A title deleted takes
+// its row with it, and one that is no title to check any more is pruned.
+func TestOnePassAtATimeAndPruning(t *testing.T) {
+	s, st, _ := library4(t)
+	ctx := context.Background()
+	conn, err := st.Pool().Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(`+passLock+`)`); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.Pass(ctx); err != nil || n != 0 {
+		t.Errorf("a pass while another runs checked %d, %v", n, err)
+	}
+	if rep := reportOf(t, s, graph.ComplianceFilter{}, 100, ""); !rep.Evaluating {
+		t.Error("the report does not say a pass runs")
+	}
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_unlock(`+passLock+`)`); err != nil {
+		t.Fatal(err)
+	}
+	conn.Release()
+	if rep := reportOf(t, s, graph.ComplianceFilter{}, 100, ""); rep.Evaluating {
+		t.Error("the report says a pass runs, and none does")
+	}
+	if n, err := s.Pass(ctx); err != nil || n != 8 {
+		t.Fatalf("the pass checked %d, %v", n, err)
+	}
+
+	if _, err := st.DeleteItems(ctx, []string{uuid(5)}, store.Deletion{By: "admin-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_compliance WHERE item_id = $1`, uuid(5)); n != 0 {
+		t.Errorf("a deleted title's row stayed")
+	}
+	// a film that has neither file nor package any more, and an episode that
+	// another's file covers now
+	storetest.Exec(t, st, `DELETE FROM com_nalet_katalog_playbackassets WHERE item_id = $1`, uuid(6))
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_items SET coveredby = $2 WHERE id = $1`, uuid(3), uuid(1))
+	s.Touch(ctx, uuid(2))
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{uuid(6), uuid(3)} {
+		if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_compliance WHERE item_id = $1`, id); n != 0 {
+			t.Errorf("%s: its row stayed", id)
+		}
+	}
+}
+
+// A record that cannot be read leaves the rules that read it unchecked of its
+// title, and the report says so.
+func TestARecordThatCannotBeRead(t *testing.T) {
+	s, _, _ := checkOf(t)
+	p := packaged{n: 1, kind: "movie", title: "A Remux Kept As It Was"}
+	storetest.AddItem(t, s.st, p.id(), "movie", p.title, "")
+	storetest.Exec(t, s.st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state) VALUES ($1, $2, ARRAY[$3]::varchar[], 'complete')`,
+		p.version(), p.id(), p.source())
+	storetest.Exec(t, s.st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, codec, sizebytes)
+		VALUES ('pk', $1, 'package.json', false, 'packaged', 'avc1.640033', 59000000000)`, p.id())
+	if _, err := s.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rep := reportOf(t, s, graph.ComplianceFilter{}, 100, "")
+	if got := rowsOf(rep); got != "A Remux Kept As It Was: VIDEO_NOT_HEVC" {
+		t.Errorf("a title without its records:\n%s", got)
+	}
+	rel := filepath.ToSlash(filepath.Join("versions", p.version(), "package.json"))
+	want := "the records of 1 title could not be read (the first: " + rel + " is not there), so their bitrate caps, " +
+		"surround and image subtitles are not checked"
+	if len(rep.NotEvaluated) != 1 || rep.NotEvaluated[0] != want {
+		t.Errorf("not evaluated: %q\nwant %q", rep.NotEvaluated, want)
+	}
+}
+
+// The rules a worker reports are kept as it reported them, written out for
+// the console; a report that is no report of the worker's rules is refused,
+// and keeps nothing.
+func TestTheRulesAWorkerReports(t *testing.T) {
+	s, st, _ := checkOf(t)
+	ctx := context.Background()
+	rules, err := s.PipelineRules(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range rules.Transcoder.Rules {
+		got = append(got, r.Key+" | "+r.Label+" | "+r.Value)
+	}
+	want := `caps.movie1080Mbps | Movie cap (1080) | 8 Mbit/s
+caps.movie2160Mbps | Movie cap (2160) | 14 Mbit/s
+caps.movieMaxGiB | Movie file size cap | 15 GiB
+caps.episode1080Mbps | Episode cap (1080) | 6 Mbit/s
+caps.episode2160Mbps | Episode cap (2160) | 8 Mbit/s
+bucket2160.minHeight | 2160 bucket from a height of | 2000 lines
+bucket2160.minWidth | 2160 bucket from a width of | 3200 pixels
+encoder.codec | HEVC encoder | hevc_nvenc
+encoder.preset | Encoder preset | p5
+encoder.cq | Constant quality | 23
+encoder.maxrate1080Mbps | Maxrate (1080) | none: the cap
+encoder.maxrate2160Mbps | Maxrate (2160) | none: the cap
+ladder | Ladder | source:hevc
+extraLadder | Extras ladder | source:hevc`
+	if strings.Join(got, "\n") != want {
+		t.Errorf("the transcoder's rules:\n%s\nwant:\n%s", strings.Join(got, "\n"), want)
+	}
+	if rules.Transcoder.Version == nil || *rules.Transcoder.Version != "1.4.0" || rules.Transcoder.ReportedAt.IsZero() {
+		t.Errorf("the transcoder's report: %+v", rules.Transcoder)
+	}
+	got = nil
+	for _, r := range rules.Packager.Rules {
+		got = append(got, r.Key+"="+r.Value)
+	}
+	if strings.Join(got, " ") != "surroundAudio=eac3 surroundBitrate=448k stereoBitrate=192k imageSubtitles=pgs, vobsub" {
+		t.Errorf("the packager's rules: %v", got)
+	}
+
+	before := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_workerrules WHERE rules::text LIKE '%"movie1080Mbps": 8%'`)
+	for _, tc := range []struct {
+		worker, body string
+		says         string
+	}{
+		{"analyzer", `{"rules": {}}`, "no such worker"},
+		{Transcoder, `not json`, "the body is no report of rules"},
+		{Transcoder, `{"version": "1", "rules": []}`, "rules is no JSON object"},
+		{Transcoder, `{"rules": {"caps": {"movie1080Mbps": "eight"}}}`, "caps.movie1080Mbps is a JSON string, and it is a number"},
+		{Transcoder, `{"rules": {"caps": {"movie1080Mbps": -1}}}`, "caps.movie1080Mbps is -1, and it is 0 or above"},
+		{Packager, `{"rules": {"surroundBitrate": "loud"}}`, `surroundBitrate is "loud", which is no bit rate`},
+		{Packager, `{"rules": {"imageSubtitles": "pgs"}}`, "imageSubtitles is a JSON string, and it is a list"},
+		{Packager, `{"version": "` + strings.Repeat("v", 256) + `", "rules": {}}`, "version is longer than 255 characters"},
+	} {
+		_, err := s.ReportRules(ctx, tc.worker, []byte(tc.body))
+		if err == nil || !strings.Contains(err.Error(), tc.says) {
+			t.Errorf("%s %s: %v, want it refused saying %q", tc.worker, tc.body, err, tc.says)
+		}
+	}
+	if after := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_workerrules WHERE rules::text LIKE '%"movie1080Mbps": 8%'`); after != before {
+		t.Error("a refused report changed the rules kept")
+	}
+	var kept map[string]any
+	var raw string
+	if err := st.Pool().QueryRow(ctx, `SELECT rules::text FROM com_nalet_katalog_workerrules WHERE worker = 'packager'`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(raw), &kept); err != nil || kept["surroundAudio"] != "eac3" {
+		t.Errorf("the packager's rules kept: %s", raw)
+	}
+}

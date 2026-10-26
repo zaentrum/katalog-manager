@@ -20,6 +20,7 @@ import (
 
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/auth/authtest"
+	"github.com/zaentrum/katalog-manager/internal/compliance"
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/extras"
@@ -207,6 +208,9 @@ type instance struct {
 	st  *store.Store
 	cfg config.Config
 	f   *fakes
+	// check is the library's compliance check, when the instance is wired
+	// with it (wiring.compliance).
+	check *compliance.Service
 	// every answer's body, to be searched for a secret
 	mu      sync.Mutex
 	answers []string
@@ -229,12 +233,15 @@ func newInstanceWith(t *testing.T, pipeline func(*store.Store) graph.Pipeline) *
 // wiring is what an instance is wired with instead of a fake: the
 // pipeline's retries, the extras, the event bus the REST routes announce
 // on and what gives a title another file (encoding it again through the
-// pipeline), each made of the instance's store and configuration.
+// pipeline), each made of the instance's store and configuration; and,
+// with compliance, the library's compliance check, whose rework goes
+// through the pipeline's queue.
 type wiring struct {
-	pipeline func(*store.Store) graph.Pipeline
-	extras   func(*store.Store, config.Config) *extras.Service
-	events   *events.Producer
-	sources  func(*store.Store, config.Config, graph.Pipeline) graph.SourceReplacer
+	pipeline   func(*store.Store) graph.Pipeline
+	extras     func(*store.Store, config.Config) *extras.Service
+	events     *events.Producer
+	sources    func(*store.Store, config.Config, graph.Pipeline) graph.SourceReplacer
+	compliance bool
 }
 
 func newInstanceWired(t *testing.T, w wiring) *instance {
@@ -292,12 +299,20 @@ func newInstanceWired(t *testing.T, w wiring) *instance {
 	services := graph.Services{Scanner: f, Enricher: f, People: f, Ratings: f, Packager: f, Validator: f, Remover: f,
 		Pipeline: pipe, Secrets: f, Extras: x, Sources: sources, Compliance: f, Rework: f}
 	deps := rest.Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool()), Events: w.events, Extras: taker, Reencode: reencode}
+	var check *compliance.Service
+	if w.compliance {
+		check = compliance.New(st, cfg)
+		services.Compliance, deps.Compliance = check, check
+		if q, ok := pipe.(graph.Rework); ok {
+			services.Rework = q
+		}
+	}
 	schema := graph.MustSchema(graph.NewResolver(st, cfg, services))
 	r := chi.NewRouter()
 	routes(r, auth.NewMiddleware(jwt, sv).Handler, cfg.Policy(), schema, stream.NewBroker().Handler, rest.New(deps))
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
-	in := &instance{url: srv.URL, iss: iss, st: st, cfg: cfg, f: f}
+	in := &instance{url: srv.URL, iss: iss, st: st, cfg: cfg, f: f, check: check}
 	t.Cleanup(func() {
 		for _, a := range in.answers {
 			for _, s := range []string{tmdbSecret, fanartSecret, omdbSecret, refusedToken, uncheckedToken, goodToken} {

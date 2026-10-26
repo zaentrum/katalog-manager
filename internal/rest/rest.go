@@ -14,14 +14,15 @@ import (
 
 // Deps are the dependencies the REST handlers need.
 type Deps struct {
-	Store    *store.Store
-	Cfg      config.Config
-	Steps    *processing.Steps
-	Events   *events.Producer // nil-safe: packaged-event emit no-ops without a bus
-	Packager Packager         // nil: POST /api/items/{id}/package answers 503
-	Extras   ExtraTaker       // nil: POST /api/extras answers 503
-	Reencode Reencoder        // nil: /api/library/reencode answers 503
-	TakeIn   TakeIn           // nil: a title that gets no package is taken in by the sweep alone; POST /api/items/{id}/takein answers 503
+	Store      *store.Store
+	Cfg        config.Config
+	Steps      *processing.Steps
+	Events     *events.Producer // nil-safe: packaged-event emit no-ops without a bus
+	Packager   Packager         // nil: POST /api/items/{id}/package answers 503
+	Extras     ExtraTaker       // nil: POST /api/extras answers 503
+	Reencode   Reencoder        // nil: /api/library/reencode answers 503
+	TakeIn     TakeIn           // nil: a title that gets no package is taken in by the sweep alone; POST /api/items/{id}/takein answers 503
+	Compliance Compliance       // nil: PUT /api/analyze/rules/{worker} answers 503, and only the nightly pass checks a title packaged again
 }
 
 // Handlers groups the REST handlers.
@@ -56,10 +57,11 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 //     /api/items/{id}/takein, a title's take-in without a package.
 //
 // The workers' protocol of an extra (its record, its steps, its
-// packaging-complete) is in the worker group too. Bodies are implemented in
-// the per-area files (artwork.go, play.go, subtitles.go, analyzer.go,
-// segments.go, chapters.go, packaging.go, package.go, settings.go,
-// ingest.go, extras.go, migrations.go, reencode.go, takein.go).
+// packaging-complete) is in the worker group too, and so is the workers'
+// report of the rules they run with. Bodies are implemented in the per-area
+// files (artwork.go, play.go, subtitles.go, analyzer.go, segments.go,
+// chapters.go, packaging.go, package.go, settings.go, ingest.go, extras.go,
+// migrations.go, reencode.go, takein.go, rules.go).
 func (h *Handlers) Register(r chi.Router) {
 	pol := h.d.Cfg.Policy()
 
@@ -99,6 +101,9 @@ func (h *Handlers) Register(r chi.Router) {
 		r.Post("/api/analyze/items/{id}/fail", h.failItem)
 		r.Get("/api/analyze/items/{id}/siblings", h.getSiblings)
 		r.Post("/api/analyze/series/{id}/reset", h.resetSeries)
+		// The rules the transcoder and the packager run with, which the
+		// library's compliance check holds the titles against.
+		r.Put("/api/analyze/rules/{worker}", h.putRules)
 
 		// Fused analyzer output
 		r.Put("/api/segments/items/{itemId}", h.putSegments)
