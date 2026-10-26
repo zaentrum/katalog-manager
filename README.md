@@ -337,8 +337,8 @@ the base schema in the order of their numbers, and each is idempotent:
   check reads of them, when it reported and when they last changed) and
   what the library's compliance check found of each movie and episode
   (`com_nalet_katalog_compliance`: the rules it breaks and the findings,
-  the sizes of its original and its package and the estimate after its
-  rework, why a rule was not checked of it, the hash of the rules it was
+  the sizes of its original and its package and the estimate once it is
+  processed again, why a rule was not checked of it, the hash of the rules it was
   checked against, when it was marked to be checked again and when it was
   checked; see [Library compliance](#library-compliance)). A deleted item's
   row goes with it. Applied at startup when any of it is missing; without it
@@ -641,8 +641,8 @@ Without an event bus or migration 033 a re-encode is refused, as a retry is.
 Many titles are encoded again through the queue, which the sweep sends a
 few at a time so the transcoder is not flooded. `POST /api/library/reencode`
 (the service account and admins) queues titles by its body, any of them
-together, each title once (the console's rework of what the compliance
-check finds queues titles by name the same way, see
+together, each title once (the compliance report has the titles it finds
+processed again by name the same way, see
 [Library compliance](#library-compliance)):
 
 - `{"items": ["<itemId>", …]}`: movies and episodes, a series its episodes
@@ -694,7 +694,8 @@ surround left out before the packager's 5.1 companion. Nothing packages a
 title again by itself. The compliance check holds every movie and episode
 with a file or a package (an episode another's file covers is its
 holder's) against the rules the workers run with now, keeps what it finds,
-and an admin reworks what it finds through the re-encode queue.
+and an admin has what it finds processed again through the re-encode
+queue.
 
 **The rules.** The transcoder and the packager report the rules they run
 with, at their start and every ten minutes, on `PUT
@@ -709,8 +710,8 @@ with, at their start and every ten minutes, on `PUT
 ```
 
 ```json
-{"version": "3f2a9c1", "rules": {"surroundAudio": "eac3", "surroundBitrate": "448k", "stereoBitrate": "192k",
-  "imageSubtitles": ["pgs", "vobsub"]}}
+{"version": "3f2a9c1", "rules": {"surroundAudio": "eac3", "surroundLayout": "5.1", "surroundBitrate": "448k",
+  "stereoBitrate": "192k", "imageSubtitles": ["pgs", "vobsub"]}}
 ```
 
 Each value is the one the worker runs with (a cap of 0 a rule switched
@@ -727,17 +728,19 @@ once, and goes on.
 **What it finds.** A rule whose worker never reported is not checked, and
 no default stands in for it: the report says so (`notEvaluated`), and so
 it does of a value a report does not give, a rule switched off, a layout
-that keeps no records, and records that cannot be read.
+that keeps no records, and records that cannot be read (how many; the log
+of the pass names the first of them and why, `compliance: 1 title whose
+records can't be read …`).
 
 | Rule | A title breaks it when |
 | --- | --- |
-| `NOT_PACKAGED` | its original is present, it has no package, and its transcode and its package neither wait nor run ("not packaged"; one taken in without a package says so) |
-| `PACKAGING_FAILED` | it has no package, and its transcode or its package failed or was skipped, saying why (a disc image: "disc image: not encoded") |
-| `OVER_BITRATE_CAP` | its package's video is above the transcoder's cap of its kind and bucket ("video 73 Mbit/s, over the 14 Mbit/s cap for a 2160 movie") |
-| `OVER_SIZE_CAP` | a movie's original is above `movieMaxGiB`, and its package copies its video as it is |
-| `NO_SURROUND` | the packager makes a 5.1 companion, and the package lacks the surround its source had (as the retire job holds an original for it) |
-| `IMAGE_SUBTITLES_MISSING` | the source has image subtitles of a form the packager carries, and the package carries none of them in their language |
-| `VIDEO_NOT_HEVC` | the package's video is not HEVC (`hev1`, `hvc1`) where the transcoder's rules make every package HEVC: its ladder names the source rung's codec, or its encoder is no CPU one |
+| `NOT_PACKAGED` | its original is present, it has no package, and its transcode and its package neither wait nor run ("It has no package, and none is being made."; one taken in without a package: "It was taken in without a package and plays from its original.") |
+| `PACKAGING_FAILED` | it has no package, and its transcode or its package failed or was skipped, saying which and why ("The transcoder failed: ffmpeg exited 1."), or its file is a disc image ("Its file is a disc image, which the transcoder doesn't encode.") |
+| `OVER_BITRATE_CAP` | its package's video is above the bit rate the transcoder allows for its kind and bucket ("The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie.") |
+| `OVER_SIZE_CAP` | a movie's original is larger than `movieMaxGiB`, and its package copies its video as it is ("The original is larger than the 16.1 GB the transcoder allows for a movie, and the package keeps its video as it is.") |
+| `NO_SURROUND` | the packager makes a surround track, and the package lacks the surround its source had, as the retire job holds an original for it ("The package has 2 audio channels, and the source has 8. The 5.1 E-AC-3 track the packager makes is missing.") |
+| `IMAGE_SUBTITLES_MISSING` | the source has image subtitles of a form the packager keeps, and the package has none of them in their language ("The source's PGS subtitles in German and French, and its VobSub subtitles in Italian, are missing from the package. The packager keeps PGS and VobSub subtitles.") |
+| `VIDEO_NOT_HEVC` | the package's video is not HEVC (`hev1`, `hvc1`) where the transcoder's rules make every package HEVC: its ladder names the source rung's codec, or its encoder is no CPU one ("The video is H.264, and the transcoder makes every video HEVC.") |
 
 The cap bucket is the transcoder's: 2160 from `minHeight` lines tall or
 `minWidth` wide, of the source's tallest and widest video stream (cover art
@@ -758,13 +761,34 @@ layout, which keeps no records, the bit rate, surround and image subtitles
 are not checked.
 
 Each title has `originalBytes`, `packageBytes` and `estimatedBytes`, what
-its package is to be after its rework at most: a rework that encodes the
-video makes it at the transcoder's maxrate (the cap of its kind and bucket,
-or its `NVENC_MAXRATE_*` override) with the packager's stereo and 5.1 audio
-for one language, for the title's duration; one that only adds tracks keeps
-the package and adds the 5.1. A title a rework cannot help (its original
-deleted after packaging, a disc image) has none, and says why
-(`reworkBlocked`).
+its package is to be at most once it is processed again: processing that
+encodes the video makes it at the transcoder's maxrate (the bit rate it
+allows for the title's kind and bucket, or its `NVENC_MAXRATE_*` override)
+with the packager's stereo and surround audio for one language, for the
+title's duration; processing that only adds tracks keeps the package and
+adds the surround track. A title that processing again cannot help (its
+original deleted after packaging, no file, a disc image) has none, and
+says why (`reworkBlocked`).
+
+**The words.** Every text the check writes for the report (a finding's
+`text`, `measured` and `limit`, `notEvaluated`, `queueReason`,
+`reworkBlocked` and the mutations' `message`) is in sentence case and
+gives the reason, never an instruction. A limit is the one its worker
+reports, read when the text is written and named by the worker that
+allows it ("the 14 Mbit/s the transcoder allows for a 2160 movie"): no
+number is typed into a text. Sizes are written as the clients write them,
+in decimal units, GB with one decimal and no trailing zero from 1 GB up and
+MB below it ("58.8 GB", "820 MB"), so a file size reported as 15 GiB reads
+16.1 GB; bit rates in Mbit/s, kbit/s below one; a no-break space keeps a
+number on the line of its unit. A size the row's columns show is not said
+again (a movie's original too large is its `originalBytes`, and the finding
+has no `measured`), a bit rate read off the package's size is "about" one,
+languages are named in English ("German"), and what the queue does to a
+title is to process it again. The words are part of the check's version,
+which each row's hash of its rules holds, so new words check every title
+again. `go test ./internal/compliance -run TestTheServerTexts` with
+`COMPLIANCE_TEXTS` set to a file writes every text there with real values,
+for a review of the words.
 
 **When it looks.** The check reads the catalog's tables and, with the v2
 layout, the small records of a packaged title's version and source
@@ -786,7 +810,8 @@ nor package) leaves the report.
 **GraphQL** (admins):
 
 - `pipelineRules` — each worker's last report: its version, when, and
-  each rule written out (`{key, label, value}`, "14 Mbit/s", "off").
+  each rule written out (`{key, label, value}`: "Video bit rate allowed for
+  a 2160 movie", "14 Mbit/s"; a limit of 0 "any").
 - `libraryCompliance(kind, rules, search, first, after)` — a page of the
   titles that break a rule (any of `rules` when given), of `kind`, whose
   title or series' title holds `search`, the largest package first, then
@@ -794,18 +819,25 @@ nor package) leaves the report.
   `after` (the last page's `nextCursor`). Each row has its findings
   (`{rule, text, measured, limit}`), sizes, its place in the re-encode
   queue (`queued`, `sent`, `done` or `failed`, and why) and when it was
-  checked. `total` counts the titles the filter matches; `summary`, for
-  every rule, those of `kind` and `search` that break it, whatever `rules`
-  asks, with the size of their packages and their estimate; `evaluatedAt`
-  is the oldest check of those (null when none was checked), `evaluating`
-  whether a pass runs, `pending` how many titles wait for the next one.
+  checked. `total` counts the titles the whole filter (`kind`, `rules`,
+  `search`) matches, and `matching` sums them up, every one of them and not
+  only the page's (`{titles, originalBytes, packageBytes,
+  estimatedBytes}`); `summary`, for every rule, those of `kind` and `search`
+  that break it, whatever `rules` asks, with the size of their packages and
+  their estimate; `evaluatedAt` is the oldest check of those (null when none
+  was checked), `evaluating` whether a pass runs, `pending` how many titles
+  wait for the next one; `queue` counts the re-encode queue, all its titles,
+  by state (`{queued, processing, processed, failed}`: a title sent is
+  processing, one done processed).
 - `queueRework(items)`, `queueReworkMatching(kind, rules, search)` — the
   titles named, or every one the filter matches, into the re-encode queue
   (as `POST /api/library/reencode` with `items`: a series is its episodes),
   which sends them at its pace: `{queued, alreadyQueued, skipped,
   message}`, a title waiting or sent already counted in `alreadyQueued`,
   one the queue cannot encode (no file, its original deleted after
-  packaging, a disc image) in `skipped`.
+  packaging, a disc image) in `skipped`, and `message` saying it in a
+  sentence ("12 titles queued to be processed again. 3 titles are queued
+  already."), why the titles skipped were skipped too.
 - `refreshCompliance(kind)` — the titles of `kind` (every kind when
   omitted) checked again by the next pass, at once.
 
