@@ -1377,8 +1377,13 @@ type ComplianceFinding {
 # where it stands in the re-encode queue (queued, sent, done or failed; null
 # when it was never queued), queueReason why it waits or failed there, and
 # queueDetail that reason's technical part (what a worker said, an event).
-# reworkBlocked says why processing it again cannot help (its original
-# deleted after packaging, no file, a disc image), null when it can.
+# reworkBlocked says why processing it again can't help, as the clause the
+# console says after a colon ("its file is a disc image, which the
+# transcoder doesn’t encode", "the original has no video", "Dolby Vision
+# profile 7 needs a tone-mapping encode"), null when it can: its original
+# deleted after packaging or being deleted, no file, a disc image, or what
+# its original's record or its failed step tells the transcoder would refuse
+# again; such a title has no estimate, and is no queueable one.
 # evaluatedAt is when the check found it so (RFC 3339).
 type ComplianceRow {
   itemId: ID!

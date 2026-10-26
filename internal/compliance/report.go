@@ -23,7 +23,7 @@ const maxPage = 500
 // each: its title, year, numbers and series.
 const filtered = `WITH f AS (
 	SELECT c.item_id, c.kind, c.rules, c.findings, c.originalbytes, c.packagebytes, c.estimatedbytes, c.unchecked,
-		c.ruleshash, c.evaluatedat, i.title, i.year, i.seasonnumber, i.episodenumber, sr.id AS series_id,
+		c.blocked, c.ruleshash, c.evaluatedat, i.title, i.year, i.seasonnumber, i.episodenumber, sr.id AS series_id,
 		sr.title AS series_title
 	FROM ` + store.ComplianceTable + ` c
 	JOIN com_nalet_katalog_items i ON i.id = c.item_id
@@ -215,7 +215,7 @@ func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []st
 	}
 	rows, err := s.pool.Query(ctx, filtered+`SELECT f.item_id, f.title, f.year, f.kind, f.series_id, f.series_title,
 			f.seasonnumber, f.episodenumber, f.findings::text, f.originalbytes, f.packagebytes, f.estimatedbytes,
-			f.evaluatedat, q.state, q.reason
+			f.evaluatedat, q.state, q.reason, f.blocked
 		FROM f
 		LEFT JOIN LATERAL (SELECT q.state, q.reason FROM `+store.ReencodeQueueTable+` q WHERE q.item_id = f.item_id
 			ORDER BY q.seq DESC LIMIT 1) q ON true
@@ -228,15 +228,21 @@ func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []st
 		return nil, nil, err
 	}
 	defer rows.Close()
+	var kept []string // each row's blocked kind, as the pass kept it ("" for none)
 	for rows.Next() {
 		var r graph.ComplianceRow
 		var findings string
 		var orig, pkg, est *int64
-		var reason *string
+		var reason, blocked *string
 		if err := rows.Scan(&r.ItemID, &r.Title, &r.Year, &r.Kind, &r.SeriesID, &r.SeriesTitle, &r.Season, &r.Episode,
-			&findings, &orig, &pkg, &est, &r.EvaluatedAt, &r.Queue, &reason); err != nil {
+			&findings, &orig, &pkg, &est, &r.EvaluatedAt, &r.Queue, &reason, &blocked); err != nil {
 			return nil, nil, err
 		}
+		k := ""
+		if blocked != nil {
+			k = *blocked
+		}
+		kept = append(kept, k)
 		if r.Queue != nil && reason != nil {
 			r.QueueReason, r.QueueDetail = queueWords(*r.Queue, *reason)
 		}
@@ -256,7 +262,7 @@ func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []st
 	}
 	var next *string
 	if len(out) > int(first) {
-		out = out[:first]
+		out, kept = out[:first], kept[:first]
 		last := out[len(out)-1]
 		c := cursor{pkg: -1, orig: -1, id: last.ItemID}
 		if last.PackageBytes != nil {
@@ -268,15 +274,17 @@ func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []st
 		s := c.String()
 		next = &s
 	}
-	if err := s.blocked(ctx, out); err != nil {
+	if err := s.blocked(ctx, out, kept); err != nil {
 		return nil, nil, err
 	}
 	return out, next, nil
 }
 
 // blocked says of each row why processing it again can't help, as the
-// re-encode queue skips it.
-func (s *Service) blocked(ctx context.Context, rows []graph.ComplianceRow) error {
+// clause the console says after a colon: as the re-encode queue skips it
+// (its original deleted, no file, a disc image), else as the pass found it
+// of its original's record or its failed step (kept).
+func (s *Service) blocked(ctx context.Context, rows []graph.ComplianceRow, kept []string) error {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -289,8 +297,12 @@ func (s *Service) blocked(ctx context.Context, rows []graph.ComplianceRow) error
 		return err
 	}
 	for i := range rows {
-		if k, ok := kinds[rows[i].ItemID]; ok {
-			rows[i].ReworkBlocked = strp(asSentence(skipReason(k)))
+		k, ok := kinds[rows[i].ItemID]
+		if !ok && kept[i] != "" {
+			k, ok = kept[i], true
+		}
+		if ok {
+			rows[i].ReworkBlocked = strp(skipReason(k))
 		}
 	}
 	return nil
@@ -410,11 +422,12 @@ type sized struct {
 // queueable are the titles f matches that break a rule (any of rules) and
 // that a request to process them again queues, in the report's order: none
 // waiting or sent in the re-encode queue, which keeps such a title as it is,
-// and none that processing again can't help, which the queue skips.
+// none that processing again can't help, which the queue skips, and none the
+// pass found the transcoder would refuse again (blockedBy).
 func (s *Service) queueable(ctx context.Context, f graph.ComplianceFilter, rules []string) ([]sized, error) {
 	rows, err := s.pool.Query(ctx, filtered+`SELECT f.item_id, f.originalbytes, f.packagebytes, f.estimatedbytes,
 			EXISTS (SELECT 1 FROM `+store.ReencodeQueueTable+` q WHERE q.item_id = f.item_id AND q.state IN ('queued', 'sent'))
-		FROM f WHERE `+breaking+` ORDER BY `+order, f.Kind, f.Search, rules)
+		FROM f WHERE `+breaking+` AND f.blocked IS NULL ORDER BY `+order, f.Kind, f.Search, rules)
 	if err != nil {
 		return nil, err
 	}

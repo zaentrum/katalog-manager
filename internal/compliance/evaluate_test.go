@@ -15,7 +15,7 @@ const (
 	transcoderReport = `{"caps": {"movie1080Mbps": 8, "movie2160Mbps": 14, "movieMaxGiB": 15, "episode1080Mbps": 6, "episode2160Mbps": 8},
 		"bucket2160": {"minHeight": 2000, "minWidth": 3200},
 		"encoder": {"codec": "hevc_nvenc", "preset": "p5", "cq": 23, "maxrate1080Mbps": null, "maxrate2160Mbps": null},
-		"ladder": "source:hevc", "extraLadder": "source:hevc"}`
+		"ladder": "source:hevc", "extraLadder": "source:hevc", "dolbyVision": {"profile5": "reshaped", "profile7": "refused"}}`
 	packagerReport = `{"surroundAudio": "eac3", "surroundLayout": "5.1", "surroundBitrate": "448k", "stereoAudio": "aac",
 		"stereoBitrate": "192k", "imageSubtitles": ["pgs", "vobsub"]}`
 )
@@ -447,6 +447,78 @@ func TestATitleWithoutAPackage(t *testing.T) {
 	rs.retries = false
 	if got := found(evaluate(retried, records{}, rs)); got != "PACKAGING_FAILED The packager failed. {shaka exited 2}" {
 		t.Errorf("a retry scheduled and no sweep: %q", got)
+	}
+}
+
+// What processing a title again can't help is told by its original's record
+// or its failed step alone, and only when it is certain: an original without
+// video, a Dolby Vision profile the transcoder leaves as it is (7, which it
+// never plans; 5 only while it reports it can't reshape it; one of base
+// layer 0, as its failed step says). A title so blocked has no estimate;
+// any other is offered.
+func TestWhatTheTranscoderWouldRefuseAgain(t *testing.T) {
+	reshapes := stateOf(t, transcoderReport, packagerReport)
+	refuses := stateOf(t, strings.Replace(transcoderReport, `"profile5": "reshaped"`, `"profile5": "refused"`, 1), packagerReport)
+	silent := stateOf(t, strings.Replace(transcoderReport, `, "dolbyVision": {"profile5": "reshaped", "profile7": "refused"}`, ``, 1),
+		packagerReport)
+	dv := func(profile string) string {
+		return `{"streams": [{"index": 0, "type": "video", "codec": "hevc", "width": 3840, "height": 2160,
+			"hdr": {"format": "dolby-vision", "dolbyVision": {"profile": ` + profile + `, "rpuPresent": true}}},
+			{"index": 1, "type": "audio", "codec": "eac3", "channels": 6}], "essence": {"dolbyVision": true}}`
+	}
+	coverArtOnly := `{"streams": [{"index": 0, "type": "video", "codec": "mjpeg", "width": 600, "height": 600,
+		"dispositions": {"attachedPic": true}}, {"index": 1, "type": "audio", "codec": "flac", "channels": 2}], "essence": {}}`
+	pkg := pkgJSON(3840, 2160, 30e6, "copy")
+	stepped := func(stepName, state, reason string) title {
+		p := "/library/arrivals/a-film.mkv"
+		ti := title{ID: "a1", Kind: "movie", Path: &p, Original: library.Original{State: library.OriginalPresent},
+			FileResolution: strp("3840x2160"), ItemDurMs: i64(7_200_000)}
+		s := step{Status: strp(state), Error: strp(reason)}
+		if stepName == "transcode" {
+			ti.Transcode = s
+		} else {
+			ti.Transcode, ti.Package = status(processing.StatusDone), s
+		}
+		return ti
+	}
+	const noVulkan = "Dolby Vision profile 5 is reshaped to HDR10 on a Vulkan device, and this host has none (no Vulkan loader); " +
+		"kept the original"
+	for _, tc := range []struct {
+		name string
+		t    title
+		r    records
+		rs   rulesState
+		want string
+	}{
+		{"an original of profile 7", packagedTitle("movie"), recordsOf(t, pkg, dv("7")), reshapes, "dolbyvision:7"},
+		{"of profile 7, the transcoder saying nothing of it", packagedTitle("movie"), recordsOf(t, pkg, dv("7")), silent, "dolbyvision:7"},
+		{"of profile 5, the transcoder reshaping it", packagedTitle("movie"), recordsOf(t, pkg, dv("5")), reshapes, ""},
+		{"of profile 5, the transcoder refusing it", packagedTitle("movie"), recordsOf(t, pkg, dv("5")), refuses, "dolbyvision:5"},
+		{"of profile 5, the transcoder saying nothing of it", packagedTitle("movie"), recordsOf(t, pkg, dv("5")), silent, ""},
+		{"of profile 8", packagedTitle("movie"), recordsOf(t, pkg, dv("8")), refuses, ""},
+		{"an original with no video but its cover art", packagedTitle("movie"), recordsOf(t, pkg, coverArtOnly), reshapes, "novideo"},
+		{"an original whose streams were never probed", packagedTitle("movie"), recordsOf(t, pkg, `{"streams": [], "essence": {}}`),
+			reshapes, ""},
+		{"a transcode refused for profile 7", stepped("transcode", processing.StatusFailed,
+			"Dolby Vision profile 7 needs a tone-mapping encode; kept the original"), records{}, reshapes, "dolbyvision:7"},
+		{"a transcode refused for a base layer of compatibility 0", stepped("transcode", processing.StatusFailed,
+			"Dolby Vision profile 8.0 needs a tone-mapping encode; kept the original"), records{}, reshapes, "dolbyvision:8.0"},
+		{"a transcode refused without a Vulkan device, the transcoder reshaping now", stepped("transcode",
+			processing.StatusFailed, noVulkan), records{}, reshapes, ""},
+		{"a transcode refused without a Vulkan device, the transcoder refusing still", stepped("transcode",
+			processing.StatusFailed, noVulkan), records{}, refuses, "dolbyvision:5"},
+		{"a package skipped, its original without video", stepped("package", processing.StatusSkipped,
+			"the source has no video stream"), records{}, reshapes, "novideo"},
+		{"a transcode that failed otherwise", stepped("transcode", processing.StatusFailed, "ffmpeg exited 1"), records{},
+			reshapes, ""},
+	} {
+		res := evaluate(tc.t, tc.r, tc.rs)
+		if res.Blocked != tc.want || len(res.Findings) == 0 {
+			t.Errorf("%s: blocked %q, want %q (%s)", tc.name, res.Blocked, tc.want, found(res))
+		}
+		if (res.EstimatedBytes == nil) != (tc.want != "") {
+			t.Errorf("%s: an estimate of %v, blocked %q", tc.name, res.EstimatedBytes, res.Blocked)
+		}
 	}
 }
 

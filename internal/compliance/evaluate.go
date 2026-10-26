@@ -153,6 +153,14 @@ type sourceRecord struct {
 		Dispositions struct {
 			AttachedPic bool `json:"attachedPic"`
 		} `json:"dispositions"`
+		// Hdr is a video stream's high dynamic range: its Dolby Vision
+		// configuration as ffprobe read it (source.schema.json's
+		// videoStream.hdr.dolbyVision).
+		Hdr struct {
+			DolbyVision *struct {
+				Profile *float64 `json:"profile"`
+			} `json:"dolbyVision"`
+		} `json:"hdr"`
 	} `json:"streams"`
 }
 
@@ -162,6 +170,10 @@ type result struct {
 	Findings                                    []finding
 	OriginalBytes, PackageBytes, EstimatedBytes *int64
 	Unchecked                                   string
+	// Blocked is why processing the title again can't help, as its
+	// original's record or its failed step tells (blockedOf), "" when
+	// nothing tells it can't.
+	Blocked string
 }
 
 // rules are the rules a result breaks, in its findings' order.
@@ -231,6 +243,7 @@ func evaluate(t title, r records, rs rulesState) result {
 		default:
 			add(NotPackaged, notPackagedText, nil, nil)
 		}
+		res.Blocked = blockedBy(t, r, rs)
 		res.EstimatedBytes = estimate(t, r, rs, res)
 		return res
 	}
@@ -276,9 +289,89 @@ func evaluate(t title, r records, rs rulesState) result {
 			}
 		}
 	}
+	res.Blocked = blockedBy(t, r, rs)
 	res.EstimatedBytes = estimate(t, r, rs, res)
 	return res
 }
+
+// blockedBy is why processing a title again can't help that the check can
+// be certain of, of two facts alone; "" when neither tells, and the title is
+// offered:
+//   - its original's record (sources/<id>/source.json, read with the
+//     version of a packaged title): its streams, probed, hold no video but
+//     cover art, or its video stream's hdr.dolbyVision.profile is one the
+//     transcoder leaves as it is (refusesDolbyVision);
+//   - its failed or skipped step: the worker's reason says the original has
+//     no video, or the transcoder refused its Dolby Vision profile, as it
+//     still does.
+func blockedBy(t title, r records, rs rulesState) string {
+	var tr *TranscoderRules
+	if rs.transcoder != nil {
+		tr = rs.transcoder.t
+	}
+	for _, s := range []step{t.Transcode, t.Package} {
+		if !s.is(processing.StatusFailed, processing.StatusSkipped) || s.Error == nil {
+			continue
+		}
+		reason := strings.TrimSpace(*s.Error)
+		if clause, ok := knownReason(reason); ok && clause == noVideoClause {
+			return blockedNoVideo
+		}
+		if m := refusedProfileRE.FindStringSubmatch(reason); m != nil && tr.refusesDolbyVision(m[1]) {
+			return blockedDolbyVision + m[1]
+		}
+		if m := noVulkanRE.FindStringSubmatch(reason); m != nil && tr.refusesDolbyVision(m[1]) {
+			return blockedDolbyVision + m[1]
+		}
+	}
+	if r.src == nil || len(r.src.Streams) == 0 {
+		return ""
+	}
+	for _, s := range r.src.Streams {
+		if s.Type != "video" || s.Dispositions.AttachedPic {
+			continue
+		}
+		if dv := s.Hdr.DolbyVision; dv != nil && dv.Profile != nil {
+			if p := strconv.Itoa(int(*dv.Profile)); tr.refusesDolbyVision(p) {
+				return blockedDolbyVision + p
+			}
+		}
+		return "" // the first video stream is the one the transcoder plans
+	}
+	return blockedNoVideo
+}
+
+// The reasons the transcoder gives of an original it refused for its Dolby
+// Vision (decision.py's dolby_vision_blocker, plan_renditions).
+var (
+	refusedProfileRE = regexp.MustCompile(`^Dolby Vision profile ([0-9]+(?:\.[0-9]+)?) needs a tone-mapping encode; kept the original$`)
+	noVulkanRE       = regexp.MustCompile(`^Dolby Vision profile ([0-9]+) is reshaped to HDR10 on a Vulkan device, and this host has none`)
+)
+
+// refusesDolbyVision reports whether the transcoder is certain to leave an
+// original of Dolby Vision profile as it is: profile 7, which it never plans
+// (decision.py's DOVI_REFUSED_PROFILES), unless it reports something else
+// of it; a profile of base-layer compatibility 0 ("8.0"), which it refuses
+// too; profile 5, which it reshapes on a Vulkan device, only while it
+// reports it refuses it (a transcoder that doesn't report it is taken to
+// reshape it). t is nil for a transcoder that never reported.
+func (t *TranscoderRules) refusesDolbyVision(profile string) bool {
+	said := ""
+	if t != nil {
+		said = t.DolbyVision["profile"+profile]
+	}
+	switch {
+	case profile == "7":
+		return said == "" || said == dvRefused
+	case strings.HasSuffix(profile, ".0"):
+		return true
+	}
+	return said == dvRefused
+}
+
+// dvRefused is what the transcoder reports of a Dolby Vision profile it
+// leaves as it is.
+const dvRefused = "refused"
 
 // stepText is what a failed or skipped transcode or package of worker says,
 // and the worker's reason, its detail: a retry is said only while one is
@@ -764,7 +857,7 @@ func missingImageSubtitles(r records, carried []string) (map[string][]string, []
 // added. A title processing again cannot help (no original, a disc image)
 // has none.
 func estimate(t title, r records, rs rulesState, res result) *int64 {
-	if len(res.Findings) == 0 || t.Original.State != library.OriginalPresent ||
+	if len(res.Findings) == 0 || res.Blocked != "" || t.Original.State != library.OriginalPresent ||
 		(t.Path != nil && processing.IsDiscImage(*t.Path)) {
 		return nil
 	}

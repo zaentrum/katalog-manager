@@ -27,6 +27,10 @@
 --                   its package is to be after its rework at most
 --   unchecked       why a rule was not checked of it (a record that cannot
 --                   be read), or null
+--   blocked         why processing it again can't help, as its original's
+--                   record or its failed step tells (an original without
+--                   video, a Dolby Vision profile the transcoder leaves as it
+--                   is): a kind, or null
 --   ruleshash       the rules it was checked against (both workers' hashes,
 --                   the library's layout, the check's own version): a row
 --                   whose hash is no longer the rules' is checked again
@@ -52,9 +56,12 @@ CREATE TABLE IF NOT EXISTS com_nalet_katalog_compliance (
   packagebytes BIGINT,
   estimatedbytes BIGINT,
   unchecked VARCHAR(500),
+  blocked VARCHAR(64),
   ruleshash VARCHAR(64) NOT NULL,
   staleat TIMESTAMPTZ,
   evaluatedat TIMESTAMPTZ NOT NULL DEFAULT now());
+-- a table an earlier build of this migration created gains the column
+ALTER TABLE com_nalet_katalog_compliance ADD COLUMN IF NOT EXISTS blocked VARCHAR(64);
 CREATE INDEX IF NOT EXISTS idx_compliance_report ON com_nalet_katalog_compliance
   (kind, (COALESCE(packagebytes, -1)) DESC, (COALESCE(originalbytes, -1)) DESC, item_id)
   WHERE rules <> '{}';

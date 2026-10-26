@@ -238,7 +238,7 @@ A Disc Image: PACKAGING_FAILED`
 		t.Errorf("the episode: %+v", storm)
 	}
 	if disc := rep.Rows[5]; disc.Findings[0].Text != discImageText || disc.ReworkBlocked == nil ||
-		*disc.ReworkBlocked != "Its file is a disc image, which the transcoder doesn’t encode." || disc.EstimatedBytes != nil {
+		*disc.ReworkBlocked != "its file is a disc image, which the transcoder doesn’t encode" || disc.EstimatedBytes != nil {
 		t.Errorf("the disc image: %+v", disc)
 	}
 	if failed := rep.Rows[4]; failed.Findings[0].Text != "The transcoder failed." || failed.Findings[0].Detail == nil ||
@@ -538,6 +538,12 @@ func TestTheQueueableAreWhatAFilterQueues(t *testing.T) {
 	storetest.Exec(t, st, `DELETE FROM com_nalet_katalog_playbackassets WHERE item_id = $1 AND isprimary = true`, uuid(10))
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemsources SET state = 'deleted', deletedat = now() WHERE item_id = $1`, uuid(10))
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemsources SET state = 'retiring' WHERE item_id = $1`, uuid(11))
+	// a film the transcoder refused for its Dolby Vision profile 7: it would
+	// refuse it again
+	unpackaged(t, st, 12, "A Film In Dolby Vision 7", dir+"/arrivals/a-film-in-dolby-vision-7.mkv", "", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemprocessingsteps (id, createdat, modifiedat, item_id, step, status,
+		attempts, error) VALUES (gen_random_uuid()::varchar, now(), now(), $1, 'transcode', 'failed', 1,
+		'Dolby Vision profile 7 needs a tone-mapping encode; kept the original')`, uuid(12))
 	if _, err := s.Pass(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -562,8 +568,13 @@ A Film That Lost Its Tracks: NO_SURROUND, IMAGE_SUBTITLES_MISSING
 An Episode Over Its Cap: OVER_BITRATE_CAP
 A Film Never Packaged: NOT_PACKAGED
 A Film Whose Transcode Failed: PACKAGING_FAILED
-A Disc Image: PACKAGING_FAILED` {
+A Disc Image: PACKAGING_FAILED
+A Film In Dolby Vision 7: PACKAGING_FAILED` {
 		t.Fatalf("the report:\n%s", got)
+	}
+	if dv := rep.Rows[len(rep.Rows)-1]; dv.ReworkBlocked == nil || *dv.ReworkBlocked != "Dolby Vision profile 7 needs a tone-mapping encode" ||
+		dv.EstimatedBytes != nil {
+		t.Errorf("the film the transcoder would refuse again: %+v", dv)
 	}
 	want := map[string]bool{uuid(1): true, uuid(4): true, uuid(3): true}
 	var sum sized
@@ -584,8 +595,8 @@ A Disc Image: PACKAGING_FAILED` {
 		got.PackageBytes != wantTotals.PackageBytes || got.EstimatedBytes == nil || *got.EstimatedBytes != *wantTotals.EstimatedBytes {
 		t.Errorf("queueable: %+v, want %+v (est %v)", got, wantTotals, *wantTotals.EstimatedBytes)
 	}
-	if m := rep.Matching; m.Titles != 8 || rep.Total != 8 {
-		t.Errorf("matching: %+v, total %d; want the 8 titles", m, rep.Total)
+	if m := rep.Matching; m.Titles != 9 || rep.Total != 9 {
+		t.Errorf("matching: %+v, total %d; want the 9 titles", m, rep.Total)
 	}
 	got, err := s.Queueable(ctx, all)
 	if err != nil {
@@ -900,7 +911,9 @@ encoder.cq | Constant quality | 23
 encoder.maxrate1080Mbps | Encode bit rate, 1080p | up to the caps above
 encoder.maxrate2160Mbps | Encode bit rate, 2160p | up to the caps above
 ladder | Renditions | one, at the original’s size, in HEVC {source:hevc}
-extraLadder | Renditions of extras | one, at the original’s size, in HEVC {source:hevc}`
+extraLadder | Renditions of extras | one, at the original’s size, in HEVC {source:hevc}
+dolbyVision.profile5 | Dolby Vision profile 5 | reshaped to HDR10 {reshaped}
+dolbyVision.profile7 | Dolby Vision profile 7 | left as it is {refused}`
 	if strings.Join(got, "\n") != want {
 		t.Errorf("the transcoder's rules:\n%s\nwant:\n%s", strings.Join(got, "\n"), want)
 	}
@@ -927,6 +940,7 @@ imageSubtitles | Image subtitles kept | PGS, VobSub`; strings.Join(got, "\n") !=
 		{Transcoder, `{"version": "1", "rules": []}`, "rules is no JSON object"},
 		{Transcoder, `{"rules": {"caps": {"movie1080Mbps": "eight"}}}`, "caps.movie1080Mbps is a JSON string, and it is a number"},
 		{Transcoder, `{"rules": {"caps": {"movie1080Mbps": -1}}}`, "caps.movie1080Mbps is -1, and it is 0 or above"},
+		{Transcoder, `{"rules": {"dolbyVision": {"profile5": true}}}`, "is a JSON bool, and it is a string"},
 		{Packager, `{"rules": {"surroundBitrate": "loud"}}`, `surroundBitrate is "loud", which is no bit rate`},
 		{Packager, `{"rules": {"imageSubtitles": "pgs"}}`, "imageSubtitles is a JSON string, and it is a list"},
 		{Packager, `{"version": "` + strings.Repeat("v", 256) + `", "rules": {}}`, "version is longer than 255 characters"},

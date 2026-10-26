@@ -66,6 +66,11 @@ type TranscoderRules struct {
 	} `json:"encoder"`
 	Ladder      *string `json:"ladder"`
 	ExtraLadder *string `json:"extraLadder"`
+	// DolbyVision is what the transcoder does with an original of each
+	// Dolby Vision profile it names, as it can at runtime ("profile5":
+	// "reshaped" on its Vulkan device, "refused" without one; "profile7":
+	// "refused"); nil from a transcoder that doesn't report it.
+	DolbyVision map[string]string `json:"dolbyVision"`
 }
 
 // PackagerRules is what the check reads of the packager's report: the codec
@@ -84,11 +89,12 @@ type PackagerRules struct {
 // hash covers: the same rules reported again keep it, whatever else the
 // report carries (its version, the extras' ladder, the encoder's quality).
 type checkedTranscoder struct {
-	Caps       any
-	Bucket2160 any
-	Codec      *string
-	Maxrate    [2]*float64
-	Ladder     *string
+	Caps        any
+	Bucket2160  any
+	Codec       *string
+	Maxrate     [2]*float64
+	Ladder      *string
+	DolbyVision map[string]string `json:",omitempty"`
 }
 
 type checkedPackager struct {
@@ -105,7 +111,8 @@ func hashOf(v any) string {
 
 func (t *TranscoderRules) hash() string {
 	return hashOf(checkedTranscoder{Caps: t.Caps, Bucket2160: t.Bucket2160, Codec: t.Encoder.Codec,
-		Maxrate: [2]*float64{t.Encoder.Maxrate1080Mbps, t.Encoder.Maxrate2160Mbps}, Ladder: t.Ladder})
+		Maxrate: [2]*float64{t.Encoder.Maxrate1080Mbps, t.Encoder.Maxrate2160Mbps}, Ladder: t.Ladder,
+		DolbyVision: t.DolbyVision})
 }
 
 func (p *PackagerRules) hash() string {
@@ -297,7 +304,7 @@ type rulesState struct {
 // version is the check's own: a check that reads its findings otherwise, or
 // writes them in other words, gets a new one, and every title is checked
 // again.
-const version = "compliance/4"
+const version = "compliance/5"
 
 // hash is the hash a title checked against s is kept under: both workers'
 // rules, the layout, whether failed steps are retried, and the check's
@@ -665,6 +672,21 @@ var settings = []setting{
 	one("imageSubtitles", "Image subtitles kept", forms),
 }
 
+// dvProfileRE is a key of the transcoder's Dolby Vision, a profile's.
+var dvProfileRE = regexp.MustCompile(`^dolbyVision\.profile([0-9]+)$`)
+
+// dolbyVisionWords is what the transcoder does with an original of a Dolby
+// Vision profile, in words: "reshaped to HDR10", "left as it is".
+func dolbyVisionWords(v any) string {
+	switch s, _ := v.(string); s {
+	case "reshaped":
+		return "reshaped to HDR10"
+	case dvRefused:
+		return "left as it is"
+	}
+	return plain(v)
+}
+
 // skipped are keys a report carries that the panel does not list: the
 // transcoder's ladder in parts, which its spec says.
 var skipped = map[string]bool{"ladderRungs": true}
@@ -719,6 +741,24 @@ func settingsOf(raw []byte) []graph.RuleSetting {
 		for _, k := range keys {
 			said[k] = true
 		}
+	}
+	// the transcoder's Dolby Vision, a row each profile it names, by profile
+	var profiles []string
+	for k := range leaves {
+		if !said[k] && dvProfileRE.MatchString(k) {
+			profiles = append(profiles, k)
+		}
+	}
+	sort.Slice(profiles, func(i, j int) bool {
+		a, _ := strconv.Atoi(dvProfileRE.FindStringSubmatch(profiles[i])[1])
+		b, _ := strconv.Atoi(dvProfileRE.FindStringSubmatch(profiles[j])[1])
+		return a < b
+	})
+	for _, k := range profiles {
+		v := leaves[k]
+		out = append(out, graph.RuleSetting{Key: k, Label: "Dolby Vision profile " + dvProfileRE.FindStringSubmatch(k)[1],
+			Value: dolbyVisionWords(v), Detail: strp(plain(v))})
+		said[k] = true
 	}
 	rest := make([]string, 0, len(leaves))
 	for k := range leaves {

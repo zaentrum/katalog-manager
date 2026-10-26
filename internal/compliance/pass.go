@@ -357,7 +357,11 @@ func (s *Service) write(ctx context.Context, results []result, hash string, star
 	n := len(results)
 	ids, kinds, rules, findings, unchecked := make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]*string, n)
 	orig, pkg, est := make([]*int64, n), make([]*int64, n), make([]*int64, n)
+	blocked := make([]*string, n)
 	for i, r := range results {
+		if r.Blocked != "" {
+			blocked[i] = strp(r.Blocked)
+		}
 		f := r.Findings
 		if f == nil {
 			f = []finding{}
@@ -378,14 +382,16 @@ func (s *Service) write(ctx context.Context, results []result, hash string, star
 		}
 	}
 	_, err := s.pool.Exec(ctx, `INSERT INTO `+store.ComplianceTable+` AS c
-			(item_id, kind, rules, findings, originalbytes, packagebytes, estimatedbytes, unchecked, ruleshash, staleat, evaluatedat)
-		SELECT u.id, u.kind, string_to_array(u.rules, ',')::varchar[], u.findings::jsonb, u.ob, u.pb, u.eb, u.un, $9, NULL, now()
-		FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::bigint[], $6::bigint[], $7::bigint[], $8::text[])
-			AS u(id, kind, rules, findings, ob, pb, eb, un)
+			(item_id, kind, rules, findings, originalbytes, packagebytes, estimatedbytes, unchecked, blocked, ruleshash,
+			 staleat, evaluatedat)
+		SELECT u.id, u.kind, string_to_array(u.rules, ',')::varchar[], u.findings::jsonb, u.ob, u.pb, u.eb, u.un, u.bl, $9,
+			NULL, now()
+		FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::bigint[], $6::bigint[], $7::bigint[], $8::text[],
+			$11::text[]) AS u(id, kind, rules, findings, ob, pb, eb, un, bl)
 		ON CONFLICT (item_id) DO UPDATE SET kind = EXCLUDED.kind, rules = EXCLUDED.rules, findings = EXCLUDED.findings,
 			originalbytes = EXCLUDED.originalbytes, packagebytes = EXCLUDED.packagebytes,
-			estimatedbytes = EXCLUDED.estimatedbytes, unchecked = EXCLUDED.unchecked, ruleshash = EXCLUDED.ruleshash,
-			staleat = CASE WHEN c.staleat > $10 THEN c.staleat END, evaluatedat = now()`,
-		ids, kinds, rules, findings, orig, pkg, est, unchecked, hash, start)
+			estimatedbytes = EXCLUDED.estimatedbytes, unchecked = EXCLUDED.unchecked, blocked = EXCLUDED.blocked,
+			ruleshash = EXCLUDED.ruleshash, staleat = CASE WHEN c.staleat > $10 THEN c.staleat END, evaluatedat = now()`,
+		ids, kinds, rules, findings, orig, pkg, est, unchecked, hash, start, blocked)
 	return err
 }

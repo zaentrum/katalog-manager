@@ -388,8 +388,11 @@ var knownReasons = []struct {
 	{regexp.MustCompile(`^Dolby Vision (profile [0-9]+(?:\.[0-9]+)?) needs a tone-mapping encode$`),
 		func(m []string) string { return "Dolby Vision " + m[1] + " needs a tone-mapping encode" }},
 	{regexp.MustCompile(`(?i)^(?:(?:the )?(?:source|original|file) has )?no video(?: stream)?$`),
-		func([]string) string { return "the original has no video" }},
+		func([]string) string { return noVideoClause }},
 }
+
+// noVideoClause is what a title whose original has no video is.
+const noVideoClause = "the original has no video"
 
 // knownReason is reason in the reader's words, for a reason the words know.
 func knownReason(reason string) (string, bool) {
@@ -414,16 +417,33 @@ var skipClauses = map[string]string{
 	graph.SkipNoEpisodes: "the series has no episodes",
 	graph.SkipUnknown:    "it is not in the catalog",
 	graph.SkipType:       "it isn’t a movie, an episode or a series",
+	blockedNoVideo:       noVideoClause,
 }
 
 // skipOther is a skip of a kind the words don't know.
 const skipOther = "other"
 
-// skipReason is why a title of kind wasn't queued, a clause; of a kind the
-// words don't know, only that it can't be.
+// The kinds of title processing again can't help that the check finds of a
+// title's record or its failed step (blockedBy), kept with its row, beside
+// those the queue skips (graph.Skip*): an original without video, and one
+// of a Dolby Vision profile the transcoder leaves as it is (the kind and
+// the profile: "dolbyvision:7").
+const (
+	blockedNoVideo     = "novideo"
+	blockedDolbyVision = "dolbyvision:"
+)
+
+// skipReason is why a title of kind wasn't queued, or can't be processed
+// again, a clause; of a kind the words don't know, only that it can't be.
 func skipReason(kind string) string {
 	if c, ok := skipClauses[kind]; ok {
 		return c
+	}
+	if profile, ok := strings.CutPrefix(kind, blockedDolbyVision); ok {
+		if profile == "5" {
+			return "Dolby Vision profile 5 needs a GPU to reshape its colours, and this transcoder has none"
+		}
+		return "Dolby Vision profile " + profile + " needs a tone-mapping encode"
 	}
 	return "it can’t be processed again"
 }

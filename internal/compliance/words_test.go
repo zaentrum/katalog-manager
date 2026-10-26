@@ -207,11 +207,17 @@ func serverTexts(t *testing.T) []text {
 	queue("failed", "the movie has no file to encode", "failed, no file")
 	queue("failed", "its file is a "+processing.DiscImageReason, "failed, a disc image")
 
-	for _, b := range []struct{ source, words string }{
-		{"its original deleted after packaging", deletedText}, {"its original being deleted after packaging", deletingText},
-		{"no file", noFileText}, {"a disc image", discText},
+	for _, b := range []struct{ source, kind string }{
+		{"its original deleted after packaging", graph.SkipDeleted},
+		{"its original being deleted after packaging", graph.SkipDeleting},
+		{"no file", graph.SkipNoFile},
+		{"a disc image", graph.SkipDiscImage},
+		{"an original without video, as its record or its step says", blockedNoVideo},
+		{"an original of Dolby Vision profile 7, as its record or its refused transcode says", blockedDolbyVision + "7"},
+		{"an original of Dolby Vision profile 8.0, as its refused transcode says", blockedDolbyVision + "8.0"},
+		{"an original of Dolby Vision profile 5, while the transcoder reports it can’t reshape it", blockedDolbyVision + "5"},
 	} {
-		out = append(out, text{"reworkBlocked", b.source, "reason", b.words})
+		out = append(out, text{"reworkBlocked", b.source, "reason", skipReason(b.kind)})
 	}
 
 	for _, m := range []struct {
@@ -352,7 +358,7 @@ func TestTheServerTexts(t *testing.T) {
 			continue
 		}
 		sentenceText := x.section != "pipelineRules" && x.section != "ComplianceSkip" && x.section != "ComplianceQueued" &&
-			!strings.HasSuffix(x.field, "measured") && !strings.HasSuffix(x.field, "limit")
+			x.section != "reworkBlocked" && !strings.HasSuffix(x.field, "measured") && !strings.HasSuffix(x.field, "limit")
 		if x.section == "ComplianceQueued" {
 			switch x.field {
 			case "queuedText", "alreadyText":
@@ -366,11 +372,17 @@ func TestTheServerTexts(t *testing.T) {
 				}
 			}
 		}
-		if x.section == "ComplianceSkip" && x.field == "reason" {
-			// a clause the console says after a colon: no capital, no full stop
-			if first := []rune(x.words)[0]; strings.ToLower(string(first)) != string(first) || strings.HasSuffix(x.words, ".") {
+		if x.section == "ComplianceSkip" && x.field == "reason" || x.section == "reworkBlocked" {
+			// a clause the console says after a colon: no capital but a
+			// name's, no full stop
+			first := []rune(x.words)[0]
+			if strings.ToLower(string(first)) != string(first) && !strings.HasPrefix(x.words, "Dolby Vision") ||
+				strings.HasSuffix(x.words, ".") {
 				t.Errorf("%s, %s: %q is no clause to say after a colon", x.section, x.source, x.words)
 			}
+		}
+		if m := plainHyphenRE.FindString(x.words); m != "" && !(x.section == "ComplianceSkip" && x.field == "title") {
+			t.Errorf("%s, %s: %q writes %q with a hyphen a line may break at, not ‑", x.section, x.source, x.words, m)
 		}
 		if sentenceText {
 			if first := []rune(x.words)[0]; strings.ToUpper(string(first)) != string(first) {
@@ -382,9 +394,6 @@ func TestTheServerTexts(t *testing.T) {
 		}
 		if m := leaks.FindString(x.words); m != "" {
 			t.Errorf("%s, %s: %q says %q", x.section, x.source, x.words, m)
-		}
-		if m := plainHyphenRE.FindString(x.words); m != "" && !(x.section == "ComplianceSkip" && x.field == "title") {
-			t.Errorf("%s, %s: %q writes %q with a hyphen a line may break at, not ‑", x.section, x.source, x.words, m)
 		}
 		if m := unitRE.FindString(x.words); m != "" {
 			t.Errorf("%s, %s: %q breaks %q across lines", x.section, x.source, x.words, m)
@@ -404,13 +413,19 @@ func TestTheServerTexts(t *testing.T) {
 	b.WriteString("# The library compliance’s texts\n\n")
 	b.WriteString("Every text katalog-manager writes for the compliance report, rendered with real values by\n")
 	b.WriteString("`go test ./internal/compliance -run TestTheServerTexts` (`" + EnvTexts + "` set to this file).\n\n")
-	b.WriteString("The rules, as the workers report them: the transcoder allows movies 8 Mbit/s (1080p) and 14 Mbit/s (2160p) of\n")
-	b.WriteString("video and a 15 GiB file, episodes 6 and 8 Mbit/s; it encodes with hevc_nvenc, preset p5, cq 23, ladder\n")
-	b.WriteString("`source:hevc`. The packager makes a 5.1 E-AC-3 track at 448k and an AAC stereo track at 192k, and keeps PGS\n")
-	b.WriteString("and VobSub subtitles. A failed step is retried by the sweep. Sizes are in decimal units, as the clients write\n")
-	b.WriteString("them (1 GB is 1,000,000,000 bytes), so the transcoder’s 15 GiB reads 16.1 GB. Sizes and bit rates are written\n")
-	b.WriteString("with a no-break space before their unit, and every apostrophe is the typographic one (’). A line marked\n")
-	b.WriteString("`detail` is what a tool said, as it said it: the console shows it under the row’s details, never in the text.\n\n")
+	for _, line := range []string{
+		"The rules, as the workers report them: the transcoder allows movies 8 Mbit/s (1080p) and 14 Mbit/s (2160p) of",
+		"video and a 15 GiB file, episodes 6 and 8 Mbit/s; it encodes with hevc_nvenc, preset p5, cq 23, ladder",
+		"`source:hevc`, and reshapes Dolby Vision profile 5 to HDR10 (profile 7 it leaves as it is). The packager makes a",
+		"5.1 E‑AC‑3 track at 448k and an AAC stereo track at 192k, and keeps PGS and VobSub subtitles. A failed step is",
+		"retried by the sweep. Sizes are in decimal units, as the clients write them (1 GB is 1,000,000,000 bytes), so the",
+		"transcoder’s 15 GiB reads 16.1 GB. Sizes and bit rates are written with a no-break space before their unit, a",
+		"format’s name with no-break hyphens (E‑AC‑3), and every apostrophe is the typographic one (’). A line marked",
+		"`detail` is what a tool said, as it said it: the console shows it under the row’s details, never in the text.",
+	} {
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("\n")
 	b.WriteString("Each line: the field, what the title or the state is, and the text.\n")
 	section := ""
 	for _, x := range texts {
