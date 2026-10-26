@@ -34,6 +34,10 @@ type Services struct {
 	Secrets   SecretChecker
 	Extras    Extras
 	Sources   SourceReplacer
+	// Compliance is the library's compliance check, and Rework the queue
+	// that reworks the titles it finds.
+	Compliance Compliance
+	Rework     Rework
 }
 
 // RatingsBackfiller rates titles from TMDB's certifications (implemented by

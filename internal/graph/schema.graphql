@@ -1290,3 +1290,164 @@ type Mutation {
   # Packages every extra of a title again, as packageExtra does.
   packageExtras(itemId: ID!): ExtraPackagingResult!
 }
+
+# ---------------------------------------------------------------------------
+# The library's compliance: every movie and episode held against the rules
+# the transcoder and the packager report they run with (README "Library
+# compliance"). A rule whose worker never reported is not checked, and the
+# report says so in notEvaluated; nothing assumes a worker's defaults. The
+# report reads what the check last found, which a pass in the background
+# keeps up: at startup, nightly, when the rules change, and for a title once
+# its package completes or its pipeline ends.
+# ---------------------------------------------------------------------------
+
+enum ComplianceRule {
+  # an original present, no package, and no transcode or package waiting or
+  # running
+  NOT_PACKAGED
+  # no package, and the transcode or the package failed or was skipped (a
+  # disc image: "disc image: not encoded")
+  PACKAGING_FAILED
+  # the package's video above the transcoder's cap for its kind and bucket
+  OVER_BITRATE_CAP
+  # a movie whose original is above the transcoder's file size cap, its
+  # video copied as it is
+  OVER_SIZE_CAP
+  # the packager makes a 5.1 companion, and the package lacks the surround
+  # its source had
+  NO_SURROUND
+  # the source has image subtitles of a form the packager carries, and the
+  # package carries none in their language
+  IMAGE_SUBTITLES_MISSING
+  # the package's video is not HEVC, which the transcoder's rules make it
+  VIDEO_NOT_HEVC
+}
+
+enum ComplianceKind {
+  MOVIE
+  EPISODE
+}
+
+# One rule a worker reported: its key in the report ("caps.movie2160Mbps"),
+# what it is, and its value written out ("14 Mbit/s", "off").
+type RuleSetting {
+  key: String!
+  label: String!
+  value: String!
+}
+
+# What a worker last reported of the rules it runs with: its version (its
+# image's commit or release), when (RFC 3339), and each rule.
+type WorkerRules {
+  worker: String!
+  version: String
+  reportedAt: String!
+  rules: [RuleSetting!]!
+}
+
+# The rules of the transcoder and of the packager; null for a worker that
+# never reported.
+type PipelineRules {
+  transcoder: WorkerRules
+  packager: WorkerRules
+}
+
+# A rule a title breaks: what the check found, in words ("video 73 Mbit/s,
+# over the 14 Mbit/s cap for a 2160 movie"), what it measured and the
+# rule's limit (null where a rule has none).
+type ComplianceFinding {
+  rule: ComplianceRule!
+  text: String!
+  measured: String
+  limit: String
+}
+
+# A title that breaks a rule. originalBytes is the size of its original,
+# packageBytes of its package; estimatedBytes what its package is to be
+# after its rework at most, null when that cannot be told. queue is where
+# it stands in the re-encode queue (queued, sent, done or failed; null when
+# it was never queued), and queueReason why it waits or failed there.
+# reworkBlocked says why a rework cannot help it (its original deleted after
+# packaging, its file a disc image), null when it can. evaluatedAt is when
+# the check found it so (RFC 3339).
+type ComplianceRow {
+  itemId: ID!
+  title: String!
+  year: Int
+  kind: ComplianceKind!
+  seriesId: ID
+  seriesTitle: String
+  season: Int
+  episode: Int
+  findings: [ComplianceFinding!]!
+  originalBytes: Float
+  packageBytes: Float
+  estimatedBytes: Float
+  queue: String
+  queueReason: String
+  reworkBlocked: String
+  evaluatedAt: String!
+}
+
+# Of the titles of the report's kind and search, whatever its rules, those
+# that break a rule: how many, the size of their packages, and what those are
+# to be after their rework (null when it cannot be told of any).
+type ComplianceSummary {
+  rule: ComplianceRule!
+  titles: Int!
+  packageBytes: Float!
+  estimatedBytes: Float
+}
+
+# A page of the titles that break a rule, the largest package first (then
+# the largest original). total counts the titles the filter matches, and
+# nextCursor, passed as after, reads the next page (null on the last).
+# notEvaluated says each rule that is not checked, and why. evaluatedAt is
+# the oldest check of the titles of the report's kind and search (null when
+# none was ever checked); evaluating, whether a pass runs; pending, how many
+# titles of the kind wait for the next pass (never checked, or checked
+# before a change of the rules or of the title).
+type ComplianceReport {
+  rules: PipelineRules!
+  notEvaluated: [String!]!
+  evaluatedAt: String
+  evaluating: Boolean!
+  pending: Int!
+  total: Int!
+  summary: [ComplianceSummary!]!
+  rows: [ComplianceRow!]!
+  nextCursor: String
+}
+
+# What a request to rework titles did: those queued, those queued already
+# (waiting or sent), those skipped (nothing to encode: no file, the
+# original deleted after packaging, a disc image, no movie or episode), and
+# what happened, in words.
+type ComplianceQueued {
+  queued: Int!
+  alreadyQueued: Int!
+  skipped: Int!
+  message: String!
+}
+
+extend type Query {
+  # The rules the transcoder and the packager last reported.
+  pipelineRules: PipelineRules!
+  # A page of the movies and episodes that break a rule (any of rules, when
+  # given), of kind, whose title or series' title holds search: at most
+  # first (default 100, at most 500), after the cursor after.
+  libraryCompliance(kind: ComplianceKind, rules: [ComplianceRule!], search: String, first: Int = 100, after: String): ComplianceReport!
+}
+
+extend type Mutation {
+  # Queues titles to be encoded again under the pipeline's current rules,
+  # through the re-encode queue, which sends them at its pace (a series is
+  # its episodes). Nothing else queues a title the check found.
+  queueRework(items: [ID!]!): ComplianceQueued!
+  # Queues every title the filter matches that breaks a rule, as
+  # queueRework does.
+  queueReworkMatching(kind: ComplianceKind, rules: [ComplianceRule!], search: String): ComplianceQueued!
+  # Has the titles of kind (all when omitted) checked again, in the
+  # background; true once the pass is set going.
+  refreshCompliance(kind: ComplianceKind): Boolean!
+}

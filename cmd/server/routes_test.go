@@ -134,6 +134,27 @@ func (f *fakes) Policy(context.Context) (graph.RetryPolicyInfo, error) {
 	return graph.RetryPolicyInfo{MaxAttempts: 3}, nil
 }
 
+func (f *fakes) PipelineRules(context.Context) (graph.PipelineRules, error) {
+	f.called("pipeline rules")
+	return graph.PipelineRules{}, nil
+}
+func (f *fakes) Report(_ context.Context, c graph.ComplianceFilter, first int32, after string) (graph.ComplianceReport, error) {
+	f.called(fmt.Sprintf("compliance report %s %s %q %d %q", c.Kind, strings.Join(c.Rules, ","), c.Search, first, after))
+	return graph.ComplianceReport{}, nil
+}
+func (f *fakes) Matching(_ context.Context, c graph.ComplianceFilter) ([]string, error) {
+	f.called(fmt.Sprintf("compliance matching %s %s %q", c.Kind, strings.Join(c.Rules, ","), c.Search))
+	return []string{"m1"}, nil
+}
+func (f *fakes) Refresh(_ context.Context, kind string) (bool, error) {
+	f.called("refresh compliance " + kind)
+	return true, nil
+}
+func (f *fakes) EnqueueReencode(_ context.Context, req graph.ReencodeRequest) (graph.ReencodeEnqueued, error) {
+	f.called("rework " + strings.Join(req.Items, ","))
+	return graph.ReencodeEnqueued{Queued: int32(len(req.Items))}, nil
+}
+
 // fakeExtra is the extra the fakes answer with.
 func fakeExtra(id, itemID string) *model.Extra {
 	return &model.Extra{ID: id, ItemID: itemID, Kind: "trailer", Title: "Trailer", RegisteredBy: "api", State: "pending"}
@@ -268,11 +289,12 @@ func newInstanceWired(t *testing.T, w wiring) *instance {
 	if q, ok := pipe.(rest.Reencoder); ok {
 		reencode = q
 	}
-	schema := graph.MustSchema(graph.NewResolver(st, cfg, graph.Services{Scanner: f, Enricher: f, People: f,
-		Ratings: f, Packager: f, Validator: f, Remover: f, Pipeline: pipe, Secrets: f, Extras: x, Sources: sources}))
+	services := graph.Services{Scanner: f, Enricher: f, People: f, Ratings: f, Packager: f, Validator: f, Remover: f,
+		Pipeline: pipe, Secrets: f, Extras: x, Sources: sources, Compliance: f, Rework: f}
+	deps := rest.Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool()), Events: w.events, Extras: taker, Reencode: reencode}
+	schema := graph.MustSchema(graph.NewResolver(st, cfg, services))
 	r := chi.NewRouter()
-	routes(r, auth.NewMiddleware(jwt, sv).Handler, cfg.Policy(), schema, stream.NewBroker().Handler,
-		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool()), Events: w.events, Extras: taker, Reencode: reencode}))
+	routes(r, auth.NewMiddleware(jwt, sv).Handler, cfg.Policy(), schema, stream.NewBroker().Handler, rest.New(deps))
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 	in := &instance{url: srv.URL, iss: iss, st: st, cfg: cfg, f: f}
@@ -376,6 +398,10 @@ var operations = []struct{ doc, calls string }{
 	{`{ processingOverview(step: "transcode") { failedTotal steps { step failed } failed { itemId } retry { available }
 		reencodeQueue { queued sent done failed idle oldest { itemId state enqueuedAt } newest { itemId } } } }`, "processing overview"},
 	{`{ retryPolicy { available automatic maxAttempts reason } }`, "retry policy"},
+	{`{ pipelineRules { transcoder { worker version reportedAt rules { key label value } } packager { worker } } }`, "pipeline rules"},
+	{`{ libraryCompliance(kind: MOVIE, rules: [OVER_BITRATE_CAP], search: "Film", first: 10) { rules { transcoder { worker } }
+		notEvaluated evaluatedAt evaluating pending total nextCursor summary { rule titles } rows { itemId findings { rule } } } }`,
+		`compliance report movie OVER_BITRATE_CAP "Film" 10 ""`},
 
 	{`mutation { triggerScan(source: "nfs") { id status } }`, "scan nfs"},
 	{`mutation { enrichOne(id: "m1") { status } }`, "enrich m1"},
@@ -394,6 +420,10 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { retryFailed(step: "package") { retried message } }`, "retry the failed package"},
 	{`mutation { reencodeItem(id: "m1") { itemId titles reencoded busy notSent message } }`, "reencode m1"},
 	{`mutation { clearReencodeQueue(states: ["done", "failed"]) }`, "clear the re-encode queue done,failed"},
+	{`mutation { queueRework(items: ["m1"]) { queued alreadyQueued skipped message } }`, "rework m1"},
+	{`mutation { queueReworkMatching(kind: EPISODE, rules: [NO_SURROUND]) { queued alreadyQueued skipped message } }`,
+		`compliance matching episode NO_SURROUND ""; rework m1`},
+	{`mutation { refreshCompliance(kind: MOVIE) }`, "refresh compliance movie"},
 	{`mutation { replaceSource(itemId: "m1", path: "/media/a-film-1080p.mkv", deleteOldFile: true) { itemId oldPath path
 		replaced oldFileDeleted oldSidecars reencode { reencoded busy notSent message } message } }`,
 		"replace the file of m1 with /media/a-film-1080p.mkv, delete true, reencode true"},
