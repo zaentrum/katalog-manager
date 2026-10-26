@@ -338,9 +338,10 @@ the base schema in the order of their numbers, and each is idempotent:
   what the library's compliance check found of each movie and episode
   (`com_nalet_katalog_compliance`: the rules it breaks and the findings,
   the sizes of its original and its package and the estimate once it is
-  processed again, why a rule was not checked of it, the hash of the rules it was
-  checked against, when it was marked to be checked again and when it was
-  checked; see [Library compliance](#library-compliance)). A deleted item's
+  processed again, why a rule was not checked of it, why processing it
+  again can't help as its original's record or its failed step tells, the
+  hash of the rules it was checked against, when it was marked to be checked
+  again and when it was checked; see [Library compliance](#library-compliance)). A deleted item's
   row goes with it. Applied at startup when any of it is missing; without it
   no rules are kept and nothing is checked.
 
@@ -706,7 +707,8 @@ with, at their start and every ten minutes, on `PUT
   "caps": {"movie1080Mbps": 8, "movie2160Mbps": 14, "movieMaxGiB": 15, "episode1080Mbps": 6, "episode2160Mbps": 8},
   "bucket2160": {"minHeight": 2000, "minWidth": 3200},
   "encoder": {"codec": "hevc_nvenc", "preset": "p5", "cq": 23, "maxrate1080Mbps": null, "maxrate2160Mbps": null},
-  "ladder": "source:hevc", "extraLadder": "source:hevc"}}
+  "ladder": "source:hevc", "extraLadder": "source:hevc",
+  "dolbyVision": {"profile5": "reshaped", "profile7": "refused"}}}
 ```
 
 ```json
@@ -766,19 +768,32 @@ encodes the video makes it at the transcoder's maxrate (the bit rate it
 allows for the title's kind and bucket, or its `NVENC_MAXRATE_*` override)
 with the packager's stereo and surround audio for one language, for the
 title's duration; processing that only adds tracks keeps the package and
-adds the surround track. A title that processing again cannot help (its
-original deleted after packaging or being deleted, no file, a disc image)
-has none, and says why, as the queue would skip it (`reworkBlocked`: "Its
-original was deleted from disk after packaging.").
+adds the surround track. A title that processing again can't help has none,
+is no queueable one, and says why as the clause the console says after a
+colon (`reworkBlocked`, "its original was deleted after packaging"): as the
+queue would skip it (its original deleted after packaging or being deleted,
+no file, a disc image), or as the transcoder is certain to refuse it again,
+which its original's record (`sources/<id>/source.json`: its streams, its
+video's `hdr.dolbyVision.profile`) or its failed step tells, and the
+transcoder's report of what it can do now (`dolbyVision`): an original with
+no video but cover art ("the original has no video"), Dolby Vision profile
+7, which it never plans, or a base layer of compatibility 0 its step says
+it refused ("Dolby Vision profile 7 needs a tone-mapping encode"), and
+profile 5 only while the transcoder reports it can't reshape it (a
+transcoder that doesn't report it is taken to). When the facts are in doubt
+(a record never probed, a profile the transcoder reports nothing of), the
+title is offered.
 
 **The words.** Every text the check writes for the report (a finding's
 `text`, `measured` and `limit`, `notEvaluated`, `queueReason`,
 `reworkBlocked`, the rules panel's labels and values, the mutations' texts
 and the reason of each title they skipped) is in sentence case, with the
 typographic apostrophe ("can’t"), and gives the reason, never an
-instruction: a skip's reason is the clause the console says after a colon
-("1 title wasn’t queued: its file is a disc image, which the transcoder
-doesn’t encode."), a toast has no full stop, and the rest are sentences.
+instruction: a skip's reason and a row's `reworkBlocked` are the clause the
+console says after a colon ("1 title wasn’t queued: its file is a disc
+image, which the transcoder doesn’t encode."), a toast has no full stop, and
+the rest are sentences. A format's or a codec's name keeps its hyphens on
+one line, no-break ones ("E‑AC‑3", "MPEG‑4").
 A title's file is its original, never its source; a height has its p
 ("2160p"); a bit rate is two words. What a tool said is never in a text
 but in a detail: a finding's `detail` (an exit code, "ffmpeg exited 1"; a
