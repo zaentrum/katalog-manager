@@ -735,7 +735,7 @@ records can't be read …`).
 | Rule | A title breaks it when |
 | --- | --- |
 | `NOT_PACKAGED` | its original is present, it has no package, and its transcode and its package neither wait nor run ("It has no package, and none is being made."; one taken in without a package: "It was taken in without a package and plays from its original.") |
-| `PACKAGING_FAILED` | it has no package, and its transcode or its package failed or was skipped, saying which and why ("The transcoder failed: ffmpeg exited 1."), or its file is a disc image ("Its file is a disc image, which the transcoder doesn't encode.") |
+| `PACKAGING_FAILED` | it has no package, and its transcode or its package failed or was skipped, saying which and why ("The transcoder failed: ffmpeg exited 1."), or its file is a disc image ("Its file is a disc image, which the transcoder doesn’t encode.") |
 | `OVER_BITRATE_CAP` | its package's video is above the bit rate the transcoder allows for its kind and bucket ("The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie.") |
 | `OVER_SIZE_CAP` | a movie's original is larger than `movieMaxGiB`, and its package copies its video as it is ("The original is larger than the 16.1 GB the transcoder allows for a movie, and the package keeps its video as it is.") |
 | `NO_SURROUND` | the packager makes a surround track, and the package lacks the surround its source had, as the retire job holds an original for it ("The package has 2 audio channels, and the source has 8. The 5.1 E-AC-3 track the packager makes is missing.") |
@@ -767,13 +767,19 @@ allows for the title's kind and bucket, or its `NVENC_MAXRATE_*` override)
 with the packager's stereo and surround audio for one language, for the
 title's duration; processing that only adds tracks keeps the package and
 adds the surround track. A title that processing again cannot help (its
-original deleted after packaging, no file, a disc image) has none, and
-says why (`reworkBlocked`).
+original deleted after packaging or being deleted, no file, a disc image)
+has none, and says why, as the queue would skip it (`reworkBlocked`: "Its
+original was deleted from disk after packaging.").
 
 **The words.** Every text the check writes for the report (a finding's
 `text`, `measured` and `limit`, `notEvaluated`, `queueReason`,
-`reworkBlocked` and the mutations' `message`) is in sentence case and
-gives the reason, never an instruction. A limit is the one its worker
+`reworkBlocked`, the mutations' `message` and the reason of each title
+they skipped) is in sentence case, with the typographic apostrophe
+("can’t"), and gives the reason, never an instruction: a skip's reason is
+the clause the console says after a colon ("1 title wasn’t queued: its
+file is a disc image, which the transcoder doesn’t encode."), and the rest
+are sentences. A text names no queue's internals: a reason the queue keeps
+in its own words is said in the reader's. A limit is the one its worker
 reports, read when the text is written and named by the worker that
 allows it ("the 14 Mbit/s the transcoder allows for a 2160 movie"): no
 number is typed into a text. Sizes are written as the clients write them,
@@ -826,18 +832,32 @@ nor package) leaves the report.
   that break it, whatever `rules` asks, with the size of their packages and
   their estimate; `evaluatedAt` is the oldest check of those (null when none
   was checked), `evaluating` whether a pass runs, `pending` how many titles
-  wait for the next one; `queue` counts the re-encode queue, all its titles,
-  by state (`{queued, processing, processed, failed}`: a title sent is
-  processing, one done processed).
+  wait for the next one; `queueable` sums up the titles of `matching` that
+  a request to process them again queues, what `queueReworkMatching`
+  queues: none waiting or sent in the re-encode queue (which keeps such a
+  title as it is; one done or failed there is queued again), and none that
+  processing again can't help (`reworkBlocked`, which the queue skips);
+  `queue` counts the re-encode queue, all its titles, by state (`{queued,
+  processing, processed, failed}`: a title sent is processing, one done
+  processed).
 - `queueRework(items)`, `queueReworkMatching(kind, rules, search)` — the
-  titles named, or every one the filter matches, into the re-encode queue
-  (as `POST /api/library/reencode` with `items`: a series is its episodes),
-  which sends them at its pace: `{queued, alreadyQueued, skipped,
-  message}`, a title waiting or sent already counted in `alreadyQueued`,
-  one the queue cannot encode (no file, its original deleted after
-  packaging, a disc image) in `skipped`, and `message` saying it in a
-  sentence ("12 titles queued to be processed again. 3 titles are queued
-  already."), why the titles skipped were skipped too.
+  titles named, or those the filter matches that it queues (`queueable`,
+  exactly: what the console offers is what is queued), into the re-encode
+  queue (as `POST /api/library/reencode` with `items`: a series is its
+  episodes), which sends them at its pace: `{queued, alreadyQueued,
+  skipped, skippedTitles, message}`, a title waiting or sent already
+  counted in `alreadyQueued`, one the queue does not take (not in the
+  catalog, no movie, episode or series, a series without episodes, no file,
+  its original deleted after packaging, a disc image) in `skipped` and,
+  each of them, in `skippedTitles` (`{itemId, title, reason}`: the title as
+  a list names it, "A Film (1991)" or "A Show · S01E02 · Its Title", an id
+  the catalog doesn't hold as it is, and the reason as the queue tells it,
+  in the reader's words, "its original was deleted from disk after
+  packaging"), and `message` saying it in a sentence ("12 titles queued to
+  be processed again. 3 titles are queued already. 1 title wasn’t queued:
+  it has no file."); a filter that queues none says why ("Of the 4 titles
+  that fit the filter, 3 are queued already and 1 can’t be processed
+  again.").
 - `refreshCompliance(kind)` — the titles of `kind` (every kind when
   omitted) checked again by the next pass, at once.
 
