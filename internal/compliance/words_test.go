@@ -184,29 +184,37 @@ func serverTexts(t *testing.T) []text {
 		source          string
 		queued, already int
 		skipped         map[string]int
-		matching        bool
+		by              graph.QueuedBy
 	}{
-		{"12 queued", 12, 0, nil, false},
-		{"1 queued", 1, 0, nil, false},
-		{"1,284 queued by a filter", 1284, 0, nil, true},
-		{"12 queued, 3 queued already", 12, 3, nil, false},
-		{"none queued, 1 queued already", 0, 1, nil, false},
-		{"12 queued, 2 skipped, their originals deleted", 12, 0, map[string]int{graph.SkipDeleted: 2}, false},
-		{"1 queued, 1 skipped, its original being deleted", 1, 0, map[string]int{graph.SkipDeleting: 1}, false},
+		{"12 queued", 12, 0, nil, graph.QueuedBy{}},
+		{"1 queued", 1, 0, nil, graph.QueuedBy{}},
+		{"1,284 queued by a filter", 1284, 0, nil, graph.QueuedBy{Matching: true}},
+		{"12 queued, 3 queued already", 12, 3, nil, graph.QueuedBy{}},
+		{"none queued, 1 queued already", 0, 1, nil, graph.QueuedBy{}},
+		{"12 queued, 2 skipped, their originals deleted", 12, 0, map[string]int{graph.SkipDeleted: 2}, graph.QueuedBy{}},
+		{"1 queued, 1 skipped, its original being deleted", 1, 0, map[string]int{graph.SkipDeleting: 1}, graph.QueuedBy{}},
 		{"5 queued, 2 queued already, 4 skipped for three reasons", 5, 2,
-			map[string]int{graph.SkipDeleted: 2, graph.SkipNoFile: 1, graph.SkipDiscImage: 1}, true},
-		{"none queued, 1 skipped, a disc image", 0, 0, map[string]int{graph.SkipDiscImage: 1}, false},
-		{"none queued, 2 skipped, disc images", 0, 0, map[string]int{graph.SkipDiscImage: 2}, false},
-		{"none queued, 2 skipped, no file", 0, 0, map[string]int{graph.SkipNoFile: 2}, false},
-		{"none queued, 1 skipped, a series without episodes", 0, 0, map[string]int{graph.SkipNoEpisodes: 1}, false},
-		{"none queued, 1 skipped, not in the catalog", 0, 0, map[string]int{graph.SkipUnknown: 1}, false},
+			map[string]int{graph.SkipDeleted: 2, graph.SkipNoFile: 1, graph.SkipDiscImage: 1}, graph.QueuedBy{Matching: true}},
+		{"none queued, 1 skipped, a disc image", 0, 0, map[string]int{graph.SkipDiscImage: 1}, graph.QueuedBy{}},
+		{"none queued, 2 skipped, disc images", 0, 0, map[string]int{graph.SkipDiscImage: 2}, graph.QueuedBy{}},
+		{"none queued, 2 skipped, no file", 0, 0, map[string]int{graph.SkipNoFile: 2}, graph.QueuedBy{}},
+		{"none queued, 1 skipped, a series without episodes", 0, 0, map[string]int{graph.SkipNoEpisodes: 1}, graph.QueuedBy{}},
+		{"none queued, 1 skipped, not in the catalog", 0, 0, map[string]int{graph.SkipUnknown: 1}, graph.QueuedBy{}},
 		{"none queued, 2 skipped, a season and a title not in the catalog", 0, 0,
-			map[string]int{graph.SkipType: 1, graph.SkipUnknown: 1}, false},
-		{"none queued, 1 skipped for a reason the words don't know", 0, 0, map[string]int{skipOther: 1}, false},
-		{"no title named", 0, 0, nil, false},
-		{"no title fits the filter", 0, 0, nil, true},
+			map[string]int{graph.SkipType: 1, graph.SkipUnknown: 1}, graph.QueuedBy{}},
+		{"none queued, 1 skipped for a reason the words don't know", 0, 0, map[string]int{skipOther: 1}, graph.QueuedBy{}},
+		{"no title named", 0, 0, nil, graph.QueuedBy{}},
+		{"no title fits the filter", 0, 0, nil, graph.QueuedBy{Matching: true}},
+		{"none queued by a filter, the 1 that fits queued already", 0, 0, nil, graph.QueuedBy{Matching: true, InQueue: 1}},
+		{"none queued by a filter, the 3 that fit queued already", 0, 0, nil, graph.QueuedBy{Matching: true, InQueue: 3}},
+		{"none queued by a filter, the 1 that fits blocked", 0, 0, nil, graph.QueuedBy{Matching: true, Blocked: 1}},
+		{"none queued by a filter, the 2 that fit blocked", 0, 0, nil, graph.QueuedBy{Matching: true, Blocked: 2}},
+		{"none queued by a filter, of 4 that fit 3 queued already and 1 blocked", 0, 0, nil,
+			graph.QueuedBy{Matching: true, InQueue: 3, Blocked: 1}},
+		{"none queued by a filter, of 2 that fit 1 queued already and 1 blocked", 0, 0, nil,
+			graph.QueuedBy{Matching: true, InQueue: 1, Blocked: 1}},
 	} {
-		out = append(out, text{"ComplianceQueued.message", m.source, "message", queuedWords(m.queued, m.already, m.skipped, m.matching)})
+		out = append(out, text{"ComplianceQueued.message", m.source, "message", queuedWords(m.queued, m.already, m.skipped, m.by)})
 	}
 
 	for _, k := range skipKinds {

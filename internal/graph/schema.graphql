@@ -1422,8 +1422,11 @@ type ComplianceQueueCounts {
 
 # A page of the titles that break a rule, the largest package first (then
 # the largest original). total counts the titles the filter matches, and
-# matching sums them up; nextCursor, passed as after, reads the next page
-# (null on the last). notEvaluated says each rule that is not checked, and
+# matching sums them up; queueable sums up those of them a request to
+# process them again queues, what queueReworkMatching queues: none queued
+# already (queued or sent), none that processing again can't help
+# (reworkBlocked). nextCursor, passed as after, reads the next page (null on
+# the last). notEvaluated says each rule that is not checked, and
 # why. evaluatedAt is the oldest check of the titles of the report's kind
 # and search (null when none was ever checked); evaluating, whether a pass
 # runs; pending, how many titles of the kind wait for the next pass (never
@@ -1437,6 +1440,7 @@ type ComplianceReport {
   pending: Int!
   total: Int!
   matching: ComplianceTotals!
+  queueable: ComplianceTotals!
   queue: ComplianceQueueCounts!
   summary: [ComplianceSummary!]!
   rows: [ComplianceRow!]!
@@ -1480,8 +1484,9 @@ extend type Mutation {
   # with now, through the re-encode queue, which sends them at its pace (a
   # series is its episodes). Nothing else queues a title the check found.
   queueRework(items: [ID!]!): ComplianceQueued!
-  # Queues every title the filter matches that breaks a rule, as
-  # queueRework does.
+  # Queues the titles the filter matches that break a rule and that a
+  # request queues, the report's queueable: none queued already, none that
+  # processing again can't help; as queueRework does.
   queueReworkMatching(kind: ComplianceKind, rules: [ComplianceRule!], search: String): ComplianceQueued!
   # Has the titles of kind (all when omitted) checked again, in the
   # background; true once the pass is set going.

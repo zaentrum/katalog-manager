@@ -113,6 +113,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		rules { transcoder { worker version reportedAt rules { key label value } } packager { worker version } }
 		notEvaluated evaluatedAt evaluating pending total nextCursor
 		matching { titles originalBytes packageBytes estimatedBytes } queue { queued processing processed failed }
+		queueable { titles originalBytes packageBytes estimatedBytes }
 		summary { rule titles packageBytes estimatedBytes }
 		rows { itemId title year kind seriesId seriesTitle season episode findings { rule text measured limit }
 			originalBytes packageBytes estimatedBytes queue queueReason reworkBlocked evaluatedAt } } }`
@@ -137,13 +138,13 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 				}
 				Packager struct{ Worker, Version string }
 			}
-			NotEvaluated []string
-			EvaluatedAt  *string
-			Evaluating   bool
-			Pending      int
-			Total        int
-			NextCursor   *string
-			Matching     struct {
+			NotEvaluated        []string
+			EvaluatedAt         *string
+			Evaluating          bool
+			Pending             int
+			Total               int
+			NextCursor          *string
+			Matching, Queueable struct {
 				Titles                      int
 				OriginalBytes, PackageBytes float64
 				EstimatedBytes              *float64
@@ -204,6 +205,10 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	}
 	if m := rep.Matching; m.Titles != 3 || m.OriginalBytes != 63e9+4e9 || m.PackageBytes != 59e9 || m.EstimatedBytes == nil {
 		t.Errorf("the totals: %+v", m)
+	}
+	if q, m := rep.Queueable, rep.Matching; q.Titles != m.Titles || q.OriginalBytes != m.OriginalBytes || q.PackageBytes != m.PackageBytes ||
+		q.EstimatedBytes == nil || *q.EstimatedBytes != *m.EstimatedBytes {
+		t.Errorf("queueable %+v, before anything is queued: want the totals, %+v", q, m)
 	}
 	if rep.Total != 3 || rep.Pending != 0 || rep.Evaluating || rep.EvaluatedAt == nil || rep.NextCursor != nil ||
 		len(rep.NotEvaluated) != 0 || len(rep.Summary) != len(compliance7) {
@@ -268,6 +273,47 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	if q := data.LibraryCompliance.Queue; q.Queued != 3 || q.Processing != 0 || q.Processed != 0 || q.Failed != 0 {
 		t.Errorf("the queue's counts: %+v", q)
 	}
+
+	// what "every title that fits" offers is what it queues: the film never
+	// packaged is being processed, the remux waits, and a disc image can't
+	// be processed again; the film whose transcode failed is left
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_reencodequeue SET state = 'sent', sentat = now() WHERE item_id = $1`, neverID)
+	const discID = "0c0c0c0c-0000-4000-8000-000000000105"
+	storetest.AddItem(t, st, discID, "movie", "A Disc Image", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, sizebytes, resolution)
+		VALUES ('a-disc', $1, '/library/arrivals/a-disc-image.iso', true, 7000000000, '1920x1080')`, discID)
+	if n, err := in.check.Pass(ctx); err != nil || n != 1 {
+		t.Fatalf("the pass checked %d titles, %v; want the disc image", n, err)
+	}
+	query(report)
+	if r := data.LibraryCompliance; r.Matching.Titles != 4 || r.Queueable.Titles != 1 || r.Queueable.OriginalBytes != 0 ||
+		r.Queueable.PackageBytes != 0 || r.Queueable.EstimatedBytes != nil || r.Queue.Processing != 1 {
+		t.Errorf("queueable %+v of matching %+v, the queue %+v; want the film whose transcode failed alone", r.Queueable, r.Matching, r.Queue)
+	}
+	offered := data.LibraryCompliance.Queueable
+	mutate(`mutation { q: queueReworkMatching { queued alreadyQueued skipped skippedTitles { itemId title reason } message } }`)
+	if q := queued.Q; q.Queued != offered.Titles || q.AlreadyQueued != 0 || q.Skipped != 0 || len(q.SkippedTitles) != 0 ||
+		q.Message != "1 title queued to be processed again." {
+		t.Errorf("queueReworkMatching, every title that fits: %+v; offered %+v", q, offered)
+	}
+	if got := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue WHERE item_id = 'm1' AND state = 'queued'`); got != 1 {
+		t.Errorf("the film whose transcode failed: %d rows queued, want 1", got)
+	}
+	query(report)
+	if q := data.LibraryCompliance.Queueable; q.Titles != 0 {
+		t.Errorf("queueable once queued: %+v", q)
+	}
+	mutate(`mutation { q: queueReworkMatching { queued alreadyQueued skipped message } }`)
+	if q := queued.Q; q.Queued != 0 || q.AlreadyQueued != 0 || q.Skipped != 0 ||
+		q.Message != "No title queued to be processed again. Of the 4 titles that fit the filter, 3 are queued already and 1 "+
+			"can’t be processed again." {
+		t.Errorf("queueReworkMatching, none left: %+v", q)
+	}
+	mutate(`mutation { q: queueRework(items: ["` + discID + `"]) { queued alreadyQueued skipped skippedTitles { itemId title reason } message } }`)
+	if q := queued.Q; q.Queued != 0 || q.Skipped != 1 || len(q.SkippedTitles) != 1 || q.SkippedTitles[0].Title != "A Disc Image" ||
+		q.SkippedTitles[0].Reason != "its file is a disc image, which the transcoder doesn’t encode" {
+		t.Errorf("queueRework of the disc image: %+v", q)
+	}
 	mutate(`mutation { q: queueReworkMatching(rules: [IMAGE_SUBTITLES_MISSING]) { queued alreadyQueued skipped message } }`)
 	if q := queued.Q; q.Queued != 0 || q.Message != "No title fits the filter, so none is queued." {
 		t.Errorf("a filter no title matches: %+v", q)
@@ -278,8 +324,8 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		t.Errorf("refreshCompliance: %s %v", a.Data, a.Errors)
 	}
 	query(report)
-	if p := data.LibraryCompliance.Pending; p != 3 {
-		t.Errorf("after a refresh of the movies: %d pending, want the 3 movies", p)
+	if p := data.LibraryCompliance.Pending; p != 4 {
+		t.Errorf("after a refresh of the movies: %d pending, want the 4 movies", p)
 	}
 	_, a = in.gql(t, "/api/manage/query", admin, `{ pipelineRules { packager { worker version reportedAt rules { key value } } } }`)
 	var rules struct {

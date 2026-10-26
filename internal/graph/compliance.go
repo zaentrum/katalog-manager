@@ -17,15 +17,36 @@ type Compliance interface {
 	// Report is a page of the titles f matches that break a rule, first of
 	// them after the cursor after ("" from the first).
 	Report(ctx context.Context, f ComplianceFilter, first int32, after string) (ComplianceReport, error)
-	// Matching are the titles f matches that break a rule, in the report's
-	// order.
-	Matching(ctx context.Context, f ComplianceFilter) ([]string, error)
+	// Queueable are the titles f matches that break a rule and that a
+	// request to process them again queues, in the report's order, and how
+	// many of those f matches it leaves out.
+	Queueable(ctx context.Context, f ComplianceFilter) (QueueableTitles, error)
 	// Refresh has every title of kind ("" every kind) checked again, and
 	// answers whether a pass was set going.
 	Refresh(ctx context.Context, kind string) (bool, error)
 	// Queued says what a request to process titles again did, as the queue
-	// answered it, in words; matching says it named its titles by a filter.
-	Queued(ctx context.Context, res ReencodeEnqueued, matching bool) (ComplianceQueued, error)
+	// answered it, in words; by says how it named its titles.
+	Queued(ctx context.Context, res ReencodeEnqueued, by QueuedBy) (ComplianceQueued, error)
+}
+
+// QueueableTitles are the titles a filter matches that break a rule and that
+// a request to process them again queues (IDs): none waiting or sent in the
+// re-encode queue, which keeps such a title as it is, and none that
+// processing again can't help (a row's reworkBlocked), which the queue
+// skips. InQueue and Blocked count the titles the filter matches that are
+// not, those waiting or sent and those processing again can't help.
+type QueueableTitles struct {
+	IDs              []string
+	InQueue, Blocked int32
+}
+
+// QueuedBy is how a request to process titles again named its titles: by
+// name, or by a filter (Matching), which leaves out the titles it matches
+// that are queued already (InQueue) or that processing again can't help
+// (Blocked).
+type QueuedBy struct {
+	Matching         bool
+	InQueue, Blocked int32
 }
 
 // Rework queues titles to be processed again, through the paced re-encode
@@ -122,6 +143,7 @@ type ComplianceReport struct {
 	Pending      int32
 	Total        int32
 	Matching     ComplianceTotals
+	Queueable    ComplianceTotals
 	Queue        ComplianceQueueCounts
 	Summary      []ComplianceSummary
 	Rows         []ComplianceRow
@@ -215,12 +237,12 @@ func (r *Resolver) QueueRework(ctx context.Context, args struct{ Items []graphql
 			items = append(items, s)
 		}
 	}
-	return r.rework(ctx, items, false)
+	return r.rework(ctx, items, QueuedBy{})
 }
 
 // rework queues items to be processed again, and says what that did; none
 // is said so.
-func (r *Resolver) rework(ctx context.Context, items []string, matching bool) (*complianceQueuedResolver, error) {
+func (r *Resolver) rework(ctx context.Context, items []string, by QueuedBy) (*complianceQueuedResolver, error) {
 	var res ReencodeEnqueued
 	if len(items) > 0 {
 		var err error
@@ -228,15 +250,16 @@ func (r *Resolver) rework(ctx context.Context, items []string, matching bool) (*
 			return nil, err
 		}
 	}
-	q, err := r.svc.Compliance.Queued(ctx, res, matching)
+	q, err := r.svc.Compliance.Queued(ctx, res, by)
 	if err != nil {
 		return nil, err
 	}
 	return &complianceQueuedResolver{m: q}, nil
 }
 
-// QueueReworkMatching queues every title the filter matches that breaks a
-// rule to be encoded again, as queueRework does.
+// QueueReworkMatching queues the titles the filter matches that break a rule
+// and that a request queues (the report's queueable), as queueRework does:
+// none queued already, none that processing again can't help.
 func (r *Resolver) QueueReworkMatching(ctx context.Context, args struct {
 	Kind   *string
 	Rules  *[]string
@@ -248,11 +271,11 @@ func (r *Resolver) QueueReworkMatching(ctx context.Context, args struct {
 	if r.svc.Compliance == nil || r.svc.Rework == nil {
 		return nil, errNotConfigured
 	}
-	items, err := r.svc.Compliance.Matching(ctx, filterOf(args.Kind, args.Rules, args.Search))
+	q, err := r.svc.Compliance.Queueable(ctx, filterOf(args.Kind, args.Rules, args.Search))
 	if err != nil {
 		return nil, err
 	}
-	return r.rework(ctx, items, true)
+	return r.rework(ctx, q.IDs, QueuedBy{Matching: true, InQueue: q.InQueue, Blocked: q.Blocked})
 }
 
 // RefreshCompliance has the titles of kind (every kind when omitted) checked
@@ -347,6 +370,9 @@ func (r *complianceReportResolver) Rows() []*complianceRowResolver {
 func (r *complianceReportResolver) NextCursor() *string { return r.m.NextCursor }
 func (r *complianceReportResolver) Matching() *complianceTotalsResolver {
 	return &complianceTotalsResolver{m: r.m.Matching}
+}
+func (r *complianceReportResolver) Queueable() *complianceTotalsResolver {
+	return &complianceTotalsResolver{m: r.m.Queueable}
 }
 func (r *complianceReportResolver) Queue() *complianceQueueCountsResolver {
 	return &complianceQueueCountsResolver{m: r.m.Queue}

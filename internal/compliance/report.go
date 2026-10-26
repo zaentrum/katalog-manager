@@ -91,7 +91,8 @@ func rulesOf(f graph.ComplianceFilter) ([]string, error) {
 // Report is a page of the titles f matches that break a rule, as the check
 // last found them, first of them after the cursor after: the largest package
 // first. It says what the workers reported, what is not checked and why, how
-// many titles f matches and their sizes, of the titles of f's kind and
+// many titles f matches and their sizes, and those of them a request to
+// process them again queues (queueable), of the titles of f's kind and
 // search those that break each rule, whichever rules f names, and the
 // re-encode queue by state.
 func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, first int32, after string) (graph.ComplianceReport, error) {
@@ -131,6 +132,11 @@ func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, first in
 	}
 	out.Total = m.Titles
 	out.NotEvaluated = notEvaluated(rs, unchecked)
+	titles, _, _, err := s.queueable(ctx, f, rules)
+	if err != nil {
+		return out, err
+	}
+	out.Queueable = totalsOf(titles)
 	q := &out.Queue
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state = 'queued'), count(*) FILTER (WHERE state = 'sent'),
 			count(*) FILTER (WHERE state = 'done'), count(*) FILTER (WHERE state = 'failed')
@@ -333,8 +339,8 @@ func (s *Service) blockedOf(ctx context.Context, ids []string) (map[string]strin
 // Queued says what a request to process titles again did, as the queue
 // answered it (res): how many it queued and how many were queued already,
 // each title it skipped, named, with why, in the reader's words, and all of
-// it in a sentence; matching says the request named its titles by a filter.
-func (s *Service) Queued(ctx context.Context, res graph.ReencodeEnqueued, matching bool) (graph.ComplianceQueued, error) {
+// it in a sentence; by says how the request named its titles.
+func (s *Service) Queued(ctx context.Context, res graph.ReencodeEnqueued, by graph.QueuedBy) (graph.ComplianceQueued, error) {
 	out := graph.ComplianceQueued{Queued: res.Queued, AlreadyQueued: res.AlreadyQueued, Skipped: int32(len(res.Skipped)),
 		SkippedTitles: []graph.ComplianceSkip{}}
 	kinds := map[string]int{}
@@ -361,7 +367,7 @@ func (s *Service) Queued(ctx context.Context, res graph.ReencodeEnqueued, matchi
 				Reason: skipReason(sk.Kind)})
 		}
 	}
-	out.Message = queuedWords(int(res.Queued), int(res.AlreadyQueued), kinds, matching)
+	out.Message = queuedWords(int(res.Queued), int(res.AlreadyQueued), kinds, by)
 	return out, nil
 }
 
@@ -391,31 +397,111 @@ func (s *Service) titlesOf(ctx context.Context, ids []string) (map[string]string
 	return out, rows.Err()
 }
 
-// Matching are the titles f matches that break a rule, in the report's
-// order.
-func (s *Service) Matching(ctx context.Context, f graph.ComplianceFilter) ([]string, error) {
+// sized is a title a report matches, with its sizes: its original's, its
+// package's, and its package's once processed again.
+type sized struct {
+	id             string
+	orig, pkg, est *int64
+}
+
+// queueable are the titles f matches that break a rule (any of rules) and
+// that a request to process them again queues, in the report's order: none
+// waiting or sent in the re-encode queue, which keeps such a title as it is
+// (inQueue counts them), and none that processing again can't help, which
+// the queue skips (blocked counts them).
+func (s *Service) queueable(ctx context.Context, f graph.ComplianceFilter, rules []string) (out []sized, inQueue, blocked int32,
+	err error) {
+	rows, err := s.pool.Query(ctx, filtered+`SELECT f.item_id, f.originalbytes, f.packagebytes, f.estimatedbytes,
+			EXISTS (SELECT 1 FROM `+store.ReencodeQueueTable+` q WHERE q.item_id = f.item_id AND q.state IN ('queued', 'sent'))
+		FROM f WHERE `+breaking+` ORDER BY `+order, f.Kind, f.Search, rules)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	var free []sized
+	for rows.Next() {
+		var t sized
+		var queued bool
+		if err := rows.Scan(&t.id, &t.orig, &t.pkg, &t.est, &queued); err != nil {
+			rows.Close()
+			return nil, 0, 0, err
+		}
+		if queued {
+			inQueue++
+			continue
+		}
+		free = append(free, t)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, 0, 0, err
+	}
+	ids := make([]string, len(free))
+	for i, t := range free {
+		ids[i] = t.id
+	}
+	kinds, err := s.blockedOf(ctx, ids)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	out = make([]sized, 0, len(free))
+	for _, t := range free {
+		if _, ok := kinds[t.id]; ok {
+			blocked++
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, inQueue, blocked, nil
+}
+
+// totalsOf sums titles up: how many, the sizes of their originals and
+// packages, and of their packages once processed again (nil when that is
+// known of none).
+func totalsOf(titles []sized) graph.ComplianceTotals {
+	out := graph.ComplianceTotals{Titles: int32(len(titles))}
+	var est int64
+	known := false
+	for _, t := range titles {
+		if t.orig != nil {
+			out.OriginalBytes += float64(*t.orig)
+		}
+		if t.pkg != nil {
+			out.PackageBytes += float64(*t.pkg)
+		}
+		if t.est != nil {
+			est += *t.est
+			known = true
+		}
+	}
+	if known {
+		e := float64(est)
+		out.EstimatedBytes = &e
+	}
+	return out
+}
+
+// Queueable are the titles f matches that break a rule and that a request
+// to process them again queues, in the report's order, and how many of
+// those f matches it leaves out (queueable).
+func (s *Service) Queueable(ctx context.Context, f graph.ComplianceFilter) (graph.QueueableTitles, error) {
+	var out graph.QueueableTitles
 	if why := s.ready(ctx); why != nil {
-		return nil, why
+		return out, why
 	}
 	rules, err := rulesOf(f)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
-	rows, err := s.pool.Query(ctx, filtered+`SELECT f.item_id FROM f WHERE `+breaking+` ORDER BY `+order,
-		f.Kind, f.Search, rules)
+	titles, inQueue, blocked, err := s.queueable(ctx, f, rules)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
+	out.IDs = make([]string, len(titles))
+	for i, t := range titles {
+		out.IDs[i] = t.id
 	}
-	return out, rows.Err()
+	out.InQueue, out.Blocked = inQueue, blocked
+	return out, nil
 }
 
 func floatOf(v *int64) *float64 {

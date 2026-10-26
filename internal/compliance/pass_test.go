@@ -443,7 +443,7 @@ func TestWhatARequestDidInWords(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		m, err := s.Queued(ctx, res, false)
+		m, err := s.Queued(ctx, res, graph.QueuedBy{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -498,9 +498,134 @@ A Film That Lost Its Tracks: its original is being deleted from disk after packa
 A Coastal Show · S01E02 · An Episode Over Its Cap: it has no file`; skips != want {
 		t.Errorf("the titles skipped:\n%s\nwant:\n%s", skips, want)
 	}
-	if m, err := s.Queued(ctx, graph.ReencodeEnqueued{}, true); err != nil || m.Message != "No title fits the filter, so none is queued." ||
+	if m, err := s.Queued(ctx, graph.ReencodeEnqueued{}, graph.QueuedBy{Matching: true}); err != nil || m.Message != "No title fits the filter, so none is queued." ||
 		m.SkippedTitles == nil || len(m.SkippedTitles) != 0 {
 		t.Errorf("nothing matched: %+v, %v", m, err)
+	}
+}
+
+// The report's queueable are what a request by its filter queues, title for
+// title and byte for byte: the titles that fit it but those queued already,
+// waiting or sent, and those that processing again can't help (a disc image,
+// an original deleted after packaging or being deleted); a title done or
+// failed in the queue before is queued again. Once they are queued, none is
+// left, and the request says why.
+func TestTheQueueableAreWhatAFilterQueues(t *testing.T) {
+	s, st, dir := library4(t)
+	ctx := context.Background()
+	for _, p := range []packaged{
+		{n: 10, kind: "movie", title: "A Film Whose Original Was Deleted", width: 1920, height: 1080, rate: 9e6, encoder: "copy",
+			original: 6e9, size: 5.5e9, srcCh: 2, pkgCh: 2},
+		{n: 11, kind: "movie", title: "A Film Whose Original Is Being Deleted", width: 1920, height: 1080, rate: 9e6, encoder: "copy",
+			original: 6e9, size: 5.4e9, srcCh: 2, pkgCh: 2},
+	} {
+		p.add(t, st, dir)
+	}
+	storetest.Exec(t, st, `DELETE FROM com_nalet_katalog_playbackassets WHERE item_id = $1 AND isprimary = true`, uuid(10))
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemsources SET state = 'deleted', deletedat = now() WHERE item_id = $1`, uuid(10))
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemsources SET state = 'retiring' WHERE item_id = $1`, uuid(11))
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	q := retry.New(st, processing.DefaultPolicy(), &bus{}, time.Minute)
+	if _, err := q.EnqueueReencode(ctx, graph.ReencodeRequest{Items: []string{uuid(3), uuid(4), uuid(5), uuid(6)}}); err != nil {
+		t.Fatal(err)
+	}
+	// the episode processed again before, the film that lost its tracks
+	// failed in the queue: both are queued again; the film never packaged
+	// waits, the one whose transcode failed is being processed
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_reencodequeue SET state = 'done', sentat = now(), doneat = now() WHERE item_id = $1`, uuid(3))
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_reencodequeue SET state = 'failed', sentat = now(), doneat = now(),
+		reason = 'transcode failed: ffmpeg exited 1' WHERE item_id = $1`, uuid(4))
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_reencodequeue SET state = 'sent', sentat = now() WHERE item_id = $1`, uuid(6))
+
+	all := graph.ComplianceFilter{}
+	rep := reportOf(t, s, all, 100, "")
+	if got := rowsOf(rep); got != `A Remux Kept As It Was: OVER_BITRATE_CAP, OVER_SIZE_CAP
+A Film Whose Original Was Deleted: OVER_BITRATE_CAP
+A Film Whose Original Is Being Deleted: OVER_BITRATE_CAP
+A Film That Lost Its Tracks: NO_SURROUND, IMAGE_SUBTITLES_MISSING
+An Episode Over Its Cap: OVER_BITRATE_CAP
+A Film Never Packaged: NOT_PACKAGED
+A Film Whose Transcode Failed: PACKAGING_FAILED
+A Disc Image: PACKAGING_FAILED` {
+		t.Fatalf("the report:\n%s", got)
+	}
+	want := map[string]bool{uuid(1): true, uuid(4): true, uuid(3): true}
+	var sum sized
+	var orig, pkg, est int64
+	for _, r := range rep.Rows {
+		if !want[r.ItemID] {
+			continue
+		}
+		if r.Queue != nil && (*r.Queue == "queued" || *r.Queue == "sent") || r.ReworkBlocked != nil {
+			t.Errorf("%s: queue %v, blocked %v, and queueable", r.Title, r.Queue, r.ReworkBlocked)
+		}
+		orig, pkg, est = orig+int64(*r.OriginalBytes), pkg+int64(*r.PackageBytes), est+int64(*r.EstimatedBytes)
+	}
+	sum.orig, sum.pkg, sum.est = &orig, &pkg, &est
+	wantTotals := totalsOf([]sized{sum})
+	wantTotals.Titles = 3
+	if got := rep.Queueable; got.Titles != wantTotals.Titles || got.OriginalBytes != wantTotals.OriginalBytes ||
+		got.PackageBytes != wantTotals.PackageBytes || got.EstimatedBytes == nil || *got.EstimatedBytes != *wantTotals.EstimatedBytes {
+		t.Errorf("queueable: %+v, want %+v (est %v)", got, wantTotals, *wantTotals.EstimatedBytes)
+	}
+	if m := rep.Matching; m.Titles != 8 || rep.Total != 8 {
+		t.Errorf("matching: %+v, total %d; want the 8 titles", m, rep.Total)
+	}
+	got, err := s.Queueable(ctx, all)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.IDs, " ") != uuid(1)+" "+uuid(4)+" "+uuid(3) || got.InQueue != 2 || got.Blocked != 3 {
+		t.Errorf("the queueable: %+v; want the remux, the film that lost its tracks and the episode, 2 in the queue, 3 blocked", got)
+	}
+	// a filter: the movies over a cap, of which only the remux can be
+	// processed again
+	movies, err := s.Queueable(ctx, graph.ComplianceFilter{Kind: "movie", Rules: []string{OverBitrateCap}})
+	if err != nil || strings.Join(movies.IDs, " ") != uuid(1) || movies.InQueue != 0 || movies.Blocked != 2 {
+		t.Errorf("the movies over a cap: %+v, %v", movies, err)
+	}
+	if r := reportOf(t, s, graph.ComplianceFilter{Kind: "movie", Rules: []string{OverBitrateCap}}, 1, ""); r.Queueable.Titles != 1 ||
+		r.Queueable.PackageBytes != 59e9 || r.Queueable.OriginalBytes != 63e9 || r.Matching.Titles != 3 {
+		t.Errorf("the movies over a cap, a page of 1: queueable %+v, matching %+v", r.Queueable, r.Matching)
+	}
+
+	// what the request queues is what was offered
+	res, err := q.EnqueueReencode(ctx, graph.ReencodeRequest{Items: got.IDs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.Queued(ctx, res, graph.QueuedBy{Matching: true, InQueue: got.InQueue, Blocked: got.Blocked})
+	if err != nil || m.Queued != rep.Queueable.Titles || m.AlreadyQueued != 0 || m.Skipped != 0 ||
+		m.Message != "3 titles queued to be processed again." {
+		t.Errorf("the request: %+v, %v", m, err)
+	}
+	var qn int32
+	var qo, qp, qe float64
+	if err := st.Pool().QueryRow(ctx, `SELECT count(*), COALESCE(sum(c.originalbytes), 0)::float8,
+			COALESCE(sum(c.packagebytes), 0)::float8, COALESCE(sum(c.estimatedbytes), 0)::float8
+		FROM com_nalet_katalog_reencodequeue q JOIN com_nalet_katalog_compliance c ON c.item_id = q.item_id
+		WHERE q.state = 'queued' AND q.item_id <> $1`, uuid(5)).Scan(&qn, &qo, &qp, &qe); err != nil {
+		t.Fatal(err)
+	}
+	if qn != rep.Queueable.Titles || qo != rep.Queueable.OriginalBytes || qp != rep.Queueable.PackageBytes ||
+		qe != *rep.Queueable.EstimatedBytes {
+		t.Errorf("queued %d titles of %v, %v and %v bytes; offered %+v", qn, qo, qp, qe, rep.Queueable)
+	}
+
+	// none is left to queue, and a request says why
+	if r := reportOf(t, s, all, 100, ""); r.Queueable.Titles != 0 || r.Queueable.OriginalBytes != 0 || r.Queueable.EstimatedBytes != nil {
+		t.Errorf("queueable once queued: %+v", r.Queueable)
+	}
+	left, err := s.Queueable(ctx, all)
+	if err != nil || len(left.IDs) != 0 || left.InQueue != 5 || left.Blocked != 3 {
+		t.Fatalf("the queueable once queued: %+v, %v", left, err)
+	}
+	m, err = s.Queued(ctx, graph.ReencodeEnqueued{}, graph.QueuedBy{Matching: true, InQueue: left.InQueue, Blocked: left.Blocked})
+	if want := "No title queued to be processed again. Of the 8 titles that fit the filter, 5 are queued already and 3 " +
+		"can’t be processed again."; err != nil || m.Message != want {
+		t.Errorf("a request with none left: %q, %v\nwant %q", m.Message, err, want)
 	}
 }
 

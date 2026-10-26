@@ -445,17 +445,18 @@ var (
 
 // queuedWords is what a request to process titles again did: how many it
 // queued, how many were queued already, how many it skipped and why; with
-// none at all, that no title was named, or none fitted the filter.
-func queuedWords(queued, already int, skipped map[string]int, matching bool) string {
+// none at all, that no title was named, that none fits the filter, or why
+// none of those that fit it is queued.
+func queuedWords(queued, already int, skipped map[string]int, by graph.QueuedBy) string {
 	total := 0
 	for _, n := range skipped {
 		total += n
 	}
 	if queued == 0 && already == 0 && total == 0 {
-		if matching {
-			return "No title fits the filter, so none is queued."
+		if !by.Matching {
+			return "No title is named, so none is queued."
 		}
-		return "No title is named, so none is queued."
+		return leftOutWords(int(by.InQueue), int(by.Blocked))
 	}
 	parts := []string{"No title queued to be processed again."}
 	if queued > 0 {
@@ -494,6 +495,27 @@ func queuedWords(queued, already int, skipped map[string]int, matching bool) str
 		parts = append(parts, titlesText(total)+" "+plural(total, "wasn’t", "weren’t")+" queued: "+why+".")
 	}
 	return strings.Join(parts, " ")
+}
+
+// leftOutWords is why a request by a filter queued no title: none fits it,
+// or each that fits it is queued already (inQueue) or can't be processed
+// again (blocked).
+func leftOutWords(inQueue, blocked int) string {
+	const none = "No title queued to be processed again. "
+	switch n := inQueue + blocked; {
+	case n == 0:
+		return "No title fits the filter, so none is queued."
+	case blocked == 0 && n == 1:
+		return none + "The title that fits the filter is queued already."
+	case blocked == 0:
+		return none + "The " + titlesText(n) + " that fit the filter are queued already."
+	case inQueue == 0 && n == 1:
+		return none + "The title that fits the filter can’t be processed again."
+	case inQueue == 0:
+		return none + "The " + titlesText(n) + " that fit the filter can’t be processed again."
+	}
+	return none + "Of the " + titlesText(inQueue+blocked) + " that fit the filter, " + countText(inQueue) + " " +
+		plural(inQueue, "is", "are") + " queued already and " + countText(blocked) + " can’t be processed again."
 }
 
 // titleText names a title as a list of them does: a movie or a series by its

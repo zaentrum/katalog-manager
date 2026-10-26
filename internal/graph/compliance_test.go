@@ -12,8 +12,8 @@ import (
 // complianceContract is the library compliance's GraphQL contract, as the
 // console is built against it, with what was added to it since (the totals
 // of the whole filter and the queue's counts; each title a request skipped,
-// and why): the schema may add to it, and may rename or remove nothing of
-// it.
+// and why; the totals of the titles a request queues): the schema may add to
+// it, and may rename or remove nothing of it.
 const complianceContract = `
 enum ComplianceRule { NOT_PACKAGED PACKAGING_FAILED OVER_BITRATE_CAP OVER_SIZE_CAP NO_SURROUND IMAGE_SUBTITLES_MISSING VIDEO_NOT_HEVC }
 enum ComplianceKind { MOVIE EPISODE }
@@ -55,6 +55,7 @@ type ComplianceQueueCounts { queued: Int! processing: Int! processed: Int! faile
 extend type ComplianceReport { matching: ComplianceTotals!  queue: ComplianceQueueCounts! }
 type ComplianceSkip { itemId: ID! title: String! reason: String! }
 extend type ComplianceQueued { skippedTitles: [ComplianceSkip!]! }
+extend type ComplianceReport { queueable: ComplianceTotals! }   # the matching titles NOT queued or processing: what "select all N matching" queues
 `
 
 var (
@@ -111,8 +112,8 @@ func TestTheComplianceContract(t *testing.T) {
 		types[ty.Name] = ty
 	}
 	blocks := contractBlockRE.FindAllStringSubmatch(complianceContract, -1)
-	if len(blocks) != 17 {
-		t.Fatalf("the contract reads as %d blocks, want 17", len(blocks))
+	if len(blocks) != 18 {
+		t.Fatalf("the contract reads as %d blocks, want 18", len(blocks))
 	}
 	for _, b := range blocks {
 		kind, name, body := b[1], b[2], b[3]

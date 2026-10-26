@@ -143,9 +143,9 @@ func (f *fakes) Report(_ context.Context, c graph.ComplianceFilter, first int32,
 	f.called(fmt.Sprintf("compliance report %s %s %q %d %q", c.Kind, strings.Join(c.Rules, ","), c.Search, first, after))
 	return graph.ComplianceReport{}, nil
 }
-func (f *fakes) Matching(_ context.Context, c graph.ComplianceFilter) ([]string, error) {
-	f.called(fmt.Sprintf("compliance matching %s %s %q", c.Kind, strings.Join(c.Rules, ","), c.Search))
-	return []string{"m1"}, nil
+func (f *fakes) Queueable(_ context.Context, c graph.ComplianceFilter) (graph.QueueableTitles, error) {
+	f.called(fmt.Sprintf("compliance queueable %s %s %q", c.Kind, strings.Join(c.Rules, ","), c.Search))
+	return graph.QueueableTitles{IDs: []string{"m1"}, InQueue: 2, Blocked: 1}, nil
 }
 func (f *fakes) Refresh(_ context.Context, kind string) (bool, error) {
 	f.called("refresh compliance " + kind)
@@ -155,8 +155,8 @@ func (f *fakes) EnqueueReencode(_ context.Context, req graph.ReencodeRequest) (g
 	f.called("rework " + strings.Join(req.Items, ","))
 	return graph.ReencodeEnqueued{Queued: int32(len(req.Items))}, nil
 }
-func (f *fakes) Queued(_ context.Context, res graph.ReencodeEnqueued, matching bool) (graph.ComplianceQueued, error) {
-	f.called(fmt.Sprintf("say %d queued, matching %v", res.Queued, matching))
+func (f *fakes) Queued(_ context.Context, res graph.ReencodeEnqueued, by graph.QueuedBy) (graph.ComplianceQueued, error) {
+	f.called(fmt.Sprintf("say %d queued, by %+v", res.Queued, by))
 	return graph.ComplianceQueued{Queued: res.Queued, Message: "queued"}, nil
 }
 
@@ -420,7 +420,8 @@ var operations = []struct{ doc, calls string }{
 	{`{ pipelineRules { transcoder { worker version reportedAt rules { key label value } } packager { worker } } }`, "pipeline rules"},
 	{`{ libraryCompliance(kind: MOVIE, rules: [OVER_BITRATE_CAP], search: "Film", first: 10) { rules { transcoder { worker } }
 		notEvaluated evaluatedAt evaluating pending total nextCursor summary { rule titles } rows { itemId findings { rule } }
-		matching { titles originalBytes packageBytes estimatedBytes } queue { queued processing processed failed } } }`,
+		matching { titles originalBytes packageBytes estimatedBytes } queueable { titles originalBytes packageBytes estimatedBytes }
+		queue { queued processing processed failed } } }`,
 		`compliance report movie OVER_BITRATE_CAP "Film" 10 ""`},
 
 	{`mutation { triggerScan(source: "nfs") { id status } }`, "scan nfs"},
@@ -441,9 +442,9 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { reencodeItem(id: "m1") { itemId titles reencoded busy notSent message } }`, "reencode m1"},
 	{`mutation { clearReencodeQueue(states: ["done", "failed"]) }`, "clear the re-encode queue done,failed"},
 	{`mutation { queueRework(items: ["m1"]) { queued alreadyQueued skipped skippedTitles { itemId title reason } message } }`,
-		"rework m1; say 1 queued, matching false"},
+		"rework m1; say 1 queued, by {Matching:false InQueue:0 Blocked:0}"},
 	{`mutation { queueReworkMatching(kind: EPISODE, rules: [NO_SURROUND]) { queued alreadyQueued skipped message } }`,
-		`compliance matching episode NO_SURROUND ""; rework m1; say 1 queued, matching true`},
+		`compliance queueable episode NO_SURROUND ""; rework m1; say 1 queued, by {Matching:true InQueue:2 Blocked:1}`},
 	{`mutation { refreshCompliance(kind: MOVIE) }`, "refresh compliance movie"},
 	{`mutation { replaceSource(itemId: "m1", path: "/media/a-film-1080p.mkv", deleteOldFile: true) { itemId oldPath path
 		replaced oldFileDeleted oldSidecars reencode { reencoded busy notSent message } message } }`,
