@@ -69,7 +69,7 @@ func serverTexts(t *testing.T) []text {
 			"width": ` + itoa(width) + `, "height": ` + itoa(height) + `, "bitrateBps": ` + ftoa(rate) + `, "encoder": "` + encoder + `"}],
 			"audio": [{"channels": 2, "bitrateBps": 192000}]}, "subtitles": [], "essence": {"surround": false, "maxAudioChannels": 2}}`
 	}
-	src := `{"file": {"sizeBytes": 63400000000}, "container": {"durationMs": 7980000},
+	src := `{"file": {"sizeBytes": 63400000000}, "container": {"format": "matroska,webm", "durationMs": 7980000},
 		"streams": [{"index": 0, "type": "video", "codec": "hevc", "width": 3840, "height": 2160, "bitrate": 73000000},
 		{"index": 1, "type": "audio", "codec": "truehd", "channels": 8},
 		{"index": 2, "type": "subtitle", "codec": "hdmv_pgs_subtitle", "language": "de", "form": "image"},
