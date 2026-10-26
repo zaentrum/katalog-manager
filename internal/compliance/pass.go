@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -97,7 +98,11 @@ func (s *Service) Pass(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	hash, since := rs.hash(), cutoff(s.now())
+	since, set, err := s.nightlyCutoff(ctx)
+	if err != nil {
+		return 0, err
+	}
+	hash := rs.hash()
 	seen := map[string]bool{}
 	checked := 0
 	var bad unread
@@ -117,7 +122,7 @@ func (s *Service) Pass(ctx context.Context) (int, error) {
 		if len(fresh) == 0 {
 			break
 		}
-		if err := s.check(ctx, fresh, rs, hash, &bad); err != nil {
+		if err := s.check(ctx, fresh, rs, hash, set, &bad); err != nil {
 			return checked, err
 		}
 		checked += len(fresh)
@@ -190,8 +195,12 @@ func (u *unread) say() {
 }
 
 // check checks the titles ids against rs and keeps what it found, under
-// hash; bad counts those whose records can't be read.
-func (s *Service) check(ctx context.Context, ids []string, rs rulesState, hash string, bad *unread) error {
+// hash; bad counts those whose records can't be read. A title's records are
+// read again only once what they were read of changed (its recordKey): else
+// the facts the check kept of them serve, and none is read, so that rules
+// that changed cost no read of the library. set says how many are read at
+// once.
+func (s *Service) check(ctx context.Context, ids []string, rs rulesState, hash string, set passSettings, bad *unread) error {
 	var start time.Time
 	if err := s.pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&start); err != nil {
 		return err
@@ -201,19 +210,34 @@ func (s *Service) check(ctx context.Context, ids []string, rs rulesState, hash s
 		return err
 	}
 	results := make([]result, len(titles))
-	sem := make(chan struct{}, readers)
+	sem := make(chan struct{}, set.readers)
 	var wg sync.WaitGroup
 	for i := range titles {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+			t := titles[i]
 			var r records
-			if rs.v2 && titles[i].Version != nil {
-				sem <- struct{}{}
-				r = s.readRecords(titles[i])
-				<-sem
+			var kept *string
+			if rs.v2 && t.RecordKey != "" {
+				if t.CachedKey == t.RecordKey && t.Cached != nil {
+					if cr, ok := decodeRecords(*t.Cached); ok {
+						r, kept = cr, t.Cached
+					}
+				}
+				if kept == nil {
+					sem <- struct{}{}
+					r = s.readRecords(t)
+					<-sem
+					if r.unchecked == "" {
+						kept = encodeRecords(r)
+					}
+				}
 			}
-			results[i] = evaluate(titles[i], r, rs)
+			results[i] = evaluate(t, r, rs)
+			if kept != nil {
+				results[i].recordKey, results[i].records = t.RecordKey, kept
+			}
 		}(i)
 	}
 	wg.Wait()
@@ -221,24 +245,99 @@ func (s *Service) check(ctx context.Context, ids []string, rs rulesState, hash s
 	return s.write(ctx, results, hash, start)
 }
 
+// recordsVersion is the form of the facts the check keeps of a title's
+// records: a check that reads other facts of them gets another, and every
+// title's records are read again.
+const recordsVersion = "records/1"
+
+// keptRecords are the facts the check keeps of a title's records, as JSON:
+// what it read of its package's record and of its original's, with their
+// essences.
+type keptRecords struct {
+	Pkg        *packageRecord  `json:"pkg,omitempty"`
+	Src        *sourceRecord   `json:"src,omitempty"`
+	PkgEssence json.RawMessage `json:"pkgEssence,omitempty"`
+	SrcEssence json.RawMessage `json:"srcEssence,omitempty"`
+}
+
+// encodeRecords is r as the check keeps it; nil when it can't be written.
+func encodeRecords(r records) *string {
+	k := keptRecords{Pkg: r.pkg, Src: r.src}
+	for _, e := range []struct {
+		doc library.Doc
+		to  *json.RawMessage
+	}{{r.pkgEssence, &k.PkgEssence}, {r.srcEssence, &k.SrcEssence}} {
+		if e.doc == nil {
+			continue
+		}
+		b, err := json.Marshal(e.doc)
+		if err != nil {
+			return nil
+		}
+		*e.to = b
+	}
+	b, err := json.Marshal(k)
+	if err != nil {
+		return nil
+	}
+	out := string(b)
+	return &out
+}
+
+// decodeRecords is the records the check kept as kept, and false when they
+// can't be read.
+func decodeRecords(kept string) (records, bool) {
+	var k keptRecords
+	if err := json.Unmarshal([]byte(kept), &k); err != nil {
+		return records{}, false
+	}
+	r := records{pkg: k.Pkg, src: k.Src}
+	for _, e := range []struct {
+		raw json.RawMessage
+		to  *library.Doc
+	}{{k.PkgEssence, &r.pkgEssence}, {k.SrcEssence, &r.srcEssence}} {
+		if len(e.raw) == 0 {
+			continue
+		}
+		d, err := library.DecodeDoc(e.raw)
+		if err != nil {
+			return records{}, false
+		}
+		*e.to = d
+	}
+	return r, true
+}
+
 // titleCols is what check reads of a title: its type and series, its file
-// with its source, its complete version with the size of its first source,
-// whether a version was taken in, its packaged row and its transcode and
-// package steps.
+// with its source (its codec and bit rate as the catalog's probe of it says,
+// its source's id while that is recorded in the library), its complete
+// version with the size of its first source, whether a version was taken
+// in, its packaged row, its transcode and package steps, what its records
+// were last read of (recordKey: the version and its source, or the file's
+// recorded source, each with when its row last changed), and the facts the
+// check kept of them.
 const titleCols = `SELECT i.id, lower(i.type),
 		COALESCE(CASE WHEN lower(p.type) = 'series' THEN p.id END, CASE WHEN lower(g.type) = 'series' THEN g.id END, ''),
 		i.durationms,
-		pa.path, pa.sizebytes, ps.sizebytes, pa.resolution, pa.durationms,
+		pa.path, pa.sizebytes, ps.sizebytes, pa.resolution, pa.durationms, pa.codec, pa.bitratekbps,
+		CASE WHEN ps.recordedat IS NOT NULL THEN ps.id END,
 		v.id, COALESCE(v.sourceids, '{}'), vs.sizebytes,
 		EXISTS (SELECT 1 FROM ` + store.VersionsTable + ` tv WHERE tv.item_id = i.id AND tv.state = 'taken'),
 		pk.codec, pk.resolution, pk.sizebytes, pk.durationms,
 		t.status, COALESCE(t.error, t.lasterror), t.details, t.nextretryat,
-		k.status, COALESCE(k.error, k.lasterror), k.details, k.nextretryat
+		k.status, COALESCE(k.error, k.lasterror), k.details, k.nextretryat,
+		CASE WHEN v.id IS NOT NULL THEN 'v:' || v.id || '@' || extract(epoch FROM v.modifiedat)::text || ' s:' ||
+				COALESCE(vs.id || '@' || extract(epoch FROM vs.modifiedat)::text, '')
+			WHEN ps.recordedat IS NOT NULL THEN 's:' || ps.id || '@' || extract(epoch FROM ps.modifiedat)::text
+			ELSE '' END,
+		COALESCE(c.recordkey, ''), c.records::text
 	FROM unnest($1::text[]) AS x(id)
 	JOIN com_nalet_katalog_items i ON i.id = x.id
 	LEFT JOIN com_nalet_katalog_items p ON p.id = i.parent_id
 	LEFT JOIN com_nalet_katalog_items g ON g.id = p.parent_id
-	LEFT JOIN LATERAL (SELECT a.path, a.sizebytes, a.resolution, a.durationms, a.sourceid FROM com_nalet_katalog_playbackassets a
+	LEFT JOIN ` + store.ComplianceTable + ` c ON c.item_id = i.id
+	LEFT JOIN LATERAL (SELECT a.path, a.sizebytes, a.resolution, a.durationms, a.codec, a.bitratekbps, a.sourceid
+		FROM com_nalet_katalog_playbackassets a
 		WHERE a.item_id = i.id AND a.isprimary = true ORDER BY a.id LIMIT 1) pa ON true
 	LEFT JOIN ` + store.SourcesTable + ` ps ON ps.id = pa.sourceid
 	LEFT JOIN ` + store.VersionsTable + ` v ON v.item_id = i.id AND v.state = 'complete'
@@ -259,16 +358,25 @@ func (s *Service) titles(ctx context.Context, ids []string) ([]title, error) {
 	for rows.Next() {
 		var t title
 		var pkgCodec, pkgRes *string
+		var bitrate *int32
 		if err := rows.Scan(&t.ID, &t.Kind, &t.SeriesID, &t.ItemDurMs,
-			&t.Path, &t.FileBytes, &t.SourceBytes, &t.FileResolution, &t.FileDurationMs,
-			&t.Version, &t.VersionSources, &t.VersionBytes, &t.Taken,
+			&t.Path, &t.FileBytes, &t.SourceBytes, &t.FileResolution, &t.FileDurationMs, &t.FileCodec, &bitrate,
+			&t.FileSource, &t.Version, &t.VersionSources, &t.VersionBytes, &t.Taken,
 			&pkgCodec, &pkgRes, &t.PkgBytes, &t.PkgDurationMs,
 			&t.Transcode.Status, &t.Transcode.Error, &t.Transcode.Details, &t.Transcode.NextRetryAt,
-			&t.Package.Status, &t.Package.Error, &t.Package.Details, &t.Package.NextRetryAt); err != nil {
+			&t.Package.Status, &t.Package.Error, &t.Package.Details, &t.Package.NextRetryAt,
+			&t.RecordKey, &t.CachedKey, &t.Cached); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		t.PkgCodec, t.PkgResolution = pkgCodec, pkgRes
+		if bitrate != nil {
+			b := int64(*bitrate)
+			t.FileBitrateKbps = &b
+		}
+		if t.RecordKey != "" {
+			t.RecordKey = recordsVersion + " " + t.RecordKey + " " + t.SeriesID
+		}
 		out = append(out, t)
 	}
 	rows.Close()
@@ -322,13 +430,15 @@ func (s *Service) audioLanguages(ctx context.Context, ids []string) (map[string]
 	return out, rows.Err()
 }
 
-// readRecords reads the records of a title's complete version: its
-// package.json and the source.json of the source it was made of, each a
-// small JSON file of the library; never a media file. What it cannot read
-// says why in unchecked, the rules that read it not checked.
+// readRecords reads the records of a title, each a small JSON file of the
+// library, never a media file: of its complete version, its package.json and
+// the source.json of the source it was made of; of a title without one, the
+// source.json of its file's source, while that is recorded. What it cannot
+// read says why in unchecked, the rules that read it not checked.
 func (s *Service) readRecords(t title) records {
 	var r records
-	if !library.ValidID(t.ID) || !library.ValidID(*t.Version) || (t.SeriesID != "" && !library.ValidID(t.SeriesID)) {
+	if !library.ValidID(t.ID) || (t.Version != nil && !library.ValidID(*t.Version)) ||
+		(t.SeriesID != "" && !library.ValidID(t.SeriesID)) {
 		r.unchecked = "its records are not read: the library names a folder by a lower-case UUID"
 		return r
 	}
@@ -337,27 +447,39 @@ func (s *Service) readRecords(t title) records {
 		return r
 	}
 	dir := s.paths.ItemDir(library.Place{ID: t.ID, Type: t.Kind, SeriesID: t.SeriesID})
-	rel := "versions/" + *t.Version + "/" + library.PackageFile
-	b, err := os.ReadFile(filepath.Join(library.VersionDir(dir, *t.Version), library.PackageFile))
+	source := ""
+	if t.Version != nil {
+		rel := "versions/" + *t.Version + "/" + library.PackageFile
+		s.reads.Add(1)
+		b, err := readRecord(filepath.Join(library.VersionDir(dir, *t.Version), library.PackageFile))
+		if err != nil {
+			r.unchecked = unreadable(rel, err)
+			return r
+		}
+		var pkg packageRecord
+		if err := json.Unmarshal(b, &pkg); err != nil {
+			r.unchecked = rel + " is no package record: " + err.Error()
+			return r
+		}
+		r.pkg = &pkg
+		if r.pkgEssence, err = library.EssenceOf(b); err != nil {
+			r.pkgEssence = nil
+		}
+		if len(t.VersionSources) == 0 || !library.ValidID(t.VersionSources[0]) {
+			r.unchecked = "its version names no source whose record could be read"
+			return r
+		}
+		source = t.VersionSources[0]
+	} else {
+		if t.FileSource == nil || !library.ValidID(*t.FileSource) {
+			return r
+		}
+		source = *t.FileSource
+	}
+	rel := "sources/" + source + "/source.json"
+	s.reads.Add(1)
+	b, err := readRecord(filepath.Join(library.SourceDir(dir, source), "source.json"))
 	if err != nil {
-		r.unchecked = unreadable(rel, err)
-		return r
-	}
-	var pkg packageRecord
-	if err := json.Unmarshal(b, &pkg); err != nil {
-		r.unchecked = rel + " is no package record: " + err.Error()
-		return r
-	}
-	r.pkg = &pkg
-	if r.pkgEssence, err = library.EssenceOf(b); err != nil {
-		r.pkgEssence = nil
-	}
-	if len(t.VersionSources) == 0 || !library.ValidID(t.VersionSources[0]) {
-		r.unchecked = "its version names no source whose record could be read"
-		return r
-	}
-	rel = "sources/" + t.VersionSources[0] + "/source.json"
-	if b, err = os.ReadFile(filepath.Join(library.SourceDir(dir, t.VersionSources[0]), "source.json")); err != nil {
 		r.unchecked = unreadable(rel, err)
 		return r
 	}
@@ -373,10 +495,36 @@ func (s *Service) readRecords(t title) records {
 	return r
 }
 
+// maxRecord is the most of a record the check reads: one larger is no
+// record it reads, said so.
+const maxRecord = 4 << 20
+
+// errTooLarge says a record is larger than maxRecord.
+var errTooLarge = errors.New("larger than a record is")
+
+// readRecord reads the record at path, at most maxRecord of it.
+func readRecord(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxRecord+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxRecord {
+		return nil, errTooLarge
+	}
+	return b, nil
+}
+
 // unreadable says why the record rel of a title cannot be read.
 func unreadable(rel string, err error) string {
 	var pe *fs.PathError
 	switch {
+	case errors.Is(err, errTooLarge):
+		return rel + " is larger than 4 MiB, more than any record"
 	case errors.Is(err, fs.ErrNotExist):
 		return rel + " is not there"
 	case errors.As(err, &pe):
@@ -398,7 +546,9 @@ func (s *Service) write(ctx context.Context, results []result, hash string, star
 	res, codec, pkgAudio, srcAudio := make([]*string, n), make([]*string, n), make([]*string, n), make([]*string, n)
 	rate, rateCap, dur := make([]*float64, n), make([]*float64, n), make([]*float64, n)
 	estimated, sizeCap := make([]bool, n), make([]*int64, n)
+	keys, kept := make([]string, n), make([]*string, n)
 	for i, r := range results {
+		keys[i], kept[i] = r.recordKey, r.records
 		if r.Blocked != "" {
 			blocked[i] = strp(r.Blocked)
 		}
@@ -428,22 +578,22 @@ func (s *Service) write(ctx context.Context, results []result, hash string, star
 	_, err := s.pool.Exec(ctx, `INSERT INTO `+store.ComplianceTable+` AS c
 			(item_id, kind, rules, findings, originalbytes, packagebytes, estimatedbytes, unchecked, blocked,
 			 resolution, videocodec, videobitrate, bitrateestimated, bitratecap, sizecap, durationseconds, packageaudio,
-			 originalaudio, ruleshash, staleat, evaluatedat)
+			 originalaudio, recordkey, records, ruleshash, staleat, evaluatedat)
 		SELECT u.id, u.kind, string_to_array(u.rules, ',')::varchar[], u.findings::jsonb, u.ob, u.pb, u.eb, u.un, u.bl,
-			u.res, u.codec, u.rate, u.est, u.rcap, u.scap, u.dur, u.pa, u.oa, $9, NULL, now()
+			u.res, u.codec, u.rate, u.est, u.rcap, u.scap, u.dur, u.pa, u.oa, u.rk, u.rec::jsonb, $9, NULL, now()
 		FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::bigint[], $6::bigint[], $7::bigint[], $8::text[],
 			$11::text[], $12::text[], $13::text[], $14::float8[], $15::boolean[], $16::float8[], $17::bigint[],
-			$18::float8[], $19::text[], $20::text[])
-			AS u(id, kind, rules, findings, ob, pb, eb, un, bl, res, codec, rate, est, rcap, scap, dur, pa, oa)
+			$18::float8[], $19::text[], $20::text[], $21::text[], $22::text[])
+			AS u(id, kind, rules, findings, ob, pb, eb, un, bl, res, codec, rate, est, rcap, scap, dur, pa, oa, rk, rec)
 		ON CONFLICT (item_id) DO UPDATE SET kind = EXCLUDED.kind, rules = EXCLUDED.rules, findings = EXCLUDED.findings,
 			originalbytes = EXCLUDED.originalbytes, packagebytes = EXCLUDED.packagebytes,
 			estimatedbytes = EXCLUDED.estimatedbytes, unchecked = EXCLUDED.unchecked, blocked = EXCLUDED.blocked,
 			resolution = EXCLUDED.resolution, videocodec = EXCLUDED.videocodec, videobitrate = EXCLUDED.videobitrate,
 			bitrateestimated = EXCLUDED.bitrateestimated, bitratecap = EXCLUDED.bitratecap, sizecap = EXCLUDED.sizecap,
 			durationseconds = EXCLUDED.durationseconds, packageaudio = EXCLUDED.packageaudio,
-			originalaudio = EXCLUDED.originalaudio,
+			originalaudio = EXCLUDED.originalaudio, recordkey = EXCLUDED.recordkey, records = EXCLUDED.records,
 			ruleshash = EXCLUDED.ruleshash, staleat = CASE WHEN c.staleat > $10 THEN c.staleat END, evaluatedat = now()`,
 		ids, kinds, rules, findings, orig, pkg, est, unchecked, hash, start, blocked,
-		res, codec, rate, estimated, rateCap, sizeCap, dur, pkgAudio, srcAudio)
+		res, codec, rate, estimated, rateCap, sizeCap, dur, pkgAudio, srcAudio, keys, kept)
 	return err
 }

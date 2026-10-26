@@ -59,18 +59,11 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
-// readers is how many records the check reads at once.
-const readers = 8
-
 // batch is how many titles a pass checks at once.
 const batch = 200
 
 // tick is how often the background pass looks for titles to check again.
 const tick = time.Minute
-
-// nightly is when, in the service's local time, every title is checked again,
-// once a day.
-const nightly = 3 * time.Hour
 
 // passLock is the advisory lock a pass holds, the catalog's (its schema's):
 // one instance checks at a time.
@@ -92,6 +85,9 @@ type Service struct {
 	// tracks is set once migration 037 is seen in place: the languages an
 	// admin set for a title's tracks.
 	tracks atomic.Bool
+	// reads counts the records the check read of the library, which the
+	// log of a pass says.
+	reads atomic.Int64
 	// said is what the pass last said went wrong, said once each time it
 	// changes (under mu).
 	mu   sync.Mutex
@@ -144,10 +140,11 @@ func (s *Service) poke() {
 	}
 }
 
-// Touch has the titles ids checked again on the next pass: their package
-// completed, or their pipeline ended. A title the check holds no row of yet
-// gets one that waits for it (no rule found, nothing checked). It is
-// best-effort: what it cannot mark the nightly pass checks.
+// Touch has the titles ids checked again on the next pass, their records
+// read again: their package completed, or their pipeline ended. A title the
+// check holds no row of yet gets one that waits for it (no rule found,
+// nothing checked). It is best-effort: what it cannot mark the nightly pass
+// checks.
 func (s *Service) Touch(ctx context.Context, ids ...string) {
 	if len(ids) == 0 || s.ready(ctx) != nil {
 		return
@@ -156,7 +153,7 @@ func (s *Service) Touch(ctx context.Context, ids ...string) {
 			(item_id, kind, ruleshash, staleat)
 		SELECT i.id, lower(i.type), '', now() FROM com_nalet_katalog_items i
 		WHERE i.id = ANY($1) AND lower(i.type) IN ('movie', 'episode')
-		ON CONFLICT (item_id) DO UPDATE SET staleat = now()`, ids); err != nil {
+		ON CONFLICT (item_id) DO UPDATE SET staleat = now(), recordkey = ''`, ids); err != nil {
 		log.Printf("compliance: %d titles could not be marked to be checked again: %v", len(ids), err)
 		return
 	}
@@ -164,7 +161,9 @@ func (s *Service) Touch(ctx context.Context, ids ...string) {
 }
 
 // Refresh has every title of kind ("" every kind) checked again by the next
-// pass, which it wakes. It answers true: the pass is set going.
+// pass, which it wakes, from the facts the check keeps of their records: it
+// reads again only the records of the versions and the originals that
+// changed. It answers true: the pass is set going.
 func (s *Service) Refresh(ctx context.Context, kind string) (bool, error) {
 	if why := s.ready(ctx); why != nil {
 		return false, why
@@ -198,27 +197,43 @@ func (s *Service) Evaluating(ctx context.Context) (bool, error) {
 }
 
 // Run checks the titles that need it now and on every tick, and whenever it
-// is woken, until ctx ends.
+// is woken, until ctx ends; while compliance.pass is off, it checks none.
 func (s *Service) Run(ctx context.Context) {
 	t := time.NewTicker(tick)
 	defer t.Stop()
 	for {
-		if why := s.ready(ctx); why != nil {
-			s.say("compliance: the library's compliance is not checked: " + why.Error())
-		} else if n, err := s.Pass(ctx); err != nil {
-			s.say("compliance: a pass stopped: " + err.Error())
-		} else {
-			s.say("")
-			if n > 0 {
-				log.Printf("compliance: %d titles checked against the workers' rules", n)
-			}
-		}
+		s.round(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		case <-s.pokes:
 		}
+	}
+}
+
+// round is one of Run's: a pass, unless the catalog keeps no check or
+// compliance.pass is off; its log says how many titles it checked, and how
+// many records it read of the library to.
+func (s *Service) round(ctx context.Context) {
+	if why := s.ready(ctx); why != nil {
+		s.say("compliance: the library's compliance is not checked: " + why.Error())
+		return
+	}
+	if set, err := readPassSettings(ctx, s.pool); err == nil && !set.on {
+		s.say("compliance: " + SettingPass + " is off, so no title is checked until it is on")
+		return
+	}
+	before := s.reads.Load()
+	n, err := s.Pass(ctx)
+	if err != nil {
+		s.say("compliance: a pass stopped: " + err.Error())
+		return
+	}
+	s.say("")
+	if n > 0 {
+		log.Printf("compliance: %d titles checked against the workers' rules, %d records read of the library",
+			n, s.reads.Load()-before)
 	}
 }
 
@@ -230,16 +245,4 @@ func (s *Service) say(msg string) {
 		log.Print(msg)
 	}
 	s.said = msg
-}
-
-// cutoff is when the nightly pass last fell due: the last nightly moment of
-// the service's local time at or before now. A title checked before it is
-// checked again.
-func cutoff(now time.Time) time.Time {
-	l := now.Local()
-	at := time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, l.Location()).Add(nightly)
-	if at.After(l) {
-		at = at.AddDate(0, 0, -1)
-	}
-	return at
 }

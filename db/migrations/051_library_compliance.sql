@@ -23,8 +23,8 @@
 --   rules           the rules it breaks, empty when it breaks none
 --   findings        [{rule, text, measured, limit}], one a rule it breaks
 --   originalbytes, packagebytes, estimatedbytes
---                   the size of its original and of its package, and what
---                   its package is to be after its rework at most
+--                   the size of its original and of its package, and an
+--                   estimate of its package once it is processed again
 --   unchecked       why a rule was not checked of it (a record that cannot
 --                   be read), or null
 --   blocked         why processing it again can't help, as its original's
@@ -38,6 +38,13 @@
 --                   rate (bit/s) and whether that was estimated, the caps
 --                   that hold for it (bit/s, bytes), its duration (s), and
 --                   its package's and its original's audio
+--   recordkey, records
+--                   the facts the check read of its records (its version's
+--                   package.json, its original's source.json), as JSON, and
+--                   what they were read of (the version and the original,
+--                   with when their rows last changed): a pass reads a title's
+--                   records again only once the key changes, and checks it
+--                   against other rules from these
 --   ruleshash       the rules it was checked against (both workers' hashes,
 --                   the library's layout, the check's own version): a row
 --                   whose hash is no longer the rules' is checked again
@@ -73,6 +80,8 @@ CREATE TABLE IF NOT EXISTS com_nalet_katalog_compliance (
   durationseconds DOUBLE PRECISION,
   packageaudio VARCHAR(255),
   originalaudio VARCHAR(255),
+  recordkey VARCHAR(400) NOT NULL DEFAULT '',
+  records JSONB,
   ruleshash VARCHAR(64) NOT NULL,
   staleat TIMESTAMPTZ,
   evaluatedat TIMESTAMPTZ NOT NULL DEFAULT now());
@@ -83,8 +92,9 @@ ALTER TABLE com_nalet_katalog_compliance ADD COLUMN IF NOT EXISTS blocked VARCHA
   ADD COLUMN IF NOT EXISTS bitrateestimated BOOLEAN NOT NULL DEFAULT false,
   ADD COLUMN IF NOT EXISTS bitratecap DOUBLE PRECISION, ADD COLUMN IF NOT EXISTS sizecap BIGINT,
   ADD COLUMN IF NOT EXISTS durationseconds DOUBLE PRECISION, ADD COLUMN IF NOT EXISTS packageaudio VARCHAR(255),
-  ADD COLUMN IF NOT EXISTS originalaudio VARCHAR(255);
-CREATE INDEX IF NOT EXISTS idx_compliance_report ON com_nalet_katalog_compliance
-  (kind, (COALESCE(packagebytes, -1)) DESC, (COALESCE(originalbytes, -1)) DESC, item_id)
-  WHERE rules <> '{}';
+  ADD COLUMN IF NOT EXISTS originalaudio VARCHAR(255), ADD COLUMN IF NOT EXISTS recordkey VARCHAR(400) NOT NULL DEFAULT '',
+  ADD COLUMN IF NOT EXISTS records JSONB;
+-- the report sorts a filtered join, which no index of the table serves: an
+-- earlier build's goes
+DROP INDEX IF EXISTS idx_compliance_report;
 CREATE INDEX IF NOT EXISTS idx_compliance_stale ON com_nalet_katalog_compliance (item_id) WHERE staleat IS NOT NULL;

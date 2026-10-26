@@ -97,6 +97,14 @@ type title struct {
 	// 037's com_nalet_katalog_itemtracklanguages), which the packager
 	// names a track by.
 	AudioLanguages map[int]string
+	// FileSource is its file's source while the library records it (its
+	// sources/<id>/source.json): the record of a title never packaged.
+	FileSource *string
+	// RecordKey is what its records are read of now, CachedKey what the
+	// facts the check kept of them (Cached, as JSON) were read of: they
+	// serve while the two are one.
+	RecordKey, CachedKey string
+	Cached               *string
 }
 
 // packaged reports whether the title has a package that plays.
@@ -194,6 +202,10 @@ type result struct {
 	Blocked string
 	// Measures are what the report's columns show of it.
 	Measures measures
+	// records are the facts the check keeps of its records, as JSON, and
+	// recordKey what they were read of; nil and "" when it keeps none.
+	records   *string
+	recordKey string
 }
 
 // measures are what the report's columns show of a title, as the check

@@ -15,12 +15,12 @@ const (
 )
 
 // complianceRelations are the tables and indexes 051 creates.
-var complianceRelations = []string{WorkerRulesTable, ComplianceTable, "idx_compliance_report", "idx_compliance_stale"}
+var complianceRelations = []string{WorkerRulesTable, ComplianceTable, "idx_compliance_stale"}
 
 // complianceColumns are the columns of the compliance a later build of 051
 // added to its table.
 var complianceColumns = []string{"blocked", "resolution", "videocodec", "videobitrate", "bitrateestimated", "bitratecap",
-	"sizecap", "durationseconds", "packageaudio", "originalaudio"}
+	"sizecap", "durationseconds", "packageaudio", "originalaudio", "recordkey", "records"}
 
 // ComplianceReady reports whether migration 051 is in place: its tables,
 // their indexes, and every column of the compliance.

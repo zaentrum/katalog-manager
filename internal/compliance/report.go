@@ -139,10 +139,14 @@ func (s *Service) pending(ctx context.Context, kind, hash string) (int32, error)
 	if err != nil {
 		return 0, err
 	}
+	since, _, err := s.nightlyCutoff(ctx)
+	if err != nil {
+		return 0, err
+	}
 	var n int32
 	err = s.pool.QueryRow(ctx, `SELECT count(*) FROM (`+eligible(covered)+`) e
 		LEFT JOIN `+store.ComplianceTable+` c ON c.item_id = e.id
-		WHERE `+dirty+` AND ($3 = '' OR e.kind = $3)`, hash, cutoff(s.now()), kind).Scan(&n)
+		WHERE `+dirty+` AND ($3 = '' OR e.kind = $3)`, hash, since, kind).Scan(&n)
 	return n, err
 }
 

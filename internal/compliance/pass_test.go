@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,13 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
+
+func deref64f(p *float64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
 
 // checkOf is the check of a catalog on the library's v2 layout, whose library
 // lies in a folder of the test's, with both workers' rules reported.
@@ -335,6 +343,162 @@ func TestAPassEstimatesTheAudioOfTheOriginal(t *testing.T) {
 	}
 	if got, want := estimated(), float64(int64((14e6+3*192e3+2*448e3)*7200/8)); got != want {
 		t.Errorf("the 5.1 tracks named English and German: estimated %v, want %v", got, want)
+	}
+}
+
+// The rules a rollout reports - the check's first pass, then the
+// transcoder's rules and the packager's - cost one read of the library's
+// records: the first pass reads them, and the check keeps what it read of
+// them, so a pass after rules that changed checks every title again from
+// what it kept, the records gone from the disk even. Of a version whose row
+// changed, the records are read again, and of no other title.
+func TestRulesThatChangeReadNoRecordAgain(t *testing.T) {
+	s, st, dir := library4(t)
+	ctx := context.Background()
+	if n, err := s.Pass(ctx); err != nil || n != 8 {
+		t.Fatalf("the first pass checked %d, %v", n, err)
+	}
+	if reads := s.reads.Load(); reads != 8 {
+		t.Fatalf("the first pass read %d records, want each of the 4 packaged titles' two", reads)
+	}
+	gone := dir + ".gone"
+	if err := os.Rename(dir, gone); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Rename(gone, dir) })
+	for _, r := range []struct{ worker, rules string }{
+		{Transcoder, strings.Replace(transcoderReport, `"movie1080Mbps": 8`, `"movie1080Mbps": 9`, 1)},
+		{Packager, strings.Replace(packagerReport, `"surroundBitrate": "448k"`, `"surroundBitrate": "640k"`, 1)},
+	} {
+		if got := reportFor(t, s, r.worker, r.rules); !got.Changed {
+			t.Fatalf("the %s's new rules were not taken for a change", r.worker)
+		}
+		if n, err := s.Pass(ctx); err != nil || n != 8 {
+			t.Fatalf("the pass after the %s's new rules checked %d, %v", r.worker, n, err)
+		}
+	}
+	if reads := s.reads.Load(); reads != 8 {
+		t.Errorf("%d records read once the rules changed twice, want the first pass's 8 alone", reads)
+	}
+	rep := reportOf(t, s, graph.ComplianceFilter{}, 100, "")
+	if len(rep.NotEvaluated) != 0 || rowsOf(rep) != `A Remux Kept As It Was: OVER_BITRATE_CAP, OVER_SIZE_CAP
+A Film That Lost Its Tracks: NO_SURROUND, IMAGE_SUBTITLES_MISSING
+An Episode Over Its Cap: OVER_BITRATE_CAP
+A Film Never Packaged: NOT_PACKAGED
+A Film Whose Transcode Failed: PACKAGING_FAILED
+A Disc Image: PACKAGING_FAILED` {
+		t.Errorf("checked from what the check kept: %q\n%s", rep.NotEvaluated, rowsOf(rep))
+	}
+	// the remux's E-AC-3 5.1 is copied, at the rate its companion measures
+	if top := rep.Rows[0]; top.EstimatedBytes == nil || *top.EstimatedBytes != float64(int64((14e6+192e3+448e3)*7200/8)) {
+		t.Errorf("the remux's estimate, from what the check kept: %v", deref64f(top.EstimatedBytes))
+	}
+	// a version whose row changed: its records are read again (and are not
+	// there), every other title's kept
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET modifiedat = modifiedat + interval '1 second' WHERE item_id = $1`, uuid(1))
+	if _, err := s.Refresh(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.Pass(ctx); err != nil || n != 8 {
+		t.Fatalf("the pass after a refresh checked %d, %v", n, err)
+	}
+	if reads := s.reads.Load(); reads != 9 {
+		t.Errorf("%d records read, want the remux's package record more alone (its source then isn't read)", reads)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_compliance WHERE unchecked LIKE '%is not there'`); n != 1 {
+		t.Errorf("%d titles whose records are not there, want the remux", n)
+	}
+}
+
+// Of a title never packaged whose original the library records, the check
+// reads its original's record: it is estimated of its tracks, its HEVC
+// video copied as the transcoder copies one within its caps.
+func TestTheOriginalsRecordOfATitleNeverPackaged(t *testing.T) {
+	s, st, dir := checkOf(t)
+	ctx := context.Background()
+	id := unpackaged(t, st, 40, "A Film In Two Languages", dir+"/arrivals/a-film-in-two-languages.mkv", "", "")
+	src := uuid(2040)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state, recordedat)
+		VALUES ($1, $2, 'original.mkv', 4000000000, 'present', now())`, src, id)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_playbackassets SET sourceid = $1 WHERE item_id = $2 AND isprimary = true`, src, id)
+	itemDir := library.Paths{Root: dir}.ItemDir(library.Place{ID: id, Type: "movie"})
+	librarytest.WriteSource(t, library.SourceDir(itemDir, src), map[string]any{"sourceId": src,
+		"file": map[string]any{"name": "original.mkv", "sizeBytes": 4000000000}, "container": map[string]any{"format": "matroska,webm",
+			"durationMs": 6000000},
+		"streams": []any{
+			map[string]any{"index": 0, "type": "video", "codec": "hevc", "profile": "Main 10", "pixelFormat": "yuv420p10le",
+				"width": 1920, "height": 1080, "bitrate": 5000000},
+			map[string]any{"index": 1, "type": "audio", "codec": "aac", "channels": 2, "language": "en"},
+			map[string]any{"index": 2, "type": "audio", "codec": "ac3", "channels": 6, "language": "de"}},
+		"essence": map[string]any{"surround": true, "maxAudioChannels": 6}}, nil)
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rep := reportOf(t, s, graph.ComplianceFilter{}, 100, "")
+	if len(rep.Rows) != 1 || rep.Rows[0].EstimatedBytes == nil ||
+		*rep.Rows[0].EstimatedBytes != float64(int64((5e6+2*192e3+448e3)*6000/8)) || s.reads.Load() != 1 {
+		t.Fatalf("%s, estimated %v, %d records read; want its original's record read once", rowsOf(rep), rep.Rows, s.reads.Load())
+	}
+	if r := rep.Rows[0]; r.OriginalAudio == nil || spaced(*r.OriginalAudio) != "2.0 AAC + 5.1 AC-3" {
+		t.Errorf("its original's audio: %v", r.OriginalAudio)
+	}
+}
+
+// A record larger than any is not read: its title is unchecked, saying so.
+func TestARecordTooLargeIsNotRead(t *testing.T) {
+	s, st, dir := library4(t)
+	itemDir := library.Paths{Root: dir}.MovieDir(uuid(2))
+	big := `{"sizeBytes": 1, "padding": "` + strings.Repeat("x", maxRecord) + `"}`
+	if err := os.WriteFile(filepath.Join(library.VersionDir(itemDir, uuid(1002)), library.PackageFile), []byte(big), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_compliance WHERE item_id = $1
+		AND unchecked = 'versions/' || $2 || '/package.json is larger than 4 MiB, more than any record'`, uuid(2), uuid(1002)); n != 1 {
+		t.Error("a package record of 4 MiB and more was read")
+	}
+}
+
+// The check's settings: compliance.pass off keeps the background pass from
+// running, the titles waiting; compliance.readers and compliance.nightly
+// as they are set, a value that is none the default, said so.
+func TestTheChecksSettings(t *testing.T) {
+	s, st, _ := library4(t)
+	ctx := context.Background()
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('c-pass', 'compliance.pass', 'off')`)
+	s.round(ctx)
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_compliance`); n != 0 {
+		t.Errorf("compliance.pass off: %d titles checked", n)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_settings SET valuetext = 'on' WHERE id = 'c-pass'`)
+	s.round(ctx)
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_compliance`); n != 8 {
+		t.Errorf("compliance.pass on: %d titles checked, want the 8", n)
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('c-readers', 'compliance.readers', '2'),
+		('c-nightly', 'compliance.nightly', '01:30')`)
+	set, err := readPassSettings(ctx, st.Pool())
+	if err != nil || !set.on || set.readers != 2 || set.nightly != 90*time.Minute || set.nightlyOff || len(set.problems) != 0 {
+		t.Errorf("the settings read: %+v, %v", set, err)
+	}
+	at := time.Date(2026, 10, 26, 1, 0, 0, 0, time.Local)
+	if got := set.cutoff(at); !got.Equal(time.Date(2026, 10, 25, 1, 30, 0, 0, time.Local)) {
+		t.Errorf("at 01:00, the nightly check of 01:30 last fell due at %v", got)
+	}
+	var bad passSettings
+	bad = passSettings{on: true, readers: defaultReaders, nightly: defaultNightly}
+	for k, v := range map[string]string{SettingReaders: "a hundred", SettingNightly: "25:00", SettingPass: "maybe"} {
+		bad.set(k, v)
+	}
+	if !bad.on || bad.readers != defaultReaders || bad.nightly != defaultNightly || len(bad.problems) != 3 {
+		t.Errorf("settings that are none: %+v", bad)
+	}
+	off := passSettings{}
+	off.set(SettingNightly, "off")
+	if !off.cutoff(at).IsZero() {
+		t.Error("the nightly check off still falls due")
 	}
 }
 
