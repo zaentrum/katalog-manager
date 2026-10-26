@@ -69,12 +69,15 @@ func (s step) is(statuses ...string) bool {
 type title struct {
 	ID, Kind string // movie or episode
 	SeriesID string // an episode's series, whose folder holds it
-	// Its file (its primary asset): where it is, its size, resolution and
-	// duration, and its source's size, when the asset names one; a source
-	// being retired leaves no original to read.
+	// Its file (its primary asset): where it is, its size, resolution,
+	// codec, bit rate and duration as the catalog's probe of it holds them,
+	// and its source's size, when the asset names one; a source being
+	// retired leaves no original to read. ItemDurMs is the title's runtime,
+	// as the reference database gives it.
 	Path                      *string
 	FileBytes, SourceBytes    *int64
-	FileResolution            *string
+	FileResolution, FileCodec *string
+	FileBitrateKbps           *int64
 	FileDurationMs, ItemDurMs *int64
 	// Its complete version (the package that plays), the sources it is made
 	// of and the size of the first; whether a version was taken in without
@@ -135,6 +138,7 @@ type rendition struct {
 	Codec      *string  `json:"codec"`
 	Channels   *float64 `json:"channels"`
 	BitrateBps *float64 `json:"bitrateBps"`
+	Language   *string  `json:"language"`
 }
 
 // sourceRecord is what the check reads of sources/<id>/source.json.
@@ -143,6 +147,8 @@ type sourceRecord struct {
 		SizeBytes *float64 `json:"sizeBytes"`
 	} `json:"file"`
 	Container struct {
+		// Format is ffprobe's name of the container ("matroska,webm").
+		Format     *string  `json:"format"`
 		DurationMs *float64 `json:"durationMs"`
 	} `json:"container"`
 	Streams []struct {
@@ -155,6 +161,8 @@ type sourceRecord struct {
 		Form         *string  `json:"form"`
 		Channels     *float64 `json:"channels"`
 		Profile      *string  `json:"profile"`
+		PixelFormat  *string  `json:"pixelFormat"`
+		BitDepth     *float64 `json:"bitDepth"`
 		Width        *float64 `json:"width"`
 		Height       *float64 `json:"height"`
 		Bitrate      *float64 `json:"bitrate"`
@@ -749,10 +757,12 @@ func (t title) packageBytes(r records) *int64 {
 	return nil
 }
 
-// durationMs is how long the title runs: its package, its source, its
-// packaged row, the title, its file, as the first that says.
+// durationMs is how long the title runs, as the first that says: its
+// package's record, its original's record, its packaged row, the catalog's
+// probe of its file, and only then the title's runtime as the reference
+// database gives it.
 func (t title) durationMs(r records) (float64, bool) {
-	for _, d := range []*float64{pkgDuration(r), srcDuration(r), i64f(t.PkgDurationMs), i64f(t.ItemDurMs), i64f(t.FileDurationMs)} {
+	for _, d := range []*float64{pkgDuration(r), srcDuration(r), i64f(t.PkgDurationMs), i64f(t.FileDurationMs), i64f(t.ItemDurMs)} {
 		if d != nil && *d > 0 {
 			return *d, true
 		}
@@ -799,6 +809,18 @@ func (t title) videoCodec(r records) string {
 func isHEVC(codec string) bool {
 	c := strings.ToLower(codec)
 	for _, p := range []string{"hev1", "hvc1", "dvh1", "dvhe", "hevc", "h265"} {
+		if strings.HasPrefix(c, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isH264 reports whether a package's codec string is H.264 (avc1, avc3), or
+// a library's name for it.
+func isH264(codec string) bool {
+	c := strings.ToLower(codec)
+	for _, p := range []string{"avc1", "avc3", "h264"} {
 		if strings.HasPrefix(c, p) {
 			return true
 		}
@@ -984,237 +1006,4 @@ func missingImageSubtitles(r records, carried []string) (map[string][]string, []
 		sort.Strings(byForm[f])
 	}
 	return byForm, langs
-}
-
-// estimate is what the title's package is to be at most once it is
-// processed again, bytes; nil when that cannot be told. Processing that
-// encodes the video (a title over a cap, of another codec, or not packaged)
-// makes a package of the video at its maxrate (the transcoder's cap of its
-// kind and bucket, or its override) and the audio the packager makes of the
-// original (planAudio): a stereo rendition of each of its audio tracks, at
-// the packager's stereo bit rate, and its 5.1 companions, for the title's
-// duration. Processing that only adds tracks (a 5.1 companion, image
-// subtitles) keeps the package's video: its package as it is, with the
-// renditions the packager makes now that it lacks (the stereo renditions of
-// the original's tracks beyond its own, as the original's record counts
-// them, and the companions beyond those it carries, the largest first). A
-// title processing again cannot help (no original, a disc image) has none,
-// and so has one whose audio's bit rate the packager doesn't report.
-func estimate(t title, r records, rs rulesState, res result) *int64 {
-	if len(res.Findings) == 0 || res.Blocked != "" || t.Original.State != library.OriginalPresent ||
-		(t.Path != nil && processing.IsDiscImage(*t.Path)) {
-		return nil
-	}
-	dur, durOK := t.durationMs(r)
-	if !durOK || rs.packager == nil || rs.packager.p == nil {
-		return nil
-	}
-	p := rs.packager.p
-	plan := planAudio(t, r, p)
-	stereo := 0.0
-	if p.StereoBitrate != nil {
-		stereo, _ = parseBitrate(*p.StereoBitrate)
-	}
-	if res.breaks(NotPackaged, PackagingFailed, OverBitrateCap, OverSizeCap, VideoNotHEVC) {
-		if rs.transcoder == nil || rs.transcoder.t == nil {
-			return nil
-		}
-		bucket, ok := t.bucket(r, rs)
-		if !ok {
-			return nil
-		}
-		video, ok := rs.transcoder.t.maxrateOf(t.Kind, bucket)
-		if !ok {
-			return nil
-		}
-		audio, ok := audioRate(plan.stereo, plan.companions, stereo)
-		if !ok {
-			return nil
-		}
-		n := int64((video*1e6 + audio) * dur / 8000)
-		return &n
-	}
-	if res.PackageBytes == nil {
-		return nil
-	}
-	// what the package carries: its record's renditions, else as much as
-	// the packager makes but the companions a package without 5.1 lacks
-	carried, carriedCompanions := plan.stereo, len(plan.companions)
-	if r.pkg != nil {
-		carried, carriedCompanions = len(r.pkg.Renditions.Audio), len(r.pkg.Renditions.AudioSurround)
-	} else if res.breaks(NoSurround) {
-		carriedCompanions = 0
-	}
-	addStereo := 0
-	if plan.from == planOriginal && plan.stereo > carried {
-		addStereo = plan.stereo - carried
-	}
-	var missing []float64
-	if len(plan.companions) > carriedCompanions {
-		largest := append([]float64(nil), plan.companions...)
-		sort.Sort(sort.Reverse(sort.Float64Slice(largest)))
-		missing = largest[:len(largest)-carriedCompanions]
-	}
-	audio, ok := audioRate(addStereo, missing, stereo)
-	if !ok {
-		return nil
-	}
-	n := *res.PackageBytes + int64(audio*dur/8000)
-	return &n
-}
-
-// audioRate is the bit rate of stereo renditions at stereo bit/s each and of
-// companions of their bit rates, bit/s; false when a rate it needs is not
-// known.
-func audioRate(renditions int, companions []float64, stereo float64) (float64, bool) {
-	if renditions > 0 && stereo <= 0 {
-		return 0, false
-	}
-	total := float64(renditions) * stereo
-	for _, c := range companions {
-		if c <= 0 {
-			return 0, false
-		}
-		total += c
-	}
-	return total, true
-}
-
-// Where an audioPlan's count comes from.
-const (
-	planOriginal = "original" // the original's record
-	planPackage  = "package"  // the package's record
-	planAssumed  = "assumed"  // neither: one stereo rendition
-)
-
-// audioPlan is the audio a package of a title is to carry once it is
-// processed again: how many stereo renditions, and the bit rates of its 5.1
-// companions (bit/s; 0 where nothing tells), and where the count comes from
-// (planOriginal, planPackage, planAssumed).
-type audioPlan struct {
-	from       string
-	stereo     int
-	companions []float64
-}
-
-// planAudio is the audio the packager makes of a title's original, as its
-// rules make it (packager.py, package_item and _prepare_source): a stereo
-// rendition of every audio track, whatever its language, which its
-// language whitelist only hides ("Stereo AAC, one per source track":
-// renditions.audio), and a 5.1 companion of the first track of more than two
-// channels of each language that is no commentary (_surround_plan:
-// renditions.audioSurround), the track itself where it is a 5.1 of the
-// companion's codec (at its own bit rate, as its record gives it), else an
-// encode at the packager's surround bit rate. The transcoder's encode
-// carries every audio track of the original as it is (ffmpeg.py: -map 0:a?,
-// -c:a copy), so either way they are the original's tracks. They are
-// counted off the original's record (sources/<id>/source.json: its audio
-// streams, in their order, each in the language an admin set for it, which
-// the packager takes over the file's); else off the package's record
-// (versions/<id>/package.json: renditions.audio, and renditions.audioSurround
-// at the larger of each one's measured bit rate and the packager's); else
-// one stereo rendition. Without the original's streams, a companion is
-// counted when the original had surround or its record doesn't say.
-func planAudio(t title, r records, p *PackagerRules) audioPlan {
-	rate := 0.0
-	if p.SurroundBitrate != nil {
-		rate, _ = parseBitrate(*p.SurroundBitrate)
-	}
-	on := surroundOn(p)
-	target := ""
-	if on {
-		target = strings.ToLower(strings.TrimSpace(*p.SurroundAudio))
-	}
-	if r.src != nil {
-		plan := audioPlan{from: planOriginal}
-		seen := map[string]bool{}
-		for _, s := range r.src.Streams {
-			if s.Type != "audio" {
-				continue
-			}
-			ordinal := plan.stereo
-			plan.stereo++
-			ch := 0.0
-			if s.Channels != nil {
-				ch = *s.Channels
-			}
-			if !on || ch <= 2 || commentary(s.Title, s.Dispositions.Commentary) {
-				continue
-			}
-			lang := languageKey(s.LanguageRaw, s.Language)
-			if o, ok := t.AudioLanguages[ordinal]; ok {
-				lang = languageKey(&o)
-			}
-			if seen[lang] {
-				continue
-			}
-			seen[lang] = true
-			companion := rate
-			if s.Codec != nil && strings.EqualFold(strings.TrimSpace(*s.Codec), target) && ch == 6 &&
-				s.Bitrate != nil && *s.Bitrate > 0 {
-				companion = *s.Bitrate
-			}
-			plan.companions = append(plan.companions, companion)
-		}
-		if plan.stereo > 0 {
-			return plan
-		}
-	}
-	had := true
-	if r.srcEssence != nil {
-		v, ok := r.srcEssence.Get("surround")
-		had = !ok || v == true
-	}
-	plan := audioPlan{from: planAssumed, stereo: 1}
-	if r.pkg != nil && len(r.pkg.Renditions.Audio) > 0 {
-		plan = audioPlan{from: planPackage, stereo: len(r.pkg.Renditions.Audio)}
-		if on {
-			for _, a := range r.pkg.Renditions.AudioSurround {
-				c := rate
-				if a.BitrateBps != nil && *a.BitrateBps > c {
-					c = *a.BitrateBps
-				}
-				plan.companions = append(plan.companions, c)
-			}
-		}
-	}
-	if on && had && len(plan.companions) == 0 {
-		plan.companions = []float64{rate}
-	}
-	return plan
-}
-
-// commentary reports whether the packager takes an audio track for a
-// commentary, which gets no 5.1 companion (packager.py, _is_commentary): its
-// disposition says it is one, or its title holds "comment" or "kommentar".
-func commentary(title *string, disposition bool) bool {
-	if disposition {
-		return true
-	}
-	if title == nil {
-		return false
-	}
-	t := strings.ToLower(*title)
-	return strings.Contains(t, "comment") || strings.Contains(t, "kommentar")
-}
-
-// languageKey is the key the packager tells a track's language by
-// (packager.py, _lang_key), of the first code that names one: its primary
-// subtag, its ISO 639-1 code where it has one ("de" of "ger", "deu",
-// "de-CH"), else as it is ("zxx", "gsw"); "und" when none does.
-func languageKey(codes ...*string) string {
-	for _, c := range codes {
-		if c == nil {
-			continue
-		}
-		primary, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(strings.ReplaceAll(*c, "_", "-"))), "-")
-		if primary == "" {
-			continue
-		}
-		if tag, ok := languages.Tag(primary); ok {
-			primary, _, _ = strings.Cut(tag, "-")
-		}
-		return primary
-	}
-	return languages.Unknown
 }

@@ -66,6 +66,12 @@ type TranscoderRules struct {
 	} `json:"encoder"`
 	Ladder      *string `json:"ladder"`
 	ExtraLadder *string `json:"extraLadder"`
+	// LadderRungs are the item ladder's rungs in parts, and RungMaxrateMbps
+	// the maxrate of a rung it sets none for, Mbit/s, by the height of its
+	// box and its codec (the planner's table): what an estimate counts
+	// every rung at.
+	LadderRungs     []ladderRung                  `json:"ladderRungs"`
+	RungMaxrateMbps map[string]map[string]float64 `json:"rungMaxrateMbps"`
 	// DolbyVision is what the transcoder does with an original of each
 	// Dolby Vision profile it names, as it can at runtime ("profile5":
 	// "reshaped" on its Vulkan device, "refused" without one; "profile7":
@@ -95,6 +101,9 @@ type checkedTranscoder struct {
 	Maxrate     [2]*float64
 	Ladder      *string
 	DolbyVision map[string]string `json:",omitempty"`
+	// the rungs and their table, which the estimate counts
+	LadderRungs     []ladderRung                  `json:",omitempty"`
+	RungMaxrateMbps map[string]map[string]float64 `json:",omitempty"`
 }
 
 type checkedPackager struct {
@@ -112,7 +121,7 @@ func hashOf(v any) string {
 func (t *TranscoderRules) hash() string {
 	return hashOf(checkedTranscoder{Caps: t.Caps, Bucket2160: t.Bucket2160, Codec: t.Encoder.Codec,
 		Maxrate: [2]*float64{t.Encoder.Maxrate1080Mbps, t.Encoder.Maxrate2160Mbps}, Ladder: t.Ladder,
-		DolbyVision: t.DolbyVision})
+		DolbyVision: t.DolbyVision, LadderRungs: t.LadderRungs, RungMaxrateMbps: t.RungMaxrateMbps})
 }
 
 func (p *PackagerRules) hash() string {
@@ -304,7 +313,7 @@ type rulesState struct {
 // version is the check's own: a check that reads its findings otherwise, or
 // writes them in other words, gets a new one, and every title is checked
 // again.
-const version = "compliance/7"
+const version = "compliance/8"
 
 // hash is the hash a title checked against s is kept under: both workers'
 // rules, the layout, whether failed steps are retried, and the check's
