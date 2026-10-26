@@ -198,7 +198,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		t.Errorf("the report's rows:\n%s", got)
 	}
 	remux := rep.Rows[0]
-	spaced := func(s string) string { return strings.ReplaceAll(s, "\u00a0", " ") }
+	spaced := func(s string) string { return strings.NewReplacer("\u00a0", " ", "\u2011", "-").Replace(s) }
 	if remux.ItemID != remuxID || spaced(remux.Findings[0].Text) != "The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder "+
 		"allows for a 2160p movie." || spaced(*remux.Findings[0].Measured) != "73 Mbit/s" || spaced(*remux.Findings[0].Limit) != "14 Mbit/s" ||
 		*remux.PackageBytes != 59e9 || *remux.OriginalBytes != 63e9 || remux.EstimatedBytes == nil || remux.Queue != nil {

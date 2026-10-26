@@ -297,7 +297,7 @@ type rulesState struct {
 // version is the check's own: a check that reads its findings otherwise, or
 // writes them in other words, gets a new one, and every title is checked
 // again.
-const version = "compliance/3"
+const version = "compliance/4"
 
 // hash is the hash a title checked against s is kept under: both workers'
 // rules, the layout, whether failed steps are retried, and the check's

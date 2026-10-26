@@ -111,8 +111,10 @@ func ftoa(f float64) string {
 
 // found writes a result's findings, one a line: "RULE text [measured /
 // limit]", a no-break space written as a space.
+// found is what the check found of a title, a finding a line, its no-break
+// spaces and hyphens written plain.
 func found(r result) string {
-	return strings.ReplaceAll(foundRaw(r), nbsp, " ")
+	return strings.NewReplacer(nbsp, " ", nbhy, "-").Replace(foundRaw(r))
 }
 
 func foundRaw(r result) string {

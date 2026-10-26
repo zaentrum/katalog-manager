@@ -140,8 +140,9 @@ func unpackaged(t *testing.T, st *store.Store, n int, title, file, transcode, pk
 	return id
 }
 
-// spaced is s with each no-break space a space.
-func spaced(s string) string { return strings.ReplaceAll(s, nbsp, " ") }
+// spaced is s with each no-break space a space, each no-break hyphen a
+// hyphen.
+func spaced(s string) string { return strings.NewReplacer(nbsp, " ", nbhy, "-").Replace(s) }
 
 // rowsOf writes a report's rows, one a line: "title: RULE, RULE".
 func rowsOf(rep graph.ComplianceReport) string {

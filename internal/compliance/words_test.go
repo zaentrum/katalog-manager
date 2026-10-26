@@ -326,6 +326,9 @@ var (
 	leaks = regexp.MustCompile(`(?i)\b(rework\w*|re-?encod\w*|yet|saves?|saving|optimi[sz]\w*|seamless\w*|effortless\w*|simply|` +
 		`successfully|please|pipeline|instance|deployment|candidate|may|might|cap|sources?|bitrates?|ffmpeg|ffprobe|shaka\S*|` +
 		`(?:240|360|480|540|576|720|1080|1440|2160|4320))\b`)
+	// plainHyphenRE is a format's or a codec's name written with a hyphen a
+	// line may break at ("E-AC-3", "MPEG-4"), not the no-break one.
+	plainHyphenRE = regexp.MustCompile(`\b[A-Z][A-Z0-9]*-[A-Z0-9]+`)
 	// unitRE is a number and a unit, kept on one line.
 	unitRE = regexp.MustCompile(`\d (GB|GiB|MB|Mbit/s|kbit/s|pixels)\b`)
 )
@@ -337,7 +340,8 @@ var (
 // its p and no tool's name; a number keeps its unit on its line, and an
 // apostrophe is the typographic one. A detail is what a tool said, as it
 // said it, and none of that holds of it. With COMPLIANCE_TEXTS set, the
-// list of them goes to that file, for a review of the words.
+// list of them goes to that file, for a review of the words. A format's or a
+// codec's name keeps its hyphens on one line ("E‑AC‑3").
 func TestTheServerTexts(t *testing.T) {
 	texts := serverTexts(t)
 	for _, x := range texts {
@@ -378,6 +382,9 @@ func TestTheServerTexts(t *testing.T) {
 		}
 		if m := leaks.FindString(x.words); m != "" {
 			t.Errorf("%s, %s: %q says %q", x.section, x.source, x.words, m)
+		}
+		if m := plainHyphenRE.FindString(x.words); m != "" && !(x.section == "ComplianceSkip" && x.field == "title") {
+			t.Errorf("%s, %s: %q writes %q with a hyphen a line may break at, not ‑", x.section, x.source, x.words, m)
 		}
 		if m := unitRE.FindString(x.words); m != "" {
 			t.Errorf("%s, %s: %q breaks %q across lines", x.section, x.source, x.words, m)

@@ -28,6 +28,10 @@ import (
 // nbsp keeps a number on the line of its unit: "1.4 GB", "73 Mbit/s".
 const nbsp = " "
 
+// nbhy is the hyphen a format's or a codec's name is written with, which a
+// line never breaks at: "E‑AC‑3", "MPEG‑4".
+const nbhy = "‑"
+
 // Decimal units, as a phone's storage and the clients' downloads count them.
 const (
 	megabyte = 1_000_000
@@ -131,7 +135,8 @@ func codecName(codec string) string {
 	c := strings.ToLower(strings.TrimSpace(codec))
 	for _, f := range []struct{ prefix, name string }{{"avc1", "H.264"}, {"avc3", "H.264"}, {"h264", "H.264"},
 		{"hev1", "HEVC"}, {"hvc1", "HEVC"}, {"dvh1", "HEVC"}, {"dvhe", "HEVC"}, {"hevc", "HEVC"}, {"h265", "HEVC"},
-		{"av01", "AV1"}, {"av1", "AV1"}, {"vp09", "VP9"}, {"vp9", "VP9"}, {"mp4v", "MPEG-4"}, {"mpeg2", "MPEG-2"}} {
+		{"av01", "AV1"}, {"av1", "AV1"}, {"vp09", "VP9"}, {"vp9", "VP9"}, {"mp4v", "MPEG" + nbhy + "4"},
+		{"mpeg2", "MPEG" + nbhy + "2"}} {
 		if strings.HasPrefix(c, f.prefix) {
 			return f.name
 		}
@@ -168,9 +173,9 @@ func formNames(forms []string) []string {
 func audioCodecName(codec string) string {
 	switch strings.ToLower(strings.TrimSpace(codec)) {
 	case "eac3", "ec-3":
-		return "E-AC-3"
+		return "E" + nbhy + "AC" + nbhy + "3"
 	case "ac3", "ac-3":
-		return "AC-3"
+		return "AC" + nbhy + "3"
 	case "aac", "mp4a":
 		return "AAC"
 	case "opus":
