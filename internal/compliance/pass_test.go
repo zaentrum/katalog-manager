@@ -154,6 +154,18 @@ func unpackaged(t *testing.T, st *store.Store, n int, title, file, transcode, pk
 func spaced(s string) string { return strings.NewReplacer(nbsp, " ", nbhy, "-").Replace(s) }
 
 // rowsOf writes a report's rows, one a line: "title: RULE, RULE".
+// evaluatedOf are the rules a report's summary says are checked, in its
+// order.
+func evaluatedOf(rep graph.ComplianceReport) string {
+	var out []string
+	for _, c := range rep.Summary {
+		if c.Evaluated {
+			out = append(out, c.Rule)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
 func rowsOf(rep graph.ComplianceReport) string {
 	var out []string
 	for _, r := range rep.Rows {
@@ -1239,6 +1251,16 @@ func TestUnreportedRulesAreNotEvaluated(t *testing.T) {
 	if rep.Rows[0].EstimatedBytes != nil {
 		t.Errorf("an estimate without the workers' rules: %v", *rep.Rows[0].EstimatedBytes)
 	}
+	// the summary lists every rule, its titles as they are, and says which
+	// are checked: those of neither worker's report are not
+	if got := evaluatedOf(rep); got != "NOT_PACKAGED PACKAGING_FAILED" || len(rep.Summary) != len(Rules) {
+		t.Errorf("neither worker reported: %d rules, checked %q, want NOT_PACKAGED PACKAGING_FAILED", len(rep.Summary), got)
+	}
+	for _, c := range rep.Summary {
+		if want := map[string]int32{NotPackaged: 1}[c.Rule]; c.Titles != want {
+			t.Errorf("%s: %d titles, want %d", c.Rule, c.Titles, want)
+		}
+	}
 
 	// the packager reports: its rules are checked from the next pass on, the
 	// transcoder's still not
@@ -1253,12 +1275,38 @@ func TestUnreportedRulesAreNotEvaluated(t *testing.T) {
 	if got := strings.Join(rep.NotEvaluated, "\n"); got != want[0]+"\nThe packager makes no surround track, so a package without one breaks no rule." {
 		t.Errorf("not evaluated:\n%s", got)
 	}
+	if got := evaluatedOf(rep); got != "NOT_PACKAGED PACKAGING_FAILED IMAGE_SUBTITLES_MISSING" {
+		t.Errorf("a packager that makes no 5.1, the transcoder not reported: checked %q", got)
+	}
 	reportFor(t, s, Packager, packagerReport)
 	if _, err := s.Pass(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := rowsOf(reportOf(t, s, graph.ComplianceFilter{}, 100, "")); got != "A Remux Kept As It Was: NO_SURROUND\nA Film Never Packaged: NOT_PACKAGED" {
+	rep = reportOf(t, s, graph.ComplianceFilter{}, 100, "")
+	if got := rowsOf(rep); got != "A Remux Kept As It Was: NO_SURROUND\nA Film Never Packaged: NOT_PACKAGED" {
 		t.Errorf("the packager's 5.1 reported:\n%s", got)
+	}
+	if got := evaluatedOf(rep); got != "NOT_PACKAGED PACKAGING_FAILED NO_SURROUND IMAGE_SUBTITLES_MISSING" {
+		t.Errorf("the packager reported, the transcoder not: checked %q", got)
+	}
+
+	// a transcoder on libx265 with its default ladder keeps a browser-friendly
+	// H.264 original as it is, so the video format is not checked; its caps are
+	reportFor(t, s, Transcoder, strings.NewReplacer(`"codec": "hevc_nvenc", "preset": "p5", "cq": 23`,
+		`"codec": "libx265", "preset": "medium", "cq": null, "crf": 24`, `"ladder": "source:hevc"`, `"ladder": "source"`).
+		Replace(transcoderReport))
+	if _, err := s.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rep = reportOf(t, s, graph.ComplianceFilter{}, 100, "")
+	if got := evaluatedOf(rep); got != "NOT_PACKAGED PACKAGING_FAILED OVER_BITRATE_CAP OVER_SIZE_CAP NO_SURROUND IMAGE_SUBTITLES_MISSING" {
+		t.Errorf("libx265 with its default ladder: checked %q", got)
+	}
+	if got := rowsOf(rep); got != "A Remux Kept As It Was: OVER_BITRATE_CAP, OVER_SIZE_CAP, NO_SURROUND\nA Film Never Packaged: NOT_PACKAGED" {
+		t.Errorf("libx265 with its default ladder:\n%s", got)
+	}
+	if len(rep.NotEvaluated) != 1 || !strings.Contains(rep.NotEvaluated[0], "H.264") {
+		t.Errorf("libx265 with its default ladder, not evaluated: %q", rep.NotEvaluated)
 	}
 }
 

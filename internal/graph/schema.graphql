@@ -1459,13 +1459,20 @@ enum ComplianceOutcome {
 # that break a rule: how many, and of the same titles, those with an
 # estimate, the size of their packages now and the estimate of them once
 # processed again (null when none has one); withoutEstimate counts those
-# left out of both.
+# left out of both. evaluated is whether the rule is checked under the rules
+# as the workers reported them: false where no title is held against it, as
+# notEvaluated says (a worker that never reported; a report that gives no
+# limit the rule is checked by, or switches every one of them off; a
+# transcoder whose ladder makes no video HEVC, as libx265 with its default
+# ladder; the older layout), so that its titles, 0, don't read as none
+# breaking it.
 type ComplianceSummary {
   rule: ComplianceRule!
   titles: Int!
   packageBytes: Float!
   estimatedBytes: Float
   withoutEstimate: Int!
+  evaluated: Boolean!
 }
 
 # The titles a report's whole filter (kind, rules, search) matches: how

@@ -129,7 +129,7 @@ func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, o graph.
 	if out.Processing, err = s.processing(ctx); err != nil {
 		return out, err
 	}
-	if out.Summary, err = s.summary(ctx, f); err != nil {
+	if out.Summary, err = s.summary(ctx, f, rs); err != nil {
 		return out, err
 	}
 	if out.Rows, out.NextCursor, err = s.rows(ctx, s.pool, f, rules, sorted, cur, first); err != nil {
@@ -204,8 +204,10 @@ func (s *Service) pending(ctx context.Context, kind, hash string) (int32, error)
 // summary is, for every rule, how many of the titles of f's kind and search
 // break it, and of the same titles with an estimate, the size of their
 // packages and the estimate of them once processed again (nil when none has
-// one), and how many have none.
-func (s *Service) summary(ctx context.Context, f graph.ComplianceFilter) ([]graph.ComplianceSummary, error) {
+// one), and how many have none; and whether the rule is checked under the
+// rules as reported (rs; coverage), so that a rule none is checked against
+// doesn't read as one no title breaks.
+func (s *Service) summary(ctx context.Context, f graph.ComplianceFilter, rs rulesState) ([]graph.ComplianceSummary, error) {
 	rows, err := s.pool.Query(ctx, filtered+`SELECT r, count(*),
 			COALESCE(sum(f.packagebytes) FILTER (WHERE f.estimatedbytes IS NOT NULL), 0)::float8, sum(f.estimatedbytes)::float8,
 			count(*) FILTER (WHERE f.estimatedbytes IS NULL)
@@ -225,12 +227,14 @@ func (s *Service) summary(ctx context.Context, f graph.ComplianceFilter) ([]grap
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	_, off := coverage(rs)
 	out := make([]graph.ComplianceSummary, 0, len(Rules))
 	for _, r := range Rules {
 		c, ok := by[r]
 		if !ok {
 			c = graph.ComplianceSummary{Rule: r}
 		}
+		c.Evaluated = !off[r]
 		out = append(out, c)
 	}
 	return out, nil
@@ -675,59 +679,10 @@ var capNames = []struct{ key, of string }{
 
 // notEvaluated says of each rule the check does not hold the titles against
 // why, in a sentence: a worker that never reported, a value its report does
-// not give, a limit it does not set, the library's layout, records that
-// cannot be read.
+// not give, a limit it does not set, the library's layout (coverage),
+// records that cannot be read.
 func notEvaluated(rs rulesState, unchecked int32) []string {
-	out := []string{}
-	if rs.transcoder == nil || rs.transcoder.t == nil {
-		out = append(out, "The transcoder hasn’t reported its rules, so bit rates, file sizes and the video format can’t be checked.")
-	} else {
-		t := rs.transcoder.t
-		caps := map[string]*float64{"movie1080Mbps": t.Caps.Movie1080Mbps, "movie2160Mbps": t.Caps.Movie2160Mbps,
-			"episode1080Mbps": t.Caps.Episode1080Mbps, "episode2160Mbps": t.Caps.Episode2160Mbps}
-		if t.Bucket2160.MinHeight == nil || t.Bucket2160.MinWidth == nil {
-			out = append(out, "The transcoder doesn’t report where 2160p begins, so bit rates can’t be checked.")
-		} else {
-			for _, c := range capNames {
-				switch v := caps[c.key]; {
-				case v == nil:
-					out = append(out, fmt.Sprintf("The transcoder doesn’t report the bit rate it allows for %s, so it can’t be checked.", c.of))
-				case *v == 0:
-					out = append(out, fmt.Sprintf("The transcoder allows any bit rate for %s.", c.of))
-				}
-			}
-		}
-		switch v := t.Caps.MovieMaxGiB; {
-		case v == nil:
-			out = append(out, "The transcoder doesn’t report the file size it allows for a movie, so it can’t be checked.")
-		case *v == 0:
-			out = append(out, "The transcoder allows movie files of any size.")
-		}
-		if ok, why := t.hevcRequired(); !ok {
-			out = append(out, why)
-		}
-	}
-	if rs.packager == nil || rs.packager.p == nil {
-		out = append(out, "The packager hasn’t reported what it keeps, so surround and image subtitles can’t be checked.")
-	} else {
-		p := rs.packager.p
-		switch {
-		case p.SurroundAudio == nil:
-			out = append(out, "The packager doesn’t report its surround track, so surround can’t be checked.")
-		case !surroundOn(p):
-			out = append(out, "The packager makes no surround track, so a package without one breaks no rule.")
-		}
-		switch {
-		case p.ImageSubtitles == nil:
-			out = append(out, "The packager doesn’t report which image subtitles it keeps, so they can’t be checked.")
-		case len(p.ImageSubtitles) == 0:
-			out = append(out, "The packager keeps no image subtitles, so a package without them breaks no rule.")
-		}
-	}
-	if !rs.v2 {
-		out = append(out, "The library uses the older layout, which keeps no records of originals and packages, "+
-			"so bit rates, surround and image subtitles can’t be checked.")
-	}
+	out, _ := coverage(rs)
 	switch {
 	case unchecked == 1:
 		out = append(out, "The records of 1 title can’t be read, so its bit rate, surround and image subtitles can’t be checked.")
@@ -736,4 +691,85 @@ func notEvaluated(rs rulesState, unchecked int32) []string {
 			"can’t be checked.", titlesText(int(unchecked))))
 	}
 	return out
+}
+
+// coverage is what the check does not hold the titles against under the
+// rules as the workers reported them and the library's layout: a sentence
+// of each, as notEvaluated says it, and the rules it checks of no title
+// (off) - those of a worker that never reported, one whose report gives no
+// value or no limit the rule is checked by (every bit rate cap, or the 2160p
+// bucket; the file size cap; the renditions, or a ladder that makes no video
+// HEVC), one the packager makes nothing of (no surround track, no image
+// subtitles), and those the older layout keeps no records for. A rule some
+// limits of which are set is checked by those, and is not off; so is one
+// whose records can't be read of some titles.
+func coverage(rs rulesState) ([]string, map[string]bool) {
+	out, off := []string{}, map[string]bool{}
+	if rs.transcoder == nil || rs.transcoder.t == nil {
+		out = append(out, "The transcoder hasn’t reported its rules, so bit rates, file sizes and the video format can’t be checked.")
+		off[OverBitrateCap], off[OverSizeCap], off[VideoNotHEVC] = true, true, true
+	} else {
+		t := rs.transcoder.t
+		caps := map[string]*float64{"movie1080Mbps": t.Caps.Movie1080Mbps, "movie2160Mbps": t.Caps.Movie2160Mbps,
+			"episode1080Mbps": t.Caps.Episode1080Mbps, "episode2160Mbps": t.Caps.Episode2160Mbps}
+		if t.Bucket2160.MinHeight == nil || t.Bucket2160.MinWidth == nil {
+			out = append(out, "The transcoder doesn’t report where 2160p begins, so bit rates can’t be checked.")
+			off[OverBitrateCap] = true
+		} else {
+			checked := false
+			for _, c := range capNames {
+				switch v := caps[c.key]; {
+				case v == nil:
+					out = append(out, fmt.Sprintf("The transcoder doesn’t report the bit rate it allows for %s, so it can’t be checked.", c.of))
+				case *v == 0:
+					out = append(out, fmt.Sprintf("The transcoder allows any bit rate for %s.", c.of))
+				default:
+					checked = true
+				}
+			}
+			if !checked {
+				off[OverBitrateCap] = true
+			}
+		}
+		switch v := t.Caps.MovieMaxGiB; {
+		case v == nil:
+			out = append(out, "The transcoder doesn’t report the file size it allows for a movie, so it can’t be checked.")
+			off[OverSizeCap] = true
+		case *v == 0:
+			out = append(out, "The transcoder allows movie files of any size.")
+			off[OverSizeCap] = true
+		}
+		if ok, why := t.hevcRequired(); !ok {
+			out = append(out, why)
+			off[VideoNotHEVC] = true
+		}
+	}
+	if rs.packager == nil || rs.packager.p == nil {
+		out = append(out, "The packager hasn’t reported what it keeps, so surround and image subtitles can’t be checked.")
+		off[NoSurround], off[ImageSubtitlesMissing] = true, true
+	} else {
+		p := rs.packager.p
+		switch {
+		case p.SurroundAudio == nil:
+			out = append(out, "The packager doesn’t report its surround track, so surround can’t be checked.")
+			off[NoSurround] = true
+		case !surroundOn(p):
+			out = append(out, "The packager makes no surround track, so a package without one breaks no rule.")
+			off[NoSurround] = true
+		}
+		switch {
+		case p.ImageSubtitles == nil:
+			out = append(out, "The packager doesn’t report which image subtitles it keeps, so they can’t be checked.")
+			off[ImageSubtitlesMissing] = true
+		case len(p.ImageSubtitles) == 0:
+			out = append(out, "The packager keeps no image subtitles, so a package without them breaks no rule.")
+			off[ImageSubtitlesMissing] = true
+		}
+	}
+	if !rs.v2 {
+		out = append(out, "The library uses the older layout, which keeps no records of originals and packages, "+
+			"so bit rates, surround and image subtitles can’t be checked.")
+		off[OverBitrateCap], off[NoSurround], off[ImageSubtitlesMissing] = true, true, true
+	}
+	return out, off
 }

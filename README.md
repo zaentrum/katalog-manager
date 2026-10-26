@@ -975,7 +975,12 @@ default stands.
   ("281 titles checked"); `summary`, for every rule, those of `kind` and
   `search` that break it, whatever `rules` asks, and of the same titles
   with an estimate the size of their packages and the estimate
-  (`withoutEstimate` those left out); `evaluatedAt` is the oldest check of
+  (`withoutEstimate` those left out), and `evaluated`, whether the rule is
+  checked under the rules as reported: false where no title is held against
+  it, as `notEvaluated` says (a worker that never reported, a report that
+  gives no limit of it or switches every one off, `VIDEO_NOT_HEVC` on
+  libx265 with its default ladder, the older layout), so that its 0 titles
+  don't read as none breaking it; `evaluatedAt` is the oldest check of
   those (null when none was checked), `evaluating` whether a pass runs,
   `pending` how many titles wait for the next one; `queueable` sums up the
   titles of `matching` that a request to process them again queues, as

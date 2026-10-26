@@ -84,6 +84,7 @@ extend type ComplianceSummary { withoutEstimate: Int! }
 type ComplianceProcessing { originals: String! inflight: Int window: String }   # live settings for the confirm
 extend type ComplianceReport { processing: ComplianceProcessing! }
 extend type ComplianceTotals { fingerprint: String! }   # names the titles; queueable's goes back with queueReworkMatching
+extend type ComplianceSummary { evaluated: Boolean! }   # false: the rule is checked of no title under the rules as reported
 `
 
 var (
@@ -163,8 +164,8 @@ func TestTheComplianceContract(t *testing.T) {
 		types[ty.Name] = ty
 	}
 	blocks := contractBlockRE.FindAllStringSubmatch(complianceContract, -1)
-	if len(blocks) != 31 {
-		t.Fatalf("the contract reads as %d blocks, want 31", len(blocks))
+	if len(blocks) != 32 {
+		t.Fatalf("the contract reads as %d blocks, want 32", len(blocks))
 	}
 	for _, b := range blocks {
 		kind, name, body := b[1], b[2], b[3]

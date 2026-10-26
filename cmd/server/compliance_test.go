@@ -141,7 +141,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		notEvaluated evaluatedAt evaluating pending total checkedTitles nextCursor
 		matching { titles originalBytes packageBytes estimatedBytes fingerprint } queue { queued processing processed failed }
 		queueable { titles originalBytes packageBytes estimatedBytes fingerprint }
-		summary { rule titles packageBytes estimatedBytes }
+		summary { rule titles packageBytes estimatedBytes evaluated }
 		rows { itemId title year kind seriesId seriesTitle season episode findings { rule text measured limit detail }
 			originalBytes packageBytes estimatedBytes queue queueReason queueDetail reworkBlocked evaluatedAt
 			resolution videoCodec videoBitrate videoBitrateEstimated bitrateCap sizeCap durationSeconds packageAudio
@@ -189,6 +189,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 				Titles         int
 				PackageBytes   float64
 				EstimatedBytes *float64
+				Evaluated      bool
 			}
 			Rows []struct {
 				ItemID, Title, Kind string
@@ -280,6 +281,12 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		len(rep.NotEvaluated) != 0 || len(rep.Summary) != len(compliance7) {
 		t.Errorf("the report: total %d, pending %d, evaluating %v, evaluated %v, next %v, not evaluated %q, %d summaries",
 			rep.Total, rep.Pending, rep.Evaluating, rep.EvaluatedAt, rep.NextCursor, rep.NotEvaluated, len(rep.Summary))
+	}
+	// both workers reported, NVENC making every video HEVC: every rule is checked
+	for _, c := range rep.Summary {
+		if !c.Evaluated {
+			t.Errorf("the summary of %s: not evaluated, with both workers' rules", c.Rule)
+		}
 	}
 	if tr := rep.Rules.Transcoder; tr.Worker != "transcoder" || tr.Version != "3f2a9c1" || len(tr.Rules) != 14 ||
 		tr.Rules[1].Key != "caps.movie2160Mbps" || spaced(tr.Rules[1].Value) != "at most 14 Mbit/s" || rep.Rules.Packager.Worker != "packager" {

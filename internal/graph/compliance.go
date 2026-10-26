@@ -160,13 +160,16 @@ type ComplianceRow struct {
 // ComplianceSummary is how many of the titles a report covers break a rule,
 // and of the same titles with an estimate, the size of their packages and
 // the estimate of them once processed again; WithoutEstimate counts those
-// left out of both.
+// left out of both. Evaluated is whether the rule is checked under the rules
+// as the workers reported them (false: no title is held against it, as the
+// report's notEvaluated says).
 type ComplianceSummary struct {
 	Rule            string
 	Titles          int32
 	PackageBytes    float64
 	EstimatedBytes  *float64
 	WithoutEstimate int32
+	Evaluated       bool
 }
 
 // ComplianceTotals are the titles a report's whole filter matches: how many,
@@ -502,6 +505,7 @@ type complianceSummaryResolver struct{ m ComplianceSummary }
 
 func (r *complianceSummaryResolver) Rule() string             { return r.m.Rule }
 func (r *complianceSummaryResolver) Titles() int32            { return r.m.Titles }
+func (r *complianceSummaryResolver) Evaluated() bool          { return r.m.Evaluated }
 func (r *complianceSummaryResolver) PackageBytes() float64    { return r.m.PackageBytes }
 func (r *complianceSummaryResolver) EstimatedBytes() *float64 { return r.m.EstimatedBytes }
 func (r *complianceSummaryResolver) WithoutEstimate() int32   { return r.m.WithoutEstimate }

@@ -699,6 +699,63 @@ func TestTheVideoCodec(t *testing.T) {
 	}
 }
 
+// The rules the check holds no title against under the rules as reported
+// are those notEvaluated names whole: a worker's that never reported, one
+// whose report gives no limit it is checked by or switches every one off
+// (all four bit rate caps, the file size cap, where 2160p begins), the video
+// format where the ladder makes no video HEVC (libx265 with its default
+// ladder), what the packager makes nothing of, and what the older layout
+// keeps no records for. A rule some of whose limits are set is checked; and
+// whatever is off, notEvaluated says why.
+func TestTheRulesCheckedAreThoseReported(t *testing.T) {
+	libx265 := strings.NewReplacer(`"codec": "hevc_nvenc", "preset": "p5", "cq": 23`,
+		`"codec": "libx265", "preset": "medium", "cq": null, "crf": 24`, `"ladder": "source:hevc"`, `"ladder": "source"`).
+		Replace(transcoderReport)
+	for _, tc := range []struct {
+		name, transcoder, packager string
+		legacy                     bool
+		off                        string
+	}{
+		{"both workers reported", transcoderReport, packagerReport, false, ""},
+		{"neither worker reported", "", "", false, "OVER_BITRATE_CAP OVER_SIZE_CAP NO_SURROUND IMAGE_SUBTITLES_MISSING VIDEO_NOT_HEVC"},
+		{"the transcoder alone not", "", packagerReport, false, "OVER_BITRATE_CAP OVER_SIZE_CAP VIDEO_NOT_HEVC"},
+		{"the packager alone not", transcoderReport, "", false, "NO_SURROUND IMAGE_SUBTITLES_MISSING"},
+		{"libx265 with its default ladder", libx265, packagerReport, false, "VIDEO_NOT_HEVC"},
+		{"libx265 with a ladder that names HEVC", strings.Replace(libx265, `"ladder": "source"`, `"ladder": "source:hevc"`, 1),
+			packagerReport, false, ""},
+		{"a transcoder that reports no renditions", strings.Replace(transcoderReport, `"ladder": "source:hevc", `, ``, 1),
+			packagerReport, false, "VIDEO_NOT_HEVC"},
+		{"every bit rate cap off", strings.NewReplacer(`"movie1080Mbps": 8`, `"movie1080Mbps": 0`, `"movie2160Mbps": 14`,
+			`"movie2160Mbps": 0`, `"episode1080Mbps": 6`, `"episode1080Mbps": 0`, `"episode2160Mbps": 8`, `"episode2160Mbps": 0`).
+			Replace(transcoderReport), packagerReport, false, "OVER_BITRATE_CAP"},
+		{"one bit rate cap off, one not reported", strings.NewReplacer(`"movie1080Mbps": 8`, `"movie1080Mbps": 0`,
+			`"movie2160Mbps": 14, `, ``).Replace(transcoderReport), packagerReport, false, ""},
+		{"no 2160p bucket", strings.Replace(transcoderReport, `"bucket2160": {"minHeight": 2000, "minWidth": 3200},`, ``, 1),
+			packagerReport, false, "OVER_BITRATE_CAP"},
+		{"any movie file size", strings.Replace(transcoderReport, `"movieMaxGiB": 15`, `"movieMaxGiB": 0`, 1), packagerReport, false,
+			"OVER_SIZE_CAP"},
+		{"no surround track, no image subtitles kept", transcoderReport, strings.NewReplacer(`"surroundAudio": "eac3"`,
+			`"surroundAudio": "off"`, `["pgs", "vobsub"]`, `[]`).Replace(packagerReport), false, "NO_SURROUND IMAGE_SUBTITLES_MISSING"},
+		{"the older layout", transcoderReport, packagerReport, true, "OVER_BITRATE_CAP NO_SURROUND IMAGE_SUBTITLES_MISSING"},
+	} {
+		rs := stateOf(t, tc.transcoder, tc.packager)
+		rs.v2 = !tc.legacy
+		said, off := coverage(rs)
+		var got []string
+		for _, r := range Rules {
+			if off[r] {
+				got = append(got, r)
+			}
+		}
+		if strings.Join(got, " ") != tc.off {
+			t.Errorf("%s: off %q, want %q", tc.name, strings.Join(got, " "), tc.off)
+		}
+		if len(off) > 0 && len(said) == 0 || strings.Join(notEvaluated(rs, 0), "\n") != strings.Join(said, "\n") {
+			t.Errorf("%s: notEvaluated %q, coverage %q", tc.name, notEvaluated(rs, 0), said)
+		}
+	}
+}
+
 // A rule of a worker that never reported is not held against a title: no
 // cap, codec or size without the transcoder's report, no surround or image
 // subtitle without the packager's; and no default stands in for one.
