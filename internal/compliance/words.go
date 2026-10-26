@@ -258,7 +258,7 @@ func imageSubtitleWords(byForm map[string][]string, langs, kept []string) (strin
 		}
 		part := formName(f) + " subtitles in " + joinAnd(names)
 		if i == 0 {
-			part = "The source's " + part
+			part = "The source’s " + part
 		} else {
 			part = "its " + part
 		}
@@ -292,7 +292,7 @@ const (
 	notPackagedText = "It has no package, and none is being made."
 	takenInText     = "It was taken in without a package and plays from its original."
 	finishedText    = "Its transcode and packaging finished, and no package is recorded."
-	discImageText   = "Its file is a disc image, which the transcoder doesn't encode."
+	discImageText   = "Its file is a disc image, which the transcoder doesn’t encode."
 )
 
 // stepWords is what a title whose transcode or package failed or was skipped
@@ -342,7 +342,7 @@ func queueWords(state, reason string) *string {
 			{"package is running", "The packager is working on it."},
 			{"transcode is waiting for its worker", "It is waiting for the transcoder to start it."},
 			{"package is waiting for its worker", "It is waiting for the packager to start it."},
-			{"the re-encode could not be sent", "It couldn't be handed to the transcoder."},
+			{"the re-encode could not be sent", "It couldn’t be handed to the transcoder."},
 		} {
 			if strings.HasPrefix(r, w.prefix) {
 				return strp(w.text)

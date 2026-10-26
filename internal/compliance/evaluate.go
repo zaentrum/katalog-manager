@@ -568,7 +568,7 @@ func isHEVC(codec string) bool {
 // to the default keeps a browser-friendly H.264 source as it is).
 func (t *TranscoderRules) hevcRequired() (bool, string) {
 	if t.Ladder == nil {
-		return false, "The transcoder doesn't report its renditions, so the video format can't be checked."
+		return false, "The transcoder doesn’t report its renditions, so the video format can’t be checked."
 	}
 	spec := strings.ToLower(strings.TrimSpace(*t.Ladder))
 	tokens := strings.Split(spec, ",")
@@ -588,17 +588,18 @@ func (t *TranscoderRules) hevcRequired() (bool, string) {
 		}
 		switch {
 		case codec != "hevc":
-			return false, "The transcoder makes the source's rendition in H.264, so an H.264 video breaks no rule."
+			return false, "The transcoder makes the source’s rendition in H.264, so an H.264 video breaks no rule."
 		case named:
 			return true, ""
 		case t.Encoder.Codec == nil:
-			return false, "The transcoder doesn't report its encoder, so the video format can't be checked."
+			return false, "The transcoder doesn’t report its encoder, so the video format can’t be checked."
 		case strings.EqualFold(strings.TrimSpace(*t.Encoder.Codec), "libx265"):
-			return false, "With libx265 the transcoder keeps a browser-friendly H.264 video as it is, so an H.264 video breaks no rule."
+			return false, "With " + strings.TrimSpace(*t.Encoder.Codec) + " the transcoder keeps a browser-friendly H.264 video " +
+				"as it is, so an H.264 video breaks no rule."
 		}
 		return true, ""
 	}
-	return false, "The transcoder makes no rendition at the source's size, so the video format can't be checked."
+	return false, "The transcoder makes no rendition at the source’s size, so the video format can’t be checked."
 }
 
 // surroundOn reports whether the packager makes a 5.1 companion.

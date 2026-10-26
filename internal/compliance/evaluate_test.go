@@ -351,14 +351,14 @@ func TestImageSubtitles(t *testing.T) {
 	rs := stateOf(t, transcoderReport, packagerReport)
 	for _, tc := range []struct{ name, subs, want string }{
 		{"only the english pgs carried", `{"format": "pgs", "language": "eng"}, {"format": "webvtt", "language": "spa"}`,
-			"IMAGE_SUBTITLES_MISSING The source's PGS subtitles in German, and its VobSub subtitles in French, are missing from " +
+			"IMAGE_SUBTITLES_MISSING The source’s PGS subtitles in German, and its VobSub subtitles in French, are missing from " +
 				"the package. The packager keeps PGS and VobSub subtitles. [German, French / PGS, VobSub]"},
 		{"every image subtitle carried", `{"format": "pgs", "language": "eng"}, {"format": "pgs", "language": "ger"},
 			{"format": "vobsub", "language": "fre"}`, ""},
 		{"a subtitle by its source stream", `{"format": "pgs", "language": "eng"}, {"format": "pgs", "language": "und", "sourceStreamIndex": 3},
 			{"format": "vobsub", "language": "fre"}`, ""},
 		{"a text track is no image subtitle", `{"format": "webvtt", "language": "eng"}, {"format": "webvtt", "language": "ger"},
-			{"format": "webvtt", "language": "fre"}`, "IMAGE_SUBTITLES_MISSING The source's PGS subtitles in German and English, and " +
+			{"format": "webvtt", "language": "fre"}`, "IMAGE_SUBTITLES_MISSING The source’s PGS subtitles in German and English, and " +
 			"its VobSub subtitles in French, are missing from the package. The packager keeps PGS and VobSub subtitles. " +
 			"[German, English, French / PGS, VobSub]"},
 	} {
@@ -368,7 +368,7 @@ func TestImageSubtitles(t *testing.T) {
 	}
 	pgsOnly := stateOf(t, transcoderReport, strings.Replace(packagerReport, `["pgs", "vobsub"]`, `["pgs"]`, 1))
 	got := found(evaluate(packagedTitle("movie"), recordsOf(t, pkg(`{"format": "pgs", "language": "eng"}`), src), pgsOnly))
-	if want := "IMAGE_SUBTITLES_MISSING The source's PGS subtitles in German are missing from the package. The packager keeps " +
+	if want := "IMAGE_SUBTITLES_MISSING The source’s PGS subtitles in German are missing from the package. The packager keeps " +
 		"PGS subtitles. [German / PGS]"; got != want {
 		t.Errorf("a packager that carries pgs alone:\n got  %q\n want %q", got, want)
 	}

@@ -67,7 +67,7 @@ func serverTexts(t *testing.T) []text {
 		recordsOf(t, sized, `{"streams": [], "essence": {}}`))
 	stereo := `{"renditions": {"video": [{"codec": "hvc1.1.6.L120.B0", "width": 1920, "height": 1080, "bitrateBps": 5000000,
 		"encoder": "copy"}]}, "subtitles": [{"format": "pgs", "language": "ger"}], "essence": {"surround": false, "maxAudioChannels": 2}}`
-	find("a 5.1 source, a stereo package, one language's PGS missing", packagedTitle("movie"), recordsOf(t, stereo,
+	find("a 5.1 source, a stereo package, one language’s PGS missing", packagedTitle("movie"), recordsOf(t, stereo,
 		`{"streams": [{"index": 0, "type": "video", "width": 1920, "height": 1080},
 		{"index": 1, "type": "subtitle", "codec": "hdmv_pgs_subtitle", "language": "de"},
 		{"index": 2, "type": "subtitle", "codec": "hdmv_pgs_subtitle", "language": "ja"}],
@@ -127,9 +127,9 @@ func serverTexts(t *testing.T) []text {
 		packagerReport, true, 0)
 	notEval("the transcoder on libx265 with the default ladder", strings.NewReplacer(`"ladder": "source:hevc"`, `"ladder": "source"`,
 		`"codec": "hevc_nvenc"`, `"codec": "libx265"`).Replace(transcoderReport), packagerReport, true, 0)
-	notEval("the transcoder makes H.264 at the source's size", strings.Replace(transcoderReport, `"ladder": "source:hevc"`,
+	notEval("the transcoder makes H.264 at the source’s size", strings.Replace(transcoderReport, `"ladder": "source:hevc"`,
 		`"ladder": "source:h264"`, 1), packagerReport, true, 0)
-	notEval("the transcoder makes no rendition at the source's size", strings.Replace(transcoderReport, `"ladder": "source:hevc"`,
+	notEval("the transcoder makes no rendition at the source’s size", strings.Replace(transcoderReport, `"ladder": "source:hevc"`,
 		`"ladder": "720p:hevc"`, 1), packagerReport, true, 0)
 	notEval("the transcoder reports no ladder", strings.Replace(transcoderReport, `"ladder": "source:hevc", `, ``, 1), packagerReport, true, 0)
 	notEval("the transcoder reports no encoder, its ladder the default", strings.NewReplacer(`"ladder": "source:hevc"`, `"ladder": "source"`,
@@ -139,8 +139,8 @@ func serverTexts(t *testing.T) []text {
 	notEval("the packager reports neither its surround track nor its image subtitles", transcoderReport,
 		`{"surroundBitrate": "448k", "stereoBitrate": "192k"}`, true, 0)
 	notEval("the legacy library layout", transcoderReport, packagerReport, false, 0)
-	notEval("the records of 1 title can't be read", transcoderReport, packagerReport, true, 1)
-	notEval("the records of 2,140 titles can't be read", transcoderReport, packagerReport, true, 2140)
+	notEval("the records of 1 title can’t be read", transcoderReport, packagerReport, true, 1)
+	notEval("the records of 2,140 titles can’t be read", transcoderReport, packagerReport, true, 2140)
 
 	queue := func(state, reason, source string) {
 		t.Helper()
@@ -230,8 +230,9 @@ var (
 // Every text the check writes for a reader is a sentence in sentence case
 // that ends as one, in the reader's words, with no word that promises,
 // hedges, or names the queue's work otherwise than "process again"; a
-// number keeps its unit on its line. With COMPLIANCE_TEXTS set, the list of
-// them goes to that file, for a review of the words.
+// number keeps its unit on its line, and an apostrophe is the typographic
+// one. With COMPLIANCE_TEXTS set, the list of them goes to that file, for a
+// review of the words.
 func TestTheServerTexts(t *testing.T) {
 	texts := serverTexts(t)
 	for _, x := range texts {
@@ -253,21 +254,24 @@ func TestTheServerTexts(t *testing.T) {
 		if strings.Contains(x.words, "  ") {
 			t.Errorf("%s, %s: %q holds two spaces in a row", x.section, x.source, x.words)
 		}
+		if strings.Contains(x.words, "'") {
+			t.Errorf("%s, %s: %q holds a typewriter apostrophe, not ’", x.section, x.source, x.words)
+		}
 	}
 	path := os.Getenv(EnvTexts)
 	if path == "" {
 		return
 	}
 	var b strings.Builder
-	b.WriteString("# The library compliance's texts\n\n")
+	b.WriteString("# The library compliance’s texts\n\n")
 	b.WriteString("Every text katalog-manager writes for the compliance report, rendered with real values by\n")
 	b.WriteString("`go test ./internal/compliance -run TestTheServerTexts` (`" + EnvTexts + "` set to this file).\n\n")
 	b.WriteString("The rules, as the workers report them: the transcoder allows movies 8 Mbit/s (1080) and 14 Mbit/s (2160) of\n")
 	b.WriteString("video and a 15 GiB file, episodes 6 and 8 Mbit/s; it encodes with hevc_nvenc, preset p5, cq 23, ladder\n")
 	b.WriteString("`source:hevc`. The packager makes a 5.1 E-AC-3 track at 448k and the stereo track at 192k, and keeps PGS and\n")
 	b.WriteString("VobSub subtitles. Sizes are in decimal units, as the clients write them (1 GB is 1,000,000,000 bytes), so\n")
-	b.WriteString("the transcoder's 15 GiB reads 16.1 GB. Sizes and bit rates are written with a no-break space before their\n")
-	b.WriteString("unit.\n\n")
+	b.WriteString("the transcoder’s 15 GiB reads 16.1 GB. Sizes and bit rates are written with a no-break space before their\n")
+	b.WriteString("unit, and every apostrophe is the typographic one (’).\n\n")
 	b.WriteString("Each line: the field, what the title or the state is, and the text.\n")
 	section := ""
 	for _, x := range texts {
@@ -301,7 +305,7 @@ func TestTheLimitsAreTheReported(t *testing.T) {
 		"The original is larger than the 32.2 GB the transcoder allows for a movie",
 		"The 7.1 AC-3 track the packager makes is missing.",
 		"[2 channels / 7.1 AC-3]",
-		"The source's PGS subtitles in German are missing from the package. The packager keeps PGS subtitles.",
+		"The source’s PGS subtitles in German are missing from the package. The packager keeps PGS subtitles.",
 		"[German / PGS]",
 	} {
 		if !strings.Contains(got, want) {

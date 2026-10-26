@@ -285,7 +285,7 @@ func TestTheReportFiltersAndPages(t *testing.T) {
 		{"episodes", graph.ComplianceFilter{Kind: "episode"}, "An Episode Over Its Cap: OVER_BITRATE_CAP"},
 		{"not packaged or failed", graph.ComplianceFilter{Rules: []string{NotPackaged, PackagingFailed}},
 			"A Film Never Packaged: NOT_PACKAGED\nA Film Whose Transcode Failed: PACKAGING_FAILED\nA Disc Image: PACKAGING_FAILED"},
-		{"by the series' title", graph.ComplianceFilter{Search: "COASTAL"}, "An Episode Over Its Cap: OVER_BITRATE_CAP"},
+		{"by the series’ title", graph.ComplianceFilter{Search: "COASTAL"}, "An Episode Over Its Cap: OVER_BITRATE_CAP"},
 		{"by the title", graph.ComplianceFilter{Search: "remux"}, "A Remux Kept As It Was: OVER_BITRATE_CAP, OVER_SIZE_CAP"},
 		{"movies over a cap", graph.ComplianceFilter{Kind: "movie", Rules: []string{OverBitrateCap}},
 			"A Remux Kept As It Was: OVER_BITRATE_CAP, OVER_SIZE_CAP"},
@@ -526,8 +526,8 @@ func TestUnreportedRulesAreNotEvaluated(t *testing.T) {
 	if got := rowsOf(rep); got != "A Film Never Packaged: NOT_PACKAGED" {
 		t.Errorf("no rules reported:\n%s", got)
 	}
-	want := []string{"The transcoder hasn't reported its limits, so bit rates, file sizes and the video format can't be checked.",
-		"The packager hasn't reported what it keeps, so surround and image subtitles can't be checked."}
+	want := []string{"The transcoder hasn’t reported its limits, so bit rates, file sizes and the video format can’t be checked.",
+		"The packager hasn’t reported what it keeps, so surround and image subtitles can’t be checked."}
 	if strings.Join(rep.NotEvaluated, "\n") != strings.Join(want, "\n") || rep.Rules.Transcoder != nil || rep.Rules.Packager != nil {
 		t.Errorf("not evaluated:\n%s\nrules %+v", strings.Join(rep.NotEvaluated, "\n"), rep.Rules)
 	}
@@ -685,7 +685,7 @@ func TestARecordThatCannotBeRead(t *testing.T) {
 	if got := rowsOf(rep); got != "A Remux Kept As It Was: VIDEO_NOT_HEVC" {
 		t.Errorf("a title without its records:\n%s", got)
 	}
-	want := "The records of 1 title can't be read, so its bit rate, surround and image subtitles can't be checked."
+	want := "The records of 1 title can’t be read, so its bit rate, surround and image subtitles can’t be checked."
 	if len(rep.NotEvaluated) != 1 || rep.NotEvaluated[0] != want {
 		t.Errorf("not evaluated: %q\nwant %q", rep.NotEvaluated, want)
 	}

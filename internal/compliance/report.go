@@ -442,18 +442,18 @@ var capNames = []struct{ key, of string }{
 func notEvaluated(rs rulesState, unchecked int32) []string {
 	out := []string{}
 	if rs.transcoder == nil || rs.transcoder.t == nil {
-		out = append(out, "The transcoder hasn't reported its limits, so bit rates, file sizes and the video format can't be checked.")
+		out = append(out, "The transcoder hasn’t reported its limits, so bit rates, file sizes and the video format can’t be checked.")
 	} else {
 		t := rs.transcoder.t
 		caps := map[string]*float64{"movie1080Mbps": t.Caps.Movie1080Mbps, "movie2160Mbps": t.Caps.Movie2160Mbps,
 			"episode1080Mbps": t.Caps.Episode1080Mbps, "episode2160Mbps": t.Caps.Episode2160Mbps}
 		if t.Bucket2160.MinHeight == nil || t.Bucket2160.MinWidth == nil {
-			out = append(out, "The transcoder doesn't report where 2160 begins, so bit rates can't be checked.")
+			out = append(out, "The transcoder doesn’t report where 2160 begins, so bit rates can’t be checked.")
 		} else {
 			for _, c := range capNames {
 				switch v := caps[c.key]; {
 				case v == nil:
-					out = append(out, fmt.Sprintf("The transcoder doesn't report the bit rate it allows for %s, so it can't be checked.", c.of))
+					out = append(out, fmt.Sprintf("The transcoder doesn’t report the bit rate it allows for %s, so it can’t be checked.", c.of))
 				case *v == 0:
 					out = append(out, fmt.Sprintf("The transcoder allows any bit rate for %s.", c.of))
 				}
@@ -461,7 +461,7 @@ func notEvaluated(rs rulesState, unchecked int32) []string {
 		}
 		switch v := t.Caps.MovieMaxGiB; {
 		case v == nil:
-			out = append(out, "The transcoder doesn't report the file size it allows for a movie, so it can't be checked.")
+			out = append(out, "The transcoder doesn’t report the file size it allows for a movie, so it can’t be checked.")
 		case *v == 0:
 			out = append(out, "The transcoder allows movie files of any size.")
 		}
@@ -470,32 +470,32 @@ func notEvaluated(rs rulesState, unchecked int32) []string {
 		}
 	}
 	if rs.packager == nil || rs.packager.p == nil {
-		out = append(out, "The packager hasn't reported what it keeps, so surround and image subtitles can't be checked.")
+		out = append(out, "The packager hasn’t reported what it keeps, so surround and image subtitles can’t be checked.")
 	} else {
 		p := rs.packager.p
 		switch {
 		case p.SurroundAudio == nil:
-			out = append(out, "The packager doesn't report its surround track, so surround can't be checked.")
+			out = append(out, "The packager doesn’t report its surround track, so surround can’t be checked.")
 		case !surroundOn(p):
 			out = append(out, "The packager makes no surround track, so a package without one breaks no rule.")
 		}
 		switch {
 		case p.ImageSubtitles == nil:
-			out = append(out, "The packager doesn't report which image subtitles it keeps, so they can't be checked.")
+			out = append(out, "The packager doesn’t report which image subtitles it keeps, so they can’t be checked.")
 		case len(p.ImageSubtitles) == 0:
 			out = append(out, "The packager keeps no image subtitles, so a package without them breaks no rule.")
 		}
 	}
 	if !rs.v2 {
 		out = append(out, "The library uses the legacy layout, which keeps no records of sources and packages, "+
-			"so bit rates, surround and image subtitles can't be checked.")
+			"so bit rates, surround and image subtitles can’t be checked.")
 	}
 	switch {
 	case unchecked == 1:
-		out = append(out, "The records of 1 title can't be read, so its bit rate, surround and image subtitles can't be checked.")
+		out = append(out, "The records of 1 title can’t be read, so its bit rate, surround and image subtitles can’t be checked.")
 	case unchecked > 1:
-		out = append(out, fmt.Sprintf("The records of %s can't be read, so their bit rates, surround and image subtitles "+
-			"can't be checked.", titlesText(int(unchecked))))
+		out = append(out, fmt.Sprintf("The records of %s can’t be read, so their bit rates, surround and image subtitles "+
+			"can’t be checked.", titlesText(int(unchecked))))
 	}
 	return out
 }
