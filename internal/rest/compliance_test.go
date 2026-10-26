@@ -109,6 +109,12 @@ func TestTheReportIsACSV(t *testing.T) {
 		w.Header().Get("Content-Disposition") != "attachment; filename=rules-all-2026-10-26T1343Z.csv" {
 		t.Fatalf("GET: %d %q %q", w.Code, w.Header().Get("Content-Type"), w.Header().Get("Content-Disposition"))
 	}
+	// the same file beside /query, where a console whose GraphQL is /query
+	// reads it
+	if beside := do(h, http.MethodGet, "/compliance.csv", "", admin); beside.Code != http.StatusOK ||
+		beside.Body.String() != w.Body.String() || beside.Header().Get("Content-Disposition") != w.Header().Get("Content-Disposition") {
+		t.Errorf("GET /compliance.csv: %d %q, want the same file", beside.Code, beside.Header().Get("Content-Disposition"))
+	}
 	want := []string{"m1", "m3"}
 	for n := 1200; n >= 1; n-- {
 		want = append(want, fmt.Sprintf("f%04d", n))

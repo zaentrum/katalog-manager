@@ -90,6 +90,7 @@ var routes = []route{
 	{http.MethodPost, "/api/items/m1/package", "", "admin"},
 	{http.MethodPost, "/api/items/m1/takein", "", "admin"},
 	{http.MethodGet, "/api/manage/compliance.csv", "", "admin"},
+	{http.MethodGet, "/compliance.csv", "", "admin"},
 }
 
 // Every route answers whom it is for, and refuses everyone else before it

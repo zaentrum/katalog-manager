@@ -55,7 +55,8 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 //   - admins: POST /api/items/{id}/package, the packaging action an admin's
 //     client forwards (chino-api's admin route), POST
 //     /api/items/{id}/takein, a title's take-in without a package, and GET
-//     /api/manage/compliance.csv, the compliance report's rows as CSV.
+//     /api/manage/compliance.csv (and /compliance.csv, beside /query), the
+//     compliance report's rows as CSV.
 //
 // The workers' protocol of an extra (its record, its steps, its
 // packaging-complete) is in the worker group too, and so is the workers'
@@ -150,9 +151,11 @@ func (h *Handlers) Register(r chi.Router) {
 	// with no package (the library's v2 layout).
 	r.With(pol.Require(auth.Admin)).Post("/api/items/{id}/takein", h.postTakeIn)
 	// The compliance report's rows as CSV, every title its filter matches, for
-	// admins as GraphQL's libraryCompliance is, under /api/manage as the
-	// console's GraphQL is.
+	// admins as GraphQL's libraryCompliance is, beside each GraphQL endpoint
+	// the console posts to (/api/manage/query, /query): it reads the file at
+	// its endpoint's base.
 	r.With(pol.Require(auth.Admin)).Get("/api/manage/compliance.csv", h.getComplianceCSV)
+	r.With(pol.Require(auth.Admin)).Get("/compliance.csv", h.getComplianceCSV)
 
 	// External-file ingest: register a staged file (item + primary asset) and
 	// emit discovered so it flows the pipeline. Neutral machine contract used by
