@@ -340,8 +340,10 @@ the base schema in the order of their numbers, and each is idempotent:
   the sizes of its original and its package and the estimate once it is
   processed again, why a rule was not checked of it, why processing it
   again can't help as its original's record or its failed step tells, the
-  hash of the rules it was checked against, when it was marked to be checked
-  again and when it was checked; see [Library compliance](#library-compliance)). A deleted item's
+  facts the check read of its records and of which records, so that it
+  reads them again only once they change, the hash of the rules it was
+  checked against, when it was marked to be checked again and when it was
+  checked; see [Library compliance](#library-compliance)). A deleted item's
   row goes with it. Applied at startup when any of it is missing; without it
   no rules are kept and nothing is checked.
 
@@ -686,9 +688,11 @@ A busy title (its transcode or package running, or waiting for its worker)
 stays queued, saying why, and takes no place of the pass: the next one goes.
 One whose event could not be sent stays queued too, its transcode failed
 with no retry of its own; the queue sends it again on a later pass. One
-whose original was retired while it waited fails. One instance sends the
-queue at a time. With no sweep (`KATALOG_RETRY_INTERVAL` off) or no event
-bus the queue waits.
+whose original was retired while it waited fails, and so does one the
+compliance check found, since it was queued, that the transcoder can't
+encode, saying why as the check does ("Dolby Vision profile 7 needs a
+tone-mapping encode."). One instance sends the queue at a time. With no
+sweep (`KATALOG_RETRY_INTERVAL` off) or no event bus the queue waits.
 
 ### Library compliance
 
@@ -711,6 +715,8 @@ with, at their start and every ten minutes, on `PUT
   "bucket2160": {"minHeight": 2000, "minWidth": 3200},
   "encoder": {"codec": "hevc_nvenc", "preset": "p5", "cq": 23, "maxrate1080Mbps": null, "maxrate2160Mbps": null},
   "ladder": "source:hevc", "extraLadder": "source:hevc",
+  "ladderRungs": [{"name": "source", "codec": "hevc", "codecNamed": true, "maxrateBps": null}],
+  "rungMaxrateMbps": {"360": {"h264": 0.8, "hevc": 0.6}, ..., "2160": {"h264": 16.0, "hevc": 14.0}},
   "dolbyVision": {"profile5": "reshaped", "profile7": "refused"}}}
 ```
 
@@ -720,7 +726,10 @@ with, at their start and every ten minutes, on `PUT
 ```
 
 Each value is the one the worker runs with (a cap of 0 a rule switched
-off; see each worker's README, "Rules report"). The rules are kept as they
+off; see each worker's README, "Rules report"); the transcoder's
+`ladderRungs` are its ladder's rungs in parts, and `rungMaxrateMbps` the
+maxrate its planner gives a rung that sets none, by the height of its box
+and its codec, which the estimate reads. The rules are kept as they
 came, and a value the check reads must be of its kind (a cap a number of 0
 or more, a bit rate as `448k`): anything else is 400, as is a worker that
 reports no rules here (`transcoder` and `packager` do); 503 without
@@ -741,10 +750,10 @@ records can't be read …`).
 | --- | --- |
 | `NOT_PACKAGED` | its original is present, it has no package, and its transcode and its package neither wait nor run ("It has no package, and none is being made."; one taken in without a package: "It was taken in without a package and plays from its original.") |
 | `PACKAGING_FAILED` | it has no package, and its transcode or its package failed or was skipped, saying which, and why where the words know the worker's reason ("The transcoder failed.", its detail "ffmpeg exited 1"; "The transcoder left it as it is: Dolby Vision profile 7 needs a tone-mapping encode."; "The packager failed, and tries again by itself." while a retry is really scheduled), or its file is a disc image ("Its file is a disc image, which the transcoder doesn’t encode.") |
-| `OVER_BITRATE_CAP` | its package's video is above the bit rate the transcoder allows for its kind and bucket ("The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160p movie.") |
-| `OVER_SIZE_CAP` | a movie's original is larger than `movieMaxGiB`, and its package copies its video as it is ("The original is larger than the 16.1 GB the transcoder allows for a movie, and the package copied its video.") |
-| `NO_SURROUND` | the packager makes a surround track, and the package lacks the surround its original had, as the retire job holds an original for it ("The package has 2 audio channels, and the original has 8. The 5.1 E-AC-3 track the packager makes is missing.") |
-| `IMAGE_SUBTITLES_MISSING` | the original has image subtitles of a form the packager keeps, and the package has none of them in their language ("The original’s PGS subtitles in German and Portuguese (Brazil), and its VobSub subtitles in Italian, are missing from the package. The packager keeps PGS and VobSub subtitles.") |
+| `OVER_BITRATE_CAP` | its package's video is above the bit rate the transcoder encodes a title of its kind and bucket at, while the cap of them holds: its override (`NVENC_MAXRATE_1080P_MBPS`, `NVENC_MAXRATE_2160P_MBPS`) where one is set, else the cap ("The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160p movie."); a browser-friendly H.264 video copied as it is, which today's transcoder copies again whatever its bit rate (an H.264 rung at the original's size does, and so does a CPU transcoder's rung whose codec the ladder leaves to the default), breaks no cap |
+| `OVER_SIZE_CAP` | a movie's original is larger than `movieMaxGiB`, and its package copies its video as it is, such an H.264 copy as above aside ("The original is larger than the 16.1 GB the transcoder allows for a movie, and the package copied its video.") |
+| `NO_SURROUND` | the packager makes a surround track, the package lacks the surround its original had, as the retire job holds an original for it, and the packager makes the original a 5.1 companion: not where its record lists no track of more than two channels but commentaries ("The package has 2 audio channels, and the original has 8. The 5.1 E-AC-3 track the packager makes is missing.") |
+| `IMAGE_SUBTITLES_MISSING` | the original has image subtitles of a form the packager keeps, and the package has none of them in their language; VobSub only of a Matroska original, the only one the packager extracts it of ("The original’s PGS subtitles in German and Portuguese (Brazil), and its VobSub subtitles in Italian, are missing from the package. The packager keeps PGS and VobSub subtitles.") |
 | `VIDEO_NOT_HEVC` | the package's video is not HEVC (`hev1`, `hvc1`) where the transcoder's rules make every package HEVC: its ladder names the source rung's codec, or its encoder is no CPU one ("The video is H.264, and the transcoder makes every video HEVC.", its detail the codec, "avc1.640028") |
 
 The cap bucket is the transcoder's: 2160 from `minHeight` lines tall or
@@ -756,34 +765,66 @@ over their durations, the stream alone); for a video copied without it, the
 bit rate the source record gives the stream copied; else the package's size
 over its duration less its audio, which errs high. The packaged playback
 row's bit rate is none of them: it is the master playlist's peak, the
-video's peaks and the audio together. A video within 3% of its cap is
-within it, and an encode whose transcode says it was capped at the cap
+video's peaks and the audio together. A video within 3% of its limit is
+within it, and an encode whose transcode says it was capped at the limit
 (`maxrate=` in its details) is never above it: an encode capped so is
-within it on average. Whether the video was copied is the top rendition's
+within it on average; the row's `bitrateCap` is that limit. Whether the
+video was copied is the top rendition's
 `encoder` (`copy`, else the encoder that made it), else the transcode's
 status (not applicable: nothing was encoded). With the library's legacy
 layout, which keeps no records, the bit rate, surround and image subtitles
 are not checked.
 
-Each title has `originalBytes`, `packageBytes` and `estimatedBytes`, what
-its package is to be at most once it is processed again: processing that
-encodes the video makes it at the transcoder's maxrate (the bit rate it
-allows for the title's kind and bucket, or its `NVENC_MAXRATE_*` override)
-with the audio the packager makes of the original, for the title's
-duration; processing that only adds tracks keeps the package and adds what
-it lacks of that audio. The packager makes a stereo rendition of every
-audio track of the original, whatever its language (its language
-whitelist only hides one), at its stereo bit rate, and a 5.1 companion of
-the first track of more than two channels of each language that is no
-commentary: the track itself, at its own bit rate, where it is a 5.1 of the
-companion's codec, else an encode at its surround bit rate. The
-transcoder's encode carries every audio track of the original as it is.
-The tracks are counted off the original's record (`sources/<id>/source.json`:
-its audio streams, each in the language an admin set for it, which the
-packager takes over the file's), else off the package's record (its
-renditions), else as one stereo rendition and, when the original had
-surround or its record doesn't say, a companion. A title that processing again can't help has none,
-is no queueable one (and the queue skips it when a request names it), and
+Each title has `originalBytes`, `packageBytes` and `estimatedBytes`, an
+estimate of its package once it is processed again, as accurate as its
+records allow, and no bound: what today's transcoder and packager make of
+its original (processing a title again runs both: the queue resets its
+transcode and its package), for the title's duration (its package's
+record's, else its original's record's, else its packaged row's, else its
+file's own, and only then the reference database's runtime):
+
+- the video of every rung of the transcoder's ladder (`ladderRungs`, else
+  its `ladder`), as its planner plans it: never upscaled; at the original's
+  size its video copied, at its own bit rate, where the planner copies
+  (HEVC every decoder plays that breaks no cap, for an HEVC rung;
+  browser-friendly H.264 for an H.264 rung, and for an HEVC one whose codec
+  the ladder leaves to the default on a CPU transcoder); any other rung an
+  encode at its maxrate: the rung's own, else for a scaled rung the
+  planner's table (`rungMaxrateMbps`), else at the original's size the
+  override or the cap of its kind and bucket (HEVC) or the table (H.264).
+  An encode at the original's size at the maxrate the package's own encode
+  ran at (its transcode's `maxrate=`) is about that encode again, its
+  measured bit rate; at another maxrate it is today's. Two rungs of one size
+  and codec count once;
+- the audio the packager makes of it: a stereo rendition of every audio
+  track of the original, whatever its language, at its stereo bit rate (its
+  language whitelist and `keep_original_if_single` only say which of them
+  the player lists: the packager never drops a track), and a 5.1 companion
+  of the first track of more than two channels of each language that is no
+  commentary, a hidden one's too: the track itself, at its own bit rate (its
+  record's, else that of the package's companion of its language), where
+  it is a 5.1 of the companion's codec, else an encode at its surround bit
+  rate. The transcoder's encode carries every audio track of the original
+  as it is. The tracks are counted off the original's record
+  (`sources/<id>/source.json`: its audio streams, each in the language an
+  admin set for it, which the packager takes over the file's), else off the
+  package's record (its renditions), else as one stereo rendition and, when
+  the original had surround or its record doesn't say, a companion;
+- what the package holds beside its renditions, which processing makes
+  again (its subtitles, its trickplay pictures, its playlists): its record's
+  `sizeBytes` less what its renditions' measured bit rates make over its
+  duration.
+
+The image subtitles processing adds to a package are not counted: an
+original's record gives no size of a subtitle track. A title has no
+estimate where its records don't tell: a worker that never reported, no
+duration, a rung whose maxrate neither its ladder nor the transcoder's
+table gives (a transcoder that reports no `rungMaxrateMbps`), an HEVC
+encode at the original's size of neither a cap nor an override, or a bit
+rate no record gives.
+
+A title that processing again can't help has no estimate either, is no
+queueable one (and the queue skips it when a request names it), and
 says why as the clause the console says after a colon (`reworkBlocked`,
 "its original was deleted after packaging"): as the
 queue would skip it (its original deleted after packaging or being deleted,
@@ -838,21 +879,44 @@ again. `go test ./internal/compliance -run TestTheServerTexts` with
 for a review of the words.
 
 **When it looks.** The check reads the catalog's tables and, with the v2
-layout, the small records of a packaged title's version and source
-(`versions/<id>/package.json`, `sources/<id>/source.json`), never a media
-file, eight at a time, two hundred titles a batch, in one instance at a
-time (an advisory lock). What it finds is kept (migration 051), and the
-report reads that. A pass in the background checks, every minute, the
-titles that need it: every title when none was checked (at the first
-start), every title once a night (after 03:00 of the service's time),
-every title checked against rules that changed since (each row keeps the
-hash of the rules it was checked against, with the layout), a title the
-catalog gained, a title whose package completed or whose transcode,
-package or take-in ended (packaging-complete and the step routes mark it),
-a title whose re-encode in the queue is done or failed, and the titles of
-a kind an admin asks for (`refreshCompliance`). A title that is no title
-to check any more (deleted, covered by another's file, with neither file
-nor package) leaves the report.
+layout, the small records of a title's version and its original
+(`versions/<id>/package.json`, `sources/<id>/source.json`; of a title never
+packaged, the record of the original the library recorded), never a media
+file, nor a record larger than 4 MiB, which it counts among those that
+can't be read; `compliance.readers` at a time, two hundred titles a batch,
+in one instance at a time (an advisory lock). What it finds is kept
+(migration 051), and the report reads that; so are the facts it read of a
+title's records, with which records they are (its version's and its
+original's ids, and when each last changed). It reads a title's records
+again only once its version or its original changed, its package completed
+or a step of it ended; a check against rules that changed, the nightly one
+and a refresh check from the facts it keeps, so that the reports of rules
+a rollout makes cost at most one read of the library. A pass in the
+background checks, every minute, the titles that need it: every title when
+none was checked (at the first start), every title once a night (after
+`compliance.nightly` of the service's local time, by the database's
+clock), every title checked against rules that changed since (each row
+keeps the hash of the rules it was checked against, with the layout), a
+title the catalog gained, a title whose package completed or whose
+transcode, package or take-in ended (packaging-complete and the step routes
+mark it), a title whose re-encode in the queue is done or failed, and the
+titles of a kind an admin asks for (`refreshCompliance`); its log says how
+many records it read. A title that is no title to check any more (deleted,
+covered by another's file, with neither file nor package) leaves the
+report.
+
+The check's settings are the catalog's (`com_nalet_katalog_settings`, an
+admin's to set), read on every pass:
+
+- `compliance.pass` (`on`): `off` stops the background pass; the report
+  keeps what it found, and the titles to check wait;
+- `compliance.readers` (`4`): how many records the pass reads at once, 1 to
+  64;
+- `compliance.nightly` (`03:00`): when every title is checked again each
+  day, `HH:MM` of the service's local time, from the facts kept, or `off`.
+
+A value that can't be read is said in the log, once while it holds, and the
+default stands.
 
 **GraphQL** (admins):
 
@@ -896,28 +960,49 @@ nor package) leaves the report.
   package), null for none of them. `total` counts the titles the whole
   filter (`kind`, `rules`, `search`) matches, and `matching` sums them up,
   every one of them and not only the page's (`{titles, originalBytes,
-  packageBytes, estimatedBytes}`); `checkedTitles` counts the titles of
-  `kind` and `search` the check has checked, whether they break a rule or
-  not ("281 titles checked"); `summary`, for every rule, those of `kind` and
-  `search` that break it, whatever `rules` asks, with the size of their
-  packages and their estimate; `evaluatedAt` is the oldest check of those
-  (null when none was checked), `evaluating` whether a pass runs, `pending` how many titles
-  wait for the next one; `queueable` sums up the titles of `matching` that
-  a request to process them again queues, what `queueReworkMatching`
-  queues: none waiting or sent in the re-encode queue (which keeps such a
-  title as it is; one done or failed there is queued again), and none that
-  processing again can't help (`reworkBlocked`, which the queue skips);
-  `queue` counts the re-encode queue, all its titles, by state (`{queued,
-  processing, processed, failed}`: a title sent is processing, one done
-  processed).
-- `queueRework(items)`, `queueReworkMatching(kind, rules, search)` — the
-  titles named, or those the filter matches that it queues (`queueable`,
-  exactly: what the console offers is what is queued), into the re-encode
-  queue (as `POST /api/library/reencode` with `items`: a series is its
-  episodes), which sends them at its pace. A request by the filter counts
-  the titles it matches that are in the queue already, as `queueRework`
-  counts them, and names none that processing again can't help, which the
-  console never offers. Both answer `{queued, alreadyQueued,
+  packageBytes, estimatedBytes, withoutEstimate, fingerprint}`): the size
+  of their originals, and of those with an estimate the size of their
+  packages now and the estimate, so that the two compare the same titles,
+  `withoutEstimate` counting those left out of both; `fingerprint` names
+  the titles, whatever their order (a hash of their ids, the same while
+  they are the same titles). `checkedTitles` counts the titles of `kind`
+  and `search` the check has checked, whether they break a rule or not
+  ("281 titles checked"); `summary`, for every rule, those of `kind` and
+  `search` that break it, whatever `rules` asks, and of the same titles
+  with an estimate the size of their packages and the estimate
+  (`withoutEstimate` those left out); `evaluatedAt` is the oldest check of
+  those (null when none was checked), `evaluating` whether a pass runs,
+  `pending` how many titles wait for the next one; `queueable` sums up the
+  titles of `matching` that a request to process them again queues, as
+  `matching` does, what `queueReworkMatching` queues: none waiting or sent
+  in the re-encode queue (which keeps such a title as it is; one done or
+  failed there is queued again), and none that processing again can't help
+  (`reworkBlocked`, which the queue skips); `queue` counts the re-encode
+  queue, all its titles, by state (`{queued, processing, processed,
+  failed}`: a title sent is processing, one done processed). `processing`
+  says how processing a title again goes now, from the settings as they
+  are set, for the console's confirm: `originals`, what becomes of a
+  title's original once its new version is complete (`library.originals`:
+  `keep`, or `delete-after-package`), `inflight`, how many titles the
+  re-encode queue has encoded at once at most
+  (`library.reencode.inflight`), and `window`, when it sends them
+  (`library.reencode.window`, each end with the offset from UTC of the
+  service's local time, which the queue reads it in:
+  "23:00+01:00-07:00+01:00", "01:00Z-06:00Z" in UTC), the last two null
+  where they are not set, or set to none.
+- `queueRework(items)`, `queueReworkMatching(kind, rules, search,
+  expected, fingerprint)` — the titles named, or those the filter matches
+  that it queues (`queueable`, exactly: what the console offers is what is
+  queued), into the re-encode queue (as `POST /api/library/reencode` with
+  `items`: a series is its episodes), which sends them at its pace. A
+  request by the filter takes back the `titles` and the `fingerprint` of
+  the `queueable` the console offered (`expected`, `fingerprint`), and
+  queues nothing when the titles queueable now are not those, saying so
+  ("Nothing was queued: the matching titles changed, from 40 to 42."; of
+  as many others, "Nothing was queued: the matching titles changed."). It
+  counts the titles it matches that are in the queue already, as
+  `queueRework` counts them, and names none that processing again can't
+  help, which the console never offers. Both answer `{queued, alreadyQueued,
   skipped, skippedTitles, queuedText, alreadyText, notQueuedText,
   message}`, a title waiting or sent already counted in `alreadyQueued`,
   one the queue does not take (not in the catalog, no movie, episode or
@@ -945,25 +1030,32 @@ nor package) leaves the report.
   omitted) checked again by the next pass, at once.
 
 **CSV.** `GET /api/manage/compliance.csv?kind=&rules=&search=&sort=&descending=`
-(admins, as `libraryCompliance`) is the report's rows as a file: every
-title the filter matches, not a page, in its order, the filter and the
-order as GraphQL names their values (`kind=MOVIE`,
-`rules=OVER_BITRATE_CAP,NO_SURROUND` or the parameter repeated,
-`sort=TITLE`, `descending=false`). It is RFC 4180 (a header row, each row
-ended by CRLF, a field quoted where it must be) in UTF-8, read and written
-500 titles at a time, and named by its kind and when the check found its
-titles, in UTC (`Content-Disposition`: `rules-movies-2026-10-26T1343Z.csv`;
-`rules-all-…` of both kinds). Its columns are `item_id`, `kind`, `title`,
-`year`, `series`, `season`, `episode`, `resolution`, `video_codec`,
-`video_bitrate_bps`, `bitrate_estimated`, `bitrate_cap_bps`,
-`size_cap_bytes`, `duration_s`, `original_bytes`, `package_bytes`,
-`estimated_bytes`, `package_audio`, `original_audio`, `rules` (their codes,
-by `;`), `outcome`, `blocked_reason` (`reworkBlocked`), `queue` (the
-title's state in the re-encode queue) and `checked_at` (RFC 3339): numbers
-as they are, bytes and bit/s whole, an empty field for none, and the
-no-break hyphens and spaces of the console's texts as plain ones
-("E-AC-3"). A filter or an order it doesn't know is 400, and a CSV that
-can't be read to its end is cut off, never ended as if it were whole.
+(admins, as `libraryCompliance`; the same at `/compliance.csv`, beside
+`/query`, so that the console reads it at the base of its GraphQL
+endpoint) is the report's rows as a file: every title the filter matches,
+not a page, in its order, the filter and the order as GraphQL names their
+values (`kind=MOVIE`, `rules=OVER_BITRATE_CAP,NO_SURROUND` or the
+parameter repeated, `sort=TITLE`, `descending=false`). It is RFC 4180 (a
+header row, each row ended by CRLF, a field quoted where it must be) in
+UTF-8, read 500 titles at a time of one snapshot of the catalog (a
+read-only transaction at repeatable read), and named by its kind and when
+the check found its titles, in UTC (`Content-Disposition`:
+`rules-movies-2026-10-26T1343Z.csv`; `rules-all-…` of both kinds). Its
+columns are `item_id`, `kind`, `title`, `year`, `series`, `season`,
+`episode`, `width`, `height`, `video_codec`, `video_bitrate_bps`,
+`bitrate_estimated`, `bitrate_cap_bps`, `size_cap_bytes`, `duration_s`,
+`original_bytes`, `package_bytes`, `estimated_bytes`, `package_audio`,
+`original_audio`, `rules` (their codes, by `;`), `outcome`,
+`blocked_reason` (`reworkBlocked`), `queue` (`QUEUED`, `PROCESSING` or
+`NEEDS_ATTENTION`: the title waiting, sent or failed in the re-encode
+queue; empty when it is in none of them) and `checked_at` (RFC 3339):
+numbers as they are, bytes, bit/s and pixels whole, an empty field for
+none, and the no-break hyphens and spaces of the console's texts as plain
+ones ("E-AC-3"). A text that begins as a spreadsheet's formula does (`=`,
+`+`, `-`, `@`, a tab, a carriage return) has a `'` before it, so that a
+spreadsheet shows it as text; a number never has. A filter or an order it
+doesn't know is 400, and a CSV that can't be read to its end is cut off,
+never ended as if it were whole.
 
 The check never queues a title: only these mutations do.
 
