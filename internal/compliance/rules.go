@@ -69,10 +69,12 @@ type TranscoderRules struct {
 }
 
 // PackagerRules is what the check reads of the packager's report: the codec
-// of its 5.1 companion ("off": none), the bit rates of an encoded companion
-// and of the stereo rendition, and the forms of image subtitles it carries.
+// of its surround companion ("off": none) and its layout ("5.1"), the bit
+// rates of an encoded companion and of the stereo rendition, and the forms of
+// image subtitles it carries.
 type PackagerRules struct {
 	SurroundAudio   *string  `json:"surroundAudio"`
+	SurroundLayout  *string  `json:"surroundLayout"`
 	SurroundBitrate *string  `json:"surroundBitrate"`
 	StereoBitrate   *string  `json:"stereoBitrate"`
 	ImageSubtitles  []string `json:"imageSubtitles"`
@@ -90,8 +92,8 @@ type checkedTranscoder struct {
 }
 
 type checkedPackager struct {
-	SurroundAudio, SurroundBitrate, StereoBitrate *string
-	ImageSubtitles                                []string
+	SurroundAudio, SurroundLayout, SurroundBitrate, StereoBitrate *string
+	ImageSubtitles                                                []string
 }
 
 // hashOf is the hex SHA-256 of v as JSON.
@@ -112,8 +114,8 @@ func (p *PackagerRules) hash() string {
 	if p.ImageSubtitles == nil {
 		forms = nil
 	}
-	return hashOf(checkedPackager{SurroundAudio: p.SurroundAudio, SurroundBitrate: p.SurroundBitrate,
-		StereoBitrate: p.StereoBitrate, ImageSubtitles: forms})
+	return hashOf(checkedPackager{SurroundAudio: p.SurroundAudio, SurroundLayout: p.SurroundLayout,
+		SurroundBitrate: p.SurroundBitrate, StereoBitrate: p.StereoBitrate, ImageSubtitles: forms})
 }
 
 // report is a worker's report as it is sent: its version and its rules.
@@ -289,9 +291,10 @@ type rulesState struct {
 	v2                   bool
 }
 
-// version is the check's own: a check that reads its findings otherwise
-// gets a new one, and every title is checked again.
-const version = "compliance/1"
+// version is the check's own: a check that reads its findings otherwise, or
+// writes them in other words, gets a new one, and every title is checked
+// again.
+const version = "compliance/2"
 
 // hash is the hash a title checked against s is kept under: both workers'
 // rules, the layout and the check's version.
@@ -368,77 +371,125 @@ func pipelineRulesOf(st rulesState) graph.PipelineRules {
 	return out
 }
 
-// A rule's label and how its value is written, by its key in a report.
+// A rule's label and how its value is written, by its key in a report: in
+// the words the check's findings use, sizes and bit rates as the clients
+// write them.
 type setting struct {
 	key, label string
 	unit       func(v any) string
 }
 
-func mbps(v any) string {
+// allowedRate writes a bit rate a worker allows, given in Mbit/s; 0 allows
+// any.
+func allowedRate(v any) string {
 	if f, ok := v.(float64); ok {
 		if f == 0 {
-			return "off"
+			return "any"
 		}
-		return number(f) + " Mbit/s"
+		return rateText(f * 1e6)
 	}
 	return plain(v)
 }
 
-func gibValue(v any) string {
+// allowedSize writes a file size a worker allows, given in GiB; 0 allows any.
+func allowedSize(v any) string {
 	if f, ok := v.(float64); ok {
 		if f == 0 {
-			return "off"
+			return "any"
 		}
-		return number(f) + " GiB"
+		return sizeText(f * gib)
 	}
 	return plain(v)
 }
 
-func unitOf(unit string) func(v any) string {
+func countOf(unit string) func(v any) string {
 	return func(v any) string {
-		if f, ok := v.(float64); ok {
-			return number(f) + " " + unit
+		if f, ok := v.(float64); ok && f == float64(int(f)) {
+			return countText(int(f)) + " " + unit
 		}
 		return plain(v)
 	}
 }
 
-func override(v any) string {
+// encodeRate writes the bit rate an encode is made at: as allowed, unless
+// the transcoder sets one of its own.
+func encodeRate(v any) string {
 	if v == nil {
-		return "none: the cap"
+		return "as allowed"
 	}
-	return mbps(v)
+	return allowedRate(v)
 }
 
+// ladder writes a ladder as the transcoder reports it, a spec.
 func ladder(v any) string {
 	if s, ok := v.(string); ok && strings.TrimSpace(s) == "" {
-		return "one rendition"
+		return "source"
 	}
 	return plain(v)
+}
+
+// surroundCodec writes the packager's surround companion: its codec, or none.
+func surroundCodec(v any) string {
+	if s, ok := v.(string); ok {
+		if strings.EqualFold(strings.TrimSpace(s), "off") || strings.TrimSpace(s) == "" {
+			return "none"
+		}
+		return audioCodecName(s)
+	}
+	return plain(v)
+}
+
+// bitrate writes a bit rate the packager writes as 448k.
+func bitrate(v any) string {
+	if s, ok := v.(string); ok {
+		if bps, ok := parseBitrate(s); ok {
+			return rateText(bps)
+		}
+	}
+	return plain(v)
+}
+
+// forms writes the forms of image subtitles the packager keeps.
+func forms(v any) string {
+	list, ok := v.([]any)
+	if !ok {
+		return plain(v)
+	}
+	if len(list) == 0 {
+		return "none"
+	}
+	names := make([]string, 0, len(list))
+	for _, f := range list {
+		if s, ok := f.(string); ok {
+			names = append(names, formName(s))
+		}
+	}
+	return strings.Join(names, ", ")
 }
 
 // settings are the rules a report holds that the console names, in the
 // order it lists them; any other key follows, by name.
 var settings = []setting{
-	{"caps.movie1080Mbps", "Movie cap (1080)", mbps},
-	{"caps.movie2160Mbps", "Movie cap (2160)", mbps},
-	{"caps.movieMaxGiB", "Movie file size cap", gibValue},
-	{"caps.episode1080Mbps", "Episode cap (1080)", mbps},
-	{"caps.episode2160Mbps", "Episode cap (2160)", mbps},
-	{"bucket2160.minHeight", "2160 bucket from a height of", unitOf("lines")},
-	{"bucket2160.minWidth", "2160 bucket from a width of", unitOf("pixels")},
+	{"caps.movie1080Mbps", "Video bit rate allowed for a 1080 movie", allowedRate},
+	{"caps.movie2160Mbps", "Video bit rate allowed for a 2160 movie", allowedRate},
+	{"caps.movieMaxGiB", "File size allowed for a movie", allowedSize},
+	{"caps.episode1080Mbps", "Video bit rate allowed for a 1080 episode", allowedRate},
+	{"caps.episode2160Mbps", "Video bit rate allowed for a 2160 episode", allowedRate},
+	{"bucket2160.minHeight", "2160 from a height of", countOf("lines")},
+	{"bucket2160.minWidth", "2160 from a width of", countOf("pixels")},
 	{"encoder.codec", "HEVC encoder", plain},
 	{"encoder.preset", "Encoder preset", plain},
 	{"encoder.cq", "Constant quality", plain},
 	{"encoder.crf", "Constant rate factor", plain},
-	{"encoder.maxrate1080Mbps", "Maxrate (1080)", override},
-	{"encoder.maxrate2160Mbps", "Maxrate (2160)", override},
-	{"ladder", "Ladder", ladder},
-	{"extraLadder", "Extras ladder", ladder},
-	{"surroundAudio", "5.1 companion", plain},
-	{"surroundBitrate", "5.1 bit rate", plain},
-	{"stereoBitrate", "Stereo bit rate", plain},
-	{"imageSubtitles", "Image subtitles carried", plain},
+	{"encoder.maxrate1080Mbps", "Encode bit rate for 1080", encodeRate},
+	{"encoder.maxrate2160Mbps", "Encode bit rate for 2160", encodeRate},
+	{"ladder", "Renditions", ladder},
+	{"extraLadder", "Renditions of extras", ladder},
+	{"surroundAudio", "Surround track", surroundCodec},
+	{"surroundLayout", "Surround layout", plain},
+	{"surroundBitrate", "Surround bit rate", bitrate},
+	{"stereoBitrate", "Stereo bit rate", bitrate},
+	{"imageSubtitles", "Image subtitles kept", forms},
 }
 
 // skipped are keys a report carries that the console does not list: the

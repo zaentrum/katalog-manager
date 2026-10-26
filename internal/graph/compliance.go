@@ -23,9 +23,12 @@ type Compliance interface {
 	// Refresh has every title of kind ("" every kind) checked again, and
 	// answers whether a pass was set going.
 	Refresh(ctx context.Context, kind string) (bool, error)
+	// Queued says what a request to process titles again did, as the queue
+	// answered it, in words; matching says it named its titles by a filter.
+	Queued(ctx context.Context, res ReencodeEnqueued, matching bool) (ComplianceQueued, error)
 }
 
-// Rework queues titles to be encoded again, through the paced re-encode
+// Rework queues titles to be processed again, through the paced re-encode
 // queue (implemented by retry).
 type Rework interface {
 	EnqueueReencode(ctx context.Context, req ReencodeRequest) (ReencodeEnqueued, error)
@@ -86,7 +89,8 @@ type ComplianceRow struct {
 }
 
 // ComplianceSummary is how many of the titles a report covers break a rule,
-// the size of their packages and what those are to be after their rework.
+// the size of their packages and what those are to be at most once processed
+// again.
 type ComplianceSummary struct {
 	Rule           string
 	Titles         int32
@@ -124,7 +128,7 @@ type ComplianceReport struct {
 	NextCursor   *string
 }
 
-// ComplianceQueued is what a request to rework titles did.
+// ComplianceQueued is what a request to process titles again did.
 type ComplianceQueued struct {
 	Queued, AlreadyQueued, Skipped int32
 	Message                        string
@@ -195,7 +199,7 @@ func (r *Resolver) QueueRework(ctx context.Context, args struct{ Items []graphql
 	if err := r.allow(ctx, "Mutation.queueRework"); err != nil {
 		return nil, err
 	}
-	if r.svc.Rework == nil {
+	if r.svc.Compliance == nil || r.svc.Rework == nil {
 		return nil, errNotConfigured
 	}
 	items := make([]string, 0, len(args.Items))
@@ -204,14 +208,24 @@ func (r *Resolver) QueueRework(ctx context.Context, args struct{ Items []graphql
 			items = append(items, s)
 		}
 	}
-	if len(items) == 0 {
-		return &complianceQueuedResolver{m: ComplianceQueued{Message: "no title named: nothing queued"}}, nil
+	return r.rework(ctx, items, false)
+}
+
+// rework queues items to be processed again, and says what that did; none
+// is said so.
+func (r *Resolver) rework(ctx context.Context, items []string, matching bool) (*complianceQueuedResolver, error) {
+	var res ReencodeEnqueued
+	if len(items) > 0 {
+		var err error
+		if res, err = r.svc.Rework.EnqueueReencode(ctx, ReencodeRequest{Items: items}); err != nil {
+			return nil, err
+		}
 	}
-	res, err := r.svc.Rework.EnqueueReencode(ctx, ReencodeRequest{Items: items})
+	q, err := r.svc.Compliance.Queued(ctx, res, matching)
 	if err != nil {
 		return nil, err
 	}
-	return &complianceQueuedResolver{m: queuedOf(res)}, nil
+	return &complianceQueuedResolver{m: q}, nil
 }
 
 // QueueReworkMatching queues every title the filter matches that breaks a
@@ -231,14 +245,7 @@ func (r *Resolver) QueueReworkMatching(ctx context.Context, args struct {
 	if err != nil {
 		return nil, err
 	}
-	if len(items) == 0 {
-		return &complianceQueuedResolver{m: ComplianceQueued{Message: "no title that breaks a rule matches: nothing queued"}}, nil
-	}
-	res, err := r.svc.Rework.EnqueueReencode(ctx, ReencodeRequest{Items: items})
-	if err != nil {
-		return nil, err
-	}
-	return &complianceQueuedResolver{m: queuedOf(res)}, nil
+	return r.rework(ctx, items, true)
 }
 
 // RefreshCompliance has the titles of kind (every kind when omitted) checked
@@ -255,31 +262,6 @@ func (r *Resolver) RefreshCompliance(ctx context.Context, args struct{ Kind *str
 		kind = kinds[*args.Kind]
 	}
 	return r.svc.Compliance.Refresh(ctx, kind)
-}
-
-// queuedOf is what a request to rework titles did, as the queue answered it.
-func queuedOf(res ReencodeEnqueued) ComplianceQueued {
-	out := ComplianceQueued{Queued: res.Queued, AlreadyQueued: res.AlreadyQueued, Skipped: int32(len(res.Skipped))}
-	titles := func(n int32) string {
-		if n == 1 {
-			return "1 title"
-		}
-		return fmt.Sprintf("%d titles", n)
-	}
-	parts := []string{titles(res.Queued) + " queued for rework"}
-	if res.AlreadyQueued > 0 {
-		parts = append(parts, titles(res.AlreadyQueued)+" queued already")
-	}
-	if n := len(res.Skipped); n > 0 {
-		first := res.Skipped[0]
-		s := fmt.Sprintf("%s skipped (%s: %s", titles(int32(n)), first.ItemID, first.Reason)
-		if n > 1 {
-			s += fmt.Sprintf("; and %d more", n-1)
-		}
-		parts = append(parts, s+")")
-	}
-	out.Message = strings.Join(parts, "; ")
-	return out
 }
 
 // stamp writes a moment as the report says one: RFC 3339, in UTC.

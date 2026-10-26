@@ -39,8 +39,8 @@
 // those an admin asks for (Refresh), a title whose package completed or whose
 // pipeline ended (Touch), and a title the catalog gained.
 //
-// The check never queues a title: an admin reworks what it finds through the
-// re-encode queue (GraphQL queueRework, queueReworkMatching).
+// The check never queues a title: an admin has what it finds processed again
+// through the re-encode queue (GraphQL queueRework, queueReworkMatching).
 package compliance
 
 import (

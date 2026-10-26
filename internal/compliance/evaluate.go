@@ -27,10 +27,6 @@ const (
 // Rules are every rule, in the order the report lists them.
 var Rules = []string{NotPackaged, PackagingFailed, OverBitrateCap, OverSizeCap, NoSurround, ImageSubtitlesMissing, VideoNotHEVC}
 
-// DiscImageText is what a title whose file is a disc image is found to be:
-// the pipeline encodes none.
-const DiscImageText = "disc image: not encoded"
-
 // tolerance is how far above its cap a package's video may measure and still
 // be within it: the packager measures a rendition from its segments, whose
 // boxes add a little to the stream, and the transcoder judged the source by
@@ -186,16 +182,6 @@ func (r result) breaks(rules ...string) bool {
 
 func strp(s string) *string { return &s }
 
-// mbit writes a bit rate in Mbit/s: "73 Mbit/s", "8.4 Mbit/s".
-func mbit(bps float64) string {
-	return strconv.FormatFloat(roundTo(bps/1e6, 1), 'f', -1, 64) + " Mbit/s"
-}
-
-// gibs writes a size in GiB: "59.8 GiB".
-func gibs(b float64) string {
-	return strconv.FormatFloat(roundTo(b/gib, 1), 'f', -1, 64) + " GiB"
-}
-
 func roundTo(f float64, places int) float64 {
 	p := 1.0
 	for range places {
@@ -220,22 +206,22 @@ func evaluate(t title, r records, rs rulesState) result {
 	if !t.packaged() {
 		switch {
 		case t.Path != nil && processing.IsDiscImage(*t.Path):
-			add(PackagingFailed, DiscImageText, nil, nil)
+			add(PackagingFailed, discImageText, nil, nil)
 		case t.Transcode.is(processing.StatusFailed, processing.StatusSkipped):
-			add(PackagingFailed, stepText("transcode", t.Transcode), nil, nil)
+			add(PackagingFailed, stepText("transcoder", t.Transcode), nil, nil)
 		case t.Package.is(processing.StatusFailed, processing.StatusSkipped):
-			add(PackagingFailed, stepText("package", t.Package), nil, nil)
+			add(PackagingFailed, stepText("packager", t.Package), nil, nil)
 		case t.Original.State != library.OriginalPresent:
-			// no original to package, nor a package: nothing a rework can do
+			// no original to package, nor a package: processing it again cannot help
 		case t.Transcode.is(processing.StatusPending, processing.StatusInProgress),
 			t.Package.is(processing.StatusPending, processing.StatusInProgress):
 			// on its way: its pipeline runs
 		case t.Taken:
-			add(NotPackaged, "not packaged: taken in without a package, it plays from its original", nil, nil)
+			add(NotPackaged, takenInText, nil, nil)
 		case t.Transcode.is(processing.StatusDone, processing.StatusNotApplicable) && t.Package.is(processing.StatusDone):
-			add(NotPackaged, "not packaged: its transcode and its package are done, and no package is recorded", nil, nil)
+			add(NotPackaged, finishedText, nil, nil)
 		default:
-			add(NotPackaged, "not packaged", nil, nil)
+			add(NotPackaged, notPackagedText, nil, nil)
 		}
 		res.EstimatedBytes = estimate(t, r, rs, res)
 		return res
@@ -246,40 +232,38 @@ func evaluate(t title, r records, rs rulesState) result {
 	if tr := rs.transcoder; tr != nil && tr.t != nil {
 		if bucketed {
 			if limit, ok := tr.t.capOf(t.Kind, bucket); ok && limit > 0 {
-				if rate, from, ok := videoRate(r, copied); ok && rate > limit*1e6*(1+tolerance) &&
+				if rate, approx, ok := videoRate(r, copied); ok && rate > limit*1e6*(1+tolerance) &&
 					!(copied == no && encodedWithin(t.Transcode, limit)) {
-					text := "video " + mbit(rate)
-					if from != "" {
-						text += " (" + from + ")"
-					}
-					add(OverBitrateCap, fmt.Sprintf("%s, over the %s cap for a %d %s", text, mbit(limit*1e6), bucket, t.Kind),
-						strp(mbit(rate)), strp(mbit(limit*1e6)))
+					text, measured, allowed := bitrateWords(rate, approx, limit*1e6, bucket, t.Kind)
+					add(OverBitrateCap, text, measured, allowed)
 				}
 			}
 		}
 		if capGiB := tr.t.Caps.MovieMaxGiB; t.Kind == "movie" && capGiB != nil && *capGiB > 0 && copied == yes &&
 			res.OriginalBytes != nil && float64(*res.OriginalBytes) > *capGiB*gib {
-			size, limit := gibs(float64(*res.OriginalBytes)), gibs(*capGiB*gib)
-			add(OverSizeCap, fmt.Sprintf("original %s, over the %s cap for a movie, and its video copied as it is", size, limit),
-				strp(size), strp(limit))
+			text, measured, allowed := sizeWords(*capGiB * gib)
+			add(OverSizeCap, text, measured, allowed)
 		}
 	}
 	if pr := rs.packager; pr != nil && pr.p != nil {
 		if surroundOn(pr.p) && r.srcEssence != nil && r.pkgEssence != nil && library.SurroundLost(r.srcEssence, r.pkgEssence) {
-			text, measured, limit := surroundText(r.srcEssence, r.pkgEssence)
-			add(NoSurround, text, measured, limit)
+			had, hadOK := essenceNumber(r.srcEssence, "maxAudioChannels")
+			kept, keptOK := essenceNumber(r.pkgEssence, "maxAudioChannels")
+			text, measured, allowed := surroundWords(had, kept, hadOK, keptOK, pr.p)
+			add(NoSurround, text, measured, allowed)
 		}
 		if pr.p.ImageSubtitles != nil && r.src != nil && r.pkg != nil {
-			if forms, langs := missingImageSubtitles(r, pr.p.ImageSubtitles); len(langs) > 0 {
-				add(ImageSubtitlesMissing, fmt.Sprintf("%s subtitles in %s not in the package", strings.Join(forms, " and "),
-					strings.Join(langs, ", ")), strp(strings.Join(langs, ", ")), nil)
+			if byForm, langs := missingImageSubtitles(r, pr.p.ImageSubtitles); len(langs) > 0 {
+				text, measured, allowed := imageSubtitleWords(byForm, langs, pr.p.ImageSubtitles)
+				add(ImageSubtitlesMissing, text, measured, allowed)
 			}
 		}
 	}
 	if tr := rs.transcoder; tr != nil && tr.t != nil {
 		if ok, _ := tr.t.hevcRequired(); ok {
 			if codec := t.videoCodec(r); codec != "" && !isHEVC(codec) {
-				add(VideoNotHEVC, fmt.Sprintf("video %s (%s), not hevc", codecFamily(codec), codec), strp(codec), strp("hevc"))
+				text, measured, allowed := codecWords(codec)
+				add(VideoNotHEVC, text, measured, allowed)
 			}
 		}
 	}
@@ -287,19 +271,16 @@ func evaluate(t title, r records, rs rulesState) result {
 	return res
 }
 
-// stepText is what a failed or skipped transcode or package says, its
-// reason, and when it is retried, if it is.
-func stepText(name string, s step) string {
-	text := name + " " + strings.ReplaceAll(*s.Status, "_", " ")
+// stepText is what a failed or skipped transcode or package of worker says:
+// its reason, and whether a retry is scheduled.
+func stepText(worker string, s step) string {
+	reason := ""
 	if s.Error != nil && strings.TrimSpace(*s.Error) != "" {
-		text += ": " + strings.TrimSpace(*s.Error)
-	} else if s.Details != nil && strings.TrimSpace(*s.Details) != "" {
-		text += ": " + strings.TrimSpace(*s.Details)
+		reason = *s.Error
+	} else if s.Details != nil {
+		reason = *s.Details
 	}
-	if *s.Status == processing.StatusFailed && s.NextRetryAt != nil {
-		text += "; retried at " + s.NextRetryAt.UTC().Format(time.RFC3339)
-	}
-	return text
+	return stepWords(worker, *s.Status, reason, *s.Status == processing.StatusFailed && s.NextRetryAt != nil)
 }
 
 // tri is yes, no or unknown.
@@ -351,9 +332,8 @@ func encodedWithin(s step, limit float64) bool {
 	return err == nil && rate <= limit
 }
 
-// videoRate is the average bit rate of the package's video, bit/s, and how it
-// was read, in words ("" for the package's own measure), from the most
-// reliable measure the records give:
+// videoRate is the average bit rate of the package's video, bit/s, and
+// whether it is approximate, from the most reliable measure the records give:
 //
 //  1. the package's top rendition's bitrateBps: what the packager measured of
 //     the video it packaged, the sizes of its segments over their durations,
@@ -363,21 +343,21 @@ func encodedWithin(s step, limit float64) bool {
 //     video stream (the stream's, or its statistics tag): the stream copied.
 //  3. the package's size over its duration, less its audio renditions' bit
 //     rates: its subtitles and pictures count with it, so it errs high, as
-//     the transcoder's own last measure does.
+//     the transcoder's own last measure does, and it is approximate.
 //
 // The packaged playback row's bit rate is none of them: it is the master
 // playlist's peak bandwidth, the video's peaks and the audio together, which
 // an encode capped at the cap goes above.
-func videoRate(r records, copied tri) (float64, string, bool) {
+func videoRate(r records, copied tri) (float64, bool, bool) {
 	if r.pkg != nil && len(r.pkg.Renditions.Video) > 0 {
 		if b := r.pkg.Renditions.Video[0].BitrateBps; b != nil && *b > 0 {
-			return *b, "", true
+			return *b, false, true
 		}
 	}
 	if copied == yes && r.src != nil {
 		for _, s := range r.src.Streams {
 			if s.Type == "video" && !s.Dispositions.AttachedPic && s.Bitrate != nil && *s.Bitrate > 0 {
-				return *s.Bitrate, "the source's video stream", true
+				return *s.Bitrate, false, true
 			}
 		}
 	}
@@ -389,10 +369,10 @@ func videoRate(r records, copied tri) (float64, string, bool) {
 			}
 		}
 		if rate > 0 {
-			return rate, "the package's size less its audio", true
+			return rate, true, true
 		}
 	}
-	return 0, "", false
+	return 0, false, false
 }
 
 // capOf is the bit rate cap of a title of kind in bucket, Mbit/s (0: off),
@@ -581,26 +561,14 @@ func isHEVC(codec string) bool {
 	return false
 }
 
-// codecFamily names the codec of a codec string as people know it.
-func codecFamily(codec string) string {
-	c := strings.ToLower(codec)
-	for _, f := range []struct{ prefix, name string }{{"avc1", "h264"}, {"avc3", "h264"}, {"h264", "h264"},
-		{"av01", "av1"}, {"vp09", "vp9"}, {"vp9", "vp9"}, {"mp4v", "mpeg-4"}} {
-		if strings.HasPrefix(c, f.prefix) {
-			return f.name
-		}
-	}
-	return c
-}
-
 // hevcRequired reports whether the transcoder's rules make a package's video
-// HEVC whatever its source, and why not: its ladder's source rung is HEVC,
-// and either names its codec (source:hevc) or its encoder is no CPU one (on
-// libx265 a rung whose codec the ladder leaves to the default keeps a
-// browser-friendly H.264 source as it is).
+// HEVC whatever its source, and why not, in a sentence the report shows: its
+// ladder's source rung is HEVC, and either names its codec (source:hevc) or
+// its encoder is no CPU one (on libx265 a rung whose codec the ladder leaves
+// to the default keeps a browser-friendly H.264 source as it is).
 func (t *TranscoderRules) hevcRequired() (bool, string) {
 	if t.Ladder == nil {
-		return false, "its report gives no ladder"
+		return false, "The transcoder doesn't report its renditions, so the video format can't be checked."
 	}
 	spec := strings.ToLower(strings.TrimSpace(*t.Ladder))
 	tokens := strings.Split(spec, ",")
@@ -620,17 +588,17 @@ func (t *TranscoderRules) hevcRequired() (bool, string) {
 		}
 		switch {
 		case codec != "hevc":
-			return false, "its ladder's source rung is h264"
+			return false, "The transcoder makes the source's rendition in H.264, so an H.264 video breaks no rule."
 		case named:
 			return true, ""
 		case t.Encoder.Codec == nil:
-			return false, "its report gives no encoder"
+			return false, "The transcoder doesn't report its encoder, so the video format can't be checked."
 		case strings.EqualFold(strings.TrimSpace(*t.Encoder.Codec), "libx265"):
-			return false, "its ladder leaves the source rung's codec to the default, and on libx265 a browser-friendly h264 source is kept as it is"
+			return false, "With libx265 the transcoder keeps a browser-friendly H.264 video as it is, so an H.264 video breaks no rule."
 		}
 		return true, ""
 	}
-	return false, "its ladder has no source rung"
+	return false, "The transcoder makes no rendition at the source's size, so the video format can't be checked."
 }
 
 // surroundOn reports whether the packager makes a 5.1 companion.
@@ -665,22 +633,6 @@ func channels(n float64) string {
 	return fmt.Sprintf("%d channels", int(n))
 }
 
-// surroundText is what a package that lacks its source's surround is found
-// to be: the source's channels, the package's, and a 5.1 companion's, which
-// the package needs (a 7.1 source's 5.1 will do).
-func surroundText(src, pkg library.Doc) (string, *string, *string) {
-	had, hadOK := essenceNumber(src, "maxAudioChannels")
-	kept, keptOK := essenceNumber(pkg, "maxAudioChannels")
-	if !hadOK || had <= 2 {
-		return "no 5.1 of the source's surround", nil, nil
-	}
-	text := fmt.Sprintf("no 5.1 of the source's %d-channel audio", int(had))
-	if !keptOK {
-		return text, nil, strp(channels(min(had, 6)))
-	}
-	return fmt.Sprintf("%s: the package carries %s", text, channels(kept)), strp(channels(kept)), strp(channels(min(had, 6)))
-}
-
 // imageForms are the forms of image subtitles, by the codec of the stream.
 var imageForms = map[string]string{"hdmv_pgs_subtitle": "pgs", "dvd_subtitle": "vobsub", "dvb_subtitle": "dvb", "xsub": "xsub"}
 
@@ -704,18 +656,17 @@ func languageOf(codes ...*string) string {
 }
 
 // missingImageSubtitles are the image subtitles of the source of a form the
-// packager carries (forms) that the package carries none of in their
-// language: their forms and their languages, sorted. A package's image
-// subtitle carries the language its record gives it, and the language of the
-// source stream it was made from.
-func missingImageSubtitles(r records, carried []string) ([]string, []string) {
+// packager carries (carried) that the package carries none of in their
+// language: the languages of each form, and every language, sorted. A
+// package's image subtitle carries the language its record gives it, and the
+// language of the source stream it was made from.
+func missingImageSubtitles(r records, carried []string) (map[string][]string, []string) {
 	carries := map[string]bool{}
 	for _, f := range carried {
 		carries[strings.ToLower(strings.TrimSpace(f))] = true
 	}
 	langOfStream := map[int]string{}
-	type want struct{ forms map[string]bool }
-	wanted := map[string]*want{}
+	wanted := map[string]map[string]bool{} // language -> forms
 	for _, s := range r.src.Streams {
 		if s.Type != "subtitle" {
 			continue
@@ -736,9 +687,9 @@ func missingImageSubtitles(r records, carried []string) ([]string, []string) {
 			continue
 		}
 		if wanted[lang] == nil {
-			wanted[lang] = &want{forms: map[string]bool{}}
+			wanted[lang] = map[string]bool{}
 		}
-		wanted[lang].forms[form] = true
+		wanted[lang][form] = true
 	}
 	if len(wanted) == 0 {
 		return nil, nil
@@ -755,36 +706,35 @@ func missingImageSubtitles(r records, carried []string) ([]string, []string) {
 			}
 		}
 	}
-	forms := map[string]bool{}
+	byForm := map[string][]string{}
 	var langs []string
-	for lang, w := range wanted {
+	for lang, forms := range wanted {
 		if has[lang] {
 			continue
 		}
 		langs = append(langs, lang)
-		for f := range w.forms {
-			forms[f] = true
+		for f := range forms {
+			byForm[f] = append(byForm[f], lang)
 		}
 	}
 	sort.Strings(langs)
-	out := make([]string, 0, len(forms))
-	for f := range forms {
-		out = append(out, f)
+	for f := range byForm {
+		sort.Strings(byForm[f])
 	}
-	sort.Strings(out)
-	return out, langs
+	return byForm, langs
 }
 
-// estimate is what the title's package is to be after its rework, at most,
-// bytes; nil when that cannot be told. A rework that encodes the video (a
-// title over a cap, of another codec, or not packaged) makes a package of the
-// video at its maxrate (the transcoder's cap of its kind and bucket, or its
-// override) and the packager's audio for one language, the stereo rendition
-// and, when the source has surround or the record does not say, the 5.1
-// companion, for the title's duration. A rework that only adds tracks (the
-// 5.1, image subtitles) keeps the package's video: its package as it is,
-// with the 5.1 companion added. A title a rework cannot help (no original,
-// a disc image) has none.
+// estimate is what the title's package is to be at most once it is
+// processed again, bytes; nil when that cannot be told. Processing that
+// encodes the video (a title over a cap, of another codec, or not packaged)
+// makes a package of the video at its maxrate (the transcoder's cap of its
+// kind and bucket, or its override) and the packager's audio for one
+// language, the stereo rendition and, when the source has surround or the
+// record does not say, the surround track, for the title's duration.
+// Processing that only adds tracks (the surround track, image subtitles)
+// keeps the package's video: its package as it is, with the surround track
+// added. A title processing again cannot help (no original, a disc image)
+// has none.
 func estimate(t title, r records, rs rulesState, res result) *int64 {
 	if len(res.Findings) == 0 || t.Original.State != library.OriginalPresent ||
 		(t.Path != nil && processing.IsDiscImage(*t.Path)) {

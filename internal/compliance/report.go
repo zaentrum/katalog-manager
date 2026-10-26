@@ -118,20 +118,19 @@ func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, first in
 	}
 
 	var unchecked int32
-	var firstUnchecked *string
 	m := &out.Matching
 	if err := s.pool.QueryRow(ctx, filtered+`SELECT min(f.evaluatedat) FILTER (WHERE f.ruleshash <> ''),
 			count(*) FILTER (WHERE `+breaking+`),
 			COALESCE(sum(f.originalbytes) FILTER (WHERE `+breaking+`), 0)::float8,
 			COALESCE(sum(f.packagebytes) FILTER (WHERE `+breaking+`), 0)::float8,
 			(sum(f.estimatedbytes) FILTER (WHERE `+breaking+`))::float8,
-			count(*) FILTER (WHERE f.unchecked IS NOT NULL), min(f.unchecked)
+			count(*) FILTER (WHERE f.unchecked IS NOT NULL)
 		FROM f`, f.Kind, f.Search, rules).Scan(&out.EvaluatedAt, &m.Titles, &m.OriginalBytes, &m.PackageBytes,
-		&m.EstimatedBytes, &unchecked, &firstUnchecked); err != nil {
+		&m.EstimatedBytes, &unchecked); err != nil {
 		return out, err
 	}
 	out.Total = m.Titles
-	out.NotEvaluated = notEvaluated(rs, unchecked, firstUnchecked)
+	out.NotEvaluated = notEvaluated(rs, unchecked)
 	q := &out.Queue
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state = 'queued'), count(*) FILTER (WHERE state = 'sent'),
 			count(*) FILTER (WHERE state = 'done'), count(*) FILTER (WHERE state = 'failed')
@@ -164,8 +163,8 @@ func (s *Service) pending(ctx context.Context, kind, hash string) (int32, error)
 }
 
 // summary is, for every rule, how many of the titles of f's kind and search
-// break it, the size of their packages, and what those are to be after
-// their rework (nil when that is known of none).
+// break it, the size of their packages, and what those are to be at most
+// once processed again (nil when that is known of none).
 func (s *Service) summary(ctx context.Context, f graph.ComplianceFilter) ([]graph.ComplianceSummary, error) {
 	rows, err := s.pool.Query(ctx, filtered+`SELECT r, count(*), COALESCE(sum(f.packagebytes), 0)::float8, sum(f.estimatedbytes)::float8
 		FROM f, unnest(f.rules) AS r GROUP BY r`, f.Kind, f.Search)
@@ -227,9 +226,13 @@ func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []st
 		var r graph.ComplianceRow
 		var findings string
 		var orig, pkg, est *int64
+		var reason *string
 		if err := rows.Scan(&r.ItemID, &r.Title, &r.Year, &r.Kind, &r.SeriesID, &r.SeriesTitle, &r.Season, &r.Episode,
-			&findings, &orig, &pkg, &est, &r.EvaluatedAt, &r.Queue, &r.QueueReason); err != nil {
+			&findings, &orig, &pkg, &est, &r.EvaluatedAt, &r.Queue, &reason); err != nil {
 			return nil, nil, err
+		}
+		if r.Queue != nil && reason != nil {
+			r.QueueReason = queueWords(*r.Queue, *reason)
 		}
 		var fs []finding
 		if err := json.Unmarshal([]byte(findings), &fs); err != nil {
@@ -264,7 +267,7 @@ func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []st
 	return out, next, nil
 }
 
-// blocked says of each row why a rework cannot help it, as the re-encode
+// blocked says of each row why processing it again cannot help, as the re-encode
 // queue skips it: its original deleted after packaging, no file to encode,
 // its file a disc image.
 func (s *Service) blocked(ctx context.Context, rows []graph.ComplianceRow) error {
@@ -302,15 +305,92 @@ func (s *Service) blocked(ctx context.Context, rows []graph.ComplianceRow) error
 	for i := range rows {
 		id := rows[i].ItemID
 		switch o := originals[id]; {
+		case o.State == library.OriginalRetiring:
+			rows[i].ReworkBlocked = strp(deletingText)
 		case o.Gone():
-			rows[i].ReworkBlocked = strp(o.Why())
+			rows[i].ReworkBlocked = strp(deletedText)
 		case !file[id]:
-			rows[i].ReworkBlocked = strp("no file to encode")
+			rows[i].ReworkBlocked = strp(noFileText)
 		case disc[id]:
-			rows[i].ReworkBlocked = strp("its file is a " + processing.DiscImageReason)
+			rows[i].ReworkBlocked = strp(discText)
 		}
 	}
 	return nil
+}
+
+// Queued says what a request to process titles again did, as the queue
+// answered it (res), in words: how many it queued, how many were queued
+// already, and why it skipped any, as the catalog holds each now; matching
+// says the request named its titles by a filter.
+func (s *Service) Queued(ctx context.Context, res graph.ReencodeEnqueued, matching bool) (graph.ComplianceQueued, error) {
+	out := graph.ComplianceQueued{Queued: res.Queued, AlreadyQueued: res.AlreadyQueued, Skipped: int32(len(res.Skipped))}
+	kinds := map[string]int{}
+	if len(res.Skipped) > 0 {
+		if why := s.ready(ctx); why != nil {
+			return out, why
+		}
+		ids := make([]string, len(res.Skipped))
+		for i, sk := range res.Skipped {
+			ids[i] = sk.ItemID
+		}
+		of, err := s.skipKinds(ctx, ids)
+		if err != nil {
+			return out, err
+		}
+		for _, id := range ids {
+			kinds[of[id]]++
+		}
+	}
+	out.Message = queuedWords(int(res.Queued), int(res.AlreadyQueued), kinds, matching)
+	return out, nil
+}
+
+// skipKinds says of each title of ids why the queue skips it, as the queue
+// tells (retry's unencodable and EnqueueReencode): not in the catalog, a
+// series without episodes, no movie, episode or series, its original deleted
+// after packaging or being deleted, no file, a disc image.
+func (s *Service) skipKinds(ctx context.Context, ids []string) (map[string]string, error) {
+	originals, err := library.OriginalsOf(ctx, s.pool, ids)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, `SELECT x.id, lower(i.type),
+			EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets p WHERE p.item_id = x.id AND p.isprimary = true),
+			`+processing.DiscImageOf("x.id")+`
+		FROM unnest($1::text[]) AS x(id) LEFT JOIN com_nalet_katalog_items i ON i.id = x.id`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id string
+		var typ *string
+		var file, disc bool
+		if err := rows.Scan(&id, &typ, &file, &disc); err != nil {
+			return nil, err
+		}
+		o := originals[id]
+		switch {
+		case typ == nil:
+			out[id] = skipUnknown
+		case *typ == "series":
+			out[id] = skipNoEpisodes
+		case *typ != "movie" && *typ != "episode":
+			out[id] = skipOther
+		case o.State == library.OriginalRetiring:
+			out[id] = skipDeleting
+		case o.Gone():
+			out[id] = skipDeleted
+		case disc:
+			out[id] = skipDisc
+		case !file:
+			out[id] = skipNoFile
+		default:
+			out[id] = skipOther
+		}
+	}
+	return out, rows.Err()
 }
 
 // Matching are the titles f matches that break a rule, in the report's
@@ -349,74 +429,73 @@ func floatOf(v *int64) *float64 {
 }
 
 // capNames are the transcoder's caps by their key in its report, and what
-// each is the cap of.
+// each is the limit for.
 var capNames = []struct{ key, of string }{
 	{"movie1080Mbps", "a 1080 movie"}, {"movie2160Mbps", "a 2160 movie"},
 	{"episode1080Mbps", "a 1080 episode"}, {"episode2160Mbps", "a 2160 episode"},
 }
 
 // notEvaluated says of each rule the check does not hold the titles against
-// why: a worker that never reported, a value its report does not give, a
-// rule it switched off, the library's layout, records that cannot be read.
-func notEvaluated(rs rulesState, unchecked int32, firstUnchecked *string) []string {
+// why, in a sentence: a worker that never reported, a value its report does
+// not give, a limit it does not set, the library's layout, records that
+// cannot be read.
+func notEvaluated(rs rulesState, unchecked int32) []string {
 	out := []string{}
 	if rs.transcoder == nil || rs.transcoder.t == nil {
-		out = append(out, "the transcoder has not reported its rules, so the caps and the video codec are not checked")
+		out = append(out, "The transcoder hasn't reported its limits, so bit rates, file sizes and the video format can't be checked.")
 	} else {
 		t := rs.transcoder.t
 		caps := map[string]*float64{"movie1080Mbps": t.Caps.Movie1080Mbps, "movie2160Mbps": t.Caps.Movie2160Mbps,
 			"episode1080Mbps": t.Caps.Episode1080Mbps, "episode2160Mbps": t.Caps.Episode2160Mbps}
 		if t.Bucket2160.MinHeight == nil || t.Bucket2160.MinWidth == nil {
-			out = append(out, "the transcoder's rules give no 2160 bucket (bucket2160), so the bitrate caps are not checked")
+			out = append(out, "The transcoder doesn't report where 2160 begins, so bit rates can't be checked.")
 		} else {
 			for _, c := range capNames {
 				switch v := caps[c.key]; {
 				case v == nil:
-					out = append(out, fmt.Sprintf("the transcoder's rules give no caps.%s, so the bitrate of %s is not checked", c.key, c.of))
+					out = append(out, fmt.Sprintf("The transcoder doesn't report the bit rate it allows for %s, so it can't be checked.", c.of))
 				case *v == 0:
-					out = append(out, fmt.Sprintf("the transcoder's bitrate cap of %s is off, so it is not checked", c.of))
+					out = append(out, fmt.Sprintf("The transcoder allows any bit rate for %s.", c.of))
 				}
 			}
 		}
 		switch v := t.Caps.MovieMaxGiB; {
 		case v == nil:
-			out = append(out, "the transcoder's rules give no caps.movieMaxGiB, so a movie's file size is not checked")
+			out = append(out, "The transcoder doesn't report the file size it allows for a movie, so it can't be checked.")
 		case *v == 0:
-			out = append(out, "the transcoder's file size cap of a movie is off, so it is not checked")
+			out = append(out, "The transcoder allows movie files of any size.")
 		}
 		if ok, why := t.hevcRequired(); !ok {
-			out = append(out, "the transcoder's rules do not make every package's video hevc ("+why+"), so the video codec is not checked")
+			out = append(out, why)
 		}
 	}
 	if rs.packager == nil || rs.packager.p == nil {
-		out = append(out, "the packager has not reported its rules, so surround and image subtitles are not checked")
+		out = append(out, "The packager hasn't reported what it keeps, so surround and image subtitles can't be checked.")
 	} else {
 		p := rs.packager.p
 		switch {
 		case p.SurroundAudio == nil:
-			out = append(out, "the packager's rules give no surroundAudio, so surround is not checked")
+			out = append(out, "The packager doesn't report its surround track, so surround can't be checked.")
 		case !surroundOn(p):
-			out = append(out, "the packager makes no 5.1 companion (surroundAudio "+strings.TrimSpace(*p.SurroundAudio)+
-				"), so surround is not checked")
+			out = append(out, "The packager makes no surround track, so a package without one breaks no rule.")
 		}
 		switch {
 		case p.ImageSubtitles == nil:
-			out = append(out, "the packager's rules give no imageSubtitles, so image subtitles are not checked")
+			out = append(out, "The packager doesn't report which image subtitles it keeps, so they can't be checked.")
 		case len(p.ImageSubtitles) == 0:
-			out = append(out, "the packager carries no image subtitles, so they are not checked")
+			out = append(out, "The packager keeps no image subtitles, so a package without them breaks no rule.")
 		}
 	}
 	if !rs.v2 {
-		out = append(out, "the library's layout is legacy, which keeps no record of a source or a package, "+
-			"so the bitrate caps, surround and image subtitles are not checked")
+		out = append(out, "The library uses the legacy layout, which keeps no records of sources and packages, "+
+			"so bit rates, surround and image subtitles can't be checked.")
 	}
-	if unchecked > 0 && firstUnchecked != nil {
-		titles := fmt.Sprintf("%d titles", unchecked)
-		if unchecked == 1 {
-			titles = "1 title"
-		}
-		out = append(out, fmt.Sprintf("the records of %s could not be read (the first: %s), so their bitrate caps, "+
-			"surround and image subtitles are not checked", titles, *firstUnchecked))
+	switch {
+	case unchecked == 1:
+		out = append(out, "The records of 1 title can't be read, so its bit rate, surround and image subtitles can't be checked.")
+	case unchecked > 1:
+		out = append(out, fmt.Sprintf("The records of %s can't be read, so their bit rates, surround and image subtitles "+
+			"can't be checked.", titlesText(int(unchecked))))
 	}
 	return out
 }

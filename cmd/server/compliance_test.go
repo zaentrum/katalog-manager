@@ -82,8 +82,8 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		"episode1080Mbps": 6, "episode2160Mbps": 8}, "bucket2160": {"minHeight": 2000, "minWidth": 3200},
 		"encoder": {"codec": "hevc_nvenc", "preset": "p5", "cq": 23, "maxrate1080Mbps": null, "maxrate2160Mbps": null},
 		"ladder": "source:hevc", "extraLadder": "source:hevc"}}`
-	packager := `{"version": "3f2a9c1", "rules": {"surroundAudio": "eac3", "surroundBitrate": "448k", "stereoBitrate": "192k",
-		"imageSubtitles": ["pgs", "vobsub"]}}`
+	packager := `{"version": "3f2a9c1", "rules": {"surroundAudio": "eac3", "surroundLayout": "5.1", "surroundBitrate": "448k",
+		"stereoBitrate": "192k", "imageSubtitles": ["pgs", "vobsub"]}}`
 	if code := in.put(t, "/api/analyze/rules/transcoder", viewer, transcoder); code != http.StatusForbidden {
 		t.Errorf("a viewer's report of rules: %d, want 403", code)
 	}
@@ -193,8 +193,9 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		t.Errorf("the report's rows:\n%s", got)
 	}
 	remux := rep.Rows[0]
-	if remux.ItemID != remuxID || remux.Findings[0].Text != "video 73 Mbit/s, over the 14 Mbit/s cap for a 2160 movie" ||
-		*remux.Findings[0].Measured != "73 Mbit/s" || *remux.Findings[0].Limit != "14 Mbit/s" ||
+	spaced := func(s string) string { return strings.ReplaceAll(s, "\u00a0", " ") }
+	if remux.ItemID != remuxID || spaced(remux.Findings[0].Text) != "The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder "+
+		"allows for a 2160 movie." || spaced(*remux.Findings[0].Measured) != "73 Mbit/s" || spaced(*remux.Findings[0].Limit) != "14 Mbit/s" ||
 		*remux.PackageBytes != 59e9 || *remux.OriginalBytes != 63e9 || remux.EstimatedBytes == nil || remux.Queue != nil {
 		t.Errorf("the remux: %+v", remux)
 	}
@@ -210,7 +211,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 			rep.Total, rep.Pending, rep.Evaluating, rep.EvaluatedAt, rep.NextCursor, rep.NotEvaluated, len(rep.Summary))
 	}
 	if tr := rep.Rules.Transcoder; tr.Worker != "transcoder" || tr.Version != "3f2a9c1" || len(tr.Rules) != 14 ||
-		tr.Rules[1].Key != "caps.movie2160Mbps" || tr.Rules[1].Value != "14 Mbit/s" || rep.Rules.Packager.Worker != "packager" {
+		tr.Rules[1].Key != "caps.movie2160Mbps" || spaced(tr.Rules[1].Value) != "14 Mbit/s" || rep.Rules.Packager.Worker != "packager" {
 		t.Errorf("the rules: %+v", rep.Rules)
 	}
 
@@ -240,12 +241,12 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	}
 	mutate(`mutation { q: queueReworkMatching(kind: MOVIE, rules: [OVER_BITRATE_CAP, VIDEO_NOT_HEVC], search: "remux") {
 		queued alreadyQueued skipped message } }`)
-	if q := queued.Q; q.Queued != 1 || q.AlreadyQueued != 0 || q.Skipped != 0 || q.Message != "1 title queued for rework" {
+	if q := queued.Q; q.Queued != 1 || q.AlreadyQueued != 0 || q.Skipped != 0 || q.Message != "1 title queued to be processed again." {
 		t.Errorf("queueReworkMatching: %+v", q)
 	}
 	mutate(`mutation { q: queueRework(items: ["` + remuxID + `", "` + neverID + `", "` + showID + `"]) { queued alreadyQueued skipped message } }`)
 	if q := queued.Q; q.Queued != 2 || q.AlreadyQueued != 1 || q.Skipped != 0 ||
-		q.Message != "2 titles queued for rework; 1 title queued already" {
+		q.Message != "2 titles queued to be processed again. 1 title is queued already." {
 		t.Errorf("queueRework: %+v", q)
 	}
 	if got := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue WHERE state = 'queued' AND selection = 'items'`); got != 3 {
@@ -262,7 +263,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		t.Errorf("the queue's counts: %+v", q)
 	}
 	mutate(`mutation { q: queueReworkMatching(rules: [IMAGE_SUBTITLES_MISSING]) { queued alreadyQueued skipped message } }`)
-	if q := queued.Q; q.Queued != 0 || q.Message != "no title that breaks a rule matches: nothing queued" {
+	if q := queued.Q; q.Queued != 0 || q.Message != "No title fits the filter, so none is queued." {
 		t.Errorf("a filter no title matches: %+v", q)
 	}
 
@@ -286,8 +287,8 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	if len(a.Errors) > 0 || json.Unmarshal(a.Data, &rules) != nil {
 		t.Fatalf("pipelineRules: %s %v", a.Data, a.Errors)
 	}
-	if p := rules.PipelineRules.Packager; p.Worker != "packager" || p.Version != "3f2a9c1" || len(p.Rules) != 4 ||
-		p.Rules[3].Key != "imageSubtitles" || p.Rules[3].Value != "pgs, vobsub" {
+	if p := rules.PipelineRules.Packager; p.Worker != "packager" || p.Version != "3f2a9c1" || len(p.Rules) != 5 ||
+		p.Rules[4].Key != "imageSubtitles" || p.Rules[4].Value != "PGS, VobSub" {
 		t.Errorf("the packager's rules: %+v", p)
 	}
 }

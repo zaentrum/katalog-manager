@@ -1305,15 +1305,16 @@ enum ComplianceRule {
   # an original present, no package, and no transcode or package waiting or
   # running
   NOT_PACKAGED
-  # no package, and the transcode or the package failed or was skipped (a
-  # disc image: "disc image: not encoded")
+  # no package, and the transcode or the package failed or was skipped, or
+  # the file is a disc image, which the transcoder doesn't encode
   PACKAGING_FAILED
-  # the package's video above the transcoder's cap for its kind and bucket
+  # the package's video above the bit rate the transcoder allows for its kind
+  # and bucket
   OVER_BITRATE_CAP
-  # a movie whose original is above the transcoder's file size cap, its
-  # video copied as it is
+  # a movie whose original is larger than the file size the transcoder
+  # allows, its video copied as it is
   OVER_SIZE_CAP
-  # the packager makes a 5.1 companion, and the package lacks the surround
+  # the packager makes a surround track, and the package lacks the surround
   # its source had
   NO_SURROUND
   # the source has image subtitles of a form the packager carries, and the
@@ -1352,9 +1353,10 @@ type PipelineRules {
   packager: WorkerRules
 }
 
-# A rule a title breaks: what the check found, in words ("video 73 Mbit/s,
-# over the 14 Mbit/s cap for a 2160 movie"), what it measured and the
-# rule's limit (null where a rule has none).
+# A rule a title breaks: the reason, in a sentence ("The video runs at
+# 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie."),
+# what was measured and the limit the worker allows (null where a rule has
+# none, or the row's columns show it).
 type ComplianceFinding {
   rule: ComplianceRule!
   text: String!
@@ -1363,13 +1365,13 @@ type ComplianceFinding {
 }
 
 # A title that breaks a rule. originalBytes is the size of its original,
-# packageBytes of its package; estimatedBytes what its package is to be
-# after its rework at most, null when that cannot be told. queue is where
-# it stands in the re-encode queue (queued, sent, done or failed; null when
-# it was never queued), and queueReason why it waits or failed there.
-# reworkBlocked says why a rework cannot help it (its original deleted after
-# packaging, its file a disc image), null when it can. evaluatedAt is when
-# the check found it so (RFC 3339).
+# packageBytes of its package; estimatedBytes what its package is to be at
+# most once it is processed again, null when that cannot be told. queue is
+# where it stands in the re-encode queue (queued, sent, done or failed; null
+# when it was never queued), and queueReason why it waits or failed there.
+# reworkBlocked says why processing it again cannot help (its original
+# deleted after packaging, no file, a disc image), null when it can.
+# evaluatedAt is when the check found it so (RFC 3339).
 type ComplianceRow {
   itemId: ID!
   title: String!
@@ -1391,7 +1393,7 @@ type ComplianceRow {
 
 # Of the titles of the report's kind and search, whatever its rules, those
 # that break a rule: how many, the size of their packages, and what those are
-# to be after their rework (null when it cannot be told of any).
+# to be at most once processed again (null when it cannot be told of any).
 type ComplianceSummary {
   rule: ComplianceRule!
   titles: Int!
@@ -1441,10 +1443,10 @@ type ComplianceReport {
   nextCursor: String
 }
 
-# What a request to rework titles did: those queued, those queued already
-# (waiting or sent), those skipped (nothing to encode: no file, the
-# original deleted after packaging, a disc image, no movie or episode), and
-# what happened, in words.
+# What a request to process titles again did: those queued, those queued
+# already (waiting or sent), those skipped (no file, the original deleted
+# after packaging, a disc image, no movie, episode or series), and what
+# happened, in a sentence.
 type ComplianceQueued {
   queued: Int!
   alreadyQueued: Int!
@@ -1462,9 +1464,9 @@ extend type Query {
 }
 
 extend type Mutation {
-  # Queues titles to be encoded again under the pipeline's current rules,
-  # through the re-encode queue, which sends them at its pace (a series is
-  # its episodes). Nothing else queues a title the check found.
+  # Queues titles to be processed again under the rules the workers run
+  # with now, through the re-encode queue, which sends them at its pace (a
+  # series is its episodes). Nothing else queues a title the check found.
   queueRework(items: [ID!]!): ComplianceQueued!
   # Queues every title the filter matches that breaks a rule, as
   # queueRework does.

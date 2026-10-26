@@ -16,7 +16,8 @@ const (
 		"bucket2160": {"minHeight": 2000, "minWidth": 3200},
 		"encoder": {"codec": "hevc_nvenc", "preset": "p5", "cq": 23, "maxrate1080Mbps": null, "maxrate2160Mbps": null},
 		"ladder": "source:hevc", "extraLadder": "source:hevc"}`
-	packagerReport = `{"surroundAudio": "eac3", "surroundBitrate": "448k", "stereoBitrate": "192k", "imageSubtitles": ["pgs", "vobsub"]}`
+	packagerReport = `{"surroundAudio": "eac3", "surroundLayout": "5.1", "surroundBitrate": "448k", "stereoBitrate": "192k",
+		"imageSubtitles": ["pgs", "vobsub"]}`
 )
 
 // stateOf is the rules of the reports given ("" for a worker that did not
@@ -109,8 +110,12 @@ func ftoa(f float64) string {
 }
 
 // found writes a result's findings, one a line: "RULE text [measured /
-// limit]".
+// limit]", a no-break space written as a space.
 func found(r result) string {
+	return strings.ReplaceAll(foundRaw(r), nbsp, " ")
+}
+
+func foundRaw(r result) string {
 	var out []string
 	for _, f := range r.Findings {
 		s := f.Rule + " " + f.Text
@@ -144,23 +149,23 @@ func TestTheBitrateCapsByKindAndBucket(t *testing.T) {
 	}{
 		{"a 1080 movie within", "movie", 1920, 1080, 7.9e6, ""},
 		{"a 1080 movie over", "movie", 1920, 800, 9.4e6,
-			"OVER_BITRATE_CAP video 9.4 Mbit/s, over the 8 Mbit/s cap for a 1080 movie [9.4 Mbit/s / 8 Mbit/s]"},
+			"OVER_BITRATE_CAP The video runs at 9.4 Mbit/s, above the 8 Mbit/s the transcoder allows for a 1080 movie. [9.4 Mbit/s / 8 Mbit/s]"},
 		{"a 2160 movie within", "movie", 3840, 2160, 13.9e6, ""},
 		{"a 2160 movie over", "movie", 3840, 2160, 73e6,
-			"OVER_BITRATE_CAP video 73 Mbit/s, over the 14 Mbit/s cap for a 2160 movie [73 Mbit/s / 14 Mbit/s]"},
+			"OVER_BITRATE_CAP The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie. [73 Mbit/s / 14 Mbit/s]"},
 		{"a scope picture is 2160 by its width", "movie", 3840, 1600, 20e6,
-			"OVER_BITRATE_CAP video 20 Mbit/s, over the 14 Mbit/s cap for a 2160 movie [20 Mbit/s / 14 Mbit/s]"},
+			"OVER_BITRATE_CAP The video runs at 20 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie. [20 Mbit/s / 14 Mbit/s]"},
 		{"a 2560 wide picture is 1080", "movie", 2560, 1440, 12e6,
-			"OVER_BITRATE_CAP video 12 Mbit/s, over the 8 Mbit/s cap for a 1080 movie [12 Mbit/s / 8 Mbit/s]"},
+			"OVER_BITRATE_CAP The video runs at 12 Mbit/s, above the 8 Mbit/s the transcoder allows for a 1080 movie. [12 Mbit/s / 8 Mbit/s]"},
 		{"a 1080 episode within", "episode", 1920, 1080, 5.9e6, ""},
 		{"a 1080 episode over", "episode", 1920, 1080, 7e6,
-			"OVER_BITRATE_CAP video 7 Mbit/s, over the 6 Mbit/s cap for a 1080 episode [7 Mbit/s / 6 Mbit/s]"},
+			"OVER_BITRATE_CAP The video runs at 7 Mbit/s, above the 6 Mbit/s the transcoder allows for a 1080 episode. [7 Mbit/s / 6 Mbit/s]"},
 		{"a 2160 episode within", "episode", 3840, 2160, 7.9e6, ""},
 		{"a 2160 episode over", "episode", 3840, 2160, 12.5e6,
-			"OVER_BITRATE_CAP video 12.5 Mbit/s, over the 8 Mbit/s cap for a 2160 episode [12.5 Mbit/s / 8 Mbit/s]"},
+			"OVER_BITRATE_CAP The video runs at 12.5 Mbit/s, above the 8 Mbit/s the transcoder allows for a 2160 episode. [12.5 Mbit/s / 8 Mbit/s]"},
 		{"a copy just above the cap, within the tolerance", "movie", 3840, 2160, 14.3e6, ""},
 		{"a copy above the tolerance", "movie", 3840, 2160, 14.5e6,
-			"OVER_BITRATE_CAP video 14.5 Mbit/s, over the 14 Mbit/s cap for a 2160 movie [14.5 Mbit/s / 14 Mbit/s]"},
+			"OVER_BITRATE_CAP The video runs at 14.5 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie. [14.5 Mbit/s / 14 Mbit/s]"},
 	} {
 		got := found(evaluate(packagedTitle(tc.kind), recordsOf(t, pkgJSON(tc.width, tc.height, tc.rate, "copy"),
 			srcJSON(tc.width, tc.height)), rs))
@@ -178,7 +183,7 @@ func TestTheBucketIsTheSources(t *testing.T) {
 	cover := `{"streams": [{"index": 0, "type": "video", "width": 1920, "height": 1080},
 		{"index": 1, "type": "video", "width": 4000, "height": 4000, "dispositions": {"attachedPic": true}}], "essence": {}}`
 	if got := found(evaluate(packagedTitle("movie"), recordsOf(t, pkgJSON(1920, 1080, 12e6, "copy"), cover), rs)); got !=
-		"OVER_BITRATE_CAP video 12 Mbit/s, over the 8 Mbit/s cap for a 1080 movie [12 Mbit/s / 8 Mbit/s]" {
+		"OVER_BITRATE_CAP The video runs at 12 Mbit/s, above the 8 Mbit/s the transcoder allows for a 1080 movie. [12 Mbit/s / 8 Mbit/s]" {
 		t.Errorf("a 1080 source with large cover art: %q, want it in the 1080 bucket", got)
 	}
 	wide := `{"streams": [{"index": 0, "type": "video", "width": 1920, "height": 1080},
@@ -231,13 +236,13 @@ func TestTheVideoIsMeasuredByTheMostReliableRecord(t *testing.T) {
 		"essence": {}}`
 	src := `{"streams": [{"index": 0, "type": "video", "width": 3840, "height": 2160, "bitrate": 30000000}], "essence": {}}`
 	got := found(evaluate(packagedTitle("movie"), recordsOf(t, pkg, src), rs))
-	if want := "OVER_BITRATE_CAP video 30 Mbit/s (the source's video stream), over the 14 Mbit/s cap for a 2160 movie " +
+	if want := "OVER_BITRATE_CAP The video runs at 30 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie. " +
 		"[30 Mbit/s / 14 Mbit/s]"; got != want {
 		t.Errorf("a copy measured by its source's stream:\n got  %q\n want %q", got, want)
 	}
 	got = found(evaluate(packagedTitle("movie"), recordsOf(t, pkg, `{"streams": [], "essence": {}}`), rs))
 	// 31.5 GB over two hours is 35 Mbit/s, less 0.832 of audio
-	if want := "OVER_BITRATE_CAP video 34.2 Mbit/s (the package's size less its audio), over the 14 Mbit/s cap for a 2160 movie " +
+	if want := "OVER_BITRATE_CAP The video runs at about 34.2 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie. " +
 		"[34.2 Mbit/s / 14 Mbit/s]"; got != want {
 		t.Errorf("a package measured by its size:\n got  %q\n want %q", got, want)
 	}
@@ -262,7 +267,8 @@ func TestTheFileSizeCap(t *testing.T) {
 		want    string
 	}{
 		{"a copied movie of 20 GiB", "movie", big, "copy", transcoderReport,
-			"OVER_SIZE_CAP original 20 GiB, over the 15 GiB cap for a movie, and its video copied as it is [20 GiB / 15 GiB]"},
+			"OVER_SIZE_CAP The original is larger than the 16.1 GB the transcoder allows for a movie, and the package keeps " +
+				"its video as it is. [- / 16.1 GB]"},
 		{"an encoded movie of 20 GiB", "movie", big, "hevc_nvenc", transcoderReport, ""},
 		{"a copied movie of 10 GiB", "movie", small, "copy", transcoderReport, ""},
 		{"a copied episode of 20 GiB", "episode", big, "copy", transcoderReport, ""},
@@ -308,9 +314,11 @@ func TestSurroundLostVersusKept(t *testing.T) {
 		want     string
 	}{
 		{"a 5.1 source, a stereo package", 6, 2,
-			"NO_SURROUND no 5.1 of the source's 6-channel audio: the package carries 2 channels [2 channels / 6 channels]"},
+			"NO_SURROUND The package has 2 audio channels, and the source has 6. The 5.1 E-AC-3 track the packager makes is missing. " +
+				"[2 channels / 5.1 E-AC-3]"},
 		{"a 7.1 source, a stereo package", 8, 2,
-			"NO_SURROUND no 5.1 of the source's 8-channel audio: the package carries 2 channels [2 channels / 6 channels]"},
+			"NO_SURROUND The package has 2 audio channels, and the source has 8. The 5.1 E-AC-3 track the packager makes is missing. " +
+				"[2 channels / 5.1 E-AC-3]"},
 		{"a 5.1 source, its 5.1 kept", 6, 6, ""},
 		{"a 7.1 source, a 5.1 kept", 8, 6, ""},
 	} {
@@ -343,13 +351,16 @@ func TestImageSubtitles(t *testing.T) {
 	rs := stateOf(t, transcoderReport, packagerReport)
 	for _, tc := range []struct{ name, subs, want string }{
 		{"only the english pgs carried", `{"format": "pgs", "language": "eng"}, {"format": "webvtt", "language": "spa"}`,
-			"IMAGE_SUBTITLES_MISSING pgs and vobsub subtitles in de, fr not in the package [de, fr / -]"},
+			"IMAGE_SUBTITLES_MISSING The source's PGS subtitles in German, and its VobSub subtitles in French, are missing from " +
+				"the package. The packager keeps PGS and VobSub subtitles. [German, French / PGS, VobSub]"},
 		{"every image subtitle carried", `{"format": "pgs", "language": "eng"}, {"format": "pgs", "language": "ger"},
 			{"format": "vobsub", "language": "fre"}`, ""},
 		{"a subtitle by its source stream", `{"format": "pgs", "language": "eng"}, {"format": "pgs", "language": "und", "sourceStreamIndex": 3},
 			{"format": "vobsub", "language": "fre"}`, ""},
 		{"a text track is no image subtitle", `{"format": "webvtt", "language": "eng"}, {"format": "webvtt", "language": "ger"},
-			{"format": "webvtt", "language": "fre"}`, "IMAGE_SUBTITLES_MISSING pgs and vobsub subtitles in de, en, fr not in the package [de, en, fr / -]"},
+			{"format": "webvtt", "language": "fre"}`, "IMAGE_SUBTITLES_MISSING The source's PGS subtitles in German and English, and " +
+			"its VobSub subtitles in French, are missing from the package. The packager keeps PGS and VobSub subtitles. " +
+			"[German, English, French / PGS, VobSub]"},
 	} {
 		if got := found(evaluate(packagedTitle("movie"), recordsOf(t, pkg(tc.subs), src), rs)); got != tc.want {
 			t.Errorf("%s:\n got  %q\n want %q", tc.name, got, tc.want)
@@ -357,7 +368,8 @@ func TestImageSubtitles(t *testing.T) {
 	}
 	pgsOnly := stateOf(t, transcoderReport, strings.Replace(packagerReport, `["pgs", "vobsub"]`, `["pgs"]`, 1))
 	got := found(evaluate(packagedTitle("movie"), recordsOf(t, pkg(`{"format": "pgs", "language": "eng"}`), src), pgsOnly))
-	if want := "IMAGE_SUBTITLES_MISSING pgs subtitles in de not in the package [de / -]"; got != want {
+	if want := "IMAGE_SUBTITLES_MISSING The source's PGS subtitles in German are missing from the package. The packager keeps " +
+		"PGS subtitles. [German / PGS]"; got != want {
 		t.Errorf("a packager that carries pgs alone:\n got  %q\n want %q", got, want)
 	}
 }
@@ -396,15 +408,15 @@ func TestATitleWithoutAPackage(t *testing.T) {
 		t    title
 		want string
 	}{
-		{"no step yet", base(), "NOT_PACKAGED not packaged"},
+		{"no step yet", base(), "NOT_PACKAGED It has no package, and none is being made."},
 		{"its transcode waiting", pending, ""},
 		{"its package running", running, ""},
-		{"taken in", taken, "NOT_PACKAGED not packaged: taken in without a package, it plays from its original"},
-		{"done, and no package", doneNoVersion, "NOT_PACKAGED not packaged: its transcode and its package are done, and no package is recorded"},
-		{"its transcode failed", failed, "PACKAGING_FAILED transcode failed: ffmpeg exited 1"},
-		{"its package failed, retried", retried, "PACKAGING_FAILED package failed: shaka exited 2; retried at 2026-10-26T10:00:00Z"},
-		{"its package skipped", skipped, "PACKAGING_FAILED package skipped: no video stream"},
-		{"a disc image", disc, "PACKAGING_FAILED " + DiscImageText},
+		{"taken in", taken, "NOT_PACKAGED It was taken in without a package and plays from its original."},
+		{"done, and no package", doneNoVersion, "NOT_PACKAGED Its transcode and packaging finished, and no package is recorded."},
+		{"its transcode failed", failed, "PACKAGING_FAILED The transcoder failed: ffmpeg exited 1."},
+		{"its package failed, retried", retried, "PACKAGING_FAILED The packager failed: shaka exited 2. A retry is scheduled."},
+		{"its package skipped", skipped, "PACKAGING_FAILED The packager skipped it: no video stream."},
+		{"a disc image", disc, "PACKAGING_FAILED " + discImageText},
 		{"no original and no package", retired, ""},
 	} {
 		if got := found(evaluate(tc.t, records{}, rs)); got != tc.want {
@@ -421,13 +433,13 @@ func TestATitleWithoutAPackage(t *testing.T) {
 func TestTheVideoCodec(t *testing.T) {
 	h264 := `{"renditions": {"video": [{"codec": "avc1.640028", "width": 1920, "height": 1080, "bitrateBps": 5000000, "encoder": "copy"}]}, "essence": {}}`
 	for _, tc := range []struct{ name, report, want string }{
-		{"source:hevc", transcoderReport, "VIDEO_NOT_HEVC video h264 (avc1.640028), not hevc [avc1.640028 / hevc]"},
+		{"source:hevc", transcoderReport, "VIDEO_NOT_HEVC " + h264Found},
 		{"the default ladder on nvenc", strings.Replace(transcoderReport, `"ladder": "source:hevc"`, `"ladder": "source"`, 1),
-			"VIDEO_NOT_HEVC video h264 (avc1.640028), not hevc [avc1.640028 / hevc]"},
+			"VIDEO_NOT_HEVC " + h264Found},
 		{"the default ladder on libx265", strings.NewReplacer(`"ladder": "source:hevc"`, `"ladder": "source"`,
 			`"codec": "hevc_nvenc"`, `"codec": "libx265"`).Replace(transcoderReport), ""},
 		{"source:hevc on libx265", strings.Replace(transcoderReport, `"codec": "hevc_nvenc"`, `"codec": "libx265"`, 1),
-			"VIDEO_NOT_HEVC video h264 (avc1.640028), not hevc [avc1.640028 / hevc]"},
+			"VIDEO_NOT_HEVC " + h264Found},
 		{"an h264 source rung", strings.Replace(transcoderReport, `"ladder": "source:hevc"`, `"ladder": "source:h264"`, 1), ""},
 	} {
 		if got := found(evaluate(packagedTitle("movie"), recordsOf(t, h264, srcJSON(1920, 1080)), stateOf(t, tc.report, packagerReport))); got != tc.want {
@@ -473,10 +485,11 @@ func TestUnreportedRulesAreNotChecked(t *testing.T) {
 	}
 }
 
-// What a title's package is to be after its rework, at most: a rework that
-// encodes the video makes it at the cap with the packager's stereo and 5.1
-// audio for the title's duration; one that only adds the 5.1 keeps the
-// package and adds the 5.1; a title a rework cannot help has none.
+// What a title's package is to be at most once it is processed again:
+// processing that encodes the video makes it at the cap with the packager's
+// stereo and 5.1 audio for the title's duration; processing that only adds
+// the 5.1 keeps the package and adds the 5.1; a title processing again cannot
+// help has none.
 func TestTheEstimate(t *testing.T) {
 	rs := stateOf(t, transcoderReport, packagerReport)
 	src := `{"streams": [{"index": 0, "type": "video", "width": 3840, "height": 2160}], "container": {"durationMs": 7200000},
@@ -511,6 +524,10 @@ func TestTheEstimate(t *testing.T) {
 }
 
 func i64(n int64) *int64 { return &n }
+
+// h264Found is what an H.264 package is found to be where every video is to
+// be HEVC.
+const h264Found = "The video is H.264, and the transcoder makes every video HEVC. [H.264 (avc1.640028) / HEVC]"
 
 func mustTime(t *testing.T, s string) time.Time {
 	t.Helper()

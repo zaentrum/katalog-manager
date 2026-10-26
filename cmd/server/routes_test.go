@@ -155,6 +155,10 @@ func (f *fakes) EnqueueReencode(_ context.Context, req graph.ReencodeRequest) (g
 	f.called("rework " + strings.Join(req.Items, ","))
 	return graph.ReencodeEnqueued{Queued: int32(len(req.Items))}, nil
 }
+func (f *fakes) Queued(_ context.Context, res graph.ReencodeEnqueued, matching bool) (graph.ComplianceQueued, error) {
+	f.called(fmt.Sprintf("say %d queued, matching %v", res.Queued, matching))
+	return graph.ComplianceQueued{Queued: res.Queued, Message: "queued"}, nil
+}
 
 // fakeExtra is the extra the fakes answer with.
 func fakeExtra(id, itemID string) *model.Extra {
@@ -436,9 +440,9 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { retryFailed(step: "package") { retried message } }`, "retry the failed package"},
 	{`mutation { reencodeItem(id: "m1") { itemId titles reencoded busy notSent message } }`, "reencode m1"},
 	{`mutation { clearReencodeQueue(states: ["done", "failed"]) }`, "clear the re-encode queue done,failed"},
-	{`mutation { queueRework(items: ["m1"]) { queued alreadyQueued skipped message } }`, "rework m1"},
+	{`mutation { queueRework(items: ["m1"]) { queued alreadyQueued skipped message } }`, "rework m1; say 1 queued, matching false"},
 	{`mutation { queueReworkMatching(kind: EPISODE, rules: [NO_SURROUND]) { queued alreadyQueued skipped message } }`,
-		`compliance matching episode NO_SURROUND ""; rework m1`},
+		`compliance matching episode NO_SURROUND ""; rework m1; say 1 queued, matching true`},
 	{`mutation { refreshCompliance(kind: MOVIE) }`, "refresh compliance movie"},
 	{`mutation { replaceSource(itemId: "m1", path: "/media/a-film-1080p.mkv", deleteOldFile: true) { itemId oldPath path
 		replaced oldFileDeleted oldSidecars reencode { reencoded busy notSent message } message } }`,

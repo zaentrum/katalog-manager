@@ -8,6 +8,7 @@ require (
 	github.com/graph-gophers/graphql-go v1.7.2
 	github.com/jackc/pgx/v5 v5.7.5
 	github.com/segmentio/kafka-go v0.4.51
+	golang.org/x/text v0.29.0
 )
 
 require (
@@ -20,5 +21,4 @@ require (
 	golang.org/x/crypto v0.37.0 // indirect
 	golang.org/x/oauth2 v0.28.0 // indirect
 	golang.org/x/sync v0.17.0 // indirect
-	golang.org/x/text v0.29.0 // indirect
 )

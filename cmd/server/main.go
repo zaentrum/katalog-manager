@@ -269,7 +269,7 @@ func run() error {
 	// The library's compliance check: every movie and episode held against
 	// the rules the transcoder and the packager report, in the background,
 	// reading the library's records a few at a time. It queues nothing: an
-	// admin reworks what it finds through the re-encode queue.
+	// admin has what it finds processed again through the re-encode queue.
 	check := compliance.New(st, cfg)
 	// The pipeline heals itself: a failed step is retried by sending its
 	// trigger event again, after a backoff, a bounded number of times, and a
@@ -348,7 +348,7 @@ func run() error {
 		Secrets: enricher,
 		Extras:  extrasSvc,
 		Sources: actions,
-		// The library's compliance, and the queue that reworks what it finds.
+		// The library's compliance, and the queue that processes again what it finds.
 		Compliance: check,
 		Rework:     retries,
 	})

@@ -1,17 +1,23 @@
 package compliance
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
+	"log"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/graph"
 	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/library/librarytest"
+	"github.com/zaentrum/katalog-manager/internal/processing"
+	"github.com/zaentrum/katalog-manager/internal/retry"
 	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
@@ -134,6 +140,9 @@ func unpackaged(t *testing.T, st *store.Store, n int, title, file, transcode, pk
 	return id
 }
 
+// spaced is s with each no-break space a space.
+func spaced(s string) string { return strings.ReplaceAll(s, nbsp, " ") }
+
 // rowsOf writes a report's rows, one a line: "title: RULE, RULE".
 func rowsOf(rep graph.ComplianceReport) string {
 	var out []string
@@ -216,7 +225,7 @@ A Disc Image: PACKAGING_FAILED`
 		t.Errorf("not evaluated, with both workers' rules: %q", rep.NotEvaluated)
 	}
 	top := rep.Rows[0]
-	if top.Findings[0].Text != "video 73 Mbit/s, over the 14 Mbit/s cap for a 2160 movie" ||
+	if spaced(top.Findings[0].Text) != "The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160 movie." ||
 		*top.PackageBytes != 59e9 || *top.OriginalBytes != 63e9 || top.Kind != "movie" || top.Queue != nil || top.ReworkBlocked != nil {
 		t.Errorf("the 4K remux: %+v", top)
 	}
@@ -227,11 +236,11 @@ A Disc Image: PACKAGING_FAILED`
 	if storm.SeriesTitle == nil || *storm.SeriesTitle != "A Coastal Show" || storm.Kind != "episode" {
 		t.Errorf("the episode: %+v", storm)
 	}
-	if disc := rep.Rows[5]; disc.Findings[0].Text != DiscImageText || disc.ReworkBlocked == nil ||
-		*disc.ReworkBlocked != "its file is a disc image: convert it to a single file" || disc.EstimatedBytes != nil {
+	if disc := rep.Rows[5]; disc.Findings[0].Text != discImageText || disc.ReworkBlocked == nil ||
+		*disc.ReworkBlocked != "Its file is a disc image." || disc.EstimatedBytes != nil {
 		t.Errorf("the disc image: %+v", disc)
 	}
-	if failed := rep.Rows[4]; failed.Findings[0].Text != "transcode failed: ffmpeg exited 1" {
+	if failed := rep.Rows[4]; failed.Findings[0].Text != "The transcoder failed: ffmpeg exited 1." {
 		t.Errorf("the failed transcode: %+v", failed.Findings)
 	}
 	summary := map[string]graph.ComplianceSummary{}
@@ -344,7 +353,7 @@ func TestARowSaysItsPlaceInTheQueue(t *testing.T) {
 		VALUES ('q3', $1, 'sent', 'items', now())`, uuid(3))
 	rep := reportOf(t, s, graph.ComplianceFilter{}, 100, "")
 	for _, r := range rep.Rows {
-		want := map[string]string{uuid(1): "queued: transcode is running", uuid(3): "sent: "}[r.ItemID]
+		want := map[string]string{uuid(1): "queued: The transcoder is working on it.", uuid(3): "sent: "}[r.ItemID]
 		got := ""
 		if r.Queue != nil {
 			got = *r.Queue + ": "
@@ -358,6 +367,105 @@ func TestARowSaysItsPlaceInTheQueue(t *testing.T) {
 	}
 	if q := rep.Queue; q != (graph.ComplianceQueueCounts{Queued: 1, Processing: 1, Processed: 0, Failed: 1}) {
 		t.Errorf("the queue's counts: %+v", q)
+	}
+}
+
+// bus takes every event the queue sends.
+type bus struct{ sent int }
+
+func (b *bus) Enabled() bool { return true }
+func (b *bus) Publish(_ context.Context, msgs []events.Message) []error {
+	b.sent += len(msgs)
+	return make([]error, len(msgs))
+}
+
+// The reasons the re-encode queue keeps of a title, as the queue writes them,
+// are said in the reader's words: one waiting while its transcode runs, one
+// failed in its transcode.
+func TestTheQueuesReasonsInWords(t *testing.T) {
+	s, st, _ := library4(t)
+	ctx := context.Background()
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	q := retry.New(st, processing.DefaultPolicy(), &bus{}, time.Minute)
+	if _, err := q.EnqueueReencode(ctx, graph.ReencodeRequest{Items: []string{uuid(1)}}); err != nil {
+		t.Fatal(err)
+	}
+	reason := func() string {
+		t.Helper()
+		for _, r := range reportOf(t, s, graph.ComplianceFilter{Search: "remux"}, 100, "").Rows {
+			if r.Queue != nil && r.QueueReason != nil {
+				return *r.Queue + ": " + *r.QueueReason
+			}
+			if r.Queue != nil {
+				return *r.Queue + ":"
+			}
+		}
+		return "none"
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemprocessingsteps SET status = 'in_progress', modifiedat = localtimestamp
+		WHERE item_id = $1 AND step = 'transcode'`, uuid(1))
+	if _, err := q.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := reason(); got != "queued: The transcoder is working on it." {
+		t.Errorf("a title waiting while its transcode runs: %q", got)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemprocessingsteps SET status = 'done' WHERE item_id = $1 AND step = 'transcode'`, uuid(1))
+	if _, err := q.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := reason(); got != "sent:" {
+		t.Errorf("a title sent: %q", got)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemprocessingsteps SET status = 'failed', error = 'ffmpeg exited 1',
+		nextretryat = NULL WHERE item_id = $1 AND step = 'transcode'`, uuid(1))
+	if _, err := q.DrainQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := reason(); got != "failed: The transcoder failed: ffmpeg exited 1." {
+		t.Errorf("a title whose transcode failed: %q", got)
+	}
+}
+
+// What a request to process titles again did is said in a sentence each:
+// those queued, those queued already, and those skipped, by why, as the
+// catalog holds them.
+func TestWhatARequestDidInWords(t *testing.T) {
+	s, st, _ := library4(t)
+	ctx := context.Background()
+	q := retry.New(st, processing.DefaultPolicy(), &bus{}, time.Minute)
+	say := func(items ...string) string {
+		t.Helper()
+		res, err := q.EnqueueReencode(ctx, graph.ReencodeRequest{Items: items})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, err := s.Queued(ctx, res, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m.Message
+	}
+	// the film whose transcode failed, the disc image and a title there is not
+	if got := say(uuid(6), uuid(7), uuid(99)); got != "1 title queued to be processed again. "+
+		"2 titles skipped: 1 is a disc image and 1 is not in the catalog." {
+		t.Errorf("one queued, two skipped: %q", got)
+	}
+	if got := say(uuid(6)); got != "No title queued to be processed again. 1 title is queued already." {
+		t.Errorf("one queued already: %q", got)
+	}
+	storetest.Exec(t, st, `DELETE FROM com_nalet_katalog_playbackassets WHERE item_id = $1 AND isprimary = true`, uuid(5))
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state, deletedat)
+		VALUES ('gone', $1, 'original.mkv', 1, 'deleted', now())`, uuid(2))
+	storetest.Exec(t, st, `DELETE FROM com_nalet_katalog_playbackassets WHERE item_id = $1 AND isprimary = true`, uuid(2))
+	if got := say(uuid(5), uuid(2), uuid(1)); got != "1 title queued to be processed again. 2 titles skipped: "+
+		"the original of 1 was deleted after packaging and 1 has no file." {
+		t.Errorf("one with its original deleted, one without a file: %q", got)
+	}
+	if m, err := s.Queued(ctx, graph.ReencodeEnqueued{}, true); err != nil || m.Message != "No title fits the filter, so none is queued." {
+		t.Errorf("nothing matched: %+v, %v", m, err)
 	}
 }
 
@@ -395,7 +503,7 @@ func TestTheRulesHashMakesRowsStale(t *testing.T) {
 	for _, r := range rep.Rules.Transcoder.Rules {
 		keys = append(keys, r.Key+"="+r.Value)
 	}
-	if got := strings.Join(keys, " "); !strings.Contains(got, "caps.movie2160Mbps=80 Mbit/s") || !strings.Contains(got, "encoder.preset=p5") {
+	if got := spaced(strings.Join(keys, " ")); !strings.Contains(got, "caps.movie2160Mbps=80 Mbit/s") || !strings.Contains(got, "encoder.preset=p5") {
 		t.Errorf("the transcoder's rules in the report: %s", got)
 	}
 }
@@ -418,8 +526,8 @@ func TestUnreportedRulesAreNotEvaluated(t *testing.T) {
 	if got := rowsOf(rep); got != "A Film Never Packaged: NOT_PACKAGED" {
 		t.Errorf("no rules reported:\n%s", got)
 	}
-	want := []string{"the transcoder has not reported its rules, so the caps and the video codec are not checked",
-		"the packager has not reported its rules, so surround and image subtitles are not checked"}
+	want := []string{"The transcoder hasn't reported its limits, so bit rates, file sizes and the video format can't be checked.",
+		"The packager hasn't reported what it keeps, so surround and image subtitles can't be checked."}
 	if strings.Join(rep.NotEvaluated, "\n") != strings.Join(want, "\n") || rep.Rules.Transcoder != nil || rep.Rules.Packager != nil {
 		t.Errorf("not evaluated:\n%s\nrules %+v", strings.Join(rep.NotEvaluated, "\n"), rep.Rules)
 	}
@@ -437,7 +545,7 @@ func TestUnreportedRulesAreNotEvaluated(t *testing.T) {
 	if got := rowsOf(rep); got != "A Film Never Packaged: NOT_PACKAGED" {
 		t.Errorf("a packager that makes no 5.1:\n%s", got)
 	}
-	if got := strings.Join(rep.NotEvaluated, "\n"); got != want[0]+"\nthe packager makes no 5.1 companion (surroundAudio off), so surround is not checked" {
+	if got := strings.Join(rep.NotEvaluated, "\n"); got != want[0]+"\nThe packager makes no surround track, so a package without one breaks no rule." {
 		t.Errorf("not evaluated:\n%s", got)
 	}
 	reportFor(t, s, Packager, packagerReport)
@@ -562,16 +670,22 @@ func TestARecordThatCannotBeRead(t *testing.T) {
 		p.version(), p.id(), p.source())
 	storetest.Exec(t, s.st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, codec, sizebytes)
 		VALUES ('pk', $1, 'package.json', false, 'packaged', 'avc1.640033', 59000000000)`, p.id())
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
 	if _, err := s.Pass(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	// the report says how many; the log says which, and why
+	if got := logged.String(); !strings.Contains(got, "compliance: 1 title whose records can't be read") ||
+		!strings.Contains(got, "the first, "+p.id()+": versions/"+p.version()+"/package.json is not there") {
+		t.Errorf("the log of a pass:\n%s", got)
 	}
 	rep := reportOf(t, s, graph.ComplianceFilter{}, 100, "")
 	if got := rowsOf(rep); got != "A Remux Kept As It Was: VIDEO_NOT_HEVC" {
 		t.Errorf("a title without its records:\n%s", got)
 	}
-	rel := filepath.ToSlash(filepath.Join("versions", p.version(), "package.json"))
-	want := "the records of 1 title could not be read (the first: " + rel + " is not there), so their bitrate caps, " +
-		"surround and image subtitles are not checked"
+	want := "The records of 1 title can't be read, so its bit rate, surround and image subtitles can't be checked."
 	if len(rep.NotEvaluated) != 1 || rep.NotEvaluated[0] != want {
 		t.Errorf("not evaluated: %q\nwant %q", rep.NotEvaluated, want)
 	}
@@ -589,22 +703,22 @@ func TestTheRulesAWorkerReports(t *testing.T) {
 	}
 	var got []string
 	for _, r := range rules.Transcoder.Rules {
-		got = append(got, r.Key+" | "+r.Label+" | "+r.Value)
+		got = append(got, r.Key+" | "+r.Label+" | "+spaced(r.Value))
 	}
-	want := `caps.movie1080Mbps | Movie cap (1080) | 8 Mbit/s
-caps.movie2160Mbps | Movie cap (2160) | 14 Mbit/s
-caps.movieMaxGiB | Movie file size cap | 15 GiB
-caps.episode1080Mbps | Episode cap (1080) | 6 Mbit/s
-caps.episode2160Mbps | Episode cap (2160) | 8 Mbit/s
-bucket2160.minHeight | 2160 bucket from a height of | 2000 lines
-bucket2160.minWidth | 2160 bucket from a width of | 3200 pixels
+	want := `caps.movie1080Mbps | Video bit rate allowed for a 1080 movie | 8 Mbit/s
+caps.movie2160Mbps | Video bit rate allowed for a 2160 movie | 14 Mbit/s
+caps.movieMaxGiB | File size allowed for a movie | 16.1 GB
+caps.episode1080Mbps | Video bit rate allowed for a 1080 episode | 6 Mbit/s
+caps.episode2160Mbps | Video bit rate allowed for a 2160 episode | 8 Mbit/s
+bucket2160.minHeight | 2160 from a height of | 2,000 lines
+bucket2160.minWidth | 2160 from a width of | 3,200 pixels
 encoder.codec | HEVC encoder | hevc_nvenc
 encoder.preset | Encoder preset | p5
 encoder.cq | Constant quality | 23
-encoder.maxrate1080Mbps | Maxrate (1080) | none: the cap
-encoder.maxrate2160Mbps | Maxrate (2160) | none: the cap
-ladder | Ladder | source:hevc
-extraLadder | Extras ladder | source:hevc`
+encoder.maxrate1080Mbps | Encode bit rate for 1080 | as allowed
+encoder.maxrate2160Mbps | Encode bit rate for 2160 | as allowed
+ladder | Renditions | source:hevc
+extraLadder | Renditions of extras | source:hevc`
 	if strings.Join(got, "\n") != want {
 		t.Errorf("the transcoder's rules:\n%s\nwant:\n%s", strings.Join(got, "\n"), want)
 	}
@@ -613,9 +727,10 @@ extraLadder | Extras ladder | source:hevc`
 	}
 	got = nil
 	for _, r := range rules.Packager.Rules {
-		got = append(got, r.Key+"="+r.Value)
+		got = append(got, r.Key+"="+spaced(r.Value))
 	}
-	if strings.Join(got, " ") != "surroundAudio=eac3 surroundBitrate=448k stereoBitrate=192k imageSubtitles=pgs, vobsub" {
+	if strings.Join(got, " ") != "surroundAudio=E-AC-3 surroundLayout=5.1 surroundBitrate=448 kbit/s stereoBitrate=192 kbit/s "+
+		"imageSubtitles=PGS, VobSub" {
 		t.Errorf("the packager's rules: %v", got)
 	}
 

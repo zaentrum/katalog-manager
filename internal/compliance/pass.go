@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,6 +99,8 @@ func (s *Service) Pass(ctx context.Context) (int, error) {
 	hash, since := rs.hash(), cutoff(s.now())
 	seen := map[string]bool{}
 	checked := 0
+	var bad unread
+	defer bad.say()
 	for ctx.Err() == nil {
 		ids, err := s.due(ctx, covered, hash, since)
 		if err != nil {
@@ -113,7 +116,7 @@ func (s *Service) Pass(ctx context.Context) (int, error) {
 		if len(fresh) == 0 {
 			break
 		}
-		if err := s.check(ctx, fresh, rs, hash); err != nil {
+		if err := s.check(ctx, fresh, rs, hash, &bad); err != nil {
 			return checked, err
 		}
 		checked += len(fresh)
@@ -158,8 +161,36 @@ func (s *Service) prune(ctx context.Context, covered bool) error {
 	return err
 }
 
-// check checks the titles ids against rs and keeps what it found, under hash.
-func (s *Service) check(ctx context.Context, ids []string, rs rulesState, hash string) error {
+// unread are the titles of a pass whose records can't be read: how many,
+// and the first of them, and why. The report says how many; the log says
+// which, for whoever looks after the library.
+type unread struct {
+	n          int
+	first, why string
+}
+
+func (u *unread) add(results []result) {
+	for _, r := range results {
+		if r.Unchecked == "" {
+			continue
+		}
+		if u.n == 0 {
+			u.first, u.why = r.ItemID, r.Unchecked
+		}
+		u.n++
+	}
+}
+
+func (u *unread) say() {
+	if u.n > 0 {
+		log.Printf("compliance: %s whose records can't be read, their bit rates, surround and image subtitles "+
+			"not checked; the first, %s: %s", titlesText(u.n), u.first, u.why)
+	}
+}
+
+// check checks the titles ids against rs and keeps what it found, under
+// hash; bad counts those whose records can't be read.
+func (s *Service) check(ctx context.Context, ids []string, rs rulesState, hash string, bad *unread) error {
 	var start time.Time
 	if err := s.pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&start); err != nil {
 		return err
@@ -185,6 +216,7 @@ func (s *Service) check(ctx context.Context, ids []string, rs rulesState, hash s
 		}(i)
 	}
 	wg.Wait()
+	bad.add(results)
 	return s.write(ctx, results, hash, start)
 }
 
