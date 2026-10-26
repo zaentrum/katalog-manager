@@ -820,6 +820,13 @@ func requestTexts(queued, already int, skipped map[string]int, matching bool) (q
 	return queuedText, alreadyText, notQueuedText
 }
 
+// changedText is the banner line of a request by a filter that queued
+// nothing, as the titles it queues are not as many as the console offered:
+// "Nothing was queued: the matching titles changed from 40 to 42."
+func changedText(expected, now int) string {
+	return "Nothing was queued: the matching titles changed from " + countText(expected) + " to " + countText(now) + "."
+}
+
 // requestMessage is what a request did in one text, as its three say it:
 // "12 titles queued to be processed again. 3 titles already in the queue."
 func requestMessage(queuedText, alreadyText, notQueuedText *string) string {

@@ -1579,8 +1579,11 @@ extend type Mutation {
   # processing again can't help; as queueRework does. It counts those in
   # the queue already (alreadyQueued), as queueRework does, and names none
   # that processing again can't help, which the console never offers; it
-  # says no title fits the filter only when none does.
-  queueReworkMatching(kind: ComplianceKind, rules: [ComplianceRule!], search: String): ComplianceQueued!
+  # says no title fits the filter only when none does. expected is the
+  # count of queueable titles the console offered: when the titles that are
+  # queueable now are another count, nothing is queued, and notQueuedText
+  # says the count changed.
+  queueReworkMatching(kind: ComplianceKind, rules: [ComplianceRule!], search: String, expected: Int!): ComplianceQueued!
   # Has the titles of kind (all when omitted) checked again, in the
   # background; true once the pass is set going.
   refreshCompliance(kind: ComplianceKind): Boolean!

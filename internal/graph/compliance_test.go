@@ -47,7 +47,7 @@ extend type Query {
 }
 extend type Mutation {
   queueRework(items: [ID!]!): ComplianceQueued!
-  queueReworkMatching(kind: ComplianceKind, rules: [ComplianceRule!], search: String): ComplianceQueued!
+  queueReworkMatching(kind: ComplianceKind, rules: [ComplianceRule!], search: String, expected: Int!): ComplianceQueued!
   refreshCompliance(kind: ComplianceKind): Boolean!
 }
 type ComplianceTotals { titles: Int! originalBytes: Float! packageBytes: Float! estimatedBytes: Float }

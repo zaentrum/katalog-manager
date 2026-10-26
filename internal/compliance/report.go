@@ -445,6 +445,14 @@ func (s *Service) Queued(ctx context.Context, res graph.ReencodeEnqueued, matchi
 	return out, nil
 }
 
+// Changed says that a request by a filter queued nothing as the titles it
+// queues changed since the console offered them: expected of them then, now
+// of them now (changedText).
+func (s *Service) Changed(expected, now int32) graph.ComplianceQueued {
+	text := changedText(int(expected), int(now))
+	return graph.ComplianceQueued{SkippedTitles: []graph.ComplianceSkip{}, NotQueuedText: &text, Message: text}
+}
+
 // titlesOf names each title of ids the catalog holds as a list of them does
 // (titleText); one it doesn't hold has no name.
 func (s *Service) titlesOf(ctx context.Context, ids []string) (map[string]string, error) {

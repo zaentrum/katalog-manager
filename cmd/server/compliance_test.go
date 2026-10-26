@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -122,7 +123,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	for who, token := range map[string]string{"a viewer": viewer, "an addon": addon, "the service account": service} {
 		for _, doc := range []string{report, `{ pipelineRules { transcoder { worker } } }`,
 			`mutation { queueRework(items: ["` + remuxID + `"]) { queued } }`,
-			`mutation { queueReworkMatching(rules: [OVER_BITRATE_CAP]) { queued } }`,
+			`mutation { queueReworkMatching(rules: [OVER_BITRATE_CAP], expected: 0) { queued } }`,
 			`mutation { refreshCompliance }`} {
 			_, a := in.gql(t, "/api/manage/query", token, doc)
 			if len(a.Errors) != 1 || a.Errors[0].Extensions["code"] != "FORBIDDEN" {
@@ -290,7 +291,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		return *s
 	}
 	const texts = "queuedText alreadyText notQueuedText"
-	mutate(`mutation { q: queueReworkMatching(kind: MOVIE, rules: [OVER_BITRATE_CAP, VIDEO_NOT_HEVC], search: "remux") {
+	mutate(`mutation { q: queueReworkMatching(kind: MOVIE, rules: [OVER_BITRATE_CAP, VIDEO_NOT_HEVC], search: "remux", expected: 1) {
 		queued alreadyQueued skipped message ` + texts + ` } }`)
 	if q := queued.Q; q.Queued != 1 || q.AlreadyQueued != 0 || q.Skipped != 0 || q.Message != "1 title queued to be processed again." ||
 		said(q.QueuedText) != "1 title queued to be processed again" || q.AlreadyText != nil || q.NotQueuedText != nil {
@@ -341,7 +342,8 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	// and counts those in the queue already, the remux and the film never
 	// packaged; of the disc image, which it never offered, it says nothing
 	offered := data.LibraryCompliance.Queueable
-	mutate(`mutation { q: queueReworkMatching { queued alreadyQueued skipped skippedTitles { itemId title reason } message } }`)
+	mutate(`mutation { q: queueReworkMatching(expected: ` + strconv.Itoa(offered.Titles) + `) { queued alreadyQueued skipped
+		skippedTitles { itemId title reason } message } }`)
 	if q := queued.Q; q.Queued != offered.Titles || q.AlreadyQueued != 2 || q.Skipped != 0 || len(q.SkippedTitles) != 0 ||
 		q.Message != "1 title queued to be processed again. 2 titles already in the queue." {
 		t.Errorf("queueReworkMatching, every title that fits: %+v; offered %+v", q, offered)
@@ -353,13 +355,13 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	if q := data.LibraryCompliance.Queueable; q.Titles != 0 {
 		t.Errorf("queueable once queued: %+v", q)
 	}
-	mutate(`mutation { q: queueReworkMatching { queued alreadyQueued skipped message ` + texts + ` } }`)
+	mutate(`mutation { q: queueReworkMatching(expected: 0) { queued alreadyQueued skipped message ` + texts + ` } }`)
 	if q := queued.Q; q.Queued != 0 || q.AlreadyQueued != 3 || q.Skipped != 0 || q.QueuedText != nil ||
 		said(q.AlreadyText) != "3 titles already in the queue" || q.NotQueuedText != nil {
 		t.Errorf("queueReworkMatching, none left to queue: %+v", q)
 	}
 	// a filter whose only title is in the queue says it is there
-	mutate(`mutation { q: queueReworkMatching(kind: MOVIE, rules: [OVER_SIZE_CAP]) { queued alreadyQueued skipped message ` +
+	mutate(`mutation { q: queueReworkMatching(kind: MOVIE, rules: [OVER_SIZE_CAP], expected: 0) { queued alreadyQueued skipped message ` +
 		texts + ` } }`)
 	if q := queued.Q; q.Queued != 0 || q.AlreadyQueued != 1 || q.Skipped != 0 || q.QueuedText != nil ||
 		said(q.AlreadyText) != "1 title already in the queue" || q.NotQueuedText != nil || q.Message != "1 title already in the queue." {
@@ -374,7 +376,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		q.SkippedTitles[0].Reason != "its file is a disc image, which the transcoder doesn’t encode" {
 		t.Errorf("queueRework of the disc image: %+v", q)
 	}
-	mutate(`mutation { q: queueReworkMatching(rules: [IMAGE_SUBTITLES_MISSING]) { queued alreadyQueued skipped message } }`)
+	mutate(`mutation { q: queueReworkMatching(rules: [IMAGE_SUBTITLES_MISSING], expected: 0) { queued alreadyQueued skipped message } }`)
 	if q := queued.Q; q.Queued != 0 || q.Message != "Nothing was queued: no title fits the filter anymore." {
 		t.Errorf("a filter no title matches: %+v", q)
 	}
@@ -468,7 +470,17 @@ func TestARequestByAFilterLeavesOutWhatCantBeProcessed(t *testing.T) {
 			t.Fatalf("%s: %s %v", doc, a.Data, a.Errors)
 		}
 	}
-	mutate(`mutation { q: queueReworkMatching(rules: [PACKAGING_FAILED]) { queued alreadyQueued skipped
+	// a console that offered another count queues nothing, and says so
+	mutate(`mutation { q: queueReworkMatching(rules: [PACKAGING_FAILED], expected: 2) { queued alreadyQueued skipped
+		skippedTitles { itemId reason } notQueuedText message } }`)
+	if q := answer.Q; q.Queued != 0 || q.NotQueuedText == nil ||
+		*q.NotQueuedText != "Nothing was queued: the matching titles changed from 2 to 1." || q.Message != *q.NotQueuedText {
+		t.Errorf("the filter, 2 titles offered and 1 now: %+v", q)
+	}
+	if got := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue`); got != 0 {
+		t.Errorf("%d titles queued, the count changed", got)
+	}
+	mutate(`mutation { q: queueReworkMatching(rules: [PACKAGING_FAILED], expected: 1) { queued alreadyQueued skipped
 		skippedTitles { itemId reason } notQueuedText message } }`)
 	if q := answer.Q; q.Queued != 1 || q.AlreadyQueued != 0 || q.Skipped != 0 || len(q.SkippedTitles) != 0 ||
 		q.NotQueuedText != nil || q.Message != "1 title queued to be processed again." {

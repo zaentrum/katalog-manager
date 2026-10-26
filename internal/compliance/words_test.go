@@ -1,6 +1,7 @@
 package compliance
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -282,6 +283,10 @@ func serverTexts(t *testing.T) []text {
 		out = append(out, text{"ComplianceQueued", m.source, "message", requestMessage(queued, already, notQueued)})
 	}
 
+	for _, c := range [][2]int{{40, 42}, {1284, 1290}} {
+		out = append(out, text{"ComplianceQueued", fmt.Sprintf("a request by a filter offered %d titles, %d now", c[0], c[1]),
+			"notQueuedText", changedText(c[0], c[1])})
+	}
 	for _, k := range skipKinds {
 		out = append(out, text{"ComplianceSkip", "a title skipped: " + k, "reason", skipReason(k)})
 	}

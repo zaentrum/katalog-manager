@@ -31,6 +31,9 @@ type Compliance interface {
 	// Queued says what a request to process titles again did, as the queue
 	// answered it, in words; matching says it named its titles by a filter.
 	Queued(ctx context.Context, res ReencodeEnqueued, matching bool) (ComplianceQueued, error)
+	// Changed says, in words, that a request by a filter queued nothing:
+	// it expected so many queueable titles, and now so many are.
+	Changed(expected, now int32) ComplianceQueued
 }
 
 // Rework queues titles to be processed again, through the paced re-encode
@@ -308,11 +311,13 @@ func (r *Resolver) rework(ctx context.Context, items []string, m *ComplianceMatc
 // and that a request queues (the report's queueable), as queueRework does,
 // and counts those of them in the queue already, as queueRework counts
 // them; it says nothing of those processing again can't help, which the
-// console never offers.
+// console never offers. When the queueable titles are not as many as the
+// console offered (expected), it queues nothing, and says so.
 func (r *Resolver) QueueReworkMatching(ctx context.Context, args struct {
-	Kind   *string
-	Rules  *[]string
-	Search *string
+	Kind     *string
+	Rules    *[]string
+	Search   *string
+	Expected int32
 }) (*complianceQueuedResolver, error) {
 	if err := r.allow(ctx, "Mutation.queueReworkMatching"); err != nil {
 		return nil, err
@@ -323,6 +328,9 @@ func (r *Resolver) QueueReworkMatching(ctx context.Context, args struct {
 	m, err := r.svc.Compliance.Matching(ctx, filterOf(args.Kind, args.Rules, args.Search))
 	if err != nil {
 		return nil, err
+	}
+	if now := int32(len(m.Queueable)); now != args.Expected {
+		return &complianceQueuedResolver{m: r.svc.Compliance.Changed(args.Expected, now)}, nil
 	}
 	return r.rework(ctx, m.Queueable, &m)
 }
