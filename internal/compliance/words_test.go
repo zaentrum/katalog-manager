@@ -397,12 +397,13 @@ func TestTheServerTexts(t *testing.T) {
 	b.WriteString("# The library compliance’s texts\n\n")
 	b.WriteString("Every text katalog-manager writes for the compliance report, rendered with real values by\n")
 	b.WriteString("`go test ./internal/compliance -run TestTheServerTexts` (`" + EnvTexts + "` set to this file).\n\n")
-	b.WriteString("The rules, as the workers report them: the transcoder allows movies 8 Mbit/s (1080) and 14 Mbit/s (2160) of\n")
+	b.WriteString("The rules, as the workers report them: the transcoder allows movies 8 Mbit/s (1080p) and 14 Mbit/s (2160p) of\n")
 	b.WriteString("video and a 15 GiB file, episodes 6 and 8 Mbit/s; it encodes with hevc_nvenc, preset p5, cq 23, ladder\n")
-	b.WriteString("`source:hevc`. The packager makes a 5.1 E-AC-3 track at 448k and the stereo track at 192k, and keeps PGS and\n")
-	b.WriteString("VobSub subtitles. Sizes are in decimal units, as the clients write them (1 GB is 1,000,000,000 bytes), so\n")
-	b.WriteString("the transcoder’s 15 GiB reads 16.1 GB. Sizes and bit rates are written with a no-break space before their\n")
-	b.WriteString("unit, and every apostrophe is the typographic one (’).\n\n")
+	b.WriteString("`source:hevc`. The packager makes a 5.1 E-AC-3 track at 448k and an AAC stereo track at 192k, and keeps PGS\n")
+	b.WriteString("and VobSub subtitles. A failed step is retried by the sweep. Sizes are in decimal units, as the clients write\n")
+	b.WriteString("them (1 GB is 1,000,000,000 bytes), so the transcoder’s 15 GiB reads 16.1 GB. Sizes and bit rates are written\n")
+	b.WriteString("with a no-break space before their unit, and every apostrophe is the typographic one (’). A line marked\n")
+	b.WriteString("`detail` is what a tool said, as it said it: the console shows it under the row’s details, never in the text.\n\n")
 	b.WriteString("Each line: the field, what the title or the state is, and the text.\n")
 	section := ""
 	for _, x := range texts {
