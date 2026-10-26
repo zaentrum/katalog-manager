@@ -133,17 +133,26 @@ func (t *TranscoderRules) copiesH264() bool {
 // the next height up, the last one above it), from the transcoder's report
 // (rungMaxrateMbps); false when it reports none.
 func (t *TranscoderRules) tableMaxrate(height int, codec string) (float64, bool) {
-	if len(t.RungMaxrateMbps) == 0 {
+	row, ok := t.tableRow(height)
+	if !ok {
 		return 0, false
 	}
+	v, ok := t.RungMaxrateMbps[row][codec]
+	return v * 1e6, ok && v > 0
+}
+
+// tableRow is the key of the row of the planner's table a rung of height
+// reads (the next height up, else the last), as the transcoder reports it;
+// false when it reports none.
+func (t *TranscoderRules) tableRow(height int) (string, bool) {
 	var rows []int
 	for h := range t.RungMaxrateMbps {
-		if n, err := strconv.Atoi(h); err == nil {
+		if n, err := strconv.Atoi(h); err == nil && strconv.Itoa(n) == h {
 			rows = append(rows, n)
 		}
 	}
 	if len(rows) == 0 {
-		return 0, false
+		return "", false
 	}
 	sort.Ints(rows)
 	row := rows[len(rows)-1]
@@ -153,8 +162,7 @@ func (t *TranscoderRules) tableMaxrate(height int, codec string) (float64, bool)
 			break
 		}
 	}
-	v, ok := t.RungMaxrateMbps[strconv.Itoa(row)][codec]
-	return v * 1e6, ok && v > 0
+	return strconv.Itoa(row), true
 }
 
 // sourceMaxrate is the maxrate of an encode at the original's size, bit/s

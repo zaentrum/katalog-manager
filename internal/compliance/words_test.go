@@ -297,18 +297,28 @@ func serverTexts(t *testing.T) []text {
 	}
 
 	for _, w := range []struct{ name, raw string }{
-		{Transcoder, transcoderReport},
+		{Transcoder, transcoderWithTable},
 		{Packager, packagerReport},
 		{"transcoder on libx265, with a ladder of three and the extras’ default", strings.NewReplacer(
 			`"codec": "hevc_nvenc", "preset": "p5", "cq": 23`, `"codec": "libx265", "preset": "medium", "cq": null, "crf": 28`,
 			`"ladder": "source:hevc"`, `"ladder": "source,720p:h264:2500k,480p"`, `"extraLadder": "source:hevc"`,
 			`"extraLadder": "720p:h264,480p:h264"`, `"episode1080Mbps": 6`, `"episode1080Mbps": 0`,
-			`"maxrate2160Mbps": null`, `"maxrate2160Mbps": 18`).Replace(transcoderReport)},
+			`"maxrate2160Mbps": null`, `"maxrate2160Mbps": 18`).Replace(transcoderWithTable)},
+		{"transcoder with a ladder at the original’s size, 720p and 576p", strings.Replace(transcoderWithTable, `"ladder": "source:hevc"`,
+			`"ladder": "source:hevc,720p:h264,576p:h264"`, 1)},
 		{"packager making no surround track, of an image that doesn’t report its stereo codec", strings.NewReplacer(
 			`"surroundAudio": "eac3"`, `"surroundAudio": "off"`, `"stereoAudio": "aac", `, ``,
 			`["pgs", "vobsub"]`, `[]`).Replace(packagerReport)},
 	} {
-		for _, r := range settingsOf([]byte(w.raw)) {
+		// the panel as the report gives it (pipelineRulesOf), of the worker
+		// the fixture is
+		rows := func() []graph.RuleSetting {
+			if strings.HasPrefix(w.name, Transcoder) {
+				return pipelineRulesOf(stateOf(t, w.raw, "")).Transcoder.Rules
+			}
+			return pipelineRulesOf(stateOf(t, "", w.raw)).Packager.Rules
+		}()
+		for _, r := range rows {
 			out = append(out, text{"pipelineRules", w.name + " " + r.Key, "label", r.Label})
 			out = append(out, text{"pipelineRules", w.name + " " + r.Key, "value", r.Value})
 			if r.Detail != nil {
@@ -617,6 +627,83 @@ func TestTheUnits(t *testing.T) {
 // on a CPU encoder, the rendition at the original's size that leaves its
 // format to the default keeps H.264 as it is when browsers can play it. A
 // spec the words can't read is said as it is.
+// The transcoder's table of rung maxrates is no row of its own: each rung of
+// its ladder that reads its maxrate off the table is a row, right after the
+// ladder's, said as the caps are ("Video bit rate, 720p rung", "at most 3
+// Mbit/s"), and the ladder's detail holds the table as reported. A ladder at
+// the original's size alone, a rung that sets its own maxrate and a
+// transcoder that reports no table have none.
+func TestTheLaddersRungsAreRowsOfTheirOwn(t *testing.T) {
+	ladder := func(spec string) string {
+		return strings.Replace(transcoderWithTable, `"ladder": "source:hevc"`, `"ladder": "`+spec+`"`, 1)
+	}
+	table := `rungMaxrateMbps={"360":{"h264":0.8,"hevc":0.6},"480":{"h264":1.5,"hevc":1.2},"540":{"h264":2,"hevc":1.6},` +
+		`"720":{"h264":3,"hevc":2.5},"1080":{"h264":6,"hevc":8},"1440":{"h264":9,"hevc":8},"2160":{"h264":16,"hevc":14}}`
+	for _, tc := range []struct {
+		name, report, detail string
+		rungs                []string // key | label | value of each row after the ladder's
+	}{
+		{"source:hevc alone, as an installation runs it", transcoderWithTable, "source:hevc; " + table, nil},
+		{"two rungs scaled, in H.264", ladder("source:hevc,720p:h264,480p:h264"), "source:hevc,720p:h264,480p:h264; " + table,
+			[]string{"ladder.720p.h264|Video bit rate, 720p rung|at most 3 Mbit/s",
+				"ladder.480p.h264|Video bit rate, 480p rung|at most 1.5 Mbit/s"}},
+		{"a rung of its own maxrate, two between the table's heights, one twice, one in HEVC",
+			ladder("source,720p:h264:2500k,576p,360p:hevc,576p,700p"), "source,720p:h264:2500k,576p,360p:hevc,576p,700p; " + table,
+			[]string{"ladder.576p.h264|Video bit rate, 576p rung|at most 3 Mbit/s",
+				"ladder.360p.hevc|Video bit rate, 360p rung|at most 600 kbit/s",
+				"ladder.700p.h264|Video bit rate, 700p rung|at most 3 Mbit/s"}},
+		{"two codecs of one height", ladder("source:hevc,720p:h264,720p:hevc"), "source:hevc,720p:h264,720p:hevc; " + table,
+			[]string{"ladder.720p.h264|Video bit rate, 720p H.264 rung|at most 3 Mbit/s",
+				"ladder.720p.hevc|Video bit rate, 720p HEVC rung|at most 2.5 Mbit/s"}},
+		{"the rungs as the transcoder reports them in parts", strings.Replace(ladder("source:hevc,720p:h264"),
+			`"rungMaxrateMbps"`, `"ladderRungs": [{"name": "source", "codec": "hevc", "codecNamed": true, "maxrateBps": null},
+			{"name": "720p", "codec": "h264", "codecNamed": true, "maxrateBps": null}], "rungMaxrateMbps"`, 1),
+			"source:hevc,720p:h264; " + table, []string{"ladder.720p.h264|Video bit rate, 720p rung|at most 3 Mbit/s"}},
+		{"a transcoder that reports no table", strings.Replace(transcoderReport, `"ladder": "source:hevc"`,
+			`"ladder": "source:hevc,720p:h264"`, 1), "source:hevc,720p:h264", nil},
+	} {
+		rows := pipelineRulesOf(stateOf(t, tc.report, "")).Transcoder.Rules
+		at := -1
+		for i, r := range rows {
+			if r.Key == "ladder" {
+				at = i
+			}
+			if strings.HasPrefix(r.Label, "rungMaxrateMbps") || strings.HasPrefix(r.Key, "ladderRungs") {
+				t.Errorf("%s: a row of the report's raw keys: %+v", tc.name, r)
+			}
+		}
+		if at < 0 {
+			t.Fatalf("%s: no row of the ladder: %+v", tc.name, rows)
+		}
+		if d := rows[at].Detail; d == nil || *d != tc.detail {
+			t.Errorf("%s: the ladder's detail %v, want %q", tc.name, d, tc.detail)
+		}
+		var got []string
+		for _, r := range rows[at+1:] {
+			if !strings.HasPrefix(r.Key, "ladder.") {
+				break
+			}
+			got = append(got, r.Key+"|"+r.Label+"|"+strings.ReplaceAll(r.Value, nbsp, " "))
+		}
+		if strings.Join(got, "\n") != strings.Join(tc.rungs, "\n") {
+			t.Errorf("%s: the rows after the ladder's\n%s\nwant\n%s", tc.name, strings.Join(got, "\n"), strings.Join(tc.rungs, "\n"))
+		}
+		n, keys := 0, map[string]bool{}
+		for _, r := range rows {
+			if strings.HasPrefix(r.Key, "ladder.") {
+				n++
+			}
+			if keys[r.Key] {
+				t.Errorf("%s: two rows of the key %s", tc.name, r.Key)
+			}
+			keys[r.Key] = true
+		}
+		if n != len(tc.rungs) {
+			t.Errorf("%s: %d rows of rungs, want %d", tc.name, n, len(tc.rungs))
+		}
+	}
+}
+
 func TestTheRenditionsInWords(t *testing.T) {
 	for _, tc := range []struct {
 		spec string

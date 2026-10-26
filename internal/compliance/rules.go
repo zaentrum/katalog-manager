@@ -389,7 +389,8 @@ func pipelineRulesOf(st rulesState) graph.PipelineRules {
 		if w.r == nil {
 			continue
 		}
-		*w.to = &graph.WorkerRules{Worker: w.name, Version: w.r.version, ReportedAt: w.r.reportedAt, Rules: settingsOf(w.r.raw)}
+		*w.to = &graph.WorkerRules{Worker: w.name, Version: w.r.version, ReportedAt: w.r.reportedAt,
+			Rules: settingsOf(w.r.raw, w.r.t)}
 	}
 	return out
 }
@@ -696,14 +697,20 @@ func dolbyVisionWords(v any) string {
 	return plain(v)
 }
 
-// skipped are keys a report carries that the panel does not list: the
-// transcoder's ladder in parts, which its spec says.
-var skipped = map[string]bool{"ladderRungs": true}
+// skipped are keys a report carries that the panel does not list as they
+// are: the transcoder's ladder in parts, which its spec says, and its table
+// of rung maxrates, which the rows of the ladder's rungs say (rungRows) and
+// the ladder's detail holds.
+var skipped = map[string]bool{"ladderRungs": true, "rungMaxrateMbps": true}
 
 // settingsOf writes out the rules of a report's rules raw, a row each, in
 // the panel's order: a row is listed when the report gives any of its keys,
-// by the first it gives; nested objects by their dotted key.
-func settingsOf(raw []byte) []graph.RuleSetting {
+// by the first it gives; nested objects by their dotted key. Of the
+// transcoder's (tr, its rules as the check reads them; nil of the
+// packager's), the ladder's row is followed by a row of each of its rungs
+// that reads its maxrate off the transcoder's table, and its detail holds
+// the table as reported.
+func settingsOf(raw []byte, tr *TranscoderRules) []graph.RuleSetting {
 	var doc map[string]any
 	if json.Unmarshal(raw, &doc) != nil {
 		return []graph.RuleSetting{}
@@ -746,7 +753,17 @@ func settingsOf(raw []byte) []graph.RuleSetting {
 			continue
 		}
 		value, detail := s.words(got)
+		if s.key == "ladder" && tr != nil && len(tr.RungMaxrateMbps) > 0 {
+			table := "rungMaxrateMbps=" + tableText(tr.RungMaxrateMbps)
+			if detail != nil {
+				table = *detail + "; " + table
+			}
+			detail = &table
+		}
 		out = append(out, graph.RuleSetting{Key: first, Label: s.label, Value: value, Detail: detail})
+		if s.key == "ladder" && tr != nil {
+			out = append(out, rungRows(tr)...)
+		}
 		for _, k := range keys {
 			said[k] = true
 		}
@@ -780,6 +797,77 @@ func settingsOf(raw []byte) []graph.RuleSetting {
 		out = append(out, graph.RuleSetting{Key: k, Label: k, Value: plain(leaves[k])})
 	}
 	return out
+}
+
+// rungRows are the rows of the rungs of the transcoder's ladder that read
+// their maxrate off its table (rungMaxrateMbps: the row of the next height
+// up), in the ladder's order, as the caps are said: "Video bit rate, 720p
+// rung", "at most 3 Mbit/s", each keyed by the ladder and its rung
+// ("ladder.720p.h264"), one a rung however often the ladder names it. A rung
+// at the original's size, one that sets its own maxrate (the ladder's words
+// say it) and one the table has no rate of have none, so a ladder of the
+// original's size alone (source:hevc) has none; a rung of a height two of
+// them share names its codec.
+func rungRows(tr *TranscoderRules) []graph.RuleSetting {
+	rungs, ok := tr.rungs()
+	if !ok || len(tr.RungMaxrateMbps) == 0 {
+		return nil
+	}
+	type row struct {
+		height     int
+		codec, key string
+		bps        float64
+	}
+	var rows []row
+	heights := map[int]int{}
+	seen := map[string]bool{}
+	for _, g := range rungs {
+		h := g.height()
+		key := "ladder." + strconv.Itoa(h) + "p." + g.Codec
+		if h == 0 || g.MaxrateBps != nil && *g.MaxrateBps > 0 || seen[key] {
+			continue
+		}
+		seen[key] = true
+		bps, ok := tr.tableMaxrate(h, g.Codec)
+		if !ok {
+			continue
+		}
+		rows = append(rows, row{h, g.Codec, key, bps})
+		heights[h]++
+	}
+	out := make([]graph.RuleSetting, 0, len(rows))
+	for _, r := range rows {
+		label := "Video bit rate, " + strconv.Itoa(r.height) + "p rung"
+		if heights[r.height] > 1 {
+			label = "Video bit rate, " + strconv.Itoa(r.height) + "p " + codecName(r.codec) + " rung"
+		}
+		out = append(out, graph.RuleSetting{Key: r.key, Label: label, Value: allowedRate(r.bps / 1e6)})
+	}
+	return out
+}
+
+// tableText is the transcoder's table of rung maxrates as it reported it, in
+// one line, by height: {"360":{"h264":0.8,"hevc":0.6},…}.
+func tableText(m map[string]map[string]float64) string {
+	heights := make([]string, 0, len(m))
+	for h := range m {
+		heights = append(heights, h)
+	}
+	sort.Slice(heights, func(i, j int) bool {
+		a, errA := strconv.Atoi(heights[i])
+		b, errB := strconv.Atoi(heights[j])
+		if errA != nil || errB != nil {
+			return heights[i] < heights[j]
+		}
+		return a < b
+	})
+	parts := make([]string, 0, len(heights))
+	for _, h := range heights {
+		k, _ := json.Marshal(h)
+		v, _ := json.Marshal(m[h])
+		parts = append(parts, string(k)+":"+string(v))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
 }
 
 // plain writes a JSON value: a number as short as it reads, a list of words

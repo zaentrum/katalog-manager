@@ -925,7 +925,12 @@ default stands.
   "Video bit rate, 2160p movies", "at most 14 Mbit/s" (a limit of 0 "any");
   "File size, movies", "at most 16.1 GB (15 GiB)"; "Renditions", the
   ladder in words, "one, at the original’s size, in HEVC", its spec the
-  detail; "Surround track", "5.1 E-AC-3, 448 kbit/s"; "Stereo track",
+  detail, with the transcoder's table of rung maxrates as it reports it
+  (`source:hevc; rungMaxrateMbps={"360":{"h264":0.8,"hevc":0.6},…}`), and
+  after it a row of each rung of the ladder that reads its maxrate off the
+  table, "Video bit rate, 720p rung", "at most 3 Mbit/s" (none of a ladder
+  at the original's size alone, or of a rung that sets its own maxrate,
+  which the ladder's words say); "Surround track", "5.1 E-AC-3, 448 kbit/s"; "Stereo track",
   "AAC, 192 kbit/s" (the codec where the packager reports it); the
   configuration as reported the detail where the value says it in words.
 - `libraryCompliance(kind, rules, search, first, after, sort, descending)`
