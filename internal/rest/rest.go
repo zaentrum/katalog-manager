@@ -22,7 +22,7 @@ type Deps struct {
 	Extras     ExtraTaker       // nil: POST /api/extras answers 503
 	Reencode   Reencoder        // nil: /api/library/reencode answers 503
 	TakeIn     TakeIn           // nil: a title that gets no package is taken in by the sweep alone; POST /api/items/{id}/takein answers 503
-	Compliance Compliance       // nil: PUT /api/analyze/rules/{worker} answers 503, and only the nightly pass checks a title packaged again
+	Compliance Compliance       // nil: PUT /api/analyze/rules/{worker} and GET /api/manage/compliance.csv answer 503, and only the nightly pass checks a title packaged again
 }
 
 // Handlers groups the REST handlers.
@@ -53,15 +53,16 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 //     attach seam, /api/library/items/{itemId}/subtitles, a subtitle attached
 //     to a title;
 //   - admins: POST /api/items/{id}/package, the packaging action an admin's
-//     client forwards (chino-api's admin route), and POST
-//     /api/items/{id}/takein, a title's take-in without a package.
+//     client forwards (chino-api's admin route), POST
+//     /api/items/{id}/takein, a title's take-in without a package, and GET
+//     /api/manage/compliance.csv, the compliance report's rows as CSV.
 //
 // The workers' protocol of an extra (its record, its steps, its
 // packaging-complete) is in the worker group too, and so is the workers'
 // report of the rules they run with. Bodies are implemented in the per-area
 // files (artwork.go, play.go, subtitles.go, analyzer.go, segments.go,
 // chapters.go, packaging.go, package.go, settings.go, ingest.go, extras.go,
-// migrations.go, reencode.go, takein.go, rules.go).
+// migrations.go, reencode.go, takein.go, rules.go, compliance.go).
 func (h *Handlers) Register(r chi.Router) {
 	pol := h.d.Cfg.Policy()
 
@@ -148,6 +149,10 @@ func (h *Handlers) Register(r chi.Router) {
 	// An admin's take-in of a title: its original into a version of its own,
 	// with no package (the library's v2 layout).
 	r.With(pol.Require(auth.Admin)).Post("/api/items/{id}/takein", h.postTakeIn)
+	// The compliance report's rows as CSV, every title its filter matches, for
+	// admins as GraphQL's libraryCompliance is, under /api/manage as the
+	// console's GraphQL is.
+	r.With(pol.Require(auth.Admin)).Get("/api/manage/compliance.csv", h.getComplianceCSV)
 
 	// External-file ingest: register a staged file (item + primary asset) and
 	// emit discovered so it flows the pipeline. Neutral machine contract used by

@@ -89,13 +89,15 @@ var routes = []route{
 
 	{http.MethodPost, "/api/items/m1/package", "", "admin"},
 	{http.MethodPost, "/api/items/m1/takein", "", "admin"},
+	{http.MethodGet, "/api/manage/compliance.csv", "", "admin"},
 }
 
 // Every route answers whom it is for, and refuses everyone else before it
 // does anything: a viewer reads artwork, playback and subtitles, and the
 // instance's subtitle languages; the worker protocol and the library's
 // migration are the service account's and the admins'; an addon only
-// ingests; the packaging action is an admin's alone. A stream token reads
+// ingests; the packaging action, a take-in and the compliance report's CSV
+// are an admin's alone. A stream token reads
 // artwork and nothing else, and no token gets nowhere.
 func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 	st := storetest.Open(t)

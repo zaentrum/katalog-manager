@@ -9,15 +9,18 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/zaentrum/katalog-manager/internal/compliance"
+	"github.com/zaentrum/katalog-manager/internal/graph"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 )
 
 // Compliance is the library's compliance check (compliance.Service): it keeps
-// the rules the workers report they run with, and checks a title again once
-// its package completed or its pipeline ended.
+// the rules the workers report they run with, checks a title again once its
+// package completed or its pipeline ended, and writes its report as CSV.
 type Compliance interface {
 	ReportRules(ctx context.Context, worker string, body []byte) (compliance.Reported, error)
 	Touch(ctx context.Context, ids ...string)
+	// Export is the report's CSV of the titles f matches, in the order o.
+	Export(ctx context.Context, f graph.ComplianceFilter, o graph.ComplianceOrder) (compliance.Export, error)
 }
 
 // putRules serves PUT /api/analyze/rules/{worker}, for the workers' service
