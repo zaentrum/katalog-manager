@@ -462,7 +462,8 @@ func (s *Service) queueIdle(ctx context.Context, set library.Settings) string {
 // (queueIdle), the titles queued first go, as many as library.reencode.rate
 // allows a pass and library.reencode.inflight leaves room for. A title busy
 // stays queued, saying why, and the next one goes; one gone, retired or with
-// no file to encode fails.
+// no file to encode fails, and so does one the library's compliance check
+// found the transcoder can't encode since it was queued.
 func (s *Service) DrainQueue(ctx context.Context) (QueuePass, error) {
 	var p QueuePass
 	if why := s.queueTable(ctx); why != "" {
@@ -602,6 +603,11 @@ func (s *Service) sendQueued(ctx context.Context, set library.Settings, p *Queue
 	}
 	why, err := s.unencodable(ctx, items)
 	if err != nil {
+		return err
+	}
+	// one the compliance check found the transcoder can't encode since it
+	// was queued fails before it is sent, as one gone or retired does
+	if err := s.blocked(ctx, items, why); err != nil {
 		return err
 	}
 	types, err := s.typesOf(ctx, items)

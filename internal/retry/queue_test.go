@@ -631,6 +631,34 @@ func TestATitleTheCheckFoundBlockedIsNotQueued(t *testing.T) {
 	}
 }
 
+// A title queued before the library's compliance check found the transcoder
+// can't encode it is not sent: the queue's pass fails it, saying why, and
+// sends the next one.
+func TestABlockedTitleIsNotSent(t *testing.T) {
+	st := queueCatalog(t)
+	b := &bus{}
+	check := &touched{}
+	s := newService(t, st, b).WithCompliance(check)
+	ctx := context.Background()
+	setting(t, st, library.SettingReencodeRate, "10")
+	setting(t, st, library.SettingReencodeInflight, "10")
+	if res, err := s.EnqueueReencode(ctx, graph.ReencodeRequest{Items: []string{"m1", "m2"}}); err != nil || res.Queued != 2 {
+		t.Fatalf("queue them: %+v, %v", res, err)
+	}
+	check.blocked = map[string]string{"m1": graph.SkipDolbyVision + "7"}
+	p, err := s.DrainQueue(ctx)
+	if err != nil || p.Sent != 1 || p.Refused != 1 {
+		t.Fatalf("the pass: %+v, %v", p, err)
+	}
+	if got := strings.Join(b.take(), "\n"); !strings.Contains(got, " m2 ") || strings.Contains(got, " m1 ") {
+		t.Errorf("sent %q, want m2 alone", got)
+	}
+	if got := queueOf(t, st); !strings.Contains(got, "m1 failed items by=katalog-manager sent=false done=true reason=the library's "+
+		"compliance check found that its original is Dolby Vision profile 7, which the transcoder leaves as it is") {
+		t.Errorf("the queue:\n%s", got)
+	}
+}
+
 // A title never packaged, with no step yet (a film taken in, or one whose
 // pipeline never ran), goes through the queue as any other: queued, it gets
 // its transcode and its package when it is sent, both waiting for their

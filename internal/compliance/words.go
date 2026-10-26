@@ -645,9 +645,30 @@ func queueWords(state, reason string) (text, detail *string) {
 			return strp(noFileText), nil
 		case strings.HasPrefix(r, "its file is a disc image"):
 			return strp(discText), nil
+		case strings.HasPrefix(r, blockedPrefix):
+			return strp(blockedText(r)), nil
 		}
 	}
 	return nil, nil
+}
+
+// blockedPrefix begins the reason the queue keeps of a title it failed as
+// the compliance check found the transcoder can't encode it (retry's
+// blockedWhy), and blockedProfileRE names its Dolby Vision profile.
+const blockedPrefix = "the library's compliance check found that "
+
+var blockedProfileRE = regexp.MustCompile(`found that its original is Dolby Vision profile (\S+), which`)
+
+// blockedText is why the queue failed a title the compliance check found
+// the transcoder can't encode, in the reader's words, of its reason r.
+func blockedText(r string) string {
+	if m := blockedProfileRE.FindStringSubmatch(r); m != nil {
+		return asSentence(skipReason(blockedDolbyVision + m[1]))
+	}
+	if strings.Contains(r, "its original has no video") {
+		return asSentence(noVideoClause)
+	}
+	return asSentence(skipReason(skipOther))
 }
 
 // The shapes of the reasons the queue keeps of a title it holds back while

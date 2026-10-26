@@ -218,6 +218,10 @@ func serverTexts(t *testing.T) []text {
 		"2026-10-06T10:00:00Z); "+newArrivalText, "failed, its original being deleted")
 	queue("failed", "the movie has no file to encode", "failed, no file")
 	queue("failed", "its file is a "+processing.DiscImageReason, "failed, a disc image")
+	queue("failed", "the library's compliance check found that its original is Dolby Vision profile 7, which the transcoder "+
+		"leaves as it is", "failed before it was sent, the check finding Dolby Vision profile 7")
+	queue("failed", "the library's compliance check found that its original has no video", "failed before it was sent, "+
+		"the check finding no video")
 
 	for _, b := range []struct{ source, kind string }{
 		{"its original deleted after packaging", graph.SkipDeleted},
@@ -351,6 +355,9 @@ func TestAQueuedTitleWaitsInTheQueue(t *testing.T) {
 		{"sent", "", "-", "-"},
 		{"done", "", "-", "-"},
 		{"failed", "", "-", "-"},
+		{"failed", "the library's compliance check found that its original is Dolby Vision profile 7, which the transcoder leaves " +
+			"as it is", "Dolby Vision profile 7 needs a tone-mapping encode.", "-"},
+		{"failed", "the library's compliance check found that its original has no video", "The original has no video.", "-"},
 	} {
 		text, detail := queueWords(tc.state, tc.reason)
 		if said(text) != tc.text || said(detail) != tc.detail {
