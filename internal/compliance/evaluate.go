@@ -89,6 +89,11 @@ type title struct {
 	Transcode, Package      step
 	// Original is what it has of its original (library.OriginalsOf).
 	Original library.Original
+	// AudioLanguages are the languages an admin set for its audio tracks,
+	// by the track's place among the original's audio streams (migration
+	// 037's com_nalet_katalog_itemtracklanguages), which the packager
+	// names a track by.
+	AudioLanguages map[int]string
 }
 
 // packaged reports whether the title has a package that plays.
@@ -153,8 +158,10 @@ type sourceRecord struct {
 		Width        *float64 `json:"width"`
 		Height       *float64 `json:"height"`
 		Bitrate      *float64 `json:"bitrate"`
+		Title        *string  `json:"title"`
 		Dispositions struct {
 			AttachedPic bool `json:"attachedPic"`
+			Commentary  bool `json:"commentary"`
 		} `json:"dispositions"`
 		// Hdr is a video stream's high dynamic range: its Dolby Vision
 		// configuration as ffprobe read it (source.schema.json's
@@ -983,13 +990,16 @@ func missingImageSubtitles(r records, carried []string) (map[string][]string, []
 // processed again, bytes; nil when that cannot be told. Processing that
 // encodes the video (a title over a cap, of another codec, or not packaged)
 // makes a package of the video at its maxrate (the transcoder's cap of its
-// kind and bucket, or its override) and the packager's audio for one
-// language, the stereo rendition and, when the source has surround or the
-// record does not say, the surround track, for the title's duration.
-// Processing that only adds tracks (the surround track, image subtitles)
-// keeps the package's video: its package as it is, with the surround track
-// added. A title processing again cannot help (no original, a disc image)
-// has none.
+// kind and bucket, or its override) and the audio the packager makes of the
+// original (planAudio): a stereo rendition of each of its audio tracks, at
+// the packager's stereo bit rate, and its 5.1 companions, for the title's
+// duration. Processing that only adds tracks (a 5.1 companion, image
+// subtitles) keeps the package's video: its package as it is, with the
+// renditions the packager makes now that it lacks (the stereo renditions of
+// the original's tracks beyond its own, as the original's record counts
+// them, and the companions beyond those it carries, the largest first). A
+// title processing again cannot help (no original, a disc image) has none,
+// and so has one whose audio's bit rate the packager doesn't report.
 func estimate(t title, r records, rs rulesState, res result) *int64 {
 	if len(res.Findings) == 0 || res.Blocked != "" || t.Original.State != library.OriginalPresent ||
 		(t.Path != nil && processing.IsDiscImage(*t.Path)) {
@@ -1000,19 +1010,13 @@ func estimate(t title, r records, rs rulesState, res result) *int64 {
 		return nil
 	}
 	p := rs.packager.p
-	surround := 0.0
-	if surroundOn(p) && p.SurroundBitrate != nil {
-		had := true
-		if r.srcEssence != nil {
-			v, ok := r.srcEssence.Get("surround")
-			had = !ok || v == true
-		}
-		if had {
-			surround, _ = parseBitrate(*p.SurroundBitrate)
-		}
+	plan := planAudio(t, r, p)
+	stereo := 0.0
+	if p.StereoBitrate != nil {
+		stereo, _ = parseBitrate(*p.StereoBitrate)
 	}
 	if res.breaks(NotPackaged, PackagingFailed, OverBitrateCap, OverSizeCap, VideoNotHEVC) {
-		if rs.transcoder == nil || rs.transcoder.t == nil || p.StereoBitrate == nil {
+		if rs.transcoder == nil || rs.transcoder.t == nil {
 			return nil
 		}
 		bucket, ok := t.bucket(r, rs)
@@ -1023,16 +1027,194 @@ func estimate(t title, r records, rs rulesState, res result) *int64 {
 		if !ok {
 			return nil
 		}
-		stereo, _ := parseBitrate(*p.StereoBitrate)
-		n := int64((video*1e6 + stereo + surround) * dur / 8000)
+		audio, ok := audioRate(plan.stereo, plan.companions, stereo)
+		if !ok {
+			return nil
+		}
+		n := int64((video*1e6 + audio) * dur / 8000)
 		return &n
 	}
 	if res.PackageBytes == nil {
 		return nil
 	}
-	n := *res.PackageBytes
-	if res.breaks(NoSurround) {
-		n += int64(surround * dur / 8000)
+	// what the package carries: its record's renditions, else as much as
+	// the packager makes but the companions a package without 5.1 lacks
+	carried, carriedCompanions := plan.stereo, len(plan.companions)
+	if r.pkg != nil {
+		carried, carriedCompanions = len(r.pkg.Renditions.Audio), len(r.pkg.Renditions.AudioSurround)
+	} else if res.breaks(NoSurround) {
+		carriedCompanions = 0
 	}
+	addStereo := 0
+	if plan.from == planOriginal && plan.stereo > carried {
+		addStereo = plan.stereo - carried
+	}
+	var missing []float64
+	if len(plan.companions) > carriedCompanions {
+		largest := append([]float64(nil), plan.companions...)
+		sort.Sort(sort.Reverse(sort.Float64Slice(largest)))
+		missing = largest[:len(largest)-carriedCompanions]
+	}
+	audio, ok := audioRate(addStereo, missing, stereo)
+	if !ok {
+		return nil
+	}
+	n := *res.PackageBytes + int64(audio*dur/8000)
 	return &n
+}
+
+// audioRate is the bit rate of stereo renditions at stereo bit/s each and of
+// companions of their bit rates, bit/s; false when a rate it needs is not
+// known.
+func audioRate(renditions int, companions []float64, stereo float64) (float64, bool) {
+	if renditions > 0 && stereo <= 0 {
+		return 0, false
+	}
+	total := float64(renditions) * stereo
+	for _, c := range companions {
+		if c <= 0 {
+			return 0, false
+		}
+		total += c
+	}
+	return total, true
+}
+
+// Where an audioPlan's count comes from.
+const (
+	planOriginal = "original" // the original's record
+	planPackage  = "package"  // the package's record
+	planAssumed  = "assumed"  // neither: one stereo rendition
+)
+
+// audioPlan is the audio a package of a title is to carry once it is
+// processed again: how many stereo renditions, and the bit rates of its 5.1
+// companions (bit/s; 0 where nothing tells), and where the count comes from
+// (planOriginal, planPackage, planAssumed).
+type audioPlan struct {
+	from       string
+	stereo     int
+	companions []float64
+}
+
+// planAudio is the audio the packager makes of a title's original, as its
+// rules make it (packager.py, package_item and _prepare_source): a stereo
+// rendition of every audio track, whatever its language, which its
+// language whitelist only hides ("Stereo AAC, one per source track":
+// renditions.audio), and a 5.1 companion of the first track of more than two
+// channels of each language that is no commentary (_surround_plan:
+// renditions.audioSurround), the track itself where it is a 5.1 of the
+// companion's codec (at its own bit rate, as its record gives it), else an
+// encode at the packager's surround bit rate. The transcoder's encode
+// carries every audio track of the original as it is (ffmpeg.py: -map 0:a?,
+// -c:a copy), so either way they are the original's tracks. They are
+// counted off the original's record (sources/<id>/source.json: its audio
+// streams, in their order, each in the language an admin set for it, which
+// the packager takes over the file's); else off the package's record
+// (versions/<id>/package.json: renditions.audio, and renditions.audioSurround
+// at the larger of each one's measured bit rate and the packager's); else
+// one stereo rendition. Without the original's streams, a companion is
+// counted when the original had surround or its record doesn't say.
+func planAudio(t title, r records, p *PackagerRules) audioPlan {
+	rate := 0.0
+	if p.SurroundBitrate != nil {
+		rate, _ = parseBitrate(*p.SurroundBitrate)
+	}
+	on := surroundOn(p)
+	target := ""
+	if on {
+		target = strings.ToLower(strings.TrimSpace(*p.SurroundAudio))
+	}
+	if r.src != nil {
+		plan := audioPlan{from: planOriginal}
+		seen := map[string]bool{}
+		for _, s := range r.src.Streams {
+			if s.Type != "audio" {
+				continue
+			}
+			ordinal := plan.stereo
+			plan.stereo++
+			ch := 0.0
+			if s.Channels != nil {
+				ch = *s.Channels
+			}
+			if !on || ch <= 2 || commentary(s.Title, s.Dispositions.Commentary) {
+				continue
+			}
+			lang := languageKey(s.LanguageRaw, s.Language)
+			if o, ok := t.AudioLanguages[ordinal]; ok {
+				lang = languageKey(&o)
+			}
+			if seen[lang] {
+				continue
+			}
+			seen[lang] = true
+			companion := rate
+			if s.Codec != nil && strings.EqualFold(strings.TrimSpace(*s.Codec), target) && ch == 6 &&
+				s.Bitrate != nil && *s.Bitrate > 0 {
+				companion = *s.Bitrate
+			}
+			plan.companions = append(plan.companions, companion)
+		}
+		if plan.stereo > 0 {
+			return plan
+		}
+	}
+	had := true
+	if r.srcEssence != nil {
+		v, ok := r.srcEssence.Get("surround")
+		had = !ok || v == true
+	}
+	plan := audioPlan{from: planAssumed, stereo: 1}
+	if r.pkg != nil && len(r.pkg.Renditions.Audio) > 0 {
+		plan = audioPlan{from: planPackage, stereo: len(r.pkg.Renditions.Audio)}
+		if on {
+			for _, a := range r.pkg.Renditions.AudioSurround {
+				c := rate
+				if a.BitrateBps != nil && *a.BitrateBps > c {
+					c = *a.BitrateBps
+				}
+				plan.companions = append(plan.companions, c)
+			}
+		}
+	}
+	if on && had && len(plan.companions) == 0 {
+		plan.companions = []float64{rate}
+	}
+	return plan
+}
+
+// commentary reports whether the packager takes an audio track for a
+// commentary, which gets no 5.1 companion (packager.py, _is_commentary): its
+// disposition says it is one, or its title holds "comment" or "kommentar".
+func commentary(title *string, disposition bool) bool {
+	if disposition {
+		return true
+	}
+	if title == nil {
+		return false
+	}
+	t := strings.ToLower(*title)
+	return strings.Contains(t, "comment") || strings.Contains(t, "kommentar")
+}
+
+// languageKey is the key the packager tells a track's language by
+// (packager.py, _lang_key), of the first code that names one: its primary
+// subtag, its ISO 639-1 code where it has one ("de" of "ger", "deu",
+// "de-CH"), else as it is ("zxx", "gsw"); "und" when none does.
+func languageKey(codes ...*string) string {
+	for _, c := range codes {
+		if c == nil {
+			continue
+		}
+		primary, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(strings.ReplaceAll(*c, "_", "-"))), "-")
+		if primary == "" {
+			continue
+		}
+		if tag, ok := languages.Tag(primary); ok {
+			primary, _, _ = strings.Cut(tag, "-")
+		}
+		return primary
+	}
+	return languages.Unknown
 }

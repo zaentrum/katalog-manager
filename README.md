@@ -769,9 +769,20 @@ Each title has `originalBytes`, `packageBytes` and `estimatedBytes`, what
 its package is to be at most once it is processed again: processing that
 encodes the video makes it at the transcoder's maxrate (the bit rate it
 allows for the title's kind and bucket, or its `NVENC_MAXRATE_*` override)
-with the packager's stereo and surround audio for one language, for the
-title's duration; processing that only adds tracks keeps the package and
-adds the surround track. A title that processing again can't help has none,
+with the audio the packager makes of the original, for the title's
+duration; processing that only adds tracks keeps the package and adds what
+it lacks of that audio. The packager makes a stereo rendition of every
+audio track of the original, whatever its language (its language
+whitelist only hides one), at its stereo bit rate, and a 5.1 companion of
+the first track of more than two channels of each language that is no
+commentary: the track itself, at its own bit rate, where it is a 5.1 of the
+companion's codec, else an encode at its surround bit rate. The
+transcoder's encode carries every audio track of the original as it is.
+The tracks are counted off the original's record (`sources/<id>/source.json`:
+its audio streams, each in the language an admin set for it, which the
+packager takes over the file's), else off the package's record (its
+renditions), else as one stereo rendition and, when the original had
+surround or its record doesn't say, a companion. A title that processing again can't help has none,
 is no queueable one (and the queue skips it when a request names it), and
 says why as the clause the console says after a colon (`reworkBlocked`,
 "its original was deleted after packaging"): as the

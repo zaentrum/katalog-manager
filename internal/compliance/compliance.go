@@ -89,6 +89,9 @@ type Service struct {
 	// ready51 is set once migration 051, and those the check reads by, are
 	// seen in place (none is undone under a running service).
 	ready51 atomic.Bool
+	// tracks is set once migration 037 is seen in place: the languages an
+	// admin set for a title's tracks.
+	tracks atomic.Bool
 	// said is what the pass last said went wrong, said once each time it
 	// changes (under mu).
 	mu   sync.Mutex

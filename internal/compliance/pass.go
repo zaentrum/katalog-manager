@@ -279,10 +279,47 @@ func (s *Service) titles(ctx context.Context, ids []string) ([]title, error) {
 	if err != nil {
 		return nil, err
 	}
+	languages, err := s.audioLanguages(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
 	for i := range out {
 		out[i].Original = originals[out[i].ID]
+		out[i].AudioLanguages = languages[out[i].ID]
 	}
 	return out, nil
+}
+
+// audioLanguages are the languages an admin set for the audio tracks of the
+// titles ids, by title and by the track's place among the original's audio
+// streams (migration 037); none without it.
+func (s *Service) audioLanguages(ctx context.Context, ids []string) (map[string]map[int]string, error) {
+	out := map[string]map[int]string{}
+	if !s.tracks.Load() {
+		ok, err := s.st.TrackLanguagesReady(ctx)
+		if err != nil || !ok {
+			return out, err
+		}
+		s.tracks.Store(true)
+	}
+	rows, err := s.pool.Query(ctx, `SELECT item_id, ordinal, language FROM com_nalet_katalog_itemtracklanguages
+		WHERE item_id = ANY($1) AND kind = 'audio'`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, language string
+		var ordinal int
+		if err := rows.Scan(&id, &ordinal, &language); err != nil {
+			return nil, err
+		}
+		if out[id] == nil {
+			out[id] = map[int]string{}
+		}
+		out[id][ordinal] = language
+	}
+	return out, rows.Err()
 }
 
 // readRecords reads the records of a title's complete version: its

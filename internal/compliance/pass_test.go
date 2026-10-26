@@ -293,6 +293,51 @@ A Disc Image: PACKAGING_FAILED`
 	}
 }
 
+// A pass estimates a title's package of the audio its original's record
+// lists, read off the library, each track in the language an admin set for
+// it in the catalog: a film with two 5.1 tracks of no language and a French
+// stereo one gets three stereo renditions and one companion, and two once an
+// admin names the 5.1 tracks English and German.
+func TestAPassEstimatesTheAudioOfTheOriginal(t *testing.T) {
+	s, st, dir := checkOf(t)
+	ctx := context.Background()
+	p := packaged{n: 30, kind: "movie", title: "A Film In Three Languages", width: 3840, height: 2160, rate: 65e6,
+		encoder: "copy", original: 60e9, size: 58e9, srcCh: 6, pkgCh: 6}
+	p.add(t, st, dir)
+	itemDir := library.Paths{Root: dir}.ItemDir(library.Place{ID: p.id(), Type: p.kind})
+	librarytest.WriteSource(t, library.SourceDir(itemDir, p.source()), map[string]any{"sourceId": p.source(),
+		"file": map[string]any{"name": "original.mkv", "sizeBytes": p.original}, "container": map[string]any{"durationMs": 7200000},
+		"streams": []any{
+			map[string]any{"index": 0, "type": "video", "codec": "hevc", "width": 3840, "height": 2160,
+				"dispositions": map[string]any{"default": true}},
+			map[string]any{"index": 1, "type": "audio", "codec": "truehd", "channels": 8},
+			map[string]any{"index": 2, "type": "audio", "codec": "dts", "channels": 6},
+			map[string]any{"index": 3, "type": "audio", "codec": "aac", "channels": 2, "language": "fr", "languageRaw": "fre"}},
+		"essence": map[string]any{"surround": true, "maxAudioChannels": 8}}, nil)
+	estimated := func() float64 {
+		t.Helper()
+		if _, err := s.Pass(ctx); err != nil {
+			t.Fatal(err)
+		}
+		rep := reportOf(t, s, graph.ComplianceFilter{}, 100, "")
+		if len(rep.Rows) != 1 || rep.Rows[0].EstimatedBytes == nil {
+			t.Fatalf("the report: %s", rowsOf(rep))
+		}
+		return *rep.Rows[0].EstimatedBytes
+	}
+	if got, want := estimated(), float64(int64((14e6+3*192e3+448e3)*7200/8)); got != want {
+		t.Errorf("two 5.1 tracks of no language: estimated %v, want %v", got, want)
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemtracklanguages (item_id, kind, ordinal, language)
+		VALUES ($1, 'audio', 0, 'eng'), ($1, 'audio', 1, 'deu')`, p.id())
+	if _, err := s.Refresh(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := estimated(), float64(int64((14e6+3*192e3+2*448e3)*7200/8)); got != want {
+		t.Errorf("the 5.1 tracks named English and German: estimated %v, want %v", got, want)
+	}
+}
+
 // The report narrows to a kind, to titles that break any of some rules, and
 // to a title or a series whose title holds a search, and pages: each page
 // after the one before, none twice; the summary and the titles checked

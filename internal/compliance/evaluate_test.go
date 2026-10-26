@@ -691,6 +691,85 @@ func TestTheEstimate(t *testing.T) {
 
 func i64(n int64) *int64 { return &n }
 
+// The estimate counts the audio the packager makes of the original: a stereo
+// rendition of each of its tracks, whatever its language, and a 5.1
+// companion of the first track of more than two channels of each language
+// that is no commentary, the track itself where it is a 5.1 of the
+// companion's codec, at its own bit rate. The count comes off the original's
+// record, its tracks in the languages an admin set for them; else off the
+// package's record; else one stereo rendition and, as the original had
+// surround, a companion (TestTheEstimate).
+func TestTheEstimateCountsTheAudioThePackagerMakes(t *testing.T) {
+	rs := stateOf(t, transcoderReport, packagerReport)
+	at := func(bps float64) int64 { return int64(bps * 7200000 / 8000) }
+	srcOf := func(width, height int, audio ...string) string {
+		streams := append([]string{`{"index": 0, "type": "video", "codec": "hevc", "width": ` + itoa(width) +
+			`, "height": ` + itoa(height) + `, "dispositions": {"default": true}}`}, audio...)
+		return `{"container": {"durationMs": 7200000}, "streams": [` + strings.Join(streams, ", ") + `],
+			"essence": {"surround": true, "maxAudioChannels": 8}}`
+	}
+	pkgOf := func(width, height int, rate float64, size int64, stereo int, surround ...float64) string {
+		var audio, companions []string
+		for i := 0; i < stereo; i++ {
+			audio = append(audio, `{"codec": "mp4a.40.2", "channels": 2, "bitrateBps": 192000}`)
+		}
+		for _, c := range surround {
+			companions = append(companions, `{"codec": "ec-3", "channels": 6, "bitrateBps": `+ftoa(c)+`}`)
+		}
+		return `{"sizeBytes": ` + strconv.FormatInt(size, 10) + `, "durationMs": 7200000,
+			"renditions": {"video": [{"codec": "hvc1.2.4.L153.B0", "width": ` + itoa(width) + `, "height": ` + itoa(height) +
+			`, "bitrateBps": ` + ftoa(rate) + `, "encoder": "copy"}], "audio": [` + strings.Join(audio, ", ") + `],
+			"audioSurround": [` + strings.Join(companions, ", ") + `]},
+			"essence": {"surround": ` + strconv.FormatBool(len(surround) > 0) + `, "maxAudioChannels": 6}}`
+	}
+	english := `{"index": 1, "type": "audio", "codec": "eac3", "channels": 6, "language": "en", "languageRaw": "eng", "bitrate": 640000}`
+	german := `{"index": 2, "type": "audio", "codec": "dts", "profile": "DTS-HD MA", "channels": 6, "language": "de", "languageRaw": "ger"}`
+	french := `{"index": 3, "type": "audio", "codec": "aac", "channels": 2, "language": "fr", "languageRaw": "fre"}`
+	untagged := func(index int, codec string, channels int) string {
+		return `{"index": ` + itoa(index) + `, "type": "audio", "codec": "` + codec + `", "channels": ` + itoa(channels) + `}`
+	}
+	for _, tc := range []struct {
+		name      string
+		languages map[int]string
+		pkg, src  string
+		rs        rulesState
+		want      int64
+	}{
+		{"a 2160 remux over its cap in three languages: 3 stereo renditions, the English 5.1 E-AC-3 copied at its " +
+			"640 kbit/s and the German DTS encoded", nil, pkgOf(3840, 2160, 65e6, 59e9, 1),
+			srcOf(3840, 2160, english, german, french), rs, at(14e6 + 3*192e3 + 640e3 + 448e3)},
+		{"the same, the packager making no 5.1", nil, pkgOf(3840, 2160, 65e6, 59e9, 1),
+			srcOf(3840, 2160, english, german, french),
+			stateOf(t, transcoderReport, strings.Replace(packagerReport, `"surroundAudio": "eac3"`, `"surroundAudio": "off"`, 1)),
+			at(14e6 + 3*192e3)},
+		{"a package in three languages that lacks its 5.1: it, and the two companions", nil, pkgOf(1920, 1080, 4e6, 4e9, 3),
+			srcOf(1920, 1080, english, german, french), rs, 4e9 + at(640e3+448e3)},
+		{"a package of one stereo rendition of the three: it, two more and the two companions", nil,
+			pkgOf(1920, 1080, 4e6, 4e9, 1), srcOf(1920, 1080, english, german, french), rs, 4e9 + at(2*192e3+640e3+448e3)},
+		{"a second English 5.1 and two commentaries: a stereo rendition each, one companion, of the first English " +
+			"track, encoded", nil, pkgOf(3840, 2160, 65e6, 59e9, 1), srcOf(3840, 2160,
+			`{"index": 1, "type": "audio", "codec": "truehd", "channels": 8, "language": "en", "languageRaw": "eng", "bitrate": 4500000}`,
+			`{"index": 2, "type": "audio", "codec": "ac3", "channels": 6, "language": "en", "languageRaw": "eng"}`,
+			`{"index": 3, "type": "audio", "codec": "aac", "channels": 2, "language": "en", "title": "Commentary with the director"}`,
+			`{"index": 4, "type": "audio", "codec": "eac3", "channels": 6, "language": "de", "dispositions": {"commentary": true}}`),
+			rs, at(14e6 + 4*192e3 + 448e3)},
+		{"two 5.1 tracks of no language: one companion", nil, pkgOf(3840, 2160, 65e6, 59e9, 1),
+			srcOf(3840, 2160, untagged(1, "truehd", 8), untagged(2, "dts", 6)), rs, at(14e6 + 2*192e3 + 448e3)},
+		{"the same, an admin naming them English and German: two", map[int]string{0: "eng", 1: "deu"},
+			pkgOf(3840, 2160, 65e6, 59e9, 1), srcOf(3840, 2160, untagged(1, "truehd", 8), untagged(2, "dts", 6)), rs,
+			at(14e6 + 2*192e3 + 2*448e3)},
+		{"an original's record without its audio: the package's 3 stereo renditions and its companion, measured " +
+			"at 640 kbit/s", nil, pkgOf(3840, 2160, 65e6, 59e9, 3, 640e3), srcOf(3840, 2160), rs, at(14e6 + 3*192e3 + 640e3)},
+	} {
+		ti := packagedTitle("movie")
+		ti.AudioLanguages = tc.languages
+		got := evaluate(ti, recordsOf(t, tc.pkg, tc.src), tc.rs)
+		if got.EstimatedBytes == nil || *got.EstimatedBytes != tc.want {
+			t.Errorf("%s: %q, estimated %v, want %d", tc.name, found(got), got.EstimatedBytes, tc.want)
+		}
+	}
+}
+
 // h264Found is what an H.264 package is found to be where every video is to
 // be HEVC.
 const h264Found = "The video is H.264, and the transcoder makes every video HEVC. [H.264 / HEVC] {avc1.640028}"
