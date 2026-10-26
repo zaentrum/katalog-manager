@@ -880,13 +880,15 @@ nor package) leaves the report.
   `FIRST_PACKAGE` for a title never packaged (or whose packaging failed,
   and that has no package), `REENCODE` over a cap or not HEVC, `REPACKAGE`
   for a track missing (or a packaging that failed, of a title with a
-  package), null for none of them. `total` counts the titles the whole filter (`kind`, `rules`,
-  `search`) matches, and `matching` sums them up, every one of them and not
-  only the page's (`{titles, originalBytes, packageBytes,
-  estimatedBytes}`); `summary`, for every rule, those of `kind` and `search`
-  that break it, whatever `rules` asks, with the size of their packages and
-  their estimate; `evaluatedAt` is the oldest check of those (null when none
-  was checked), `evaluating` whether a pass runs, `pending` how many titles
+  package), null for none of them. `total` counts the titles the whole
+  filter (`kind`, `rules`, `search`) matches, and `matching` sums them up,
+  every one of them and not only the page's (`{titles, originalBytes,
+  packageBytes, estimatedBytes}`); `checkedTitles` counts the titles of
+  `kind` and `search` the check has checked, whether they break a rule or
+  not ("281 titles checked"); `summary`, for every rule, those of `kind` and
+  `search` that break it, whatever `rules` asks, with the size of their
+  packages and their estimate; `evaluatedAt` is the oldest check of those
+  (null when none was checked), `evaluating` whether a pass runs, `pending` how many titles
   wait for the next one; `queueable` sums up the titles of `matching` that
   a request to process them again queues, what `queueReworkMatching`
   queues: none waiting or sent in the re-encode queue (which keeps such a

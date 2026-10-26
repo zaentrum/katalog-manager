@@ -1498,6 +1498,9 @@ type ComplianceReport {
   evaluating: Boolean!
   pending: Int!
   total: Int!
+  # The titles of the report's kind and search the check has checked,
+  # whether they break a rule or not: "281 titles checked".
+  checkedTitles: Int
   matching: ComplianceTotals!
   queueable: ComplianceTotals!
   queue: ComplianceQueueCounts!

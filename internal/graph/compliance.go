@@ -149,12 +149,15 @@ type ComplianceReport struct {
 	Evaluating   bool
 	Pending      int32
 	Total        int32
-	Matching     ComplianceTotals
-	Queueable    ComplianceTotals
-	Queue        ComplianceQueueCounts
-	Summary      []ComplianceSummary
-	Rows         []ComplianceRow
-	NextCursor   *string
+	// CheckedTitles are the titles of the report's kind and search the
+	// check covers and has checked, whether they break a rule or not.
+	CheckedTitles int32
+	Matching      ComplianceTotals
+	Queueable     ComplianceTotals
+	Queue         ComplianceQueueCounts
+	Summary       []ComplianceSummary
+	Rows          []ComplianceRow
+	NextCursor    *string
 }
 
 // ComplianceSkip is a title a request to process titles again didn't queue:
@@ -369,6 +372,10 @@ func (r *complianceReportResolver) EvaluatedAt() *string {
 func (r *complianceReportResolver) Evaluating() bool { return r.m.Evaluating }
 func (r *complianceReportResolver) Pending() int32   { return r.m.Pending }
 func (r *complianceReportResolver) Total() int32     { return r.m.Total }
+func (r *complianceReportResolver) CheckedTitles() *int32 {
+	n := r.m.CheckedTitles
+	return &n
+}
 func (r *complianceReportResolver) Summary() []*complianceSummaryResolver {
 	out := make([]*complianceSummaryResolver, 0, len(r.m.Summary))
 	for i := range r.m.Summary {

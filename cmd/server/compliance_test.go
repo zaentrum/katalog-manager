@@ -111,7 +111,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 
 	const report = `{ libraryCompliance {
 		rules { transcoder { worker version reportedAt rules { key label value detail } } packager { worker version } }
-		notEvaluated evaluatedAt evaluating pending total nextCursor
+		notEvaluated evaluatedAt evaluating pending total checkedTitles nextCursor
 		matching { titles originalBytes packageBytes estimatedBytes } queue { queued processing processed failed }
 		queueable { titles originalBytes packageBytes estimatedBytes }
 		summary { rule titles packageBytes estimatedBytes }
@@ -148,6 +148,7 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 			Evaluating          bool
 			Pending             int
 			Total               int
+			CheckedTitles       *int
 			NextCursor          *string
 			Matching, Queueable struct {
 				Titles                      int
@@ -242,6 +243,9 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 	if q, m := rep.Queueable, rep.Matching; q.Titles != m.Titles || q.OriginalBytes != m.OriginalBytes || q.PackageBytes != m.PackageBytes ||
 		q.EstimatedBytes == nil || *q.EstimatedBytes != *m.EstimatedBytes {
 		t.Errorf("queueable %+v, before anything is queued: want the totals, %+v", q, m)
+	}
+	if rep.CheckedTitles == nil || *rep.CheckedTitles != 4 {
+		t.Errorf("titles checked: %v, want the 4, the episode within its caps too", rep.CheckedTitles)
 	}
 	if rep.Total != 3 || rep.Pending != 0 || rep.Evaluating || rep.EvaluatedAt == nil || rep.NextCursor != nil ||
 		len(rep.NotEvaluated) != 0 || len(rep.Summary) != len(compliance7) {

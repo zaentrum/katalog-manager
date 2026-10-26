@@ -202,8 +202,10 @@ func reportOf(t *testing.T, s *Service, f graph.ComplianceFilter, first int32, a
 func TestAPassChecksTheLibraryAndTheReportReadsIt(t *testing.T) {
 	s, st, _ := library4(t)
 	ctx := context.Background()
-	if rep := reportOf(t, s, graph.ComplianceFilter{}, 100, ""); rep.EvaluatedAt != nil || rep.Total != 0 || rep.Pending != 8 {
-		t.Fatalf("before a pass: evaluated %v, total %d, pending %d; want never, none and the 8 titles", rep.EvaluatedAt, rep.Total, rep.Pending)
+	if rep := reportOf(t, s, graph.ComplianceFilter{}, 100, ""); rep.EvaluatedAt != nil || rep.Total != 0 || rep.Pending != 8 ||
+		rep.CheckedTitles != 0 {
+		t.Fatalf("before a pass: evaluated %v, total %d, pending %d, checked %d; want never, none, the 8 titles and none",
+			rep.EvaluatedAt, rep.Total, rep.Pending, rep.CheckedTitles)
 	}
 	n, err := s.Pass(ctx)
 	if err != nil || n != 8 {
@@ -221,6 +223,9 @@ A Disc Image: PACKAGING_FAILED`
 	}
 	if rep.Total != 6 || rep.Pending != 0 || rep.EvaluatedAt == nil || rep.Evaluating || rep.NextCursor != nil {
 		t.Errorf("total %d, pending %d, evaluated %v, evaluating %v, next %v", rep.Total, rep.Pending, rep.EvaluatedAt, rep.Evaluating, rep.NextCursor)
+	}
+	if rep.CheckedTitles != 8 {
+		t.Errorf("%d titles checked, want the 8, those within the rules too", rep.CheckedTitles)
 	}
 	if len(rep.NotEvaluated) != 0 {
 		t.Errorf("not evaluated, with both workers' rules: %q", rep.NotEvaluated)
@@ -290,30 +295,33 @@ A Disc Image: PACKAGING_FAILED`
 
 // The report narrows to a kind, to titles that break any of some rules, and
 // to a title or a series whose title holds a search, and pages: each page
-// after the one before, none twice; the summary counts the titles of the
-// kind and the search, whichever rules are asked for.
+// after the one before, none twice; the summary and the titles checked
+// count the titles of the kind and the search, whichever rules are asked
+// for, the titles checked those within the rules too.
 func TestTheReportFiltersAndPages(t *testing.T) {
 	s, _, _ := library4(t)
 	if _, err := s.Pass(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name string
-		f    graph.ComplianceFilter
-		want string
+		name    string
+		f       graph.ComplianceFilter
+		want    string
+		checked int32
 	}{
-		{"episodes", graph.ComplianceFilter{Kind: "episode"}, "An Episode Over Its Cap: OVER_BITRATE_CAP"},
+		{"episodes", graph.ComplianceFilter{Kind: "episode"}, "An Episode Over Its Cap: OVER_BITRATE_CAP", 1},
 		{"not packaged or failed", graph.ComplianceFilter{Rules: []string{NotPackaged, PackagingFailed}},
-			"A Film Never Packaged: NOT_PACKAGED\nA Film Whose Transcode Failed: PACKAGING_FAILED\nA Disc Image: PACKAGING_FAILED"},
-		{"by the series’ title", graph.ComplianceFilter{Search: "COASTAL"}, "An Episode Over Its Cap: OVER_BITRATE_CAP"},
-		{"by the title", graph.ComplianceFilter{Search: "remux"}, "A Remux Kept As It Was: OVER_BITRATE_CAP, OVER_SIZE_CAP"},
+			"A Film Never Packaged: NOT_PACKAGED\nA Film Whose Transcode Failed: PACKAGING_FAILED\nA Disc Image: PACKAGING_FAILED", 8},
+		{"by the series’ title", graph.ComplianceFilter{Search: "COASTAL"}, "An Episode Over Its Cap: OVER_BITRATE_CAP", 1},
+		{"by the title", graph.ComplianceFilter{Search: "remux"}, "A Remux Kept As It Was: OVER_BITRATE_CAP, OVER_SIZE_CAP", 1},
 		{"movies over a cap", graph.ComplianceFilter{Kind: "movie", Rules: []string{OverBitrateCap}},
-			"A Remux Kept As It Was: OVER_BITRATE_CAP, OVER_SIZE_CAP"},
-		{"nothing", graph.ComplianceFilter{Search: "no such title"}, ""},
+			"A Remux Kept As It Was: OVER_BITRATE_CAP, OVER_SIZE_CAP", 7},
+		{"nothing", graph.ComplianceFilter{Search: "no such title"}, "", 0},
 	} {
 		rep := reportOf(t, s, tc.f, 100, "")
-		if got := rowsOf(rep); got != tc.want || int(rep.Total) != len(rep.Rows) {
-			t.Errorf("%s: total %d\n%s\nwant:\n%s", tc.name, rep.Total, got, tc.want)
+		if got := rowsOf(rep); got != tc.want || int(rep.Total) != len(rep.Rows) || rep.CheckedTitles != tc.checked {
+			t.Errorf("%s: total %d, %d checked (want %d)\n%s\nwant:\n%s", tc.name, rep.Total, rep.CheckedTitles, tc.checked,
+				got, tc.want)
 		}
 	}
 	rep := reportOf(t, s, graph.ComplianceFilter{Kind: "movie", Rules: []string{OverBitrateCap}}, 100, "")

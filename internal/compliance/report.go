@@ -59,12 +59,13 @@ func rulesOf(f graph.ComplianceFilter) ([]string, error) {
 }
 
 // Report is a page of the titles f matches that break a rule, as the check
-// last found them, first of them after the cursor after: the largest package
-// first. It says what the workers reported, what is not checked and why, how
-// many titles f matches and their sizes, and those of them a request to
-// process them again queues (queueable), of the titles of f's kind and
-// search those that break each rule, whichever rules f names, and the
-// re-encode queue by state.
+// last found them, first of them after the cursor after, in the order o. It
+// says what the workers reported, what is not checked and why, how many
+// titles of f's kind and search the check has checked (CheckedTitles,
+// whether they break a rule or not), how many f matches and their sizes,
+// and those of them a request to process them again queues (queueable), of
+// the titles of f's kind and search those that break each rule, whichever
+// rules f names, and the re-encode queue by state.
 func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, o graph.ComplianceOrder, first int32,
 	after string) (graph.ComplianceReport, error) {
 	out := graph.ComplianceReport{NotEvaluated: []string{}, Summary: []graph.ComplianceSummary{}, Rows: []graph.ComplianceRow{}}
@@ -96,13 +97,14 @@ func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, o graph.
 	var unchecked int32
 	m := &out.Matching
 	if err := s.pool.QueryRow(ctx, filtered+`SELECT min(f.evaluatedat) FILTER (WHERE f.ruleshash <> ''),
+			count(*) FILTER (WHERE f.ruleshash <> ''),
 			count(*) FILTER (WHERE `+breaking+`),
 			COALESCE(sum(f.originalbytes) FILTER (WHERE `+breaking+`), 0)::float8,
 			COALESCE(sum(f.packagebytes) FILTER (WHERE `+breaking+`), 0)::float8,
 			(sum(f.estimatedbytes) FILTER (WHERE `+breaking+`))::float8,
 			count(*) FILTER (WHERE f.unchecked IS NOT NULL)
-		FROM f`, f.Kind, f.Search, rules).Scan(&out.EvaluatedAt, &m.Titles, &m.OriginalBytes, &m.PackageBytes,
-		&m.EstimatedBytes, &unchecked); err != nil {
+		FROM f`, f.Kind, f.Search, rules).Scan(&out.EvaluatedAt, &out.CheckedTitles, &m.Titles, &m.OriginalBytes,
+		&m.PackageBytes, &m.EstimatedBytes, &unchecked); err != nil {
 		return out, err
 	}
 	out.Total = m.Titles
