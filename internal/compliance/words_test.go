@@ -287,6 +287,8 @@ func serverTexts(t *testing.T) []text {
 		out = append(out, text{"ComplianceQueued", fmt.Sprintf("a request by a filter offered %d titles, %d now", c[0], c[1]),
 			"notQueuedText", changedText(c[0], c[1])})
 	}
+	out = append(out, text{"ComplianceQueued", "a request by a filter offered 40 titles, 40 others now", "notQueuedText",
+		changedText(40, 40)})
 	for _, k := range skipKinds {
 		out = append(out, text{"ComplianceSkip", "a title skipped: " + k, "reason", skipReason(k)})
 	}
@@ -391,6 +393,25 @@ func TestARequestSaysWhatTheCheckFoundBlocked(t *testing.T) {
 	} {
 		if _, _, got := requestTexts(0, 0, tc.skipped, false); got == nil || *got != tc.want {
 			t.Errorf("%v: %v, want %q", tc.skipped, got, tc.want)
+		}
+	}
+}
+
+// A request by a filter that queued nothing, as its titles are not those the
+// console offered, says from how many to how many, or, of as many others,
+// that they changed.
+func TestARequestSaysTheTitlesChanged(t *testing.T) {
+	for _, tc := range []struct {
+		expected, now int
+		want          string
+	}{
+		{40, 42, "Nothing was queued: the matching titles changed, from 40 to 42."},
+		{2, 0, "Nothing was queued: the matching titles changed, from 2 to 0."},
+		{1284, 1290, "Nothing was queued: the matching titles changed, from 1,284 to 1,290."},
+		{40, 40, "Nothing was queued: the matching titles changed."},
+	} {
+		if got := changedText(tc.expected, tc.now); got != tc.want {
+			t.Errorf("%d offered, %d now: %q, want %q", tc.expected, tc.now, got, tc.want)
 		}
 	}
 }

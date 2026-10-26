@@ -1472,13 +1472,17 @@ type ComplianceSummary {
 # many, and the size of their originals; and of the same titles, those with
 # an estimate, the size of their packages now and the estimate of them once
 # processed again (null when none has one), so that the two compare the
-# same titles; withoutEstimate counts those left out of both.
+# same titles; withoutEstimate counts those left out of both. fingerprint
+# names the titles, whatever their order: the same while they are the same
+# titles, another once one comes or goes (a hash of their ids); the
+# queueable's is what queueReworkMatching takes back.
 type ComplianceTotals {
   titles: Int!
   originalBytes: Float!
   packageBytes: Float!
   estimatedBytes: Float
   withoutEstimate: Int!
+  fingerprint: String!
 }
 
 # The re-encode queue, all its titles, by state: queued, processing (sent),
@@ -1595,11 +1599,14 @@ extend type Mutation {
   # processing again can't help; as queueRework does. It counts those in
   # the queue already (alreadyQueued), as queueRework does, and names none
   # that processing again can't help, which the console never offers; it
-  # says no title fits the filter only when none does. expected is the
-  # count of queueable titles the console offered: when the titles that are
-  # queueable now are another count, nothing is queued, and notQueuedText
-  # says the count changed.
-  queueReworkMatching(kind: ComplianceKind, rules: [ComplianceRule!], search: String, expected: Int!): ComplianceQueued!
+  # says no title fits the filter only when none does. expected and
+  # fingerprint are the report's queueable the console offered, its titles
+  # and its fingerprint: when the titles that are queueable now are not
+  # those, nothing is queued, and notQueuedText says so ("Nothing was
+  # queued: the matching titles changed, from 40 to 42."; of as many others,
+  # "Nothing was queued: the matching titles changed.").
+  queueReworkMatching(kind: ComplianceKind, rules: [ComplianceRule!], search: String, expected: Int!,
+    fingerprint: String!): ComplianceQueued!
   # Has the titles of kind (all when omitted) checked again, in the
   # background; true once the pass is set going.
   refreshCompliance(kind: ComplianceKind): Boolean!

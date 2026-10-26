@@ -47,7 +47,7 @@ extend type Query {
 }
 extend type Mutation {
   queueRework(items: [ID!]!): ComplianceQueued!
-  queueReworkMatching(kind: ComplianceKind, rules: [ComplianceRule!], search: String, expected: Int!): ComplianceQueued!
+  queueReworkMatching(kind: ComplianceKind, rules: [ComplianceRule!], search: String, expected: Int!, fingerprint: String!): ComplianceQueued!
   refreshCompliance(kind: ComplianceKind): Boolean!
 }
 type ComplianceTotals { titles: Int! originalBytes: Float! packageBytes: Float! estimatedBytes: Float }
@@ -83,12 +83,36 @@ extend type ComplianceTotals { withoutEstimate: Int! }   # the titles left out o
 extend type ComplianceSummary { withoutEstimate: Int! }
 type ComplianceProcessing { originals: String! inflight: Int window: String }   # live settings for the confirm
 extend type ComplianceReport { processing: ComplianceProcessing! }
+extend type ComplianceTotals { fingerprint: String! }   # names the titles; queueable's goes back with queueReworkMatching
 `
 
 var (
 	contractBlockRE = regexp.MustCompile(`(enum|type|extend type)\s+(\w+)\s*\{([^}]*)\}`)
 	contractFieldRE = regexp.MustCompile(`(\w+)\s*(?:\(([^)]*)\))?\s*:\s*([\[\]\w!]+)`)
 )
+
+// A fingerprint names a set of titles, whatever their order, and is another
+// once a title comes or goes.
+func TestTheFingerprintNamesTheTitles(t *testing.T) {
+	three := Fingerprint([]string{"m1", "m2", "m3"})
+	if again := Fingerprint([]string{"m3", "m1", "m2"}); again != three {
+		t.Errorf("the same titles in another order: %s, want %s", again, three)
+	}
+	if len(three) != 32 || strings.Trim(three, "0123456789abcdef") != "" {
+		t.Errorf("fingerprint %q, want 32 hex digits", three)
+	}
+	for _, other := range [][]string{{"m1", "m2"}, {"m1", "m2", "m3", "m4"}, {"m1", "m2", "m4"}, nil, {"m1", "m23"}} {
+		if f := Fingerprint(other); f == three {
+			t.Errorf("%v has the fingerprint of m1, m2, m3", other)
+		}
+	}
+	if Fingerprint([]string{"m1", "2"}) == Fingerprint([]string{"m12"}) {
+		t.Error("an id runs into the next one")
+	}
+	if Fingerprint(nil) != Fingerprint([]string{}) {
+		t.Error("no title has two fingerprints")
+	}
+}
 
 // introspected is a type as introspection gives it.
 type introspected struct {
@@ -139,8 +163,8 @@ func TestTheComplianceContract(t *testing.T) {
 		types[ty.Name] = ty
 	}
 	blocks := contractBlockRE.FindAllStringSubmatch(complianceContract, -1)
-	if len(blocks) != 30 {
-		t.Fatalf("the contract reads as %d blocks, want 30", len(blocks))
+	if len(blocks) != 31 {
+		t.Fatalf("the contract reads as %d blocks, want 31", len(blocks))
 	}
 	for _, b := range blocks {
 		kind, name, body := b[1], b[2], b[3]

@@ -2,7 +2,10 @@ package graph
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,8 +35,23 @@ type Compliance interface {
 	// answered it, in words; matching says it named its titles by a filter.
 	Queued(ctx context.Context, res ReencodeEnqueued, matching bool) (ComplianceQueued, error)
 	// Changed says, in words, that a request by a filter queued nothing:
-	// it expected so many queueable titles, and now so many are.
+	// it expected so many queueable titles, and now so many are (as many:
+	// others).
 	Changed(expected, now int32) ComplianceQueued
+}
+
+// Fingerprint names a set of titles by their ids, whatever their order: the
+// same while they are the same titles, another once one comes or goes. It is
+// the first 16 bytes of the SHA-256 of the ids sorted, each ended by a line
+// break, in hex.
+func Fingerprint(ids []string) string {
+	sorted := append([]string(nil), ids...)
+	sort.Strings(sorted)
+	h := sha256.New()
+	for _, id := range sorted {
+		h.Write([]byte(id + "\n"))
+	}
+	return hex.EncodeToString(h.Sum(nil)[:16])
 }
 
 // Rework queues titles to be processed again, through the paced re-encode
@@ -155,12 +173,13 @@ type ComplianceSummary struct {
 // the size of their originals, and of the same titles with an estimate, the
 // size of their packages and the estimate of them after they are processed
 // again (nil when none has one); WithoutEstimate counts those left out of
-// both.
+// both, and Fingerprint names the titles (Fingerprint).
 type ComplianceTotals struct {
 	Titles                      int32
 	OriginalBytes, PackageBytes float64
 	EstimatedBytes              *float64
 	WithoutEstimate             int32
+	Fingerprint                 string
 }
 
 // ComplianceQueueCounts are the re-encode queue's titles by state: queued,
@@ -323,13 +342,15 @@ func (r *Resolver) rework(ctx context.Context, items []string, m *ComplianceMatc
 // and that a request queues (the report's queueable), as queueRework does,
 // and counts those of them in the queue already, as queueRework counts
 // them; it says nothing of those processing again can't help, which the
-// console never offers. When the queueable titles are not as many as the
-// console offered (expected), it queues nothing, and says so.
+// console never offers. When the queueable titles are not those the console
+// offered, as many as expected and of the fingerprint it read of them, it
+// queues nothing, and says so.
 func (r *Resolver) QueueReworkMatching(ctx context.Context, args struct {
-	Kind     *string
-	Rules    *[]string
-	Search   *string
-	Expected int32
+	Kind        *string
+	Rules       *[]string
+	Search      *string
+	Expected    int32
+	Fingerprint string
 }) (*complianceQueuedResolver, error) {
 	if err := r.allow(ctx, "Mutation.queueReworkMatching"); err != nil {
 		return nil, err
@@ -341,7 +362,7 @@ func (r *Resolver) QueueReworkMatching(ctx context.Context, args struct {
 	if err != nil {
 		return nil, err
 	}
-	if now := int32(len(m.Queueable)); now != args.Expected {
+	if now := int32(len(m.Queueable)); now != args.Expected || Fingerprint(m.Queueable) != strings.TrimSpace(args.Fingerprint) {
 		return &complianceQueuedResolver{m: r.svc.Compliance.Changed(args.Expected, now)}, nil
 	}
 	return r.rework(ctx, m.Queueable, &m)
@@ -468,6 +489,7 @@ func (r *complianceTotalsResolver) OriginalBytes() float64   { return r.m.Origin
 func (r *complianceTotalsResolver) PackageBytes() float64    { return r.m.PackageBytes }
 func (r *complianceTotalsResolver) EstimatedBytes() *float64 { return r.m.EstimatedBytes }
 func (r *complianceTotalsResolver) WithoutEstimate() int32   { return r.m.WithoutEstimate }
+func (r *complianceTotalsResolver) Fingerprint() string      { return r.m.Fingerprint }
 
 type complianceQueueCountsResolver struct{ m ComplianceQueueCounts }
 

@@ -114,6 +114,7 @@ func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, o graph.
 	if err != nil {
 		return out, err
 	}
+	m.Fingerprint = graph.Fingerprint(matched.all)
 	out.Queueable = totalsOf(matched.queueable)
 	q := &out.Queue
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state = 'queued'), count(*) FILTER (WHERE state = 'sent'),
@@ -492,7 +493,8 @@ func (s *Service) Queued(ctx context.Context, res graph.ReencodeEnqueued, matchi
 
 // Changed says that a request by a filter queued nothing as the titles it
 // queues changed since the console offered them: expected of them then, now
-// of them now (changedText).
+// of them now, as many of other titles where they are the same count
+// (changedText).
 func (s *Service) Changed(expected, now int32) graph.ComplianceQueued {
 	text := changedText(int(expected), int(now))
 	return graph.ComplianceQueued{SkippedTitles: []graph.ComplianceSkip{}, NotQueuedText: &text, Message: text}
@@ -532,10 +534,12 @@ type sized struct {
 }
 
 // matched are the titles a filter matches that break a rule, as a request
-// by the filter takes them (graph.ComplianceMatching).
+// by the filter takes them (graph.ComplianceMatching), and the ids of all of
+// them.
 type matched struct {
 	queueable []sized
 	queued    int32
+	all       []string
 }
 
 // matching are the titles f matches that break a rule (any of rules), in the
@@ -572,11 +576,11 @@ func (s *Service) matching(ctx context.Context, f graph.ComplianceFilter, rules 
 	if err := rows.Err(); err != nil {
 		return out, err
 	}
-	ids := make([]string, len(titles))
+	out.all = make([]string, len(titles))
 	for i, t := range titles {
-		ids[i] = t.id
+		out.all[i] = t.id
 	}
-	kinds, err := s.blockedOf(ctx, s.pool, ids)
+	kinds, err := s.blockedOf(ctx, s.pool, out.all)
 	if err != nil {
 		return out, err
 	}
@@ -597,12 +601,14 @@ func (s *Service) matching(ctx context.Context, f graph.ComplianceFilter, rules 
 // totalsOf sums titles up: how many, and the sizes of their originals; and
 // of the same titles with an estimate, the sizes of their packages and the
 // estimate of them once processed again (nil when none has one), and how
-// many have none.
+// many have none; and their fingerprint.
 func totalsOf(titles []sized) graph.ComplianceTotals {
 	out := graph.ComplianceTotals{Titles: int32(len(titles))}
+	ids := make([]string, len(titles))
 	var est int64
 	known := false
-	for _, t := range titles {
+	for i, t := range titles {
+		ids[i] = t.id
 		if t.orig != nil {
 			out.OriginalBytes += float64(*t.orig)
 		}
@@ -620,6 +626,7 @@ func totalsOf(titles []sized) graph.ComplianceTotals {
 		e := float64(est)
 		out.EstimatedBytes = &e
 	}
+	out.Fingerprint = graph.Fingerprint(ids)
 	return out
 }
 

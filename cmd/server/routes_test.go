@@ -454,7 +454,8 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { clearReencodeQueue(states: ["done", "failed"]) }`, "clear the re-encode queue done,failed"},
 	{`mutation { queueRework(items: ["m1"]) { queued alreadyQueued skipped skippedTitles { itemId title reason } message
 		queuedText alreadyText notQueuedText } }`, "rework m1; say 1 queued, 0 already, 0 skipped, matching false"},
-	{`mutation { queueReworkMatching(kind: EPISODE, rules: [NO_SURROUND], expected: 1) { queued alreadyQueued skipped message } }`,
+	{`mutation { queueReworkMatching(kind: EPISODE, rules: [NO_SURROUND], expected: 1, fingerprint: "` + graph.Fingerprint([]string{"m1"}) +
+		`") { queued alreadyQueued skipped message } }`,
 		`compliance matching episode NO_SURROUND ""; rework m1; say 1 queued, 1 already, 0 skipped, matching true`},
 	{`mutation { refreshCompliance(kind: MOVIE) }`, "refresh compliance movie"},
 	{`mutation { replaceSource(itemId: "m1", path: "/media/a-film-1080p.mkv", deleteOldFile: true) { itemId oldPath path
