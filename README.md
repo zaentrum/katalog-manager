@@ -876,7 +876,9 @@ nor package) leaves the report.
   sort and direction; one of another is refused). Each row has its findings
   (`{rule, text, measured, limit, detail}`), sizes, its place in the
   re-encode queue (`queued`, `sent`, `done` or `failed`, why in words,
-  `queueReason`, and that reason's technical part, `queueDetail`), when it
+  `queueReason`, "It is waiting in the queue." of a title queued and not
+  yet sent that nothing else holds, and that reason's technical part,
+  `queueDetail`), when it
   was checked, and the columns of a technical report, as the check measured
   them: `resolution` ("3840×2160") and `videoCodec` ("HEVC", "H.264") of
   the package's video, else the original's; `videoBitrate` (bit/s, as

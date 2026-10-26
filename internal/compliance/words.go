@@ -567,14 +567,23 @@ var (
 	discText     = discImageText
 )
 
+// waitingText is where a title queued and not yet sent stands in the
+// re-encode queue, when the queue says nothing else of it.
+const waitingText = "It is waiting in the queue."
+
 // queueWords is where a title stands in the re-encode queue, in words, from
 // the reason the queue keeps of a title waiting or failed, and the reason's
 // technical part, its detail (what a worker said, when its worker last
-// reported, an event); nil for a reason of no shape the queue writes (and
-// for none).
+// reported, an event). A title queued and not yet sent waits in the queue
+// (waitingText) when its reason says nothing else, or nothing, the reason
+// then its detail; nil for any other state's reason of no shape the queue
+// writes, and for none.
 func queueWords(state, reason string) (text, detail *string) {
 	r := strings.TrimSpace(reason)
 	if r == "" {
+		if state == "queued" {
+			return strp(waitingText), nil
+		}
 		return nil, nil
 	}
 	after := func(prefix string) (string, bool) {
@@ -608,6 +617,7 @@ func queueWords(state, reason string) (text, detail *string) {
 		if rest, ok := after("the re-encode could not be sent"); ok {
 			return strp("It couldn’t be handed to the transcoder."), some(rest)
 		}
+		return strp(waitingText), &r
 	case "failed":
 		if rest, ok := after("transcode failed"); ok {
 			text, detail := stepWords("transcoder", "failed", noErrorGiven(rest), false)

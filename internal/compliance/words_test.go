@@ -202,6 +202,8 @@ func serverTexts(t *testing.T) []text {
 	queue("queued", "package is waiting for its worker since 2026-10-26T09:40:00Z, and encoding it again would run it twice; "+
 		"wait for it, or for its timeout of 2h", "queued, its package waiting to start")
 	queue("queued", "the re-encode could not be sent: broker: not the leader", "queued, its event not sent")
+	queue("queued", "", "queued and not yet sent, as a request leaves it")
+	queue("queued", "held back by an older queue", "queued, for a reason the words don’t know")
 	queue("failed", "transcode failed: ffmpeg exited 1", "failed in its transcode")
 	queue("failed", "package failed: shaka-packager exited 1", "failed in its package")
 	queue("failed", "transcode failed: Dolby Vision profile 7 needs a tone-mapping encode; kept the original", "failed, its transcode refused")
@@ -330,6 +332,33 @@ func i32p(n int32) *int32 { return &n }
 // year, an episode by its series, its number and its title, a season by its
 // series and its number; a part the catalog doesn't hold is left out, and a
 // title of which it holds nothing is its id.
+// A title queued and not yet sent waits in the queue: when the queue keeps
+// no reason of it, and when the words don't know its reason, which is then
+// its detail; one the queue holds back for its step says why. A title sent,
+// done or failed without a reason is said nothing of.
+func TestAQueuedTitleWaitsInTheQueue(t *testing.T) {
+	said := func(s *string) string {
+		if s == nil {
+			return "-"
+		}
+		return *s
+	}
+	for _, tc := range []struct{ state, reason, text, detail string }{
+		{"queued", "", "It is waiting in the queue.", "-"},
+		{"queued", "  ", "It is waiting in the queue.", "-"},
+		{"queued", "held back by an older queue", "It is waiting in the queue.", "held back by an older queue"},
+		{"queued", "transcode is waiting for its worker", "It is waiting for the transcoder.", "-"},
+		{"sent", "", "-", "-"},
+		{"done", "", "-", "-"},
+		{"failed", "", "-", "-"},
+	} {
+		text, detail := queueWords(tc.state, tc.reason)
+		if said(text) != tc.text || said(detail) != tc.detail {
+			t.Errorf("%s %q: %q {%s}, want %q {%s}", tc.state, tc.reason, said(text), said(detail), tc.text, tc.detail)
+		}
+	}
+}
+
 // A request's line of the titles it didn't queue says those the check found
 // the transcoder can't encode as it says the others: an original without
 // video, and a Dolby Vision profile, said of the profile whatever the

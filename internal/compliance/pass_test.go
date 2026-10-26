@@ -554,31 +554,41 @@ A Remux Kept As It Was: OVER_BITRATE_CAP, OVER_SIZE_CAP` {
 }
 
 // A row says where its title stands in the re-encode queue, the latest
-// place it had there, and why it waits or failed.
+// place it had there, and why it waits or failed: a title queued and not
+// yet sent, as a request leaves it, waits in the queue.
 func TestARowSaysItsPlaceInTheQueue(t *testing.T) {
 	s, st, _ := library4(t)
-	if _, err := s.Pass(context.Background()); err != nil {
+	ctx := context.Background()
+	if _, err := s.Pass(ctx); err != nil {
 		t.Fatal(err)
 	}
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_reencodequeue (id, item_id, state, selection, reason)
 		VALUES ('q1', $1, 'failed', 'items', 'transcode failed: out of memory'), ('q2', $1, 'queued', 'items', 'transcode is running')`, uuid(1))
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_reencodequeue (id, item_id, state, selection, sentat)
 		VALUES ('q3', $1, 'sent', 'items', now())`, uuid(3))
+	q := retry.New(st, processing.DefaultPolicy(), &bus{}, time.Minute)
+	if res, err := q.EnqueueReencode(ctx, graph.ReencodeRequest{Items: []string{uuid(5)}}); err != nil || res.Queued != 1 {
+		t.Fatalf("queue the film never packaged: %+v, %v", res, err)
+	}
 	rep := reportOf(t, s, graph.ComplianceFilter{}, 100, "")
 	for _, r := range rep.Rows {
-		want := map[string]string{uuid(1): "queued: The transcoder is working on it.", uuid(3): "sent: "}[r.ItemID]
+		want := map[string]string{uuid(1): "queued: The transcoder is working on it.", uuid(3): "sent: ",
+			uuid(5): "queued: It is waiting in the queue."}[r.ItemID]
 		got := ""
 		if r.Queue != nil {
 			got = *r.Queue + ": "
 			if r.QueueReason != nil {
 				got += *r.QueueReason
 			}
+			if r.QueueDetail != nil {
+				got += " {" + *r.QueueDetail + "}"
+			}
 		}
 		if got != want {
 			t.Errorf("%s: queue %q, want %q", r.Title, got, want)
 		}
 	}
-	if q := rep.Queue; q != (graph.ComplianceQueueCounts{Queued: 1, Processing: 1, Processed: 0, Failed: 1}) {
+	if q := rep.Queue; q != (graph.ComplianceQueueCounts{Queued: 2, Processing: 1, Processed: 0, Failed: 1}) {
 		t.Errorf("the queue's counts: %+v", q)
 	}
 }

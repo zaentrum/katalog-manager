@@ -231,8 +231,12 @@ func (s *Service) rows(ctx context.Context, f graph.ComplianceFilter, rules []st
 			k = *blocked
 		}
 		kept = append(kept, k)
-		if r.Queue != nil && reason != nil {
-			r.QueueReason, r.QueueDetail = queueWords(*r.Queue, *reason)
+		if r.Queue != nil {
+			why := ""
+			if reason != nil {
+				why = *reason
+			}
+			r.QueueReason, r.QueueDetail = queueWords(*r.Queue, why)
 		}
 		var fs []finding
 		if err := json.Unmarshal([]byte(findings), &fs); err != nil {

@@ -1388,8 +1388,10 @@ type ComplianceFinding {
 # packageBytes of its package; estimatedBytes what its package is to be at
 # most once it is processed again, null when that cannot be told. queue is
 # where it stands in the re-encode queue (queued, sent, done or failed; null
-# when it was never queued), queueReason why it waits or failed there, and
-# queueDetail that reason's technical part (what a worker said, an event).
+# when it was never queued), queueReason why it waits or failed there (a
+# title queued and not yet sent "It is waiting in the queue." when nothing
+# else holds it), and queueDetail that reason's technical part (what a
+# worker said, an event).
 # reworkBlocked says why processing it again can't help, as the clause the
 # console says after a colon ("its file is a disc image, which the
 # transcoder doesn’t encode", "the original has no video", "Dolby Vision
