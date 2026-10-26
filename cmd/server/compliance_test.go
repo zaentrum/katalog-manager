@@ -338,10 +338,14 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		r.Queueable.PackageBytes != 0 || r.Queueable.EstimatedBytes != nil || r.Queue.Processing != 1 {
 		t.Errorf("queueable %+v of matching %+v, the queue %+v; want the film whose transcode failed alone", r.Queueable, r.Matching, r.Queue)
 	}
+	// and says of the others what queueRework says: the remux and the film
+	// never packaged are in the queue, the disc image can't be processed
 	offered := data.LibraryCompliance.Queueable
 	mutate(`mutation { q: queueReworkMatching { queued alreadyQueued skipped skippedTitles { itemId title reason } message } }`)
-	if q := queued.Q; q.Queued != offered.Titles || q.AlreadyQueued != 0 || q.Skipped != 0 || len(q.SkippedTitles) != 0 ||
-		q.Message != "1 title queued to be processed again." {
+	const discSkipped = "1 title wasn’t queued: its file is a disc image, which the transcoder doesn’t encode."
+	if q := queued.Q; q.Queued != offered.Titles || q.AlreadyQueued != 2 || q.Skipped != 1 || len(q.SkippedTitles) != 1 ||
+		q.SkippedTitles[0].ItemID != discID ||
+		q.Message != "1 title queued to be processed again. 2 titles already in the queue. "+discSkipped {
 		t.Errorf("queueReworkMatching, every title that fits: %+v; offered %+v", q, offered)
 	}
 	if got := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue WHERE item_id = 'm1' AND state = 'queued'`); got != 1 {
@@ -352,9 +356,16 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		t.Errorf("queueable once queued: %+v", q)
 	}
 	mutate(`mutation { q: queueReworkMatching { queued alreadyQueued skipped message ` + texts + ` } }`)
-	if q := queued.Q; q.Queued != 0 || q.AlreadyQueued != 0 || q.Skipped != 0 || q.QueuedText != nil || q.AlreadyText != nil ||
-		said(q.NotQueuedText) != "Nothing was queued: no title fits the filter anymore." || q.Message != said(q.NotQueuedText) {
-		t.Errorf("queueReworkMatching, none left: %+v", q)
+	if q := queued.Q; q.Queued != 0 || q.AlreadyQueued != 3 || q.Skipped != 1 || q.QueuedText != nil ||
+		said(q.AlreadyText) != "3 titles already in the queue" || said(q.NotQueuedText) != discSkipped {
+		t.Errorf("queueReworkMatching, none left to queue: %+v", q)
+	}
+	// a filter whose only title is in the queue says it is there
+	mutate(`mutation { q: queueReworkMatching(kind: MOVIE, rules: [OVER_SIZE_CAP]) { queued alreadyQueued skipped message ` +
+		texts + ` } }`)
+	if q := queued.Q; q.Queued != 0 || q.AlreadyQueued != 1 || q.Skipped != 0 || q.QueuedText != nil ||
+		said(q.AlreadyText) != "1 title already in the queue" || q.NotQueuedText != nil || q.Message != "1 title already in the queue." {
+		t.Errorf("queueReworkMatching of the remux, in the queue: %+v", q)
 	}
 	mutate(`mutation { q: queueRework(items: []) { queued alreadyQueued skipped message ` + texts + ` } }`)
 	if q := queued.Q; q.Queued != 0 || said(q.NotQueuedText) != "Nothing was queued: no title was selected." {

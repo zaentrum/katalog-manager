@@ -146,9 +146,10 @@ func (f *fakes) Report(_ context.Context, c graph.ComplianceFilter, o graph.Comp
 		o.Descending, first, after))
 	return graph.ComplianceReport{}, nil
 }
-func (f *fakes) Queueable(_ context.Context, c graph.ComplianceFilter) ([]string, error) {
-	f.called(fmt.Sprintf("compliance queueable %s %s %q", c.Kind, strings.Join(c.Rules, ","), c.Search))
-	return []string{"m1"}, nil
+func (f *fakes) Matching(_ context.Context, c graph.ComplianceFilter) (graph.ComplianceMatching, error) {
+	f.called(fmt.Sprintf("compliance matching %s %s %q", c.Kind, strings.Join(c.Rules, ","), c.Search))
+	return graph.ComplianceMatching{Queueable: []string{"m1"}, AlreadyQueued: 1,
+		Skipped: []graph.ReencodeSkipped{{ItemID: "m2", Kind: graph.SkipDiscImage}}}, nil
 }
 func (f *fakes) Refresh(_ context.Context, kind string) (bool, error) {
 	f.called("refresh compliance " + kind)
@@ -159,7 +160,8 @@ func (f *fakes) EnqueueReencode(_ context.Context, req graph.ReencodeRequest) (g
 	return graph.ReencodeEnqueued{Queued: int32(len(req.Items))}, nil
 }
 func (f *fakes) Queued(_ context.Context, res graph.ReencodeEnqueued, matching bool) (graph.ComplianceQueued, error) {
-	f.called(fmt.Sprintf("say %d queued, matching %v", res.Queued, matching))
+	f.called(fmt.Sprintf("say %d queued, %d already, %d skipped, matching %v", res.Queued, res.AlreadyQueued, len(res.Skipped),
+		matching))
 	return graph.ComplianceQueued{Queued: res.Queued, Message: "queued"}, nil
 }
 
@@ -448,9 +450,9 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { reencodeItem(id: "m1") { itemId titles reencoded busy notSent message } }`, "reencode m1"},
 	{`mutation { clearReencodeQueue(states: ["done", "failed"]) }`, "clear the re-encode queue done,failed"},
 	{`mutation { queueRework(items: ["m1"]) { queued alreadyQueued skipped skippedTitles { itemId title reason } message
-		queuedText alreadyText notQueuedText } }`, "rework m1; say 1 queued, matching false"},
+		queuedText alreadyText notQueuedText } }`, "rework m1; say 1 queued, 0 already, 0 skipped, matching false"},
 	{`mutation { queueReworkMatching(kind: EPISODE, rules: [NO_SURROUND]) { queued alreadyQueued skipped message } }`,
-		`compliance queueable episode NO_SURROUND ""; rework m1; say 1 queued, matching true`},
+		`compliance matching episode NO_SURROUND ""; rework m1; say 1 queued, 1 already, 1 skipped, matching true`},
 	{`mutation { refreshCompliance(kind: MOVIE) }`, "refresh compliance movie"},
 	{`mutation { replaceSource(itemId: "m1", path: "/media/a-film-1080p.mkv", deleteOldFile: true) { itemId oldPath path
 		replaced oldFileDeleted oldSidecars reencode { reencoded busy notSent message } message } }`,

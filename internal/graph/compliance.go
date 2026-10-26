@@ -18,12 +18,13 @@ type Compliance interface {
 	// order o, first of them after the cursor after ("" from the first; a
 	// cursor of the same order).
 	Report(ctx context.Context, f ComplianceFilter, o ComplianceOrder, first int32, after string) (ComplianceReport, error)
-	// Queueable are the titles f matches that break a rule and that a
-	// request to process them again queues, in the report's order: none
-	// waiting or sent in the re-encode queue, which keeps such a title as it
-	// is, and none that processing again can't help (a row's
+	// Matching are the titles f matches that break a rule, as a request by
+	// the filter takes them: those it queues, in the report's order (the
+	// report's queueable), and the others as queueRework would say them,
+	// those waiting or sent in the re-encode queue already, which keeps
+	// such a title as it is, and those processing again can't help (a row's
 	// reworkBlocked), which the queue skips.
-	Queueable(ctx context.Context, f ComplianceFilter) ([]string, error)
+	Matching(ctx context.Context, f ComplianceFilter) (ComplianceMatching, error)
 	// Refresh has every title of kind ("" every kind) checked again, and
 	// answers whether a pass was set going.
 	Refresh(ctx context.Context, kind string) (bool, error)
@@ -52,6 +53,26 @@ type ComplianceFilter struct {
 	Kind   string
 	Rules  []string
 	Search string
+}
+
+// ComplianceMatching are the titles a filter matches that break a rule, as
+// a request by the filter takes them: those it queues (Queueable, the
+// report's queueable, in the report's order), how many of the others wait
+// or are sent in the re-encode queue already (AlreadyQueued), and those
+// processing again can't help, each a skip of its kind (Skipped).
+type ComplianceMatching struct {
+	Queueable     []string
+	AlreadyQueued int32
+	Skipped       []ReencodeSkipped
+}
+
+// Of is what a request by the filter did: what the queue did of the titles
+// it queued (res), and of the others what queueRework says of them, those
+// in the queue already and those it skips.
+func (m ComplianceMatching) Of(res ReencodeEnqueued) ReencodeEnqueued {
+	res.AlreadyQueued += m.AlreadyQueued
+	res.Skipped = append(res.Skipped, m.Skipped...)
+	return res
 }
 
 // ComplianceOrder is the order a report's rows are in: a ComplianceSort
@@ -255,12 +276,13 @@ func (r *Resolver) QueueRework(ctx context.Context, args struct{ Items []graphql
 			items = append(items, s)
 		}
 	}
-	return r.rework(ctx, items, false)
+	return r.rework(ctx, items, nil)
 }
 
-// rework queues items to be processed again, and says what that did; none
-// is said so.
-func (r *Resolver) rework(ctx context.Context, items []string, matching bool) (*complianceQueuedResolver, error) {
+// rework queues items to be processed again, and says what that did, with
+// what m says of the titles of a filter it didn't queue when the request
+// named its titles by a filter (m not nil); none is said so.
+func (r *Resolver) rework(ctx context.Context, items []string, m *ComplianceMatching) (*complianceQueuedResolver, error) {
 	var res ReencodeEnqueued
 	if len(items) > 0 {
 		var err error
@@ -268,7 +290,10 @@ func (r *Resolver) rework(ctx context.Context, items []string, matching bool) (*
 			return nil, err
 		}
 	}
-	q, err := r.svc.Compliance.Queued(ctx, res, matching)
+	if m != nil {
+		res = m.Of(res)
+	}
+	q, err := r.svc.Compliance.Queued(ctx, res, m != nil)
 	if err != nil {
 		return nil, err
 	}
@@ -276,8 +301,10 @@ func (r *Resolver) rework(ctx context.Context, items []string, matching bool) (*
 }
 
 // QueueReworkMatching queues the titles the filter matches that break a rule
-// and that a request queues (the report's queueable), as queueRework does:
-// none queued already, none that processing again can't help.
+// and that a request queues (the report's queueable), as queueRework does,
+// and says of every title the filter matches what queueRework says of it:
+// one in the queue already is counted so, one processing again can't help
+// is skipped, saying why.
 func (r *Resolver) QueueReworkMatching(ctx context.Context, args struct {
 	Kind   *string
 	Rules  *[]string
@@ -289,11 +316,11 @@ func (r *Resolver) QueueReworkMatching(ctx context.Context, args struct {
 	if r.svc.Compliance == nil || r.svc.Rework == nil {
 		return nil, errNotConfigured
 	}
-	items, err := r.svc.Compliance.Queueable(ctx, filterOf(args.Kind, args.Rules, args.Search))
+	m, err := r.svc.Compliance.Matching(ctx, filterOf(args.Kind, args.Rules, args.Search))
 	if err != nil {
 		return nil, err
 	}
-	return r.rework(ctx, items, true)
+	return r.rework(ctx, m.Queueable, &m)
 }
 
 // RefreshCompliance has the titles of kind (every kind when omitted) checked

@@ -914,7 +914,10 @@ nor package) leaves the report.
   titles named, or those the filter matches that it queues (`queueable`,
   exactly: what the console offers is what is queued), into the re-encode
   queue (as `POST /api/library/reencode` with `items`: a series is its
-  episodes), which sends them at its pace: `{queued, alreadyQueued,
+  episodes), which sends them at its pace. A request by the filter says of
+  the titles it matches and doesn't queue what `queueRework` says of them:
+  those in the queue already, and those processing again can't help, why.
+  Both answer `{queued, alreadyQueued,
   skipped, skippedTitles, queuedText, alreadyText, notQueuedText,
   message}`, a title waiting or sent already counted in `alreadyQueued`,
   one the queue does not take (not in the catalog, no movie, episode or
@@ -934,8 +937,10 @@ nor package) leaves the report.
   composed when they don't ("4 titles weren’t queued: the originals of 2
   were deleted after packaging, 1 has no file and 1 is a disc image."), or
   of nothing queued at all ("Nothing was queued: no title was selected.";
-  by a filter, "Nothing was queued: no title fits the filter anymore.")
-  (`notQueuedText`); `message` is the three in one text.
+  by a filter no title fits any more, "Nothing was queued: no title fits
+  the filter anymore.") (`notQueuedText`); `message` is the three in one
+  text. A filter whose only title is in the queue says so ("1 title already
+  in the queue"), as `queueRework` of it does.
 - `refreshCompliance(kind)` — the titles of `kind` (every kind when
   omitted) checked again by the next pass, at once.
 

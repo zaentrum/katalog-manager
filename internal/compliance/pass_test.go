@@ -743,8 +743,11 @@ A Coastal Show · S01E02 · An Episode Over Its Cap: it has no file`; skips != w
 // title and byte for byte: the titles that fit it but those queued already,
 // waiting or sent, and those that processing again can't help (a disc image,
 // an original deleted after packaging or being deleted); a title done or
-// failed in the queue before is queued again. Once they are queued, none is
-// left, and the request says why.
+// failed in the queue before is queued again. The request says of the others
+// what queueRework says of them: those in the queue already, and those it
+// can't help, why. Once they are queued, none is left, and the request says
+// they are in the queue; "no title fits the filter anymore" only when none
+// does.
 func TestTheQueueableAreWhatAFilterQueues(t *testing.T) {
 	s, st, dir := library4(t)
 	ctx := context.Background()
@@ -819,17 +822,29 @@ A Film In Dolby Vision 7: PACKAGING_FAILED` {
 	if m := rep.Matching; m.Titles != 9 || rep.Total != 9 {
 		t.Errorf("matching: %+v, total %d; want the 9 titles", m, rep.Total)
 	}
-	got, err := s.Queueable(ctx, all)
+	got, err := s.Matching(ctx, all)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(got, " ") != uuid(1)+" "+uuid(4)+" "+uuid(3) {
-		t.Errorf("the queueable: %v; want the remux, the film that lost its tracks and the episode", got)
+	if strings.Join(got.Queueable, " ") != uuid(1)+" "+uuid(4)+" "+uuid(3) {
+		t.Errorf("the queueable: %v; want the remux, the film that lost its tracks and the episode", got.Queueable)
+	}
+	// the others, in the report's order: the film never packaged waits in the
+	// queue and the one whose transcode failed is being processed; the films
+	// whose originals were deleted or are being deleted, the disc image and the
+	// film in Dolby Vision 7 can't be processed again
+	var skips []string
+	for _, sk := range got.Skipped {
+		skips = append(skips, sk.ItemID+" "+sk.Kind)
+	}
+	if want := uuid(10) + " deleted, " + uuid(11) + " deleting, " + uuid(7) + " disc, " + uuid(12) + " dolbyvision:7"; got.AlreadyQueued != 2 ||
+		strings.Join(skips, ", ") != want {
+		t.Errorf("the others: %d in the queue, skipped %s; want 2, and %s", got.AlreadyQueued, strings.Join(skips, ", "), want)
 	}
 	// a filter: the movies over a cap, of which only the remux can be
 	// processed again
-	movies, err := s.Queueable(ctx, graph.ComplianceFilter{Kind: "movie", Rules: []string{OverBitrateCap}})
-	if err != nil || strings.Join(movies, " ") != uuid(1) {
+	movies, err := s.Matching(ctx, graph.ComplianceFilter{Kind: "movie", Rules: []string{OverBitrateCap}})
+	if err != nil || strings.Join(movies.Queueable, " ") != uuid(1) {
 		t.Errorf("the movies over a cap: %+v, %v", movies, err)
 	}
 	if r := reportOf(t, s, graph.ComplianceFilter{Kind: "movie", Rules: []string{OverBitrateCap}}, 1, ""); r.Queueable.Titles != 1 ||
@@ -837,15 +852,24 @@ A Film In Dolby Vision 7: PACKAGING_FAILED` {
 		t.Errorf("the movies over a cap, a page of 1: queueable %+v, matching %+v", r.Queueable, r.Matching)
 	}
 
-	// what the request queues is what was offered
-	res, err := q.EnqueueReencode(ctx, graph.ReencodeRequest{Items: got})
+	// what the request queues is what was offered, and it says the others
+	said := func(s *string) string {
+		if s == nil {
+			return "-"
+		}
+		return *s
+	}
+	res, err := q.EnqueueReencode(ctx, graph.ReencodeRequest{Items: got.Queueable})
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := s.Queued(ctx, res, true)
-	if err != nil || m.Queued != rep.Queueable.Titles || m.AlreadyQueued != 0 || m.Skipped != 0 || m.QueuedText == nil ||
-		*m.QueuedText != "3 titles queued to be processed again" || m.AlreadyText != nil || m.NotQueuedText != nil ||
-		m.Message != "3 titles queued to be processed again." {
+	const notQueued = "4 titles weren’t queued: the original of 1 was deleted after packaging, the original of 1 is being " +
+		"deleted after packaging, 1 is a disc image and 1 is Dolby Vision profile 7."
+	m, err := s.Queued(ctx, got.Of(res), true)
+	if err != nil || m.Queued != rep.Queueable.Titles || m.AlreadyQueued != 2 || m.Skipped != 4 || len(m.SkippedTitles) != 4 ||
+		said(m.QueuedText) != "3 titles queued to be processed again" || said(m.AlreadyText) != "2 titles already in the queue" ||
+		said(m.NotQueuedText) != notQueued ||
+		m.Message != "3 titles queued to be processed again. 2 titles already in the queue. "+notQueued {
 		t.Errorf("the request: %+v, %v", m, err)
 	}
 	var qn int32
@@ -865,13 +889,33 @@ A Film In Dolby Vision 7: PACKAGING_FAILED` {
 	if r := reportOf(t, s, all, 100, ""); r.Queueable.Titles != 0 || r.Queueable.OriginalBytes != 0 || r.Queueable.EstimatedBytes != nil {
 		t.Errorf("queueable once queued: %+v", r.Queueable)
 	}
-	left, err := s.Queueable(ctx, all)
-	if err != nil || len(left) != 0 {
-		t.Fatalf("the queueable once queued: %v, %v", left, err)
+	left, err := s.Matching(ctx, all)
+	if err != nil || len(left.Queueable) != 0 || left.AlreadyQueued != 5 || len(left.Skipped) != 4 {
+		t.Fatalf("the titles once queued: %+v, %v", left, err)
 	}
-	m, err = s.Queued(ctx, graph.ReencodeEnqueued{}, true)
-	if err != nil || m.NotQueuedText == nil || *m.NotQueuedText != "Nothing was queued: no title fits the filter anymore." {
-		t.Errorf("a request with none left: %+v, %v", m, err)
+	m, err = s.Queued(ctx, left.Of(graph.ReencodeEnqueued{}), true)
+	if err != nil || m.Queued != 0 || m.QueuedText != nil || said(m.AlreadyText) != "5 titles already in the queue" ||
+		said(m.NotQueuedText) != notQueued {
+		t.Errorf("a request with none left to queue: %+v, %v", m, err)
+	}
+	// a filter whose only title is in the queue says it is there
+	only, err := s.Matching(ctx, graph.ComplianceFilter{Kind: "movie", Rules: []string{ImageSubtitlesMissing}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err = s.Queued(ctx, only.Of(graph.ReencodeEnqueued{}), true)
+	if err != nil || m.Queued != 0 || m.AlreadyQueued != 1 || m.QueuedText != nil ||
+		said(m.AlreadyText) != "1 title already in the queue" || m.NotQueuedText != nil || m.Message != "1 title already in the queue." {
+		t.Errorf("a filter whose only title is in the queue: %+v, %v", m, err)
+	}
+	// and one no title fits, that none does
+	none, err := s.Matching(ctx, graph.ComplianceFilter{Search: "no such title"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err = s.Queued(ctx, none.Of(graph.ReencodeEnqueued{}), true)
+	if err != nil || m.AlreadyText != nil || said(m.NotQueuedText) != "Nothing was queued: no title fits the filter anymore." {
+		t.Errorf("a filter no title fits: %+v, %v", m, err)
 	}
 }
 

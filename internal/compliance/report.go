@@ -109,11 +109,11 @@ func (s *Service) Report(ctx context.Context, f graph.ComplianceFilter, o graph.
 	}
 	out.Total = m.Titles
 	out.NotEvaluated = notEvaluated(rs, unchecked)
-	titles, err := s.queueable(ctx, f, rules)
+	matched, err := s.matching(ctx, f, rules)
 	if err != nil {
 		return out, err
 	}
-	out.Queueable = totalsOf(titles)
+	out.Queueable = totalsOf(matched.queueable)
 	q := &out.Queue
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state = 'queued'), count(*) FILTER (WHERE state = 'sent'),
 			count(*) FILTER (WHERE state = 'done'), count(*) FILTER (WHERE state = 'failed')
@@ -470,46 +470,68 @@ type sized struct {
 	orig, pkg, est *int64
 }
 
-// queueable are the titles f matches that break a rule (any of rules) and
-// that a request to process them again queues, in the report's order: none
-// waiting or sent in the re-encode queue, which keeps such a title as it is,
-// none that processing again can't help, which the queue skips, and none the
-// pass found the transcoder would refuse again (blockedBy).
-func (s *Service) queueable(ctx context.Context, f graph.ComplianceFilter, rules []string) ([]sized, error) {
-	rows, err := s.pool.Query(ctx, filtered+`SELECT f.item_id, f.originalbytes, f.packagebytes, f.estimatedbytes,
+// matched are the titles a filter matches that break a rule, as a request
+// by the filter takes them (graph.ComplianceMatching).
+type matched struct {
+	queueable []sized
+	queued    int32
+	skipped   []graph.ReencodeSkipped
+}
+
+// matching are the titles f matches that break a rule (any of rules), in the
+// report's order, as a request to process them again by the filter takes
+// them, and as queueRework says them: those processing again can't help are
+// skipped, each of its kind, as the queue skips it (its original deleted
+// after packaging or being deleted, no file, a disc image), else as the pass
+// found the transcoder would refuse it again (blockedBy); those waiting or
+// sent in the re-encode queue are there already, as the queue keeps them;
+// the others are queueable, what a request queues.
+func (s *Service) matching(ctx context.Context, f graph.ComplianceFilter, rules []string) (matched, error) {
+	var out matched
+	rows, err := s.pool.Query(ctx, filtered+`SELECT f.item_id, f.originalbytes, f.packagebytes, f.estimatedbytes, f.blocked,
 			EXISTS (SELECT 1 FROM `+store.ReencodeQueueTable+` q WHERE q.item_id = f.item_id AND q.state IN ('queued', 'sent'))
-		FROM f WHERE `+breaking+` AND f.blocked IS NULL ORDER BY `+order, f.Kind, f.Search, rules)
+		FROM f WHERE `+breaking+` ORDER BY `+order, f.Kind, f.Search, rules)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
-	var free []sized
+	type candidate struct {
+		sized
+		kept   *string
+		queued bool
+	}
+	var titles []candidate
 	for rows.Next() {
-		var t sized
-		var queued bool
-		if err := rows.Scan(&t.id, &t.orig, &t.pkg, &t.est, &queued); err != nil {
+		var t candidate
+		if err := rows.Scan(&t.id, &t.orig, &t.pkg, &t.est, &t.kept, &t.queued); err != nil {
 			rows.Close()
-			return nil, err
+			return out, err
 		}
-		if !queued {
-			free = append(free, t)
-		}
+		titles = append(titles, t)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return out, err
 	}
-	ids := make([]string, len(free))
-	for i, t := range free {
+	ids := make([]string, len(titles))
+	for i, t := range titles {
 		ids[i] = t.id
 	}
 	kinds, err := s.blockedOf(ctx, ids)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
-	out := make([]sized, 0, len(free))
-	for _, t := range free {
-		if _, ok := kinds[t.id]; !ok {
-			out = append(out, t)
+	for _, t := range titles {
+		kind, blocked := kinds[t.id]
+		if !blocked && t.kept != nil {
+			kind, blocked = *t.kept, true
+		}
+		switch {
+		case blocked:
+			out.skipped = append(out.skipped, graph.ReencodeSkipped{ItemID: t.id, Kind: kind, Reason: skipReason(kind)})
+		case t.queued:
+			out.queued++
+		default:
+			out.queueable = append(out.queueable, t.sized)
 		}
 	}
 	return out, nil
@@ -541,25 +563,29 @@ func totalsOf(titles []sized) graph.ComplianceTotals {
 	return out
 }
 
-// Queueable are the titles f matches that break a rule and that a request
-// to process them again queues, in the report's order (queueable).
-func (s *Service) Queueable(ctx context.Context, f graph.ComplianceFilter) ([]string, error) {
+// Matching are the titles f matches that break a rule, as a request by the
+// filter takes them (matching): those it queues, in the report's order, how
+// many of the others are in the re-encode queue already, and those
+// processing again can't help, each with its kind.
+func (s *Service) Matching(ctx context.Context, f graph.ComplianceFilter) (graph.ComplianceMatching, error) {
+	out := graph.ComplianceMatching{Queueable: []string{}, Skipped: []graph.ReencodeSkipped{}}
 	if why := s.ready(ctx); why != nil {
-		return nil, why
+		return out, why
 	}
 	rules, err := rulesOf(f)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
-	titles, err := s.queueable(ctx, f, rules)
+	m, err := s.matching(ctx, f, rules)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
-	ids := make([]string, len(titles))
-	for i, t := range titles {
-		ids[i] = t.id
+	for _, t := range m.queueable {
+		out.Queueable = append(out.Queueable, t.id)
 	}
-	return ids, nil
+	out.AlreadyQueued = m.queued
+	out.Skipped = append(out.Skipped, m.skipped...)
+	return out, nil
 }
 
 func floatOf(v *int64) *float64 {
