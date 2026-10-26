@@ -743,11 +743,11 @@ A Coastal Show · S01E02 · An Episode Over Its Cap: it has no file`; skips != w
 // title and byte for byte: the titles that fit it but those queued already,
 // waiting or sent, and those that processing again can't help (a disc image,
 // an original deleted after packaging or being deleted); a title done or
-// failed in the queue before is queued again. The request says of the others
-// what queueRework says of them: those in the queue already, and those it
-// can't help, why. Once they are queued, none is left, and the request says
-// they are in the queue; "no title fits the filter anymore" only when none
-// does.
+// failed in the queue before is queued again. The request counts those in
+// the queue already, as queueRework does, and says nothing of those it can't
+// help, which the console never offers. Once they are queued, none is left,
+// and the request says they are in the queue; "no title fits the filter
+// anymore" only when none does.
 func TestTheQueueableAreWhatAFilterQueues(t *testing.T) {
 	s, st, dir := library4(t)
 	ctx := context.Background()
@@ -829,17 +829,12 @@ A Film In Dolby Vision 7: PACKAGING_FAILED` {
 	if strings.Join(got.Queueable, " ") != uuid(1)+" "+uuid(4)+" "+uuid(3) {
 		t.Errorf("the queueable: %v; want the remux, the film that lost its tracks and the episode", got.Queueable)
 	}
-	// the others, in the report's order: the film never packaged waits in the
-	// queue and the one whose transcode failed is being processed; the films
-	// whose originals were deleted or are being deleted, the disc image and the
-	// film in Dolby Vision 7 can't be processed again
-	var skips []string
-	for _, sk := range got.Skipped {
-		skips = append(skips, sk.ItemID+" "+sk.Kind)
-	}
-	if want := uuid(10) + " deleted, " + uuid(11) + " deleting, " + uuid(7) + " disc, " + uuid(12) + " dolbyvision:7"; got.AlreadyQueued != 2 ||
-		strings.Join(skips, ", ") != want {
-		t.Errorf("the others: %d in the queue, skipped %s; want 2, and %s", got.AlreadyQueued, strings.Join(skips, ", "), want)
+	// of the others, the film never packaged waits in the queue and the one
+	// whose transcode failed is being processed; the films whose originals
+	// were deleted or are being deleted, the disc image and the film in Dolby
+	// Vision 7 are left out
+	if got.AlreadyQueued != 2 {
+		t.Errorf("%d in the queue already, want 2", got.AlreadyQueued)
 	}
 	// a filter: the movies over a cap, of which only the remux can be
 	// processed again
@@ -863,13 +858,10 @@ A Film In Dolby Vision 7: PACKAGING_FAILED` {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const notQueued = "4 titles weren’t queued: the original of 1 was deleted after packaging, the original of 1 is being " +
-		"deleted after packaging, 1 is a disc image and 1 is Dolby Vision profile 7."
 	m, err := s.Queued(ctx, got.Of(res), true)
-	if err != nil || m.Queued != rep.Queueable.Titles || m.AlreadyQueued != 2 || m.Skipped != 4 || len(m.SkippedTitles) != 4 ||
+	if err != nil || m.Queued != rep.Queueable.Titles || m.AlreadyQueued != 2 || m.Skipped != 0 || len(m.SkippedTitles) != 0 ||
 		said(m.QueuedText) != "3 titles queued to be processed again" || said(m.AlreadyText) != "2 titles already in the queue" ||
-		said(m.NotQueuedText) != notQueued ||
-		m.Message != "3 titles queued to be processed again. 2 titles already in the queue. "+notQueued {
+		m.NotQueuedText != nil || m.Message != "3 titles queued to be processed again. 2 titles already in the queue." {
 		t.Errorf("the request: %+v, %v", m, err)
 	}
 	var qn int32
@@ -890,12 +882,12 @@ A Film In Dolby Vision 7: PACKAGING_FAILED` {
 		t.Errorf("queueable once queued: %+v", r.Queueable)
 	}
 	left, err := s.Matching(ctx, all)
-	if err != nil || len(left.Queueable) != 0 || left.AlreadyQueued != 5 || len(left.Skipped) != 4 {
+	if err != nil || len(left.Queueable) != 0 || left.AlreadyQueued != 5 {
 		t.Fatalf("the titles once queued: %+v, %v", left, err)
 	}
 	m, err = s.Queued(ctx, left.Of(graph.ReencodeEnqueued{}), true)
 	if err != nil || m.Queued != 0 || m.QueuedText != nil || said(m.AlreadyText) != "5 titles already in the queue" ||
-		said(m.NotQueuedText) != notQueued {
+		m.NotQueuedText != nil {
 		t.Errorf("a request with none left to queue: %+v, %v", m, err)
 	}
 	// a filter whose only title is in the queue says it is there

@@ -20,10 +20,10 @@ type Compliance interface {
 	Report(ctx context.Context, f ComplianceFilter, o ComplianceOrder, first int32, after string) (ComplianceReport, error)
 	// Matching are the titles f matches that break a rule, as a request by
 	// the filter takes them: those it queues, in the report's order (the
-	// report's queueable), and the others as queueRework would say them,
-	// those waiting or sent in the re-encode queue already, which keeps
-	// such a title as it is, and those processing again can't help (a row's
-	// reworkBlocked), which the queue skips.
+	// report's queueable), and how many of the others wait or are sent in
+	// the re-encode queue already, which keeps such a title as it is. Those
+	// processing again can't help (a row's reworkBlocked) are none of them:
+	// the console never offers them.
 	Matching(ctx context.Context, f ComplianceFilter) (ComplianceMatching, error)
 	// Refresh has every title of kind ("" every kind) checked again, and
 	// answers whether a pass was set going.
@@ -57,21 +57,20 @@ type ComplianceFilter struct {
 
 // ComplianceMatching are the titles a filter matches that break a rule, as
 // a request by the filter takes them: those it queues (Queueable, the
-// report's queueable, in the report's order), how many of the others wait
-// or are sent in the re-encode queue already (AlreadyQueued), and those
-// processing again can't help, each a skip of its kind (Skipped).
+// report's queueable, in the report's order), and how many of the others
+// wait or are sent in the re-encode queue already (AlreadyQueued). Those
+// processing again can't help are left out, as the console never offers
+// them.
 type ComplianceMatching struct {
 	Queueable     []string
 	AlreadyQueued int32
-	Skipped       []ReencodeSkipped
 }
 
 // Of is what a request by the filter did: what the queue did of the titles
-// it queued (res), and of the others what queueRework says of them, those
-// in the queue already and those it skips.
+// it queued (res), and those in the queue already, as queueRework says
+// them.
 func (m ComplianceMatching) Of(res ReencodeEnqueued) ReencodeEnqueued {
 	res.AlreadyQueued += m.AlreadyQueued
-	res.Skipped = append(res.Skipped, m.Skipped...)
 	return res
 }
 
@@ -302,9 +301,9 @@ func (r *Resolver) rework(ctx context.Context, items []string, m *ComplianceMatc
 
 // QueueReworkMatching queues the titles the filter matches that break a rule
 // and that a request queues (the report's queueable), as queueRework does,
-// and says of every title the filter matches what queueRework says of it:
-// one in the queue already is counted so, one processing again can't help
-// is skipped, saying why.
+// and counts those of them in the queue already, as queueRework counts
+// them; it says nothing of those processing again can't help, which the
+// console never offers.
 func (r *Resolver) QueueReworkMatching(ctx context.Context, args struct {
 	Kind   *string
 	Rules  *[]string

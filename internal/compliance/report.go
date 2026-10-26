@@ -475,17 +475,16 @@ type sized struct {
 type matched struct {
 	queueable []sized
 	queued    int32
-	skipped   []graph.ReencodeSkipped
 }
 
 // matching are the titles f matches that break a rule (any of rules), in the
 // report's order, as a request to process them again by the filter takes
-// them, and as queueRework says them: those processing again can't help are
-// skipped, each of its kind, as the queue skips it (its original deleted
-// after packaging or being deleted, no file, a disc image), else as the pass
-// found the transcoder would refuse it again (blockedBy); those waiting or
-// sent in the re-encode queue are there already, as the queue keeps them;
-// the others are queueable, what a request queues.
+// them: those processing again can't help are left out, as the queue would
+// skip them (their original deleted after packaging or being deleted, no
+// file, a disc image) or as the pass found the transcoder would refuse them
+// again (blockedBy); those waiting or sent in the re-encode queue are there
+// already, as the queue keeps them; the others are queueable, what a
+// request queues.
 func (s *Service) matching(ctx context.Context, f graph.ComplianceFilter, rules []string) (matched, error) {
 	var out matched
 	rows, err := s.pool.Query(ctx, filtered+`SELECT f.item_id, f.originalbytes, f.packagebytes, f.estimatedbytes, f.blocked,
@@ -521,13 +520,10 @@ func (s *Service) matching(ctx context.Context, f graph.ComplianceFilter, rules 
 		return out, err
 	}
 	for _, t := range titles {
-		kind, blocked := kinds[t.id]
-		if !blocked && t.kept != nil {
-			kind, blocked = *t.kept, true
-		}
+		_, blocked := kinds[t.id]
 		switch {
-		case blocked:
-			out.skipped = append(out.skipped, graph.ReencodeSkipped{ItemID: t.id, Kind: kind, Reason: skipReason(kind)})
+		case blocked || t.kept != nil:
+			// left out: the console never offers it
 		case t.queued:
 			out.queued++
 		default:
@@ -564,11 +560,10 @@ func totalsOf(titles []sized) graph.ComplianceTotals {
 }
 
 // Matching are the titles f matches that break a rule, as a request by the
-// filter takes them (matching): those it queues, in the report's order, how
-// many of the others are in the re-encode queue already, and those
-// processing again can't help, each with its kind.
+// filter takes them (matching): those it queues, in the report's order, and
+// how many of the others are in the re-encode queue already.
 func (s *Service) Matching(ctx context.Context, f graph.ComplianceFilter) (graph.ComplianceMatching, error) {
-	out := graph.ComplianceMatching{Queueable: []string{}, Skipped: []graph.ReencodeSkipped{}}
+	out := graph.ComplianceMatching{Queueable: []string{}}
 	if why := s.ready(ctx); why != nil {
 		return out, why
 	}
@@ -584,7 +579,6 @@ func (s *Service) Matching(ctx context.Context, f graph.ComplianceFilter) (graph
 		out.Queueable = append(out.Queueable, t.id)
 	}
 	out.AlreadyQueued = m.queued
-	out.Skipped = append(out.Skipped, m.skipped...)
 	return out, nil
 }
 

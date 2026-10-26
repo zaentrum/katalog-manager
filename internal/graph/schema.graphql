@@ -1567,10 +1567,10 @@ extend type Mutation {
   queueRework(items: [ID!]!): ComplianceQueued!
   # Queues the titles the filter matches that break a rule and that a
   # request queues, the report's queueable: none queued already, none that
-  # processing again can't help; as queueRework does. Of the others it says
-  # what queueRework says of them: those in the queue already
-  # (alreadyQueued), and those processing again can't help (skippedTitles,
-  # and why); that no title fits the filter only when none does.
+  # processing again can't help; as queueRework does. It counts those in
+  # the queue already (alreadyQueued), as queueRework does, and names none
+  # that processing again can't help, which the console never offers; it
+  # says no title fits the filter only when none does.
   queueReworkMatching(kind: ComplianceKind, rules: [ComplianceRule!], search: String): ComplianceQueued!
   # Has the titles of kind (all when omitted) checked again, in the
   # background; true once the pass is set going.

@@ -914,10 +914,10 @@ nor package) leaves the report.
   titles named, or those the filter matches that it queues (`queueable`,
   exactly: what the console offers is what is queued), into the re-encode
   queue (as `POST /api/library/reencode` with `items`: a series is its
-  episodes), which sends them at its pace. A request by the filter says of
-  the titles it matches and doesn't queue what `queueRework` says of them:
-  those in the queue already, and those processing again can't help, why.
-  Both answer `{queued, alreadyQueued,
+  episodes), which sends them at its pace. A request by the filter counts
+  the titles it matches that are in the queue already, as `queueRework`
+  counts them, and names none that processing again can't help, which the
+  console never offers. Both answer `{queued, alreadyQueued,
   skipped, skippedTitles, queuedText, alreadyText, notQueuedText,
   message}`, a title waiting or sent already counted in `alreadyQueued`,
   one the queue does not take (not in the catalog, no movie, episode or

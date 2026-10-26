@@ -338,14 +338,12 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		r.Queueable.PackageBytes != 0 || r.Queueable.EstimatedBytes != nil || r.Queue.Processing != 1 {
 		t.Errorf("queueable %+v of matching %+v, the queue %+v; want the film whose transcode failed alone", r.Queueable, r.Matching, r.Queue)
 	}
-	// and says of the others what queueRework says: the remux and the film
-	// never packaged are in the queue, the disc image can't be processed
+	// and counts those in the queue already, the remux and the film never
+	// packaged; of the disc image, which it never offered, it says nothing
 	offered := data.LibraryCompliance.Queueable
 	mutate(`mutation { q: queueReworkMatching { queued alreadyQueued skipped skippedTitles { itemId title reason } message } }`)
-	const discSkipped = "1 title wasn’t queued: its file is a disc image, which the transcoder doesn’t encode."
-	if q := queued.Q; q.Queued != offered.Titles || q.AlreadyQueued != 2 || q.Skipped != 1 || len(q.SkippedTitles) != 1 ||
-		q.SkippedTitles[0].ItemID != discID ||
-		q.Message != "1 title queued to be processed again. 2 titles already in the queue. "+discSkipped {
+	if q := queued.Q; q.Queued != offered.Titles || q.AlreadyQueued != 2 || q.Skipped != 0 || len(q.SkippedTitles) != 0 ||
+		q.Message != "1 title queued to be processed again. 2 titles already in the queue." {
 		t.Errorf("queueReworkMatching, every title that fits: %+v; offered %+v", q, offered)
 	}
 	if got := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue WHERE item_id = 'm1' AND state = 'queued'`); got != 1 {
@@ -356,8 +354,8 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		t.Errorf("queueable once queued: %+v", q)
 	}
 	mutate(`mutation { q: queueReworkMatching { queued alreadyQueued skipped message ` + texts + ` } }`)
-	if q := queued.Q; q.Queued != 0 || q.AlreadyQueued != 3 || q.Skipped != 1 || q.QueuedText != nil ||
-		said(q.AlreadyText) != "3 titles already in the queue" || said(q.NotQueuedText) != discSkipped {
+	if q := queued.Q; q.Queued != 0 || q.AlreadyQueued != 3 || q.Skipped != 0 || q.QueuedText != nil ||
+		said(q.AlreadyText) != "3 titles already in the queue" || q.NotQueuedText != nil {
 		t.Errorf("queueReworkMatching, none left to queue: %+v", q)
 	}
 	// a filter whose only title is in the queue says it is there
@@ -436,6 +434,57 @@ func TestLibraryComplianceThroughTheService(t *testing.T) {
 		p.Rules[1].Key != "stereoAudio" || spaced(p.Rules[1].Value) != "AAC, 192 kbit/s" ||
 		p.Rules[2].Key != "imageSubtitles" || p.Rules[2].Value != "PGS, VobSub" {
 		t.Errorf("the packager's rules: %+v", p)
+	}
+}
+
+// A request by a filter that matches a title it queues and one processing
+// again can't help queues the one, and its answer names no skipped title:
+// the console never offers the other. Named by its id, that title is
+// skipped, saying why.
+func TestARequestByAFilterLeavesOutWhatCantBeProcessed(t *testing.T) {
+	in := newInstanceWired(t, wiring{pipeline: func(st *store.Store) graph.Pipeline {
+		return retry.New(st, processing.DefaultPolicy(), &markingBus{}, time.Minute)
+	}, compliance: true})
+	st, admin := in.st, in.iss.Admin(t)
+	const discID = "0c0c0c0c-0000-4000-8000-000000000107"
+	storetest.AddItem(t, st, discID, "movie", "A Disc Image", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, sizebytes, resolution)
+		VALUES ('a-disc', $1, '/library/arrivals/a-disc-image.iso', true, 7000000000, '1920x1080')`, discID)
+	if n, err := in.check.Pass(context.Background()); err != nil || n != 2 {
+		t.Fatalf("the pass checked %d titles, %v; want the film whose transcode failed and the disc image", n, err)
+	}
+	var answer struct {
+		Q struct {
+			Queued, AlreadyQueued, Skipped int
+			SkippedTitles                  []struct{ ItemID, Reason string }
+			NotQueuedText                  *string
+			Message                        string
+		}
+	}
+	mutate := func(doc string) {
+		t.Helper()
+		_, a := in.gql(t, "/api/manage/query", admin, doc)
+		if len(a.Errors) > 0 || json.Unmarshal(a.Data, &answer) != nil {
+			t.Fatalf("%s: %s %v", doc, a.Data, a.Errors)
+		}
+	}
+	mutate(`mutation { q: queueReworkMatching(rules: [PACKAGING_FAILED]) { queued alreadyQueued skipped
+		skippedTitles { itemId reason } notQueuedText message } }`)
+	if q := answer.Q; q.Queued != 1 || q.AlreadyQueued != 0 || q.Skipped != 0 || len(q.SkippedTitles) != 0 ||
+		q.NotQueuedText != nil || q.Message != "1 title queued to be processed again." {
+		t.Errorf("a filter of a title it queues and a disc image: %+v", q)
+	}
+	if got := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue WHERE item_id = 'm1'`); got != 1 {
+		t.Errorf("the film whose transcode failed: %d rows queued, want 1", got)
+	}
+	mutate(`mutation { q: queueRework(items: ["` + discID + `"]) { queued alreadyQueued skipped
+		skippedTitles { itemId reason } notQueuedText message } }`)
+	if q := answer.Q; q.Queued != 0 || q.Skipped != 1 || len(q.SkippedTitles) != 1 || q.SkippedTitles[0].ItemID != discID ||
+		q.SkippedTitles[0].Reason != "its file is a disc image, which the transcoder doesn’t encode" {
+		t.Errorf("the disc image by its id: %+v", q)
+	}
+	if got := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_reencodequeue WHERE item_id = $1`, discID); got != 0 {
+		t.Errorf("the disc image was queued %d times", got)
 	}
 }
 
