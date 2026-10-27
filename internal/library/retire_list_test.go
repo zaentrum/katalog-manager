@@ -1829,3 +1829,15 @@ func TestADryRunsWordHoldsForItsMaxAge(t *testing.T) {
 	}
 	g.kept(t)
 }
+
+// A title its dry run left no word on (what retiring it gives up not kept) is
+// no title a run retires.
+func TestARunSkipsATitleItsDryRunLeftNoWordOn(t *testing.T) {
+	f := newListFixture(t)
+	dry, _ := f.dry(t, rtFilm)
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_retirerunitems SET digest = NULL WHERE run_id = $1`, dry.ID)
+	if _, items := f.retire(t, dry.ID); said(items[0]) != "skipped: its dry run left no word on what retiring it gives up" {
+		t.Errorf("%s", said(items[0]))
+	}
+	f.kept(t)
+}

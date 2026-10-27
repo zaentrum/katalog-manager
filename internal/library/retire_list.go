@@ -244,7 +244,7 @@ func (l *RetireList) Start(ctx context.Context, req ListRequest) (ListRun, error
 	}
 	from := strings.TrimSpace(req.FromRun)
 	var list []string
-	var reviews []review
+	var reviews []*review
 	switch {
 	case len(req.Items) > 0 && from != "":
 		return ListRun{}, &ListRefused{"BOTH", "a list names titles, or the dry run whose titles it retires, and not both"}
@@ -296,7 +296,7 @@ func (l *RetireList) Start(ctx context.Context, req ListRequest) (ListRun, error
 			n := clip(n, 500)
 			named[i] = &n
 		}
-		if i < len(reviews) {
+		if i < len(reviews) && reviews[i] != nil {
 			rv := reviews[i]
 			rsrc[i], rver[i], rdig[i], rat[i] = &rv.source, &rv.version, &rv.digest, &rv.at
 		}
@@ -338,10 +338,11 @@ func (l *RetireList) Start(ctx context.Context, req ListRequest) (ListRun, error
 }
 
 // fromRun are the titles the dry run id found it would retire, in its order,
-// and what it found of each (review); ListRefused of a run that is none, no
-// dry run, a dry run not done, one that finished longer ago than
-// library.retire.list.maxAge, or one that found none.
-func (l *RetireList) fromRun(ctx context.Context, id string, set Settings) ([]string, []review, error) {
+// and what it found of each (review; nil of one it left no word on, which a
+// run skips); ListRefused of a run that is none, no dry run, a dry run not
+// done, one that finished longer ago than library.retire.list.maxAge, or one
+// that found none.
+func (l *RetireList) fromRun(ctx context.Context, id string, set Settings) ([]string, []*review, error) {
 	var state string
 	var dry, fresh bool
 	err := l.pool.QueryRow(ctx, `SELECT state, dryrun, COALESCE(finishedat >= now() - make_interval(secs => $2::float8), false)
@@ -360,20 +361,23 @@ func (l *RetireList) fromRun(ctx context.Context, id string, set Settings) ([]st
 			DurationText(set.RetireListMaxAge) + ") ago: what it found holds no more"}
 	}
 	rows, err := l.pool.Query(ctx, `SELECT item_id, source_id, version_id, digest, at FROM com_nalet_katalog_retirerunitems
-		WHERE run_id = $1 AND result = $2 AND source_id IS NOT NULL AND version_id IS NOT NULL AND digest IS NOT NULL
-		  AND at IS NOT NULL
-		ORDER BY position`, id, ListWouldRetire)
+		WHERE run_id = $1 AND result = $2 ORDER BY position`, id, ListWouldRetire)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer rows.Close()
 	var out []string
-	var reviews []review
+	var reviews []*review
 	for rows.Next() {
 		var item string
-		var rv review
-		if err := rows.Scan(&item, &rv.source, &rv.version, &rv.digest, &rv.at); err != nil {
+		var src, ver, digest *string
+		var at *time.Time
+		if err := rows.Scan(&item, &src, &ver, &digest, &at); err != nil {
 			return nil, nil, err
+		}
+		var rv *review
+		if src != nil && ver != nil && digest != nil && at != nil {
+			rv = &review{source: *src, version: *ver, digest: *digest, at: *at}
 		}
 		out, reviews = append(out, item), append(reviews, rv)
 	}
