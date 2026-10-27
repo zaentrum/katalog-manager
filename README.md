@@ -358,8 +358,11 @@ the base schema in the order of their numbers, and each is idempotent:
   and ended, why a stopped or failed one ended)
   and how each title of a list fared (`com_nalet_katalog_retirerunitems`, in
   the list's order: its name when the run began, the original the run
-  retires of it, its result and why, its original's size, and that the run
-  began to retire it, which a run that resumes goes on from); one run runs
+  retires of it and the version it checked it against, its result and why,
+  its original's size, of a title a dry run would retire the digest of what
+  retiring it gives up, of a run's title what its dry run found of it and
+  when, and that the run began to retire it, which a run that resumes goes
+  on from); one run runs
   at a time (`idx_retireruns_running`). A run and its titles are kept once
   it is done, a deleted title's row too: the record of what was retired, on
   whose word. Applied at startup when any of it is missing; without it no
@@ -1711,6 +1714,8 @@ The library's settings are read on every use, as `extras.scan` is:
   list says what it would retire, and retires none) or `on` (a run retires
   the titles a dry run found it would; see
   [Retiring the originals of a list](#retiring-the-originals-of-a-list)).
+- `library.retire.list.maxAge` (`24h`): how long a dry run's word on its
+  titles holds for a run of them; above 0.
 - `library.retire.delay` (`10m`), `library.retire.rate` (`30` a minute),
   `library.verify` (`full` or `chain`), `library.verify.maxAge` (`30d`),
   `library.superseded.grace` (`24h`), `library.trash.grace` (`24h`; `0`
@@ -1929,7 +1934,15 @@ some titles gone names them in a dry run, `retireOriginals(items: [ID!])`
 (GraphQL, admins), reads what it found (`retireRun`), and retires the titles
 it found it would retire, `retireOriginals(fromRun: ID, dryRun: false)`. That
 is the only way a run begins: it takes those titles alone, each checked
-again, and a list of titles named is a dry run (`NAMED_TITLES`). The setting
+again, and a list of titles named is a dry run (`NAMED_TITLES`). A run holds
+each title to what its dry run found of it: the same original, the same
+version, and the same that retiring it gives up (what the package doesn't
+carry of the original, and the files that go with it into the trash, kept
+as a digest). A title that changed since is skipped, saying how ("it changed
+since the dry run: its version is … now, and the dry run checked …"), as the
+run checks it and again right before its event; so is one its dry run
+checked longer ago than `library.retire.list.maxAge` (`24h`), and a run of a
+dry run that finished longer ago is refused (`FROM_RUN`). The setting
 `library.retire.list` says what a list may do: `off` (none runs), `dry-run`
 (the default: a dry run, and a run is refused, `DRY_RUN_ONLY`) or `on`.
 
@@ -2025,8 +2038,9 @@ asked (`requestedBy`), when it began and ended, its titles counted (`total`,
 originals it retired (of a dry run, would retire: `bytes`), and its titles a
 page at a time, `items(first: 100, after: <position>, result: SKIPPED)`:
 each with its `position` in the list, `itemId`, `title` (as a list names it,
-"A Film (1991)"), `sourceId`, `result` (`RETIRED`, `SKIPPED`, `FAILED`,
-`WOULD_RETIRE`; null while it waits), `reason`, `bytes` and `at`.
+"A Film (1991)"), `sourceId`, `versionId` (the version it was checked
+against), `result` (`RETIRED`, `SKIPPED`, `FAILED`, `WOULD_RETIRE`; null while
+it waits), `reason`, `bytes` and `at`.
 
 ## Configuration
 
@@ -2104,6 +2118,15 @@ in a schema of its own and drops it afterwards:
 ```bash
 KATALOG_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:5432/postgres?sslmode=disable' go test ./...
 ```
+
+They hold to no collation of the database's: a database of `C` and one of
+`en_US` sort the same for them. CI runs them against PostgreSQL 17: GitHub's
+workflow (`.github/workflows/build.yml`) with a `postgres:17` service, the
+GitLab pipeline (`.gitlab-ci.yml`) with the image `$POSTGRES_IMAGE`
+(`postgres:17-alpine` from Docker Hub unless set). An installation whose
+runners pull through a mirror of its own sets the CI/CD variable
+`POSTGRES_IMAGE` to the mirror's copy of the image; the repository names
+none.
 
 GraphQL endpoint: `POST /query`. Health: `/healthz`,
 `/actuator/health/{liveness,readiness}`.
