@@ -1218,6 +1218,7 @@ func nonNil(s []string) []string {
 // goes on with it.
 func (r *Retirer) fail(ctx context.Context, rt *retirement, msg string) error {
 	s := rt.src
+	rt.why = msg
 	bg := context.WithoutCancel(ctx)
 	recorded, begun, _ := r.eventOf(rt)
 	if _, err := r.pool.Exec(bg, `UPDATE com_nalet_katalog_itemsources SET error = $2, modifiedat = now(),
