@@ -27,12 +27,37 @@ func (s *Store) RetireRunsReady(ctx context.Context) (bool, error) {
 }
 
 // EnsureRetireRuns applies db/migrations/052_retire_runs.sql when any of its
-// objects is missing. Without it no list of originals is retired.
+// objects is missing, under the migrations' lock (applyLocked). Without it no
+// list of originals is retired.
 func (s *Store) EnsureRetireRuns(ctx context.Context) error {
-	ready, err := s.RetireRunsReady(ctx)
-	if err != nil || ready {
+	return s.applyLocked(ctx, s.RetireRunsReady, migrations.RetireRuns)
+}
+
+// migrationLock is the advisory lock a startup migration is applied under,
+// the catalog's (its schema's): of instances that start at once, one applies
+// it, and the others find it in place.
+const migrationLock = `hashtext('katalog-migrations/' || current_schema())`
+
+// applyLocked applies the migration sql when ready says it is not in place,
+// in one transaction under migrationLock, asking ready again once it holds
+// the lock: another instance may have applied it meanwhile.
+func (s *Store) applyLocked(ctx context.Context, ready func(context.Context) (bool, error), sql string) error {
+	if ok, err := ready(ctx); err != nil || ok {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, migrations.RetireRuns)
-	return err
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(`+migrationLock+`)`); err != nil {
+		return err
+	}
+	if ok, err := ready(ctx); err != nil || ok {
+		return err
+	}
+	if _, err := tx.Exec(ctx, sql); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/zaentrum/katalog-manager/db/migrations"
@@ -51,5 +52,37 @@ func TestRetireRunsMigration(t *testing.T) {
 	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_retirerunitems WHERE run_id = 'r1'`); n != 2 {
 		t.Errorf("the titles of the first run after the startup check: %d, want 2", n)
+	}
+}
+
+// Instances that start at once on a catalog without 051 and 052 apply each
+// once, under the migrations' lock: none fails, and both are in place.
+func TestMigrationsAppliedByInstancesStartingAtOnce(t *testing.T) {
+	for round := 0; round < 5; round++ {
+		st := storetest.OpenBase(t)
+		var wg sync.WaitGroup
+		errs := make([]error, 8)
+		for i := range errs {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				if i%2 == 0 {
+					errs[i] = st.EnsureRetireRuns(context.Background())
+				} else {
+					errs[i] = st.EnsureCompliance(context.Background())
+				}
+			}(i)
+		}
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Errorf("round %d, instance %d: %v", round, i, err)
+			}
+		}
+		for name, ready := range map[string]func(context.Context) (bool, error){"052": st.RetireRunsReady, "051": st.ComplianceReady} {
+			if ok, err := ready(context.Background()); !ok || err != nil {
+				t.Errorf("round %d: %s not in place: %v %v", round, name, ok, err)
+			}
+		}
 	}
 }

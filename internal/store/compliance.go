@@ -35,13 +35,9 @@ func (s *Store) ComplianceReady(ctx context.Context) (bool, error) {
 }
 
 // EnsureCompliance applies db/migrations/051_library_compliance.sql when any
-// of its objects is missing. Without it the workers' rules are not kept, and
-// the library's compliance is not checked.
+// of its objects is missing (a later build of it adds a column), under the
+// migrations' lock (applyLocked). Without it the workers' rules are not kept,
+// and the library's compliance is not checked.
 func (s *Store) EnsureCompliance(ctx context.Context) error {
-	ready, err := s.ComplianceReady(ctx)
-	if err != nil || ready {
-		return err
-	}
-	_, err = s.pool.Exec(ctx, migrations.Compliance)
-	return err
+	return s.applyLocked(ctx, s.ComplianceReady, migrations.Compliance)
 }
