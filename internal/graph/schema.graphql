@@ -1669,8 +1669,8 @@ enum RetireRunState {
 # What a run did with a title: retired its original, skipped it (a condition
 # does not hold, reason says which), failed to retire it (the retire path
 # refused, reason says why; nothing is deleted before its event is recorded,
-# and a failure after says so: the retire job finishes it), or, in a dry run,
-# would retire it.
+# and a failure after says so: the retire job finishes it; or an error
+# stopped it three times, a while apart), or, in a dry run, would retire it.
 enum RetireResult {
   RETIRED
   SKIPPED
