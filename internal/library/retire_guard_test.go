@@ -251,3 +251,58 @@ func TestTheTrashKeepsADayForItsWholeGrace(t *testing.T) {
 		}
 	}
 }
+
+// An original that is a link is refused before its event is recorded, as
+// the retire job holds it to the file recorded: nothing is recorded, and the
+// source is present again, saying why.
+func TestAnOriginalThatIsALinkIsRefusedBeforeItsEvent(t *testing.T) {
+	f := newRetireFixture(t)
+	target := filepath.Join(t.TempDir(), "Example Film.mkv")
+	b, _ := os.ReadFile(f.original)
+	librarytest.Write(t, target, b)
+	if err := os.Remove(f.original); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, f.original); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.r.Pass(context.Background()); err == nil || !strings.Contains(err.Error(), "the original changed since it "+
+		"was recorded: "+f.original+" is no file; nothing is deleted") {
+		t.Errorf("the pass: %v", err)
+	}
+	if s := f.source(t, rtSource); s.State != SourcePresent || s.RetireEventID != nil || f.events(t) != 0 {
+		t.Errorf("the source: %s, event %v; events %d", s.State, s.RetireEventID, f.events(t))
+	}
+	if fi, err := os.Lstat(f.original); err != nil || fi.Mode()&os.ModeSymlink == 0 || !exists(target) {
+		t.Errorf("the link: %v, %v; the file it names there %v", fi, err, exists(target))
+	}
+}
+
+// A subtitle file beside another original of the title, named as it is, is
+// that original's: retiring the original the version was made of leaves it
+// where it is, its row naming it, though its bytes are in the retired
+// original's record.
+func TestASidecarOfAnotherOriginalOfTheTitleStays(t *testing.T) {
+	f := newRetireFixture(t)
+	f.intoVersion(t, rtVersion)
+	// another original of the title, where the first arrived, the subtitle
+	// files beside it
+	const other = "7e8f9a0b-1c2d-4e3f-8a4b-5c6d7e8f9a0b"
+	librarytest.Write(t, f.original, bytes.Repeat([]byte("another cut "), 30000))
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state)
+		VALUES ($1, $2, 'Example Film.mkv', $3, 360000, 'present')`, other, rtFilm, f.original)
+	if rep := f.pass(t); rep.Originals != 1 || rep.Failed != 0 {
+		t.Fatalf("the pass: %+v", rep)
+	}
+	if s := f.source(t, rtSource); s.State != SourceDeleted {
+		t.Fatalf("the original the version was made of: %s", s.State)
+	}
+	if !exists(f.de) || !exists(f.original) {
+		t.Errorf("the other original's subtitle file there %v, the other original there %v", exists(f.de), exists(f.original))
+	}
+	var path string
+	if err := f.st.Pool().QueryRow(context.Background(), `SELECT path FROM com_nalet_katalog_subtitleassets WHERE id = $1`,
+		"de-"+rtFilm[:8]).Scan(&path); err != nil || path != f.de {
+		t.Errorf("the row of the other original's subtitle: %s, %v", path, err)
+	}
+}
