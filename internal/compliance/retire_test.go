@@ -198,6 +198,24 @@ func TestTheChecksWordIsOfTheCurrentVersion(t *testing.T) {
 	if got := passed(); got != "the compliance check finds it breaks OVER_BITRATE_CAP" {
 		t.Errorf("its version checked: %q", got)
 	}
+
+	// a row of the version's records, written before it was complete, and
+	// one written after, of another version's records
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_compliance SET rules = '{}', findings = '[]'::jsonb WHERE item_id = $1`, id)
+	if got := passed(); got != "" {
+		t.Fatalf("its row of no rule: %q", got)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_compliance SET evaluatedat = now() - interval '1 hour' WHERE item_id = $1`, id)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET completedat = now() - interval '1 minute' WHERE id = $1`, newVer)
+	if got := passed(); got != want {
+		t.Errorf("a row of its version written before it was complete: %q", got)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_compliance SET evaluatedat = now(), recordkey = replace(recordkey, $2, $3)
+		WHERE item_id = $1`, id, "v:"+newVer+"@", "v:"+uuid(7004)+"@")
+	if got := passed(); got != "the compliance check read the records of another version than its version "+newVer+
+		": it waits to be checked again" {
+		t.Errorf("a row of another version's records: %q", got)
+	}
 }
 
 // A packaged title whose video's bit rate is not measured, held to no cap, is
