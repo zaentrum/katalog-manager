@@ -25,6 +25,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/extras"
 	"github.com/zaentrum/katalog-manager/internal/graph"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/rest"
@@ -162,6 +163,22 @@ func (f *fakes) Changed(expected, now int32) graph.ComplianceQueued {
 	f.called(fmt.Sprintf("say the matching titles changed from %d to %d", expected, now))
 	return graph.ComplianceQueued{Message: "changed"}
 }
+func (f *fakes) Start(_ context.Context, items []string, dryRun bool, by string) (library.ListRun, error) {
+	f.called(fmt.Sprintf("retire the originals of %s, dry run %v", strings.Join(items, ","), dryRun))
+	return library.ListRun{ID: "r1", State: library.RunRunning, DryRun: dryRun, RequestedBy: by,
+		StartedAt: time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC), Total: len(items), Pending: len(items)}, nil
+}
+func (f *fakes) Latest(context.Context) (*library.ListRun, error) {
+	f.called("the retire run")
+	at := time.Date(2026, 10, 27, 9, 5, 0, 0, time.UTC)
+	return &library.ListRun{ID: "r1", State: library.RunDone, DryRun: true, RequestedBy: "an-admin",
+		StartedAt: at.Add(-5 * time.Minute), FinishedAt: &at, Total: 1, WouldRetire: 1, Bytes: 4e9}, nil
+}
+func (f *fakes) Items(_ context.Context, id string, first, after int, result string) ([]library.ListItem, error) {
+	f.called(fmt.Sprintf("the titles of retire run %s: %d after %d, %q", id, first, after, result))
+	r, src := library.ListWouldRetire, "s1"
+	return []library.ListItem{{Position: 1, ItemID: "m1", Result: &r, SourceID: &src}}, nil
+}
 func (f *fakes) Queued(_ context.Context, res graph.ReencodeEnqueued, matching bool) (graph.ComplianceQueued, error) {
 	f.called(fmt.Sprintf("say %d queued, %d already, %d skipped, matching %v", res.Queued, res.AlreadyQueued, len(res.Skipped),
 		matching))
@@ -220,9 +237,11 @@ type instance struct {
 	st  *store.Store
 	cfg config.Config
 	f   *fakes
-	// check is the library's compliance check, when the instance is wired
-	// with it (wiring.compliance).
+	// check is the library's compliance check, and list the runner of the
+	// lists of originals to retire, when the instance is wired with it
+	// (wiring.compliance).
 	check *compliance.Service
+	list  *library.RetireList
 	// every answer's body, to be searched for a secret
 	mu      sync.Mutex
 	answers []string
@@ -309,9 +328,10 @@ func newInstanceWired(t *testing.T, w wiring) *instance {
 		reencode = q
 	}
 	services := graph.Services{Scanner: f, Enricher: f, People: f, Ratings: f, Packager: f, Validator: f, Remover: f,
-		Pipeline: pipe, Secrets: f, Extras: x, Sources: sources, Compliance: f, Rework: f}
+		Pipeline: pipe, Secrets: f, Extras: x, Sources: sources, Compliance: f, Rework: f, Retirement: f}
 	deps := rest.Deps{Store: st, Cfg: cfg, Steps: processing.New(st.Pool()), Events: w.events, Extras: taker, Reencode: reencode}
 	var check *compliance.Service
+	var list *library.RetireList
 	if w.compliance {
 		check = compliance.New(st, cfg)
 		services.Compliance, deps.Compliance = check, check
@@ -321,13 +341,15 @@ func newInstanceWired(t *testing.T, w wiring) *instance {
 		if r, ok := pipe.(*retry.Service); ok {
 			r.WithCompliance(check)
 		}
+		list = library.NewRetireList(st.Pool(), cfg, processing.New(st.Pool()), check)
+		services.Retirement = list
 	}
 	schema := graph.MustSchema(graph.NewResolver(st, cfg, services))
 	r := chi.NewRouter()
 	routes(r, auth.NewMiddleware(jwt, sv).Handler, cfg.Policy(), schema, stream.NewBroker().Handler, rest.New(deps))
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
-	in := &instance{url: srv.URL, iss: iss, st: st, cfg: cfg, f: f, check: check}
+	in := &instance{url: srv.URL, iss: iss, st: st, cfg: cfg, f: f, check: check, list: list}
 	t.Cleanup(func() {
 		for _, a := range in.answers {
 			for _, s := range []string{tmdbSecret, fanartSecret, omdbSecret, refusedToken, uncheckedToken, goodToken} {
@@ -458,6 +480,10 @@ var operations = []struct{ doc, calls string }{
 		`") { queued alreadyQueued skipped message } }`,
 		`compliance matching episode NO_SURROUND ""; rework m1; say 1 queued, 1 already, 0 skipped, matching true`},
 	{`mutation { refreshCompliance(kind: MOVIE) }`, "refresh compliance movie"},
+	{`mutation { retireOriginals(items: ["m1", "m2"]) { id state dryRun requestedBy startedAt total pending } }`,
+		"retire the originals of m1,m2, dry run true"},
+	{`{ retireRun { id state dryRun finishedAt wouldRetire bytes items(first: 50, result: WOULD_RETIRE) { position itemId
+		sourceId result reason at } } }`, `the retire run; the titles of retire run r1: 50 after 0, "would-retire"`},
 	{`mutation { replaceSource(itemId: "m1", path: "/media/a-film-1080p.mkv", deleteOldFile: true) { itemId oldPath path
 		replaced oldFileDeleted oldSidecars reencode { reencoded busy notSent message } message } }`,
 		"replace the file of m1 with /media/a-film-1080p.mkv, delete true, reencode true"},

@@ -552,3 +552,104 @@ func TestARequestByAFilterLeavesOutWhatCantBeProcessed(t *testing.T) {
 // compliance7 are the rules a report sums up, one summary each.
 var compliance7 = []string{"NOT_PACKAGED", "PACKAGING_FAILED", "OVER_BITRATE_CAP", "OVER_SIZE_CAP", "NO_SURROUND",
 	"IMAGE_SUBTITLES_MISSING", "VIDEO_NOT_HEVC"}
+
+// A list of originals to retire through the service as main wires it, with
+// the real compliance check: an admin's dry run of two titles answers as it
+// begins, runs in the background, and says of each why it would not be
+// retired (the remux breaks its caps; the episode's version was never
+// verified); a second list is refused while one runs; nothing is touched.
+func TestAListOfOriginalsThroughTheService(t *testing.T) {
+	in := newInstanceWired(t, wiring{compliance: true})
+	st, ctx, admin := in.st, context.Background(), in.iss.Admin(t)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('set-layout', 'library.layout', 'v2')`)
+	service := in.iss.Service(t, "zaentrum-manager")
+	for worker, body := range map[string]string{
+		"transcoder": `{"version": "3f2a9c1", "rules": {"caps": {"movie1080Mbps": 8, "movie2160Mbps": 14, "movieMaxGiB": 15,
+			"episode1080Mbps": 6, "episode2160Mbps": 8}, "bucket2160": {"minHeight": 2000, "minWidth": 3200},
+			"encoder": {"codec": "hevc_nvenc", "preset": "p5", "cq": 23, "maxrate1080Mbps": null, "maxrate2160Mbps": null},
+			"ladder": "source:hevc", "extraLadder": "source:hevc"}}`,
+		"packager": `{"version": "3f2a9c1", "rules": {"surroundAudio": "eac3", "surroundLayout": "5.1", "surroundBitrate": "448k",
+			"stereoAudio": "aac", "stereoBitrate": "192k", "imageSubtitles": ["pgs", "vobsub"]}}`,
+	} {
+		if code := in.put(t, "/api/analyze/rules/"+worker, service, body); code != http.StatusOK {
+			t.Fatalf("the %s's report: %d", worker, code)
+		}
+	}
+	layOut(t, in, remuxID, "movie", "A Remux Kept As It Was", "", remuxVer, remuxSrc, 3840, 2160, 73e6, 63e9, 59e9)
+	storetest.AddItem(t, st, showID, "series", "A Coastal Show", "")
+	layOut(t, in, episodeID, "episode", "An Episode Within Its Caps", showID, epVer, epSrc, 1920, 1080, 5e6, 2e9, 1.8e9)
+	if _, err := in.check.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var started struct {
+		RetireOriginals struct {
+			ID, State, RequestedBy string
+			DryRun                 bool
+			Total, Pending         int
+		}
+	}
+	_, a := in.gql(t, "/api/manage/query", admin, `mutation { retireOriginals(items: ["`+remuxID+`", "`+episodeID+`"]) {
+		id state dryRun requestedBy total pending } }`)
+	if len(a.Errors) > 0 || json.Unmarshal(a.Data, &started) != nil {
+		t.Fatalf("retireOriginals: %s %v", a.Data, a.Errors)
+	}
+	if r := started.RetireOriginals; r.State != "RUNNING" || !r.DryRun || r.Total != 2 || r.Pending != 2 || r.RequestedBy == "" {
+		t.Errorf("the run as it begins: %+v", r)
+	}
+	_, a = in.gql(t, "/api/manage/query", admin, `mutation { retireOriginals(items: ["`+remuxID+`"], dryRun: false) { id } }`)
+	if len(a.Errors) != 1 || a.Errors[0].Extensions["code"] != "RUNNING" {
+		t.Errorf("a second list while one runs: %v", a.Errors)
+	}
+	if err := in.list.Work(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var run struct {
+		RetireRun struct {
+			ID, State                   string
+			DryRun                      bool
+			FinishedAt                  *string
+			Total, WouldRetire, Skipped int
+			Items                       []struct {
+				Position       int
+				ItemID, Title  string
+				Result, Reason *string
+				SourceID       *string
+			}
+		}
+	}
+	_, a = in.gql(t, "/api/manage/query", admin, `{ retireRun { id state dryRun finishedAt total wouldRetire skipped
+		items { position itemId title result reason sourceId } } }`)
+	if len(a.Errors) > 0 || json.Unmarshal(a.Data, &run) != nil {
+		t.Fatalf("retireRun: %s %v", a.Data, a.Errors)
+	}
+	r := run.RetireRun
+	if r.ID != started.RetireOriginals.ID || r.State != "DONE" || !r.DryRun || r.FinishedAt == nil || r.Total != 2 ||
+		r.Skipped != 2 || len(r.Items) != 2 {
+		t.Fatalf("the run: %+v", r)
+	}
+	if it := r.Items[0]; it.ItemID != remuxID || it.Title != "A Remux Kept As It Was" || it.Result == nil || *it.Result != "SKIPPED" ||
+		it.Reason == nil || *it.Reason != "its complete version "+remuxVer+" was never verified" {
+		t.Errorf("the remux: %+v", it)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET verifiedat = now(), verifiedlevel = 'full'`)
+	if _, a = in.gql(t, "/api/manage/query", admin, `mutation { retireOriginals(items: ["`+remuxID+`"]) { id } }`); len(a.Errors) > 0 {
+		t.Fatal(a.Errors)
+	}
+	if err := in.list.Work(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, a = in.gql(t, "/api/manage/query", admin, `{ retireRun { id state dryRun finishedAt total wouldRetire skipped
+		items(result: SKIPPED) { position itemId title result reason sourceId } } }`)
+	if len(a.Errors) > 0 || json.Unmarshal(a.Data, &run) != nil {
+		t.Fatalf("retireRun: %s %v", a.Data, a.Errors)
+	}
+	if it := run.RetireRun.Items; len(it) != 1 || it[0].Reason == nil ||
+		*it[0].Reason != "the compliance check finds it breaks OVER_BITRATE_CAP, OVER_SIZE_CAP" ||
+		it[0].SourceID == nil || *it[0].SourceID != remuxSrc {
+		t.Errorf("the remux, verified: %+v", it)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemsources WHERE state = 'present'`); n != 2 {
+		t.Errorf("%d originals present after two dry runs, want 2", n)
+	}
+}

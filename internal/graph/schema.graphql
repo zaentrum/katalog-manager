@@ -1620,3 +1620,96 @@ extend type Mutation {
   # background; true once the pass is set going.
   refreshCompliance(kind: ComplianceKind): Boolean!
 }
+
+# ---- an admin's list of originals to retire ----
+
+# A run of retireOriginals: the titles of an admin's list, each checked, and
+# its original retired when every condition holds, through the retire job's
+# own path (its event, the trash and its grace, the source's row, what the
+# package lacks of it), one at a time, at most library.retire.rate a minute;
+# a dry run retires none, and says of each title whether it would.
+# library.originals stays as it is. state is RUNNING until every title has
+# its result (DONE), or the run could not go on (FAILED, error says why). One
+# runs at a time, in the background: it goes on when the admin goes away, and
+# one a restart interrupted goes on where it stopped. requestedBy is the
+# admin who asked (their subject). The counts are of its titles: pending
+# those still to come; bytes the size of the originals it retired (of a dry
+# run, would retire).
+type RetireRun {
+  id: ID!
+  state: RetireRunState!
+  dryRun: Boolean!
+  requestedBy: String!
+  startedAt: Time!
+  finishedAt: Time
+  error: String
+  total: Int!
+  pending: Int!
+  retired: Int!
+  wouldRetire: Int!
+  skipped: Int!
+  failed: Int!
+  bytes: Float!
+  # its titles in the list's order: at most first (1 to 500) after the
+  # place after (a title's position), of result alone when given
+  items(first: Int = 100, after: Int = 0, result: RetireResult): [RetireItem!]!
+}
+
+enum RetireRunState {
+  RUNNING
+  DONE
+  FAILED
+}
+
+# What a run did with a title: retired its original, skipped it (a condition
+# does not hold, reason says which), failed to retire it (the retire path
+# refused, reason says why; nothing is deleted before its event is recorded),
+# or, in a dry run, would retire it.
+enum RetireResult {
+  RETIRED
+  SKIPPED
+  FAILED
+  WOULD_RETIRE
+}
+
+# A title of a run's list: its place in it (from 1), its id, its name as a
+# list names it ("A Film (1991)") when the run began, the original the run
+# retires of it, its result (null while it waits), why, as the clause a
+# sentence says after a colon ("its originals are held (holdOriginal)"), the
+# size of its original, and when it got its result. A title is retired only
+# when: it is a movie or an episode whose file is its own (an episode
+# another's file covers names its holder) and it is not held; it has a
+# complete version, verified once at least, made of one original, which is
+# present; no step that reads the original waits, runs or is to be retried,
+# and it is not in the re-encode queue; the compliance check found it within
+# every rule under the rules both workers report now; its package has the
+# surround of its original; its original is where the catalog says, of the
+# size recorded, and the trash is on its filesystem (unless
+# library.trash.grace is 0); and no episode its file covers is held, at work
+# or in the re-encode queue.
+type RetireItem {
+  position: Int!
+  itemId: ID!
+  title: String
+  sourceId: ID
+  result: RetireResult
+  reason: String
+  bytes: Float
+  at: Time
+}
+
+extend type Query {
+  # The run of retireOriginals begun last, running or not; null when none
+  # ever ran.
+  retireRun: RetireRun
+}
+
+extend type Mutation {
+  # Retires the originals of the titles items names (movies and episodes, by
+  # their ids, each once), a dry run unless dryRun is false, in the
+  # background: it answers the run as it begins, and retireRun follows it.
+  # Refused while a run runs (RUNNING), of no title (EMPTY) or more than
+  # 10,000 (TOO_MANY), with library.layout legacy (LEGACY), or without
+  # migration 052 (UNAVAILABLE).
+  retireOriginals(items: [ID!]!, dryRun: Boolean = true): RetireRun!
+}

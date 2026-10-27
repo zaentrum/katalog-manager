@@ -311,6 +311,12 @@ func wire(ctx context.Context, cfg config.Config, st *store.Store) (*service, er
 	// reading the library's records a few at a time. It queues nothing: an
 	// admin has what it finds processed again through the re-encode queue.
 	check := compliance.New(st, cfg)
+	// An admin's list of titles whose originals are retired
+	// (retireOriginals): library.originals stays as it is; each title is
+	// held against every condition, the compliance check's word among them,
+	// and its original retired through the retire job's own path, one at a
+	// time, at the job's pace, in the background.
+	retireList := library.NewRetireList(st.Pool(), cfg, steps, check)
 	// The pipeline heals itself: a failed step is retried by sending its
 	// trigger event again, after a backoff, a bounded number of times, and a
 	// step whose worker went silent past its timeout is reaped into a failure.
@@ -341,6 +347,8 @@ func wire(ctx context.Context, cfg config.Config, st *store.Store) (*service, er
 		// The library's compliance, and the queue that processes again what it finds.
 		Compliance: check,
 		Rework:     retries,
+		// An admin's list of originals to retire.
+		Retirement: retireList,
 	})
 	schema := graph.MustSchema(resolver)
 
@@ -389,6 +397,9 @@ func wire(ctx context.Context, cfg config.Config, st *store.Store) (*service, er
 		go enricher.RunChangeSync(ctx, cfg.TMDBRefreshInterval)
 		go retries.Run(ctx)
 		go check.Run(ctx)
+		// A list of originals to retire runs here, one a restart
+		// interrupted too, in one instance at a time.
+		go retireList.Run(ctx)
 		// The library's projections (metadata.json, person.json) follow the
 		// database, with library.layout=v2, in one instance at a time.
 		go library.NewProjector(st.Pool(), cfg).Run(ctx)

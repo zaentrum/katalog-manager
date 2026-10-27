@@ -45,6 +45,7 @@ var fieldAccess = map[string]auth.Access{
 	"Query.retryPolicy":           auth.Admin,
 	"Query.pipelineRules":         auth.Admin,
 	"Query.libraryCompliance":     auth.Admin,
+	"Query.retireRun":             auth.Admin,
 
 	"Mutation.triggerScan":              auth.Worker, // the scan Job's
 	"Mutation.enrichOne":                auth.Admin,
@@ -84,6 +85,7 @@ var fieldAccess = map[string]auth.Access{
 	"Mutation.queueRework":              auth.Admin,
 	"Mutation.queueReworkMatching":      auth.Admin,
 	"Mutation.refreshCompliance":        auth.Admin,
+	"Mutation.retireOriginals":          auth.Admin,
 }
 
 // allow returns nil when the caller in ctx may call field ("Query.items",

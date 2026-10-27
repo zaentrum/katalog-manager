@@ -38,6 +38,8 @@ type Services struct {
 	// that reworks the titles it finds.
 	Compliance Compliance
 	Rework     Rework
+	// Retirement retires the originals of an admin's list of titles.
+	Retirement Retirement
 }
 
 // RatingsBackfiller rates titles from TMDB's certifications (implemented by
