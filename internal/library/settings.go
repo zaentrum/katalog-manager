@@ -55,6 +55,10 @@ const (
 	// dry-run (the default: a list says what it would retire, and retires
 	// none) or on (a run retires the titles a dry run found it would).
 	SettingRetireList = "library.retire.list"
+	// SettingRetireListMaxAge is how long a dry run's word on its titles
+	// holds for a run of them (24h): a run of an older dry run is refused,
+	// and a title its dry run checked longer ago is not retired.
+	SettingRetireListMaxAge = "library.retire.list.maxAge"
 )
 
 // The values of the settings.
@@ -90,6 +94,8 @@ type Settings struct {
 	// RetireList is what an admin's list of originals to retire may do:
 	// RetireListOff, RetireListDryRun or RetireListOn.
 	RetireList string
+	// RetireListMaxAge is how long a dry run's word on a title holds.
+	RetireListMaxAge time.Duration
 	// Problems says of each setting that could not be read what it held and
 	// what is used instead.
 	Problems []string
@@ -100,7 +106,8 @@ func Defaults() Settings {
 	return Settings{Layout: LayoutLegacy, Originals: OriginalsKeep, RetireDelay: 10 * time.Minute,
 		RetireRate: defaultRetireNum, Verify: VerifyFull, VerifyMaxAge: 30 * 24 * time.Hour,
 		SupersededGrace: 24 * time.Hour, TrashGrace: 24 * time.Hour,
-		ReencodeRate: defaultReencode, ReencodeInflight: defaultReencode, RetireList: RetireListDryRun}
+		ReencodeRate: defaultReencode, ReencodeInflight: defaultReencode, RetireList: RetireListDryRun,
+		RetireListMaxAge: 24 * time.Hour}
 }
 
 // V2 reports whether the environment runs the v2 layout.
@@ -214,7 +221,32 @@ func (s *Settings) set(key, value string) {
 		case SettingTrashGrace:
 			s.TrashGrace = d
 		}
+	case SettingRetireListMaxAge:
+		if d, err := ParseDuration(v); err == nil && d > 0 {
+			s.RetireListMaxAge = d
+		} else {
+			bad("a duration above 0, as 24h or 2d; it is 24h")
+		}
 	}
+}
+
+// DurationText writes d as the settings write one: "24h", "90m", "1h30m",
+// whole days from two on as days ("30d").
+func DurationText(d time.Duration) string {
+	switch {
+	case d == 0:
+		return "0"
+	case d >= 48*time.Hour && d%(24*time.Hour) == 0:
+		return strconv.Itoa(int(d/(24*time.Hour))) + "d"
+	}
+	s := d.String() // 24h0m0s, 1h30m0s, 5m0s, 1m30s
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
 }
 
 var daysRE = regexp.MustCompile(`^(\d+)d(.*)$`)

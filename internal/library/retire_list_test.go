@@ -806,6 +806,39 @@ func TestAListIsStopped(t *testing.T) {
 			f.kept(t)
 		})
 	}
+	t.Run("by library.retire.list dry-run while the retire job's lock is waited for", func(t *testing.T) {
+		f := newListFixture(t)
+		dry, _ := f.dry(t, rtFilm)
+		conn, err := f.st.Pool().Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Release()
+		if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(`+retireLockKey+`)`); err != nil {
+			t.Fatal(err)
+		}
+		f.onSleep = func(d time.Duration) {
+			if d == f.l.lockWait {
+				f.set(t, SettingRetireList, RetireListDryRun)
+				_, _ = conn.Exec(ctx, `SELECT pg_advisory_unlock(`+retireLockKey+`)`)
+			}
+		}
+		if _, err := f.l.Start(ctx, ListRequest{FromRun: dry.ID, By: "an-admin"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.l.Work(ctx); err != nil {
+			t.Fatal(err)
+		}
+		run, items := f.latest(t)
+		if run.State != RunStopped || deref(run.Error) != "library.retire.list is dry-run: no original is retired, and the "+
+			"run stopped" || items[0].Result != nil {
+			t.Errorf("%+v: %s", run, said(items[0]))
+		}
+		f.kept(t)
+		if got := f.step(t, rtFilm); got != "none" {
+			t.Errorf("the retire step: %s", got)
+		}
+	})
 	t.Run("a dry run by library.retire.list off", func(t *testing.T) {
 		f := newListFixture(t)
 		if _, err := f.l.Start(ctx, ListRequest{Items: []string{rtFilm}, DryRun: true, By: "an-admin"}); err != nil {
@@ -1639,4 +1672,160 @@ func TestAListWaitsForTheRetireJobsPass(t *testing.T) {
 	if _, items := f.retire(t, dry.ID); said(items[0]) != "retired: " || waited != 3 {
 		t.Errorf("the list once the pass is over: %s, waited %d times", said(items[0]), waited)
 	}
+}
+
+// A run retires a title only as its dry run found it: the same original, the
+// same version, and what retiring it gives up the same - what the package
+// doesn't carry of the original, and the files that go with it into the
+// trash. A title that changed since is skipped, saying how, before anything
+// is claimed (the run's check) or right before the event (the retire path
+// asks again), and nothing of it is touched.
+func TestARunRetiresOnlyWhatItsDryRunReviewed(t *testing.T) {
+	const (
+		s2 = "4d5e6f7a-8b9c-4d0e-8f1a-2b3c4d5e6f7a"
+		v2 = "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b"
+		p2 = "6f7a8b9c-0d1e-4f2a-8b3c-4d5e6f7a8b9c"
+	)
+	// another original, its own record, and a complete version of it,
+	// verified, the version the dry run checked superseded
+	anotherOriginal := func(t *testing.T, f *listFixture) {
+		folder := filepath.Join(f.p.Arrivals, "Example Film (2020) again")
+		original := filepath.Join(folder, "Example Film.mkv")
+		librarytest.Write(t, original, bytes.Repeat([]byte("a newer file "), 30000))
+		size, qh1, err := QH1(original)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sourceDir := SourceDir(f.itemDir, s2)
+		storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, librarypath,
+				sizebytes, qh1, state, recordedat, recorddir)
+			VALUES ($1, $2, 'Example Film.mkv', $3, 'Example Film (2020) again/Example Film.mkv', $4, $5, 'present',
+				now() - interval '1 hour', $6)`, s2, rtFilm, original, size, qh1, sourceDir)
+		versionDir := VersionDir(f.itemDir, v2)
+		librarytest.WriteVersion(t, versionDir, librarytest.Version{VersionID: v2, PackageID: p2, SourceIDs: []string{s2},
+			CreatedAt: "2026-10-27T06:00:00Z", Package: map[string]any{"essence": f.pkg}})
+		librarytest.WriteSource(t, sourceDir, map[string]any{"sourceId": s2, "file": map[string]any{"name": "Example Film.mkv",
+			"sizeBytes": size, "fixity": map[string]any{"qh1": qh1}}, "sidecars": []any{}, "essence": f.src}, nil)
+		storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2,
+			supersededat = now() WHERE id = $1`, rtVersion, v2)
+		storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir,
+				completedat, verifiedat, verifiedlevel)
+			VALUES ($1, $2, ARRAY[$3::varchar], 'complete', $4, $5, now() - interval '30 minutes', now(), 'full')`,
+			v2, rtFilm, s2, p2, versionDir)
+	}
+	// a newer version of the same original, verified, whose package lacks
+	// the German subtitles
+	newerVersion := func(t *testing.T, f *listFixture) {
+		f.newer(t, v2, p2, map[string]any{"surround": true, "maxAudioChannels": 6, "audioLanguages": []string{"en"},
+			"subtitleLanguages": []string{"en"}})
+		storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_itemversions SET verifiedat = now(), verifiedlevel = 'full'
+			WHERE id = $1`, v2)
+	}
+	// the package of the version the dry run checked lacks the German
+	// subtitles since
+	lessCarried := func(t *testing.T, f *listFixture) {
+		librarytest.WriteVersion(t, f.versionDir, librarytest.Version{VersionID: rtVersion, PackageID: rtPackage,
+			SourceIDs: []string{rtSource}, CreatedAt: "2026-10-06T10:00:00Z", Package: map[string]any{"essence": map[string]any{
+				"surround": true, "maxAudioChannels": 6, "audioLanguages": []string{"en"}, "subtitleLanguages": []string{"en"}}}})
+	}
+	// another title's row names the German subtitle file since: it stays
+	otherFiles := func(t *testing.T, f *listFixture) {
+		storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_subtitleassets (id, item_id, path, format, lang)
+			VALUES ('shared-de', $1, $2, 'srt', 'de')`, ltFilm, f.de)
+	}
+	const original = "skipped: it changed since the dry run: its original is " + s2 + " now, and the dry run checked " + rtSource
+	const version = "skipped: it changed since the dry run: its version is " + v2 + " now, and the dry run checked " + rtVersion
+	const loss = "skipped: it changed since the dry run: what retiring it gives up is not what the dry run showed; now "
+	for _, c := range []struct {
+		name   string
+		call   int // 0: before the run; 2: as the retire path asks again, right before the event
+		change func(t *testing.T, f *listFixture)
+		want   string // the reason, {de}, {en} and {nfo} its sidecars
+	}{
+		{"another original and version", 0, anotherOriginal, original},
+		{"a newer version of the original", 0, newerVersion, version},
+		{"its package carrying less", 0, lessCarried, loss + "what its package doesn’t carry of it: maxAudioChannels, " +
+			"subtitleLanguages:de; the files that go with it: {de}, {en}, {nfo}"},
+		{"other files going with it", 0, otherFiles, loss + "what its package doesn’t carry of it: maxAudioChannels; " +
+			"the files that go with it: {en}, {nfo}"},
+		{"a newer version of the original at the last", 2, newerVersion, version},
+		{"its package carrying less at the last", 2, lessCarried, loss + "what its package doesn’t carry of it: " +
+			"maxAudioChannels, subtitleLanguages:de; the files that go with it: {de}, {en}, {nfo}"},
+		{"other files going with it at the last", 2, otherFiles, loss + "what its package doesn’t carry of it: " +
+			"maxAudioChannels; the files that go with it: {en}, {nfo}"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newListFixture(t)
+			f.addOther(t)
+			dry, items := f.dry(t, rtFilm)
+			if !wouldRetire(items[0]) || deref(items[0].VersionID) != rtVersion {
+				t.Fatalf("the dry run: %s, version %s", said(items[0]), deref(items[0].VersionID))
+			}
+			calls := 0
+			if c.call == 0 {
+				c.change(t, f)
+			} else {
+				f.gate.turn = func(string) (string, bool) {
+					if calls++; calls == c.call {
+						c.change(t, f)
+					}
+					return "", false
+				}
+			}
+			_, items = f.retire(t, dry.ID)
+			if want := strings.NewReplacer("{de}", f.de, "{en}", f.en, "{nfo}", f.nfo).Replace(c.want); said(items[0]) != want {
+				t.Errorf("%s\nwant %s", said(items[0]), want)
+			}
+			if c.call > 0 && calls < c.call {
+				t.Errorf("the compliance check was asked %d times: nothing changed", calls)
+			}
+			f.kept(t)
+			if c.name == "another original and version" {
+				if s := f.source(t, s2); s.State != SourcePresent || !exists(deref(s.ArrivalPath)) {
+					t.Errorf("the original the dry run never checked: %s", s.State)
+				}
+			}
+		})
+	}
+}
+
+// What a dry run found holds for library.retire.list.maxAge (24h): a run of an
+// older dry run is refused, and a title its dry run checked longer ago is
+// skipped; with the setting longer, the same dry run is retired from.
+func TestADryRunsWordHoldsForItsMaxAge(t *testing.T) {
+	ctx := context.Background()
+	f := newListFixture(t)
+	dry, _ := f.dry(t, rtFilm)
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_retireruns SET startedat = now() - interval '25 hours',
+		finishedat = now() - interval '25 hours' WHERE id = $1`, dry.ID)
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_retirerunitems SET at = now() - interval '25 hours' WHERE run_id = $1`,
+		dry.ID)
+	var refused *ListRefused
+	if _, err := f.l.Start(ctx, ListRequest{FromRun: dry.ID, By: "an-admin"}); !errors.As(err, &refused) ||
+		refused.Code != "FROM_RUN" || refused.Msg != "dry run "+dry.ID+" finished more than library.retire.list.maxAge (24h) "+
+		"ago: what it found holds no more" {
+		t.Fatalf("a run of a dry run 25 hours old: %v", err)
+	}
+	f.set(t, SettingRetireListMaxAge, "2d")
+	if _, items := f.retire(t, dry.ID); said(items[0]) != "retired: " {
+		t.Errorf("with library.retire.list.maxAge 2d: %s", said(items[0]))
+	}
+
+	// a title its dry run checked longer ago than the setting allows
+	g := newListFixture(t)
+	dry, _ = g.dry(t, rtFilm)
+	run, err := g.l.Start(ctx, ListRequest{FromRun: dry.ID, By: "an-admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storetest.Exec(t, g.st, `UPDATE com_nalet_katalog_retirerunitems SET reviewed_at = now() - interval '25 hours'
+		WHERE run_id = $1`, run.ID)
+	if err := g.l.Work(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, items := g.latest(t); said(items[0]) != "skipped: its dry run checked it more than library.retire.list.maxAge "+
+		"(24h) ago" {
+		t.Errorf("a title its dry run checked 25 hours ago: %s", said(items[0]))
+	}
+	g.kept(t)
 }

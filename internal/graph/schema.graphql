@@ -1680,7 +1680,8 @@ enum RetireResult {
 
 # A title of a run's list: its place in it (from 1), its id, its name as a
 # list names it ("A Film (1991)") when the run began, the original the run
-# retires of it, its result (null while it waits), why, as the clause a
+# retires of it and the version it checked it against (versionId), its
+# result (null while it waits), why, as the clause a
 # sentence says after a colon ("its originals are held (holdOriginal)"; of a
 # title a dry run would retire, what its package doesn't carry of the
 # original and the files that go with it into the trash), the size of its
@@ -1699,12 +1700,15 @@ enum RetireResult {
 # file beside the original would be lost with it; and no episode its file
 # covers is held, at work or in the re-encode queue. A run checks a title
 # once it may act on it, and the retire path asks again right before it
-# records the event.
+# records the event; a run's title is held to what its dry run found of it,
+# within library.retire.list.maxAge: the same original and version, and the
+# same that retiring it gives up (else SKIPPED, it changed since the dry run).
 type RetireItem {
   position: Int!
   itemId: ID!
   title: String
   sourceId: ID
+  versionId: ID
   result: RetireResult
   reason: String
   bytes: Float
@@ -1723,13 +1727,15 @@ extend type Mutation {
   # (movies and episodes, by their ids, each once), or of the titles the dry
   # run fromRun found it would retire; with dryRun false, a run that retires
   # the originals of the titles the dry run fromRun found it would, each
-  # checked again (titles named are a dry run alone, and library.retire.list
-  # must be on). Refused with library.retire.list off (OFF), a run with it
-  # dry-run (DRY_RUN_ONLY), a run of titles named (NAMED_TITLES), titles and
-  # fromRun both (BOTH), no title (EMPTY), an id that is no title's (BAD_ID),
-  # more than 10,000 (TOO_MANY), fromRun no dry run done with a title it
-  # would retire (FROM_RUN), while a run runs (RUNNING), with library.layout
-  # legacy (LEGACY), or without migration 052 (UNAVAILABLE).
+  # checked again and held to what the dry run found of it (titles named are
+  # a dry run alone, and library.retire.list must be on). Refused with
+  # library.retire.list off (OFF), a run with it dry-run (DRY_RUN_ONLY), a run
+  # of titles named (NAMED_TITLES), titles and fromRun both (BOTH), no title
+  # (EMPTY), an id that is no title's (BAD_ID), more than 10,000 (TOO_MANY),
+  # fromRun no dry run done with a title it would retire, or one that finished
+  # longer ago than library.retire.list.maxAge (FROM_RUN), while a run runs
+  # (RUNNING), with library.layout legacy (LEGACY), or without migration 052
+  # (UNAVAILABLE).
   retireOriginals(items: [ID!], fromRun: ID, dryRun: Boolean = true): RetireRun!
   # Stops the run that runs once the title it is at has its result (STOPPED,
   # its titles still to come left as they are); null when none runs.

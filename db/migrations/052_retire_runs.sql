@@ -5,8 +5,10 @@
 -- policy, names them in a list (GraphQL retireOriginals): a dry run checks
 -- each title and says whether it would retire its original; a run retires the
 -- originals of the titles a dry run found it would (fromrun), each checked
--- again, through the retire job's own path (its event, the trash and its
--- grace, the source's row, what the package lacks of it), one at a time. One
+-- again and held to what the dry run found of it (its original, its version,
+-- what it would give up), through the retire job's own path (its event, the
+-- trash and its grace, the source's row, what the package lacks of it), one
+-- at a time. One
 -- run runs at a time; a run a restart interrupted goes on where it stopped,
 -- and an admin stops one (stopRetireRun, library.retire.list off). A run and
 -- its titles are kept once it is done, a record of what was retired, on whose
@@ -28,6 +30,13 @@
 --                keeps its row of the run)
 --   title        its name as a list names it, when the run began
 --   source_id    the original the run retires or retired of it, once known
+--   version_id   the complete version the run checked it against, once known
+--   digest       of a title a dry run would retire, the sha256 (hex) of what
+--                it would give up: what its package doesn't carry of the
+--                original, and the files that go with it into the trash
+--   reviewed_source_id, reviewed_version_id, reviewed_digest, reviewed_at
+--                of a run's title, what its dry run found of it and when: a
+--                title that changed since is not retired
 --   result       retired, skipped, failed or would-retire; null while it waits
 --   reason       why it was skipped or failed, or what a dry run found
 --   bytes        the size of its original
@@ -53,6 +62,12 @@ CREATE TABLE IF NOT EXISTS com_nalet_katalog_retirerunitems (
   item_id VARCHAR(36) NOT NULL,
   title VARCHAR(500),
   source_id VARCHAR(36),
+  version_id VARCHAR(36),
+  digest VARCHAR(64),
+  reviewed_source_id VARCHAR(36),
+  reviewed_version_id VARCHAR(36),
+  reviewed_digest VARCHAR(64),
+  reviewed_at TIMESTAMPTZ,
   result VARCHAR(16) CHECK (result IN ('retired', 'skipped', 'failed', 'would-retire')),
   reason VARCHAR(1000),
   bytes BIGINT,

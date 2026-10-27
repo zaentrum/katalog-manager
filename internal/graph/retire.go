@@ -169,12 +169,13 @@ func (r *retireRunResolver) Items(ctx context.Context, args struct {
 
 type retireItemResolver struct{ m library.ListItem }
 
-func (r *retireItemResolver) Position() int32       { return int32(r.m.Position) }
-func (r *retireItemResolver) ItemID() graphql.ID    { return graphql.ID(r.m.ItemID) }
-func (r *retireItemResolver) Title() *string        { return r.m.Title }
-func (r *retireItemResolver) SourceID() *graphql.ID { return gidp(r.m.SourceID) }
-func (r *retireItemResolver) Result() *string       { return resultName(r.m.Result) }
-func (r *retireItemResolver) Reason() *string       { return r.m.Reason }
+func (r *retireItemResolver) Position() int32        { return int32(r.m.Position) }
+func (r *retireItemResolver) ItemID() graphql.ID     { return graphql.ID(r.m.ItemID) }
+func (r *retireItemResolver) Title() *string         { return r.m.Title }
+func (r *retireItemResolver) SourceID() *graphql.ID  { return gidp(r.m.SourceID) }
+func (r *retireItemResolver) VersionID() *graphql.ID { return gidp(r.m.VersionID) }
+func (r *retireItemResolver) Result() *string        { return resultName(r.m.Result) }
+func (r *retireItemResolver) Reason() *string        { return r.m.Reason }
 func (r *retireItemResolver) Bytes() *float64 {
 	if r.m.Bytes == nil {
 		return nil

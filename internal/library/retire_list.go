@@ -2,11 +2,14 @@ package library
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,8 +28,10 @@ import (
 // (keep, its default) and stays as it is. A dry run of the titles an admin
 // names checks each, and says whether it would retire its original, touching
 // nothing but the run's own rows; a run retires the originals of the titles a
-// dry run found it would (fromRun) and nothing else, each through the retire
-// job's own path (retireOf: its claim, its checks of the original and of the
+// dry run found it would (fromRun) and nothing else, each held to what the
+// dry run found of it (its original, its version, and what retiring it gives
+// up: review), within library.retire.list.maxAge, through the retire job's
+// own path (retireOf: its claim, its checks of the original and of the
 // version, its event, the trash and its grace, the source's row, what the
 // package lacks of it recorded), on the word of the admin who asked. The
 // setting library.retire.list says what a list may do: off, dry-run (the
@@ -114,17 +119,18 @@ type ListRun struct {
 }
 
 // ListItem is a title of a run's list: its place in it (from 1), its id and
-// its name when the run began, the original the run retires of it, its
-// result (nil while it waits), why (of a title a dry run would retire, what
-// its package doesn't carry of the original and the files that go with it),
-// its original's size, and when it got its result.
+// its name when the run began, the original the run retires of it and the
+// version it checked it against, its result (nil while it waits), why (of a
+// title a dry run would retire, what its package doesn't carry of the
+// original and the files that go with it), its original's size, and when it
+// got its result.
 type ListItem struct {
-	Position        int
-	ItemID          string
-	Title, SourceID *string
-	Result, Reason  *string
-	Bytes           *int64
-	At              *time.Time
+	Position                   int
+	ItemID                     string
+	Title, SourceID, VersionID *string
+	Result, Reason             *string
+	Bytes                      *int64
+	At                         *time.Time
 }
 
 // ListRequest is what an admin asks of a list: a dry run of the titles they
@@ -238,11 +244,12 @@ func (l *RetireList) Start(ctx context.Context, req ListRequest) (ListRun, error
 	}
 	from := strings.TrimSpace(req.FromRun)
 	var list []string
+	var reviews []review
 	switch {
 	case len(req.Items) > 0 && from != "":
 		return ListRun{}, &ListRefused{"BOTH", "a list names titles, or the dry run whose titles it retires, and not both"}
 	case from != "":
-		if list, err = l.fromRun(ctx, from); err != nil {
+		if list, reviews, err = l.fromRun(ctx, from, set); err != nil {
 			return ListRun{}, err
 		}
 	case !req.DryRun:
@@ -282,10 +289,16 @@ func (l *RetireList) Start(ctx context.Context, req ListRequest) (ListRun, error
 		return ListRun{}, err
 	}
 	named := make([]*string, len(list))
+	rsrc, rver, rdig := make([]*string, len(list)), make([]*string, len(list)), make([]*string, len(list))
+	rat := make([]*time.Time, len(list))
 	for i, id := range list {
 		if n, ok := names[id]; ok {
 			n := clip(n, 500)
 			named[i] = &n
+		}
+		if i < len(reviews) {
+			rv := reviews[i]
+			rsrc[i], rver[i], rdig[i], rat[i] = &rv.source, &rv.version, &rv.digest, &rv.at
 		}
 	}
 	var fromRun *string
@@ -306,10 +319,11 @@ func (l *RetireList) Start(ctx context.Context, req ListRequest) (ListRun, error
 		}
 		return ListRun{}, err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_retirerunitems (run_id, position, item_id, title)
-		SELECT $1, x.position, x.id, t.title
-		FROM unnest($2::text[]) WITH ORDINALITY AS x(id, position)
-		JOIN unnest($3::text[]) WITH ORDINALITY AS t(title, position) ON t.position = x.position`, id, list, named); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_retirerunitems (run_id, position, item_id, title,
+			reviewed_source_id, reviewed_version_id, reviewed_digest, reviewed_at)
+		SELECT $1, x.position, x.id, x.title, x.rsrc, x.rver, x.rdig, x.rat
+		FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::timestamptz[])
+			WITH ORDINALITY AS x(id, title, rsrc, rver, rdig, rat, position)`, id, list, named, rsrc, rver, rdig, rat); err != nil {
 		return ListRun{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -323,44 +337,98 @@ func (l *RetireList) Start(ctx context.Context, req ListRequest) (ListRun, error
 	return *run, nil
 }
 
-// fromRun are the titles the dry run id found it would retire, in its order;
-// ListRefused of a run that is none, no dry run, a dry run not done, or one
-// that found none.
-func (l *RetireList) fromRun(ctx context.Context, id string) ([]string, error) {
+// fromRun are the titles the dry run id found it would retire, in its order,
+// and what it found of each (review); ListRefused of a run that is none, no
+// dry run, a dry run not done, one that finished longer ago than
+// library.retire.list.maxAge, or one that found none.
+func (l *RetireList) fromRun(ctx context.Context, id string, set Settings) ([]string, []review, error) {
 	var state string
-	var dry bool
-	err := l.pool.QueryRow(ctx, `SELECT state, dryrun FROM com_nalet_katalog_retireruns WHERE id = $1`, id).Scan(&state, &dry)
+	var dry, fresh bool
+	err := l.pool.QueryRow(ctx, `SELECT state, dryrun, COALESCE(finishedat >= now() - make_interval(secs => $2::float8), false)
+		FROM com_nalet_katalog_retireruns WHERE id = $1`, id, set.RetireListMaxAge.Seconds()).Scan(&state, &dry, &fresh)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return nil, &ListRefused{"FROM_RUN", "there is no run " + id}
+		return nil, nil, &ListRefused{"FROM_RUN", "there is no run " + id}
 	case err != nil:
-		return nil, err
+		return nil, nil, err
 	case !dry:
-		return nil, &ListRefused{"FROM_RUN", "run " + id + " is no dry run: a run retires the titles a dry run found it would"}
+		return nil, nil, &ListRefused{"FROM_RUN", "run " + id + " is no dry run: a run retires the titles a dry run found it would"}
 	case state != RunDone:
-		return nil, &ListRefused{"FROM_RUN", "dry run " + id + " is " + state + ": a run takes the titles of a dry run done"}
+		return nil, nil, &ListRefused{"FROM_RUN", "dry run " + id + " is " + state + ": a run takes the titles of a dry run done"}
+	case !fresh:
+		return nil, nil, &ListRefused{"FROM_RUN", "dry run " + id + " finished more than library.retire.list.maxAge (" +
+			DurationText(set.RetireListMaxAge) + ") ago: what it found holds no more"}
 	}
-	rows, err := l.pool.Query(ctx, `SELECT item_id FROM com_nalet_katalog_retirerunitems WHERE run_id = $1 AND result = $2
+	rows, err := l.pool.Query(ctx, `SELECT item_id, source_id, version_id, digest, at FROM com_nalet_katalog_retirerunitems
+		WHERE run_id = $1 AND result = $2 AND source_id IS NOT NULL AND version_id IS NOT NULL AND digest IS NOT NULL
+		  AND at IS NOT NULL
 		ORDER BY position`, id, ListWouldRetire)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	var out []string
+	var reviews []review
 	for rows.Next() {
 		var item string
-		if err := rows.Scan(&item); err != nil {
-			return nil, err
+		var rv review
+		if err := rows.Scan(&item, &rv.source, &rv.version, &rv.digest, &rv.at); err != nil {
+			return nil, nil, err
 		}
-		out = append(out, item)
+		out, reviews = append(out, item), append(reviews, rv)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(out) == 0 {
-		return nil, &ListRefused{"FROM_RUN", "dry run " + id + " found no title whose original it would retire"}
+		return nil, nil, &ListRefused{"FROM_RUN", "dry run " + id + " found no title whose original it would retire"}
 	}
-	return out, nil
+	return out, reviews, nil
+}
+
+// review is what a dry run found of a title a run retires: the original it
+// checked, the version it checked it against, the digest of what retiring it
+// gives up (reviewDigest), and when it checked it.
+type review struct {
+	source, version, digest string
+	at                      time.Time
+}
+
+// changed says how the title the dry run reviewed as rv changed since, its
+// original s and its version v now; "" when it did not, or of no review.
+func (rv *review) changed(s *Source, v *Version) string {
+	switch {
+	case rv == nil:
+		return ""
+	case s.ID != rv.source:
+		return "it changed since the dry run: its original is " + s.ID + " now, and the dry run checked " + rv.source
+	case v.ID != rv.version:
+		return "it changed since the dry run: its version is " + v.ID + " now, and the dry run checked " + rv.version
+	}
+	return ""
+}
+
+// changedLoss is why a title whose retirement would give up other than its
+// dry run showed is not retired: what it gives up now (preview).
+func changedLoss(preview string) string {
+	return "it changed since the dry run: what retiring it gives up is not what the dry run showed; now " + preview
+}
+
+// reviewDigest is the sha256 (hex) of what retiring an original gives up:
+// what its package doesn't carry of it (accepted) and the files that go with
+// it into the trash (moving), whatever their order.
+func reviewDigest(accepted, moving []string) string {
+	h := sha256.New()
+	for _, part := range [][]string{accepted, moving} {
+		sorted := slices.Clone(part)
+		slices.Sort(sorted)
+		for _, x := range sorted {
+			h.Write([]byte(x))
+			h.Write([]byte{0})
+		}
+		h.Write([]byte{1})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // refusedRunning is the refusal of a list while another runs.
@@ -457,7 +525,7 @@ func (l *RetireList) Latest(ctx context.Context) (*ListRun, error) {
 // "pending" those still to come).
 func (l *RetireList) Items(ctx context.Context, id string, first, after int, result string) ([]ListItem, error) {
 	first = min(max(first, 1), 500)
-	rows, err := l.pool.Query(ctx, `SELECT position, item_id, title, source_id, result, reason, bytes, at
+	rows, err := l.pool.Query(ctx, `SELECT position, item_id, title, source_id, version_id, result, reason, bytes, at
 		FROM com_nalet_katalog_retirerunitems
 		WHERE run_id = $1 AND position > $2
 		  AND ($3 = '' OR ($3 = 'pending' AND result IS NULL) OR result = $3)
@@ -469,7 +537,8 @@ func (l *RetireList) Items(ctx context.Context, id string, first, after int, res
 	out := []ListItem{}
 	for rows.Next() {
 		var it ListItem
-		if err := rows.Scan(&it.Position, &it.ItemID, &it.Title, &it.SourceID, &it.Result, &it.Reason, &it.Bytes, &it.At); err != nil {
+		if err := rows.Scan(&it.Position, &it.ItemID, &it.Title, &it.SourceID, &it.VersionID, &it.Result, &it.Reason, &it.Bytes,
+			&it.At); err != nil {
 			return nil, err
 		}
 		out = append(out, it)
@@ -574,8 +643,10 @@ func (l *RetireList) Work(ctx context.Context) error {
 			l.inRow++
 			res = outcome{result: ListFailed, reason: fmt.Sprintf("an error stopped it %d times, the last: %v", titleTries, err),
 				source: it.sourceID}
+		case res.result == "" && ctx.Err() != nil:
+			return ctx.Err() // ended before the title had a result: it stays to come
 		case res.result == "":
-			return ctx.Err() // ended, or stopped, before it had a result: the title stays to come
+			continue // stopped, or the settings no longer let the run go on: the title stays to come, and the run ends
 		default:
 			delete(l.tries, key)
 			l.inRow = 0
@@ -665,29 +736,42 @@ type listItem struct {
 	itemID   string
 	sourceID *string
 	phase    *string
+	// review is, of a run's title, what its dry run found of it; nil of a
+	// dry run's, and of a run's whose dry run left no word on it
+	review *review
 }
 
 // next is the run's first title after the place after that waits for its
 // result; nil when none does.
 func (l *RetireList) next(ctx context.Context, run string, after int) (*listItem, error) {
 	var it listItem
-	err := l.pool.QueryRow(ctx, `SELECT position, item_id, source_id, phase FROM com_nalet_katalog_retirerunitems
+	var rsrc, rver, rdig *string
+	var rat *time.Time
+	err := l.pool.QueryRow(ctx, `SELECT position, item_id, source_id, phase, reviewed_source_id, reviewed_version_id,
+			reviewed_digest, reviewed_at
+		FROM com_nalet_katalog_retirerunitems
 		WHERE run_id = $1 AND position > $2 AND result IS NULL ORDER BY position LIMIT 1`, run, after).
-		Scan(&it.position, &it.itemID, &it.sourceID, &it.phase)
+		Scan(&it.position, &it.itemID, &it.sourceID, &it.phase, &rsrc, &rver, &rdig, &rat)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	if rsrc != nil && rver != nil && rdig != nil && rat != nil {
+		it.review = &review{source: *rsrc, version: *rver, digest: *rdig, at: *rat}
+	}
 	return &it, nil
 }
 
-// outcome is a title's result: what, why, its original and its size.
+// outcome is a title's result: what, why, its original and its size, the
+// version it was checked against, and of a title a dry run would retire the
+// digest of what retiring it gives up.
 type outcome struct {
-	result, reason string
-	source         *string
-	bytes          *int64
+	result, reason  string
+	source          *string
+	bytes           *int64
+	version, digest *string
 }
 
 func (l *RetireList) note(ctx context.Context, run string, position int, o outcome) error {
@@ -697,8 +781,8 @@ func (l *RetireList) note(ctx context.Context, run string, position int, o outco
 		reason = &r
 	}
 	_, err := l.pool.Exec(ctx, `UPDATE com_nalet_katalog_retirerunitems SET result = $3, reason = $4, bytes = $5,
-			source_id = COALESCE($6, source_id), phase = NULL, at = now()
-		WHERE run_id = $1 AND position = $2`, run, position, o.result, reason, o.bytes, o.source)
+			source_id = COALESCE($6, source_id), version_id = COALESCE($7, version_id), digest = $8, phase = NULL, at = now()
+		WHERE run_id = $1 AND position = $2`, run, position, o.result, reason, o.bytes, o.source, o.version, o.digest)
 	return err
 }
 
@@ -752,12 +836,14 @@ func (l *RetireList) stillRuns(ctx context.Context, run *running) (bool, Setting
 
 // title takes a title of the run to its result. A run that retires keeps its
 // pace and holds the retire job's lock first, then finds it still runs: what
-// it then checks holds while it acts. A title whose retirement the run began
-// before it was interrupted goes on with it: its original deleted meanwhile
-// on the run's word is retired (on another's, skipped), one still retiring
-// resumed, one present again checked anew. Any other is checked (check) and,
-// every condition holding, retired, or in a dry run would be. An empty
-// result: ctx ended, or the run stopped, first.
+// it then checks holds while it acts. It holds a title to what its dry run
+// found of it (its review), in check and again as the retire path asks right
+// before the event. A title whose retirement the run began before it was
+// interrupted goes on with it: its original deleted meanwhile on the run's
+// word is retired (on another's, skipped), one still retiring resumed, one
+// present again checked anew. Any other is checked (check) and, every
+// condition holding, retired, or in a dry run would be. An empty result: ctx
+// ended, or the run stopped, first.
 func (l *RetireList) title(ctx context.Context, conn *pgxpool.Conn, run *running, it *listItem, p *pace) (outcome, error) {
 	set, err := ReadSettings(ctx, l.pool)
 	if err != nil {
@@ -778,7 +864,15 @@ func (l *RetireList) title(ctx context.Context, conn *pgxpool.Conn, run *running
 		}
 		set = now
 	}
-	auth := Authority{By: RetireListedBy(run.by), Reason: RetireListedReason, Recheck: l.recheck}
+	rv := it.review
+	if !run.dry && rv == nil {
+		return outcome{result: ListSkipped, reason: "its dry run left no word on what retiring it gives up"}, nil
+	}
+	if run.dry {
+		rv = nil
+	}
+	auth := Authority{By: RetireListedBy(run.by), Reason: RetireListedReason,
+		Recheck: func(ctx context.Context, s *Source) (string, error) { return l.recheck(ctx, s, rv) }}
 	if it.phase != nil && *it.phase == listPhaseRetiring && it.sourceID != nil {
 		s, err := SourceByID(ctx, l.pool, *it.sourceID)
 		if err != nil {
@@ -800,26 +894,32 @@ func (l *RetireList) title(ctx context.Context, conn *pgxpool.Conn, run *running
 		}
 		// present again: its retirement was called off meanwhile; checked anew
 	}
-	s, preview, why, err := l.check(ctx, it.itemID, set)
+	f, why, err := l.check(ctx, it.itemID, rv, set)
 	if err != nil {
 		return outcome{}, err
 	}
-	var src *string
-	var size *int64
-	if s != nil {
-		src, size = &s.ID, &s.SizeBytes
+	var o outcome
+	if f.src != nil {
+		o.source, o.bytes = &f.src.ID, &f.src.SizeBytes
+	}
+	if f.ver != nil {
+		o.version = &f.ver.ID
 	}
 	switch {
 	case why != "":
-		return outcome{result: ListSkipped, reason: why, source: src, bytes: size}, nil
+		o.result, o.reason = ListSkipped, why
+		return o, nil
 	case run.dry:
-		return outcome{result: ListWouldRetire, reason: preview, source: src, bytes: size}, nil
+		o.result, o.reason, o.digest = ListWouldRetire, f.preview, &f.digest
+		return o, nil
 	}
-	if _, err := l.pool.Exec(ctx, `UPDATE com_nalet_katalog_retirerunitems SET phase = $3, source_id = $4
-		WHERE run_id = $1 AND position = $2`, run.id, it.position, listPhaseRetiring, s.ID); err != nil {
+	if _, err := l.pool.Exec(ctx, `UPDATE com_nalet_katalog_retirerunitems SET phase = $3, source_id = $4, version_id = $5
+		WHERE run_id = $1 AND position = $2`, run.id, it.position, listPhaseRetiring, f.src.ID, f.ver.ID); err != nil {
 		return outcome{}, err
 	}
-	return l.retire(ctx, auth, set, s)
+	res, err := l.retire(ctx, auth, set, f.src)
+	res.version = o.version
+	return res, err
 }
 
 // retire retires the original s through the retire job's own path, on the
@@ -859,15 +959,27 @@ func (l *RetireList) retire(ctx context.Context, auth Authority, set Settings, s
 	return outcome{result: ListSkipped, reason: why, source: &src}, nil
 }
 
+// found is what check found of a title: its original, the version it
+// checked it against, and of one whose original it would retire what
+// retiring it gives up, as a dry run says it (preview), and its digest
+// (reviewDigest).
+type found struct {
+	src             *Source
+	ver             *Version
+	preview, digest string
+}
+
 // check holds the title id against every condition its original is retired
-// on, in this order, and answers its original and what a dry run says of it
-// (preview), or why not:
+// on, in this order, and answers what it found of it, or why not:
 //
+//   - of a run's title, its dry run checked it within library.retire.list.maxAge
+//     (rv, its review);
 //   - it is a movie or an episode of the catalog, whose file is its own (an
-//     episode another's file covers is that episode's), and it is not held
-//     (holdOriginal);
+//     episode another episode's file covers is that episode's), and it is not
+//     held (holdOriginal);
 //   - it has a complete version, verified once at least, made of exactly one
-//     original, which is present;
+//     original, which is present; of a run's title, the original and the
+//     version its dry run checked;
 //   - no step that reads the original waits, runs or is to be retried, and
 //     it is not in the re-encode queue (queued, or sent);
 //   - the compliance check found it within every rule under the rules both
@@ -881,54 +993,66 @@ func (l *RetireList) retire(ctx context.Context, auth Authority, set Settings, s
 //   - what the retire path reads before it records the event holds, of the
 //     small files: its version's checksums are not pending, the source's
 //     record verifies, and no file beside the original would be lost with it
-//     (a sidecar paired after packaging);
+//     (a sidecar paired after packaging); of a run's title, retiring it gives
+//     up what its dry run showed, no more and no other;
 //   - the episodes its file covers are not held, and none has a step at work
 //     or is in the re-encode queue.
 //
 // The retire path checks the rest before it deletes anything: the original's
 // quick hash and the version's checksums.
-func (l *RetireList) check(ctx context.Context, id string, set Settings) (*Source, string, string, error) {
+func (l *RetireList) check(ctx context.Context, id string, rv *review, set Settings) (found, string, error) {
+	if rv != nil && l.now().Sub(rv.at) > set.RetireListMaxAge {
+		return found{}, "its dry run checked it more than library.retire.list.maxAge (" + DurationText(set.RetireListMaxAge) +
+			") ago", nil
+	}
 	if why, err := l.itemOf(ctx, id); err != nil || why != "" {
-		return nil, "", why, err
+		return found{}, why, err
 	}
 	v, s, why, err := l.versionOf(ctx, id, "")
+	f := found{src: s, ver: v}
 	if err != nil || why != "" {
-		return s, "", why, err
+		return f, why, err
+	}
+	if why := rv.changed(s, v); why != "" {
+		return f, why, nil
 	}
 	if why, err := l.atWork(ctx, id); err != nil || why != "" {
-		return s, "", why, err
+		return f, why, err
 	}
 	if why, err := l.passed(ctx, id); err != nil || why != "" {
-		return s, "", why, err
+		return f, why, err
 	}
 	pl, err := PlaceOf(ctx, l.pool, id)
 	if err != nil {
-		return s, "", "the title has no folder in the library: " + err.Error(), nil
+		return f, "the title has no folder in the library: " + err.Error(), nil
 	}
 	itemDir := PathsOf(l.cfg).ItemDir(pl)
 	dir := deref(v.Dir)
 	if dir == "" {
-		return s, "", "the catalog doesn’t say where its version’s folder is", nil
+		return f, "the catalog doesn’t say where its version’s folder is", nil
 	}
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return s, "", "its version’s folder isn’t there: " + dir, nil
+		return f, "its version’s folder isn’t there: " + dir, nil
 	}
 	if lost, err := surroundLost(itemDir, v.ID, s.ID); err != nil {
-		return s, "", fmt.Sprintf("the essences of its original's and its package's records can’t be read: %v", err), nil
+		return f, fmt.Sprintf("the essences of its original's and its package's records can’t be read: %v", err), nil
 	} else if lost {
-		return s, "", SurroundHeld, nil
+		return f, SurroundHeld, nil
 	}
 	if why := l.fileOf(s, itemDir, set); why != "" {
-		return s, "", why, nil
+		return f, why, nil
 	}
-	preview, why, err := l.preflight(ctx, itemDir, dir, v, s)
+	f.preview, f.digest, why, err = l.preflight(ctx, itemDir, dir, v, s)
 	if err != nil || why != "" {
-		return s, "", why, err
+		return f, why, err
+	}
+	if rv != nil && f.digest != rv.digest {
+		return f, changedLoss(f.preview), nil
 	}
 	if why, err := l.coveredOf(ctx, id); err != nil || why != "" {
-		return s, "", why, err
+		return f, why, err
 	}
-	return s, preview, "", nil
+	return f, "", nil
 }
 
 // recheck is the list's word on the retirement of s, as the retire path asks
@@ -936,21 +1060,40 @@ func (l *RetireList) check(ctx context.Context, id string, set Settings) (*Sourc
 // check still finds it within every rule, and then, read last, the title is
 // still a movie or an episode of its own and not held, its complete version
 // is still made of s alone, nothing reads it, and the episodes its file
-// covers hold too.
-func (l *RetireList) recheck(ctx context.Context, s *Source) (string, error) {
+// covers hold too; of a run's title, its version is still the one its dry
+// run checked (rv), and retiring it still gives up what the dry run showed.
+func (l *RetireList) recheck(ctx context.Context, s *Source, rv *review) (string, error) {
 	if why, err := l.passed(ctx, s.ItemID); err != nil || why != "" {
 		return why, err
 	}
 	if why, err := l.itemOf(ctx, s.ItemID); err != nil || why != "" {
 		return why, err
 	}
-	if _, _, why, err := l.versionOf(ctx, s.ItemID, s.ID); err != nil || why != "" {
+	v, _, why, err := l.versionOf(ctx, s.ItemID, s.ID)
+	if err != nil || why != "" {
 		return why, err
+	}
+	if why := rv.changed(s, v); why != "" {
+		return why, nil
 	}
 	if why, err := l.atWork(ctx, s.ItemID); err != nil || why != "" {
 		return why, err
 	}
-	return l.coveredOf(ctx, s.ItemID)
+	if why, err := l.coveredOf(ctx, s.ItemID); err != nil || why != "" || rv == nil {
+		return why, err
+	}
+	pl, err := PlaceOf(ctx, l.pool, s.ItemID)
+	if err != nil {
+		return "the title has no folder in the library: " + err.Error(), nil
+	}
+	preview, digest, why, err := l.preflight(ctx, PathsOf(l.cfg).ItemDir(pl), deref(v.Dir), v, s)
+	if err != nil || why != "" {
+		return why, err
+	}
+	if digest != rv.digest {
+		return changedLoss(preview), nil
+	}
+	return "", nil
 }
 
 // itemOf says why the title id is none whose original a list retires, ""
@@ -1173,32 +1316,34 @@ func (l *RetireList) fileOf(s *Source, itemDir string, set Settings) string {
 // preflight checks what the retire path reads before it records the event
 // of the original s of the version v (its folder dir, which is there) that
 // reads small files alone (not the original's bytes, not the package's), and
-// answers what a dry run says of it, or why the retirement would be refused:
-// the version's checksums are not pending, the source's record verifies, and
-// no file beside the original would be lost with it. A dry run says what the
-// package doesn't carry of the original (the deletion gate) and the files
+// answers what retiring it gives up, as a dry run says it (preview) and its
+// digest (reviewDigest), or why the retirement would be refused: the
+// version's checksums are not pending, the source's record verifies, and no
+// file beside the original would be lost with it. What it gives up is what
+// the package doesn't carry of the original (the deletion gate) and the files
 // that go with it into the trash.
-func (l *RetireList) preflight(ctx context.Context, itemDir, dir string, v *Version, s *Source) (string, string, error) {
+func (l *RetireList) preflight(ctx context.Context, itemDir, dir string, v *Version, s *Source) (preview, digest, why string,
+	err error) {
 	if pending, err := checksumsPending(dir); err != nil {
-		return "", fmt.Sprintf("its version’s package.json can’t be read: %v", err), nil
+		return "", "", fmt.Sprintf("its version’s package.json can’t be read: %v", err), nil
 	} else if pending {
-		return "", "its version’s checksums are pending: no file of its package was hashed yet, so nothing proves it", nil
+		return "", "", "its version’s checksums are pending: no file of its package was hashed yet, so nothing proves it", nil
 	}
 	record, err := VerifySource(SourceDir(itemDir, s.ID))
 	if err != nil {
-		return "", fmt.Sprintf("the source’s record does not verify: %v", err), nil
+		return "", "", fmt.Sprintf("the source’s record does not verify: %v", err), nil
 	}
 	rt := &retirement{src: s, itemDir: itemDir, ver: v, record: record}
 	sidecars, err := l.r.sidecarsOf(ctx, rt, true)
 	var refused *sidecarRefused
 	if errors.As(err, &refused) {
-		return "", refused.msg, nil
+		return "", "", refused.msg, nil
 	} else if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	accepted, err := GateOf(itemDir, v.ID, s.ID)
 	if err != nil {
-		return "", fmt.Sprintf("the deletion gate can’t be read: %v", err), nil
+		return "", "", fmt.Sprintf("the deletion gate can’t be read: %v", err), nil
 	}
 	lacks := "nothing"
 	if len(accepted) > 0 {
@@ -1214,7 +1359,8 @@ func (l *RetireList) preflight(ctx context.Context, itemDir, dir string, v *Vers
 	if len(moving) > 0 {
 		goes = strings.Join(moving, ", ")
 	}
-	return "what its package doesn’t carry of it: " + lacks + "; the files that go with it: " + goes, "", nil
+	return "what its package doesn’t carry of it: " + lacks + "; the files that go with it: " + goes,
+		reviewDigest(accepted, moving), "", nil
 }
 
 // checksumsPending reports whether the package.json of the version folder

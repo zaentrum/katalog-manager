@@ -627,15 +627,15 @@ func TestAListOfOriginalsThroughTheService(t *testing.T) {
 			FinishedAt                  *string
 			Total, WouldRetire, Skipped int
 			Items                       []struct {
-				Position       int
-				ItemID, Title  string
-				Result, Reason *string
-				SourceID       *string
+				Position            int
+				ItemID, Title       string
+				Result, Reason      *string
+				SourceID, VersionID *string
 			}
 		}
 	}
 	_, a = in.gql(t, "/api/manage/query", admin, `{ retireRun { id state dryRun finishedAt total wouldRetire skipped
-		items { position itemId title result reason sourceId } } }`)
+		items { position itemId title result reason sourceId versionId } } }`)
 	if len(a.Errors) > 0 || json.Unmarshal(a.Data, &run) != nil {
 		t.Fatalf("retireRun: %s %v", a.Data, a.Errors)
 	}
@@ -645,7 +645,8 @@ func TestAListOfOriginalsThroughTheService(t *testing.T) {
 		t.Fatalf("the run: %+v", r)
 	}
 	if it := r.Items[0]; it.ItemID != remuxID || it.Title != "A Remux Kept As It Was" || it.Result == nil || *it.Result != "SKIPPED" ||
-		it.Reason == nil || *it.Reason != "its complete version "+remuxVer+" was never verified" {
+		it.Reason == nil || *it.Reason != "its complete version "+remuxVer+" was never verified" || it.VersionID == nil ||
+		*it.VersionID != remuxVer {
 		t.Errorf("the remux: %+v", it)
 	}
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET verifiedat = now(), verifiedlevel = 'full'`)

@@ -157,22 +157,29 @@ func TestTheSettingsAreRead(t *testing.T) {
 	s = Defaults()
 	for k, v := range map[string]string{SettingLayout: " V2 ", SettingOriginals: "delete-after-package", SettingRetireDelay: "1h",
 		SettingRetireRate: "5", SettingVerify: "chain", SettingVerifyMaxAge: "7d", SettingSupersededGrace: "2h",
-		SettingTrashGrace: "0"} {
+		SettingTrashGrace: "0", SettingRetireList: " On", SettingRetireListMaxAge: "36h"} {
 		s.set(k, v)
 	}
 	if !s.V2() || !s.DeleteOriginals() || s.RetireDelay != time.Hour || s.RetireRate != 5 || s.Verify != VerifyChain ||
-		s.VerifyMaxAge != 7*24*time.Hour || s.SupersededGrace != 2*time.Hour || s.TrashGrace != 0 || len(s.Problems) != 0 {
+		s.VerifyMaxAge != 7*24*time.Hour || s.SupersededGrace != 2*time.Hour || s.TrashGrace != 0 ||
+		s.RetireList != RetireListOn || s.RetireListMaxAge != 36*time.Hour || len(s.Problems) != 0 {
 		t.Errorf("read: %+v", s)
 	}
 	s = Defaults()
 	for k, v := range map[string]string{SettingLayout: "v3", SettingOriginals: "delete", SettingRetireRate: "0",
-		SettingVerify: "some", SettingTrashGrace: "a while", SettingRetireDelay: ""} {
+		SettingVerify: "some", SettingTrashGrace: "a while", SettingRetireDelay: "", SettingRetireList: "yes",
+		SettingRetireListMaxAge: "0"} {
 		s.set(k, v)
 	}
 	d := Defaults()
 	if s.Layout != d.Layout || s.Originals != d.Originals || s.RetireRate != d.RetireRate || s.Verify != d.Verify ||
-		s.TrashGrace != d.TrashGrace || s.RetireDelay != d.RetireDelay || len(s.Problems) != 5 {
+		s.TrashGrace != d.TrashGrace || s.RetireDelay != d.RetireDelay || s.RetireList != RetireListDryRun ||
+		s.RetireListMaxAge != 24*time.Hour || len(s.Problems) != 7 {
 		t.Errorf("what cannot be read: %+v", s)
+	}
+	if !strings.Contains(strings.Join(s.Problems, "\n"), `library.retire.list.maxAge is "0", which is not a duration above 0, `+
+		`as 24h or 2d; it is 24h`) {
+		t.Errorf("the problems: %v", s.Problems)
 	}
 	if !strings.Contains(strings.Join(s.Problems, "\n"), `library.layout is "v3", which is not legacy or v2; the layout is legacy`) {
 		t.Errorf("the problems: %v", s.Problems)
@@ -213,5 +220,19 @@ func TestEnsureWorkTree(t *testing.T) {
 	}
 	if err := EnsureWorkTree(config.Config{WorkRoot: "relative", ArrivalsRoot: dir, ExtrasRoot: dir}); err == nil {
 		t.Error("a relative work folder")
+	}
+}
+
+// A duration is written as the settings write one.
+func TestDurationText(t *testing.T) {
+	for d, want := range map[time.Duration]string{0: "0", 24 * time.Hour: "24h", 48 * time.Hour: "2d", 36 * time.Hour: "36h",
+		90 * time.Minute: "1h30m", 10 * time.Minute: "10m", 90 * time.Second: "1m30s", 30 * time.Second: "30s",
+		30 * 24 * time.Hour: "30d"} {
+		if got := DurationText(d); got != want {
+			t.Errorf("%s: %q, want %q", d, got, want)
+		}
+		if back, err := ParseDuration(DurationText(d)); err != nil || back != d {
+			t.Errorf("%s read back: %s, %v", d, back, err)
+		}
 	}
 }
