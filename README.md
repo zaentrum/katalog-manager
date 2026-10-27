@@ -38,7 +38,8 @@ The surface is split deliberately:
   (see [Encoding a title again](#encoding-a-title-again)),
   `clearReencodeQueue` (see [The re-encode queue](#the-re-encode-queue)),
   `queueRework`, `queueReworkMatching` and `refreshCompliance` (see
-  [Library compliance](#library-compliance)), `retireOriginals` (see
+  [Library compliance](#library-compliance)), `retireOriginals` and
+  `stopRetireRun` (see
   [Retiring the originals of a list](#retiring-the-originals-of-a-list)),
   `replaceSource` (see [Replacing a title's file](#replacing-a-titles-file)),
   `backfillSourceProbes`, `backfillSourceSizes`, `backfillRatings` and `setMinAgeOverride` (see
@@ -341,7 +342,9 @@ the base schema in the order of their numbers, and each is idempotent:
   what the library's compliance check found of each movie and episode
   (`com_nalet_katalog_compliance`: the rules it breaks and the findings,
   the sizes of its original and its package and the estimate once it is
-  processed again, why a rule was not checked of it, why processing it
+  processed again, why a rule was not checked of it, the rules it couldn't
+  hold it against (`uncheckedrules`, which a later build of 051 adds to a
+  table without it), why processing it
   again can't help as its original's record or its failed step tells, the
   facts the check read of its records and of which records, so that it
   reads them again only once they change, the hash of the rules it was
@@ -351,7 +354,8 @@ the base schema in the order of their numbers, and each is idempotent:
   no rules are kept and nothing is checked.
 - `052_retire_runs.sql` keeps an admin's lists of titles whose originals
   are retired (`com_nalet_katalog_retireruns`: a run a row, its state, a dry
-  run or not, who asked, when it began and ended, why a failed one stopped)
+  run or not, the dry run whose titles it retires, who asked, when it began
+  and ended, why a stopped or failed one ended)
   and how each title of a list fared (`com_nalet_katalog_retirerunitems`, in
   the list's order: its name when the run began, the original the run
   retires of it, its result and why, its original's size, and that the run
@@ -361,6 +365,9 @@ the base schema in the order of their numbers, and each is idempotent:
   whose word. Applied at startup when any of it is missing; without it no
   list is run (see
   [Retiring the originals of a list](#retiring-the-originals-of-a-list)).
+  051 and 052 are applied under an advisory lock of the catalog's, each
+  asked for again once it is held: of instances that start at once, one
+  applies them and the others find them in place.
 
 ## Track languages
 
@@ -789,6 +796,23 @@ video was copied is the top rendition's
 status (not applicable: nothing was encoded). With the library's legacy
 layout, which keeps no records, the bit rate, surround and image subtitles
 are not checked.
+
+A rule in force that the check can't hold a packaged title against, for
+want of what the rule takes of it, is no rule the title keeps:
+`OVER_BITRATE_CAP` where the cap of its kind and bucket isn't reported, of a
+title with no bucket while a cap is, or of one whose video's bit rate no
+record gives under a cap above 0 (a browser-friendly H.264 copy the
+transcoder keeps is held to none); `OVER_SIZE_CAP` of a movie where the file
+size cap isn't reported, whose original's size isn't known, or whose
+original is larger and whether its package copied the video isn't;
+`VIDEO_NOT_HEVC` where the renditions aren't reported, or every video is
+HEVC and the package's codec isn't known; `NO_SURROUND` where the surround
+track isn't reported, or the packager makes one and an essence isn't there;
+`IMAGE_SUBTITLES_MISSING` where the image subtitles kept aren't reported, or
+some are and a record isn't there. Its row keeps those rules
+(`uncheckedrules`, in the order of the table), and such a title is not
+within every rule when an admin's list asks before it retires its original
+(see [Retiring the originals of a list](#retiring-the-originals-of-a-list)).
 
 Each title has `originalBytes`, `packageBytes` and `estimatedBytes`, an
 estimate of its package once it is processed again, as accurate as its
@@ -1682,6 +1706,11 @@ The library's settings are read on every use, as `extras.scan` is:
   retire job's policy, which an admin's list of originals to retire leaves
   as it is (see
   [Retiring the originals of a list](#retiring-the-originals-of-a-list)).
+- `library.retire.list` (`dry-run`): what an admin's list of originals to
+  retire may do: `off` (none runs, and one that runs stops), `dry-run` (a
+  list says what it would retire, and retires none) or `on` (a run retires
+  the titles a dry run found it would; see
+  [Retiring the originals of a list](#retiring-the-originals-of-a-list)).
 - `library.retire.delay` (`10m`), `library.retire.rate` (`30` a minute),
   `library.verify` (`full` or `chain`), `library.verify.maxAge` (`30d`),
   `library.superseded.grace` (`24h`), `library.trash.grace` (`24h`; `0`
@@ -1896,63 +1925,101 @@ shape: a refresh writes it again (`shape`).
 
 `library.originals` keeps every original unless it is `delete-after-package`,
 and a list changes nothing of it: an admin who wants exactly the originals of
-some titles gone names them, `retireOriginals(items: [ID!]!, dryRun: Boolean
-= true)` (GraphQL, admins). The run checks each title in the list's order, and
-retires the original of each that holds every condition through the retire
-job's own path — its claim (the step `retire` runs), the original checked
-against its size and quick hash, the source's record and the version
-verified, its `original-deleted` event recorded with what the package does
-not carry of it, the original and its sidecars moved into
-`.work/trash/<day>/<sourceId>/` (unlinked at once with `library.trash.grace`
-`0`), the source deleted and the catalog's rows repointed, the step done —
-on the word of the admin who asked: the event's `by` and the source's
-`deletedBy` say `katalog-manager (retireOriginals, by <subject>)`, its reason
-that an admin listed it. A dry run, the default, checks every title and
-retires none: it says of each whether it would be retired, and touches
-nothing but the run's own rows. A title is retired only when, in this order:
+some titles gone names them in a dry run, `retireOriginals(items: [ID!])`
+(GraphQL, admins), reads what it found (`retireRun`), and retires the titles
+it found it would retire, `retireOriginals(fromRun: ID, dryRun: false)`. That
+is the only way a run begins: it takes those titles alone, each checked
+again, and a list of titles named is a dry run (`NAMED_TITLES`). The setting
+`library.retire.list` says what a list may do: `off` (none runs), `dry-run`
+(the default: a dry run, and a run is refused, `DRY_RUN_ONLY`) or `on`.
+
+A run checks each title in the list's order, and retires the original of
+each that holds every condition through the retire job's own path — its
+claim (the step `retire` runs), the original checked against its size and
+quick hash, the source's record and the version verified, its
+`original-deleted` event recorded with what the package does not carry of
+it, the original and its sidecars moved into `.work/trash/<day>/<sourceId>/`
+(unlinked at once with `library.trash.grace` `0`), the source deleted and the
+catalog's rows repointed, the step done — on the word of the admin who
+asked: the event's `by` and the source's `deletedBy` say `katalog-manager
+(retireOriginals, by <subject>)`, its reason that an admin listed it. A dry
+run checks every title and retires none: it says of each whether it would be
+retired, of one it would what its package doesn't carry of the original (the
+deletion gate's, "maxAudioChannels") and the files that go with it into the
+trash, and touches nothing but the run's own rows. A title is retired only
+when, in this order:
 
 - it is a movie or an episode of the catalog whose file is its own (an
   episode another episode's file covers names that holder, whose original it
   is), and it is not held (`holdOriginal`);
-- it has a complete version, verified once at least, made of one original,
-  which is present;
+- it has a complete version, verified once at least, made of exactly one
+  original, which is present (a version of several is retired by none: each
+  of its originals is part of its package);
 - no step that reads the original waits, runs or is to be retried, and it is
   not in the re-encode queue (queued, or sent);
-- the [compliance check](#library-compliance) checked it against the rules
-  both workers report now, it was not marked to be checked again since, its
-  records were read, it breaks no rule and processing it again can help;
-- its package has the surround of its original, as the retire job holds an
-  original for it;
-- its original is where the catalog says, of the size it recorded, and the
+- the [compliance check](#library-compliance) found it within every rule: it
+  checked it against the rules both workers report now, of its current
+  version (the records it read were that version's, read once it was
+  complete), since the nightly check last fell due, and it was not marked to
+  be checked again since; its records were read, it could hold it against
+  every rule in force (none it couldn't for want of a bit rate, a bucket, a
+  codec or a size), it breaks none, and processing it again can help;
+- its version's folder is there, and its package has the surround of its
+  original, as the retire job holds an original for it;
+- its original is a file of its own (no link) where the catalog says, under
+  a root the retire path deletes under, of the size it recorded, and the
   trash is on its filesystem (a rename across filesystems would fail once its
   event is recorded), unless `library.trash.grace` is `0`;
+- its version's checksums are not pending (nothing would prove its package
+  yet), the source's record verifies, and no file beside the original would
+  be lost with it (a subtitle paired after packaging);
 - the episodes its file covers, of a file of several, are not held, and none
   has a step at work or is in the re-encode queue.
 
-Else it is skipped, saying why, as the clause a sentence says after a colon
-("its originals are held (holdOriginal)", "the compliance check finds it
-breaks OVER_BITRATE_CAP"); the retire path checks the rest (the quick hash,
-the records, the version's checksums, the sidecars) and a mismatch fails the
-title, saying why, its original kept. The library's name of an original is
-all a list retires: a file with a second name, a hard link another tree
-shares, is retired by the library's name, moved into the trash, and its other
-names are none of the library's — it frees no space while one is left.
+A run that retires checks a title once it may act on it, its pace kept and
+the retire job's lock held, and the retire path asks the list again right
+before it records the event, once it claimed the original and verified the
+version, and before it resumes a retirement a restart interrupted: what
+turned meanwhile holds the title back. A title held back is skipped, saying
+why, as the clause a sentence says after a colon ("its originals are held
+(holdOriginal)", "the compliance check finds it breaks OVER_BITRATE_CAP");
+the retire path checks the rest (the quick hash, the version's checksums) and
+a mismatch fails the title, saying why, its original kept. A failure once the
+event is recorded says so: the retire job finishes that retirement. A sidecar
+another title's row or another original names too stays where it is, and
+the retired title's row points at its copy all the same. The library's name
+of an original is all a list retires: a file with a second name, a hard link
+another tree shares, is retired by the library's name, moved into the trash,
+and its other names are none of the library's — it frees no space while one
+is left.
 
 One run runs at a time, in one instance at a time (an advisory lock), in the
 background: the mutation answers the run as it begins, it goes on when the
 admin goes away, and a run a restart interrupted goes on where it stopped (a
-retirement it claimed is resumed; one the retire job called off meanwhile,
-as `keep` calls off one on the policy's word, is checked anew; one whose
-event it recorded is finished, by the job or by it). Another list is refused
-while one runs (`RUNNING`), as one of no title (`EMPTY`), of more than 10,000
-(`TOO_MANY`), with `library.layout` `legacy` (`LEGACY`) or without migration
-052 (`UNAVAILABLE`). It retires one original at a time, each while the retire
-job runs no pass (it holds the job's lock), at most `library.retire.rate` a
-minute, the job's own pace: the verifications read the share, and nothing is
-read or moved in parallel. A dry run keeps no pace.
+retirement it claimed is resumed, asking the list again; one the retire job
+called off meanwhile, as `keep` calls off one on the policy's word, is
+checked anew; one whose event it recorded is finished, by the job or by it;
+an original deleted meanwhile on another's word is skipped, saying by whom).
+`stopRetireRun` (admins) stops the run that runs after the title it is at,
+its titles still to come left as they are, and answers it (`STOPPED`, its
+`error` saying who stopped it); `library.retire.list` stops any run once it
+is `off`, and a run that retires once it is no longer `on`, before the next
+title. A title an error stops (the catalog out of reach) is tried again, ten
+seconds later and then twenty, and failed after the third time, saying so;
+the run goes on, and five titles failed so in a row stop it (`FAILED`).
+Another list is refused while one runs (`RUNNING`), as one of no title
+(`EMPTY`), of an id that is no title's (`BAD_ID`), of more than 10,000
+(`TOO_MANY`), of titles and a dry run both (`BOTH`), of a run that is no dry
+run done with a title it would retire (`FROM_RUN`), with `library.layout`
+`legacy` (`LEGACY`) or without migration 052 (`UNAVAILABLE`). It retires one
+original at a time, each while the retire job runs no pass (it holds the
+job's lock), at most `library.retire.rate` a minute, the job's own pace: the
+verifications read the share, and nothing is read or moved in parallel. A dry
+run keeps no pace.
 
 `retireRun` is the run begun last, running or not (null when none ran):
-its `state` (`RUNNING`, `DONE`, or `FAILED` with its `error`), `dryRun`, who
+its `state` (`RUNNING`, `DONE`, `STOPPED` or `FAILED`, the last two with their
+`error`), `dryRun`, the dry run whose titles it retires (`fromRun`), who
 asked (`requestedBy`), when it began and ended, its titles counted (`total`,
 `pending`, `retired`, `wouldRetire`, `skipped`, `failed`) and the size of the
 originals it retired (of a dry run, would retire: `bytes`), and its titles a
