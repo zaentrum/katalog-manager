@@ -1716,6 +1716,9 @@ The library's settings are read on every use, as `extras.scan` is:
   [Retiring the originals of a list](#retiring-the-originals-of-a-list)).
 - `library.retire.list.maxAge` (`24h`): how long a dry run's word on its
   titles holds for a run of them; above 0.
+- `library.verify.new` (`on`): whether the verifier verifies each new
+  version in full once (see below); `off` leaves new versions unverified
+  until the retire job verifies one.
 - `library.retire.delay` (`10m`), `library.retire.rate` (`30` a minute),
   `library.verify` (`full` or `chain`), `library.verify.maxAge` (`30d`),
   `library.superseded.grace` (`24h`), `library.trash.grace` (`24h`; `0`
@@ -1816,6 +1819,23 @@ original in its version's folder back where it arrived before the folder
 goes, where the catalog still knows that place (a source recorded before it
 kept none); the folder of one whose place it does not know stays, said in the
 removal's errors.
+
+The verifier verifies each new version once, with `library.verify.new` on
+(the default), every minute, in one instance at a time: a complete version
+no one verified (the retire job, the fill run of a migration's checksums),
+one at a time, the one completed first first, in full — its chain and every
+file's hash against its checksums — and notes it as the fill run does,
+verified in full at the moment its verification began, only while the
+version is what it read (complete, in that folder, of the package its
+`package.json` names, and noted by no one meanwhile). It reads the library
+and writes nothing in it. A version whose chain does not hold, whose
+checksums are pending, whose folder lies outside the library or whose
+`package.json` is another package's, and one whose row changed while it was
+read, is left as it is, said in the log, and tried again six hours later. A
+list of originals to retire takes a version verified once at least, so it
+takes a title processed again once the verifier has verified its new
+version; the retire job verifies a version again before it retires an
+original either way.
 
 Once a title's original is retired, nothing reads it any more: reencodeItem
 says so, naming the event (a better version is a new arrival:
@@ -1965,9 +1985,10 @@ when, in this order:
 - it is a movie or an episode of the catalog whose file is its own (an
   episode another episode's file covers names that holder, whose original it
   is), and it is not held (`holdOriginal`);
-- it has a complete version, verified once at least, made of exactly one
-  original, which is present (a version of several is retired by none: each
-  of its originals is part of its package);
+- it has a complete version, verified once at least (the verifier verifies
+  each new one), made of exactly one original, which is present (a version
+  of several is retired by none: each of its originals is part of its
+  package);
 - no step that reads the original waits, runs or is to be retried, and it is
   not in the re-encode queue (queued, or sent);
 - the [compliance check](#library-compliance) found it within every rule: it

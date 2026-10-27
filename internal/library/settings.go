@@ -35,6 +35,9 @@ const (
 	// SettingVerifyMaxAge is how recent a full verification may be for the
 	// chain alone to do (30d).
 	SettingVerifyMaxAge = "library.verify.maxAge"
+	// SettingVerifyNew is whether the verifier verifies in full each complete
+	// version no one verified yet: on (the default) or off.
+	SettingVerifyNew = "library.verify.new"
 	// SettingSupersededGrace is how long a superseded version stays before it
 	// is removed (24h).
 	SettingSupersededGrace = "library.superseded.grace"
@@ -69,6 +72,8 @@ const (
 	OriginalsDelete  = "delete-after-package"
 	VerifyFull       = "full"
 	VerifyChain      = "chain"
+	VerifyNewOn      = "on"
+	VerifyNewOff     = "off"
 	RetireListOff    = "off"
 	RetireListDryRun = "dry-run"
 	RetireListOn     = "on"
@@ -78,12 +83,14 @@ const (
 
 // Settings are the library's settings as they are read.
 type Settings struct {
-	Layout          string
-	Originals       string
-	RetireDelay     time.Duration
-	RetireRate      int
-	Verify          string
-	VerifyMaxAge    time.Duration
+	Layout       string
+	Originals    string
+	RetireDelay  time.Duration
+	RetireRate   int
+	Verify       string
+	VerifyMaxAge time.Duration
+	// VerifyNew is whether the verifier verifies new versions.
+	VerifyNew       bool
 	SupersededGrace time.Duration
 	TrashGrace      time.Duration
 	// ReencodeRate, ReencodeInflight and ReencodeWindow are how the sweep
@@ -104,7 +111,7 @@ type Settings struct {
 // Defaults are the settings of a catalog that sets none.
 func Defaults() Settings {
 	return Settings{Layout: LayoutLegacy, Originals: OriginalsKeep, RetireDelay: 10 * time.Minute,
-		RetireRate: defaultRetireNum, Verify: VerifyFull, VerifyMaxAge: 30 * 24 * time.Hour,
+		RetireRate: defaultRetireNum, Verify: VerifyFull, VerifyMaxAge: 30 * 24 * time.Hour, VerifyNew: true,
 		SupersededGrace: 24 * time.Hour, TrashGrace: 24 * time.Hour,
 		ReencodeRate: defaultReencode, ReencodeInflight: defaultReencode, RetireList: RetireListDryRun,
 		RetireListMaxAge: 24 * time.Hour}
@@ -173,6 +180,12 @@ func (s *Settings) set(key, value string) {
 			s.Verify = lower
 		} else {
 			bad("full or chain; a version is verified in full")
+		}
+	case SettingVerifyNew:
+		if lower == VerifyNewOn || lower == VerifyNewOff {
+			s.VerifyNew = lower == VerifyNewOn
+		} else {
+			bad("on or off; new versions are verified")
 		}
 	case SettingRetireRate:
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 {

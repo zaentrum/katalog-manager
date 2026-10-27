@@ -403,6 +403,10 @@ func wire(ctx context.Context, cfg config.Config, st *store.Store) (*service, er
 		// The library's projections (metadata.json, person.json) follow the
 		// database, with library.layout=v2, in one instance at a time.
 		go library.NewProjector(st.Pool(), cfg).Run(ctx)
+		// Each new version is verified in full once (library.verify.new), so
+		// that a list of originals to retire may take it, with
+		// library.layout=v2, in one instance at a time.
+		go library.NewVerifier(st.Pool(), cfg).Run(ctx)
 		// Event-driven enrichment: consume stube.catalog.item.discovered, enrich the
 		// item synchronously, then emit stube.catalog.item.enriched to trigger analyze.
 		// This replaces the old 60s enrichment poll ticker (pure-Kafka triggers).

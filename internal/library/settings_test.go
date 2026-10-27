@@ -16,7 +16,7 @@ import (
 func TestTheLibrarysDefaults(t *testing.T) {
 	d := Defaults()
 	if d.V2() || d.DeleteOriginals() || d.RetireDelay != 10*time.Minute || d.RetireRate != 30 || d.Verify != VerifyFull ||
-		d.VerifyMaxAge != 30*24*time.Hour || d.SupersededGrace != 24*time.Hour || d.TrashGrace != 24*time.Hour ||
+		d.VerifyMaxAge != 30*24*time.Hour || !d.VerifyNew || d.SupersededGrace != 24*time.Hour || d.TrashGrace != 24*time.Hour ||
 		d.ReencodeRate != 4 || d.ReencodeInflight != 4 || d.ReencodeWindow != "" {
 		t.Errorf("the defaults: %+v", d)
 	}
@@ -157,25 +157,28 @@ func TestTheSettingsAreRead(t *testing.T) {
 	s = Defaults()
 	for k, v := range map[string]string{SettingLayout: " V2 ", SettingOriginals: "delete-after-package", SettingRetireDelay: "1h",
 		SettingRetireRate: "5", SettingVerify: "chain", SettingVerifyMaxAge: "7d", SettingSupersededGrace: "2h",
-		SettingTrashGrace: "0", SettingRetireList: " On", SettingRetireListMaxAge: "36h"} {
+		SettingTrashGrace: "0", SettingRetireList: " On", SettingRetireListMaxAge: "36h", SettingVerifyNew: " OFF "} {
 		s.set(k, v)
 	}
 	if !s.V2() || !s.DeleteOriginals() || s.RetireDelay != time.Hour || s.RetireRate != 5 || s.Verify != VerifyChain ||
-		s.VerifyMaxAge != 7*24*time.Hour || s.SupersededGrace != 2*time.Hour || s.TrashGrace != 0 ||
+		s.VerifyMaxAge != 7*24*time.Hour || s.VerifyNew || s.SupersededGrace != 2*time.Hour || s.TrashGrace != 0 ||
 		s.RetireList != RetireListOn || s.RetireListMaxAge != 36*time.Hour || len(s.Problems) != 0 {
 		t.Errorf("read: %+v", s)
 	}
 	s = Defaults()
 	for k, v := range map[string]string{SettingLayout: "v3", SettingOriginals: "delete", SettingRetireRate: "0",
 		SettingVerify: "some", SettingTrashGrace: "a while", SettingRetireDelay: "", SettingRetireList: "yes",
-		SettingRetireListMaxAge: "0"} {
+		SettingRetireListMaxAge: "0", SettingVerifyNew: "never"} {
 		s.set(k, v)
 	}
 	d := Defaults()
 	if s.Layout != d.Layout || s.Originals != d.Originals || s.RetireRate != d.RetireRate || s.Verify != d.Verify ||
 		s.TrashGrace != d.TrashGrace || s.RetireDelay != d.RetireDelay || s.RetireList != RetireListDryRun ||
-		s.RetireListMaxAge != 24*time.Hour || len(s.Problems) != 7 {
+		s.RetireListMaxAge != 24*time.Hour || !s.VerifyNew || len(s.Problems) != 8 {
 		t.Errorf("what cannot be read: %+v", s)
+	}
+	if !strings.Contains(strings.Join(s.Problems, "\n"), `library.verify.new is "never", which is not on or off; new versions are verified`) {
+		t.Errorf("the problems: %v", s.Problems)
 	}
 	if !strings.Contains(strings.Join(s.Problems, "\n"), `library.retire.list.maxAge is "0", which is not a duration above 0, `+
 		`as 24h or 2d; it is 24h`) {
