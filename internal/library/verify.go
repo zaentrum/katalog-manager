@@ -1,6 +1,7 @@
 package library
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -83,16 +84,22 @@ var ErrChecksumsPending = errors.New("its package's checksums are pending: no fi
 // answered with Pending set, whatever full asks. A caller that needs the
 // bytes proven refuses such a chain (ErrChecksumsPending).
 func VerifyVersion(dir string, full bool) (*Chain, error) {
-	return verifyChain(dir, VersionFile, versionPackageDirs, full)
+	return VerifyVersionContext(context.Background(), dir, full)
+}
+
+// VerifyVersionContext is VerifyVersion, given up once ctx ends: its error
+// then names the file it was at.
+func VerifyVersionContext(ctx context.Context, dir string, full bool) (*Chain, error) {
+	return verifyChain(ctx, dir, VersionFile, versionPackageDirs, full)
 }
 
 // VerifyExtra checks the chain of an extra's folder as VerifyVersion checks a
 // version's, its record extra.json.
 func VerifyExtra(dir string, full bool) (*Chain, error) {
-	return verifyChain(dir, ExtraFile, extraPackageDirs, full)
+	return verifyChain(context.Background(), dir, ExtraFile, extraPackageDirs, full)
 }
 
-func verifyChain(dir, record string, dirs []string, full bool) (*Chain, error) {
+func verifyChain(ctx context.Context, dir, record string, dirs []string, full bool) (*Chain, error) {
 	c := &Chain{}
 	at := func(name string) string { return filepath.Join(dir, name) }
 	complete, err := os.ReadFile(at(CompleteFile))
@@ -177,7 +184,7 @@ func verifyChain(dir, record string, dirs []string, full bool) (*Chain, error) {
 	if full {
 		for _, rel := range attached {
 			sum, _ := AttachedSum(filepath.Base(rel))
-			digest, _, err := SHA256File(at(rel))
+			digest, _, err := SHA256FileContext(ctx, at(rel))
 			if err != nil {
 				return nil, broken(at(rel), "%v", err)
 			}
@@ -233,7 +240,7 @@ func verifyChain(dir, record string, dirs []string, full bool) (*Chain, error) {
 	for _, name := range names {
 		path := at(name)
 		if name == record || full {
-			digest, size, err := SHA256File(path)
+			digest, size, err := SHA256FileContext(ctx, path)
 			if err != nil {
 				return nil, broken(path, "%v", err)
 			}

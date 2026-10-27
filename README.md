@@ -1787,7 +1787,9 @@ With `delete-after-package` it deletes a title's original once a complete
 version of it is as old as the delay, the title is not held, and every step
 that reads the original is over: claimed (the step `retire` runs), the
 original checked against its size and quick hash, the version verified (in
-full, unless the migration's stage did that within `library.verify.maxAge`;
+full, unless a full verification — the migration's stage, the fill run of
+its checksums or the verifier — is within `library.verify.maxAge`, when its
+chain alone is checked;
 an [attached subtitle](#attached-subtitles) in its `subs/` is no file of the
 package the chain covers, and in full its bytes are held to its name),
 its `original-deleted` event recorded with what the package does not carry
@@ -1828,14 +1830,21 @@ file's hash against its checksums — and notes it as the fill run does,
 verified in full at the moment its verification began, only while the
 version is what it read (complete, in that folder, of the package its
 `package.json` names, and noted by no one meanwhile). It reads the library
-and writes nothing in it. A version whose chain does not hold, whose
-checksums are pending, whose folder lies outside the library or whose
-`package.json` is another package's, and one whose row changed while it was
-read, is left as it is, said in the log, and tried again six hours later. A
-list of originals to retire takes a version verified once at least, so it
-takes a title processed again once the verifier has verified its new
-version; the retire job verifies a version again before it retires an
-original either way.
+and writes nothing in it, all of it on one connection, the one that holds
+its lock, and a shutdown stops it at the file it is at, nothing noted. A
+version whose chain does not hold, whose checksums are pending, whose folder
+lies outside the library or whose `package.json` is another package's, one
+whose folder or package the catalog changed while it was read, and one whose
+note could not be written, is left as it is, said in the log, and tried
+again six hours later, twice as long each time after, a week at most (the
+waits are the process's: a restart tries each again); one that went, or
+that another verified, while it was read waits for no one. A value of
+`library.verify.new` it cannot read is `on`, said in the log. A list of
+originals to retire takes a version verified once at least, so it takes a
+title processed again once the verifier has verified its new version. The
+retire job checks the version again before it retires an original: its
+chain alone within `library.verify.maxAge` of a full verification, every
+file's hash after.
 
 Once a title's original is retired, nothing reads it any more: reencodeItem
 says so, naming the event (a better version is a new arrival:

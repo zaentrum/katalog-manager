@@ -3,6 +3,7 @@ package library
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -351,17 +352,36 @@ func SHA256(b []byte) string {
 
 // SHA256File is the hex sha256 of the file at path, and its size.
 func SHA256File(path string) (string, int64, error) {
+	return SHA256FileContext(context.Background(), path)
+}
+
+// SHA256FileContext is SHA256File, given up once ctx ends: its error is
+// then ctx's.
+func SHA256FileContext(ctx context.Context, path string) (string, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", 0, err
 	}
 	defer f.Close()
 	h := sha256.New()
-	n, err := io.Copy(h, bufio.NewReaderSize(f, 1<<20))
+	n, err := io.Copy(h, ctxReader{ctx, bufio.NewReaderSize(f, 1<<20)})
 	if err != nil {
 		return "", 0, err
 	}
 	return hex.EncodeToString(h.Sum(nil)), n, nil
+}
+
+// ctxReader reads r until ctx ends.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
 }
 
 // MkdirAll makes dir and its parents, as the library's writers make folders.

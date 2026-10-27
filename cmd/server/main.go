@@ -234,7 +234,11 @@ func run() error {
 	log.Println("shutting down…")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	err = srv.Shutdown(shutdownCtx)
+	// The background workers stop before the service closes and the pool
+	// with it: closing the pool waits for every connection they hold.
+	bgCancel()
+	return err
 }
 
 // service is katalog-manager as run wires it: the handler it serves, the
