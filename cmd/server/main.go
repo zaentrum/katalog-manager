@@ -173,6 +173,11 @@ func run() error {
 	if err := st.EnsureCompliance(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/051_library_compliance.sql is missing and could not be applied: %v; the workers' rules are not kept and the library's compliance is not checked until it is", err)
 	}
+	// An admin's lists of titles whose originals are retired, and how each
+	// title fared (migration 052).
+	if err := st.EnsureRetireRuns(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/052_retire_runs.sql is missing and could not be applied: %v; no list of originals is retired until it is", err)
+	}
 	// An item the scanner made before it wrote its own name into the row has
 	// it in its record alone: the row follows the record (bounded, in the
 	// background).

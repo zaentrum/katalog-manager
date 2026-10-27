@@ -12,8 +12,8 @@
 // 042, store.EnsureReencodeQueue, store.EnsureTakeIn,
 // store.EnsureMultiEpisodeFiles, store.EnsureSeriesScanTitle,
 // store.EnsureIdentityIndexes, store.EnsureAttachedSubtitles,
-// store.EnsureLibraryWriteThrough, which applies 050 after 041, and
-// store.EnsureCompliance).
+// store.EnsureLibraryWriteThrough, which applies 050 after 041,
+// store.EnsureCompliance and store.EnsureRetireRuns).
 // It applies 035, which drops what is left of a retired integration, at every
 // start when any of that is there (store.DropRetiredJobTables), and 049, the
 // catalog search, in the background after startup, one statement at a time:
@@ -164,3 +164,9 @@ var LibraryWriteThrough string
 //
 //go:embed 051_library_compliance.sql
 var Compliance string
+
+// RetireRuns is 052_retire_runs.sql: an admin's lists of titles whose
+// originals are retired (retireOriginals), and how each title fared.
+//
+//go:embed 052_retire_runs.sql
+var RetireRuns string
