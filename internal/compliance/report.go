@@ -510,29 +510,9 @@ func (s *Service) Changed(expected, now int32) graph.ComplianceQueued {
 }
 
 // titlesOf names each title of ids the catalog holds as a list of them does
-// (titleText); one it doesn't hold has no name.
+// (library.TitlesOf); one it doesn't hold has no name.
 func (s *Service) titlesOf(ctx context.Context, ids []string) (map[string]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT x.id, lower(i.type), i.title, i.year, i.seasonnumber, i.episodenumber,
-			CASE WHEN lower(p.type) = 'series' THEN p.title WHEN lower(g.type) = 'series' THEN g.title END
-		FROM unnest($1::text[]) AS x(id)
-		JOIN com_nalet_katalog_items i ON i.id = x.id
-		LEFT JOIN com_nalet_katalog_items p ON p.id = i.parent_id
-		LEFT JOIN com_nalet_katalog_items g ON g.id = p.parent_id`, ids)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]string{}
-	for rows.Next() {
-		var id string
-		var typ, title, series *string
-		var year, season, episode *int32
-		if err := rows.Scan(&id, &typ, &title, &year, &season, &episode, &series); err != nil {
-			return nil, err
-		}
-		out[id] = titleText(id, typ, title, series, year, season, episode)
-	}
-	return out, rows.Err()
+	return library.TitlesOf(ctx, s.pool, ids)
 }
 
 // sized is a title a report matches, with its sizes: its original's, its

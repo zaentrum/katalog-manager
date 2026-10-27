@@ -12,6 +12,7 @@ import (
 	"golang.org/x/text/language/display"
 
 	"github.com/zaentrum/katalog-manager/internal/graph"
+	"github.com/zaentrum/katalog-manager/internal/library"
 )
 
 // The words the check writes for the person who runs the server: what it
@@ -846,50 +847,7 @@ func requestMessage(queuedText, alreadyText, notQueuedText *string) string {
 	return strings.Join(parts, " ")
 }
 
-// titleText names a title as a list of them does: a movie or a series by its
-// title and year ("A Film (1991)"), an episode by its series, its number and
-// its title ("A Show · S01E02 · Its Title"), a season by its series and its
-// number ("A Show · S01"). A part the catalog doesn't hold is left out, and a
-// title of which it holds nothing is its id.
+// titleText names a title as a list of them does (library.TitleText).
 func titleText(id string, typ, title, series *string, year, season, episode *int32) string {
-	str := func(s *string) string {
-		if s == nil {
-			return ""
-		}
-		return strings.TrimSpace(*s)
-	}
-	name := str(title)
-	var parts []string
-	add := func(p string) {
-		if p != "" {
-			parts = append(parts, p)
-		}
-	}
-	switch str(typ) {
-	case "episode":
-		add(str(series))
-		switch {
-		case season != nil && episode != nil:
-			add(fmt.Sprintf("S%02dE%02d", *season, *episode))
-		case episode != nil:
-			add(fmt.Sprintf("E%02d", *episode))
-		}
-		add(name)
-	case "season":
-		add(str(series))
-		if season != nil {
-			add(fmt.Sprintf("S%02d", *season))
-		} else {
-			add(name)
-		}
-	default:
-		if name != "" && year != nil && *year > 0 {
-			name += " (" + strconv.Itoa(int(*year)) + ")"
-		}
-		add(name)
-	}
-	if len(parts) == 0 {
-		return id
-	}
-	return strings.Join(parts, " · ")
+	return library.TitleText(id, typ, title, series, year, season, episode)
 }
