@@ -883,6 +883,60 @@ func TestAListOutlastsAnError(t *testing.T) {
 	}
 }
 
+// An error of the catalog's in the retire path, once the run claimed the
+// original, is one as any: the title is tried again a while later, where its
+// retirement stopped, and retired once the error is over, or failed after the
+// third time, its claim left to the retire job, which calls it off while
+// library.originals keeps originals.
+func TestAListOutlastsAnErrorInTheRetirePath(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		errors int // the calls of the compliance check after the first that fail
+		want   string
+	}{
+		{"once", 1, "retired: "},
+		{"every time", 99, "failed: an error stopped it 3 times, the last: the compliance check can’t be reached"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newListFixture(t)
+			dry, _ := f.dry(t, rtFilm)
+			calls := 0
+			f.l.gate = gateFunc(func(ctx context.Context, ids []string) (map[string]string, error) {
+				if calls++; calls > 1 && calls <= 1+c.errors {
+					return nil, errors.New("the compliance check can’t be reached")
+				}
+				return f.gate.Passed(ctx, ids)
+			})
+			f.slept = nil
+			if _, items := f.retire(t, dry.ID); said(items[0]) != c.want {
+				t.Fatalf("%s\nwant %s", said(items[0]), c.want)
+			}
+			// the waits after an error (another test's pass may hold the retire
+			// job's lock a while too)
+			var waits []time.Duration
+			for _, d := range f.slept {
+				if d != f.l.lockWait {
+					waits = append(waits, d)
+				}
+			}
+			if c.errors == 1 {
+				if s := f.source(t, rtSource); s.State != SourceDeleted || len(waits) != 1 || f.events(t) != 1 {
+					t.Errorf("the source: %s; waits %v; events %d", s.State, waits, f.events(t))
+				}
+				return
+			}
+			if s := f.source(t, rtSource); s.State != SourceRetiring || s.RetireEventID == nil || f.events(t) != 0 ||
+				len(waits) != 2 || waits[1] != 2*waits[0] {
+				t.Errorf("the source: %s, its claim %v; events %d; waits %v", s.State, s.RetireEventID, f.events(t), waits)
+			}
+			if rep := f.pass(t); rep.Originals != 0 || rep.Failed != 0 {
+				t.Errorf("the retire job's pass: %+v", rep)
+			}
+			f.kept(t)
+		})
+	}
+}
+
 // gateFunc is a compliance check of a function.
 type gateFunc func(ctx context.Context, ids []string) (map[string]string, error)
 

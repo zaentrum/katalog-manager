@@ -823,17 +823,22 @@ func (l *RetireList) title(ctx context.Context, conn *pgxpool.Conn, run *running
 }
 
 // retire retires the original s through the retire job's own path, on the
-// list's word (auth): its result, and why when it is not retired. A failure
-// once the event is recorded says so: the retire job finishes it.
+// list's word (auth): its result, and why when it is not retired; an error of
+// the catalog's, which Work tries again a while later (the title resumes
+// where the retirement stopped). A failure once the event is recorded says
+// so: the retire job finishes it.
 func (l *RetireList) retire(ctx context.Context, auth Authority, set Settings, s *Source) (outcome, error) {
 	src, size := s.ID, s.SizeBytes
 	rt := &retirement{src: s, auth: auth}
 	deleted, err := l.r.retireOf(ctx, PathsOf(l.cfg), set, l.now().UTC(), rt)
+	var refused *retireFailed
 	switch {
 	case errors.Is(err, errHeld):
 		return outcome{result: ListSkipped, reason: SurroundHeld, source: &src}, nil
 	case err != nil && ctx.Err() != nil:
 		return outcome{}, nil
+	case err != nil && !errors.As(err, &refused):
+		return outcome{}, err
 	case err != nil:
 		why := rt.why
 		if why == "" {

@@ -1279,8 +1279,15 @@ func (r *Retirer) fail(ctx context.Context, rt *retirement, msg string) error {
 		log.Printf("library: the retire step of item %s could not be failed: %v", s.ItemID, err)
 	}
 	r.say("source:"+s.ID, fmt.Sprintf("original %s of item %s is not deleted: %s", s.ID, s.ItemID, msg))
-	return fmt.Errorf("original %s of item %s: %s", s.ID, s.ItemID, msg)
+	return &retireFailed{fmt.Sprintf("original %s of item %s: %s", s.ID, s.ItemID, msg)}
 }
+
+// retireFailed is a retirement the retire path refused, saying why (fail):
+// what the library and its records say, no error of the catalog's, which
+// whoever retires the original may try again.
+type retireFailed struct{ msg string }
+
+func (e *retireFailed) Error() string { return e.msg }
 
 // clip is s cut to n characters at most.
 func clip(s string, n int) string {
