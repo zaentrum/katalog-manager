@@ -324,7 +324,7 @@ func (s *Store) CreditsByPerson(ctx context.Context, personID string) ([]*model.
 		      FROM com_nalet_katalog_itempeople ip WHERE ip.person_id = $1) c
 		JOIN com_nalet_katalog_items i ON i.id = c.item_id
 		LEFT JOIN com_nalet_katalog_items pa ON pa.id = i.parent_id
-		ORDER BY COALESCE(i.year, pa.year) DESC NULLS LAST, COALESCE(pa.title, i.title),
+		ORDER BY COALESCE(i.year, pa.year) DESC NULLS LAST, COALESCE(pa.title, i.title), i.parent_id IS NOT NULL,
 			i.seasonnumber NULLS FIRST, i.episodenumber NULLS FIRST, i.title, i.id,
 			array_position($2::text[], c.role::text) NULLS LAST, c.role, c.id`, personID, model.CreditRoles)
 	if err != nil {

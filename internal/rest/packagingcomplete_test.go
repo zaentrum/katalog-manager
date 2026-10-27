@@ -16,8 +16,10 @@ import (
 // forced", by path.
 func subtitleRows(t *testing.T, st *store.Store, item string) string {
 	t.Helper()
+	// by path byte by byte, whatever the catalog's collation (en_US sorts
+	// ".work/…" after "movies/…", C before)
 	rows, err := st.Pool().Query(context.Background(), `SELECT id, path, COALESCE(lang, '-'), COALESCE(isdefault, false), isforced
-		FROM com_nalet_katalog_subtitleassets WHERE item_id = $1 ORDER BY path`, item)
+		FROM com_nalet_katalog_subtitleassets WHERE item_id = $1 ORDER BY path COLLATE "C"`, item)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -131,15 +132,19 @@ func TestTheReportIsACSV(t *testing.T) {
 		query, name string
 		first       []string // the titles of its first rows
 		rows        int
+		// a title whose place is the catalog's collation's, not the
+		// report's: by title, "=Cut Above" sorts first in C and under C in
+		// en_US, which ignores the sign
+		unplaced string
 	}{
-		{"kind=EPISODE", "rules-episodes-2026-10-26T1430Z.csv", []string{"e1"}, 1},
-		{"kind=movie&rules=NOT_PACKAGED,PACKAGING_FAILED", "rules-movies-2026-10-26T1343Z.csv", []string{"m2"}, 1},
+		{"kind=EPISODE", "rules-episodes-2026-10-26T1430Z.csv", []string{"e1"}, 1, ""},
+		{"kind=movie&rules=NOT_PACKAGED,PACKAGING_FAILED", "rules-movies-2026-10-26T1343Z.csv", []string{"m2"}, 1, ""},
 		{"rules=NOT_PACKAGED&rules=packaging_failed&descending=false", "rules-all-2026-10-26T1343Z.csv",
-			[]string{"e1", "m2"}, 2},
-		{"search=dinner", "rules-all-2026-10-26T1343Z.csv", []string{"m1"}, 1},
+			[]string{"e1", "m2"}, 2, ""},
+		{"search=dinner", "rules-all-2026-10-26T1343Z.csv", []string{"m1"}, 1, ""},
 		{"search=filler%201&sort=TITLE&descending=false", "rules-all-2026-10-26T1500Z.csv",
-			[]string{"f0001", "f0010", "f0100", "f1000", "f1001", "f1002"}, 312},
-		{"sort=title&search=A", "rules-all-2026-10-26T1343Z.csv", []string{"m1", "e1", "m2", "m3"}, 4},
+			[]string{"f0001", "f0010", "f0100", "f1000", "f1001", "f1002"}, 312, ""},
+		{"sort=title&search=A", "rules-all-2026-10-26T1343Z.csv", []string{"m1", "e1", "m2"}, 4, "m3"},
 	} {
 		w := do(h, http.MethodGet, "/api/manage/compliance.csv?"+tc.query, "", admin)
 		if w.Code != http.StatusOK || w.Header().Get("Content-Disposition") != "attachment; filename="+tc.name {
@@ -147,8 +152,13 @@ func TestTheReportIsACSV(t *testing.T) {
 			continue
 		}
 		got := ids("?"+tc.query, w.Body.String())
-		if len(got) != tc.rows || strings.Join(got[:min(len(got), len(tc.first))], " ") != strings.Join(tc.first, " ") {
-			t.Errorf("?%s: %d rows, %v first; want %d, %v", tc.query, len(got), got[:min(len(got), len(tc.first))],
+		rows, placed := len(got), tc.rows
+		if i := slices.Index(got, tc.unplaced); tc.unplaced != "" && i >= 0 {
+			got, placed = slices.Delete(got, i, i+1), placed-1
+		}
+		if rows != tc.rows || len(got) != placed ||
+			strings.Join(got[:min(len(got), len(tc.first))], " ") != strings.Join(tc.first, " ") {
+			t.Errorf("?%s: %d rows, %v first; want %d, %v", tc.query, rows, got[:min(len(got), len(tc.first))],
 				tc.rows, tc.first)
 		}
 	}
