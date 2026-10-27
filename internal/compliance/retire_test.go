@@ -246,6 +246,84 @@ func TestTheChecksWordOfATitleItCouldNotHoldToACap(t *testing.T) {
 		AND uncheckedrules = ARRAY['OVER_BITRATE_CAP']::varchar[] AND rules = '{}'`, p.id()); n != 1 {
 		t.Error("its row says no rule it could not be held against")
 	}
+
+	// its package packaged again, its video's bit rate measured: checked
+	// again, its row holds no rule it could not hold it against
+	librarytest.WriteVersion(t, library.VersionDir(itemDir, p.version()), librarytest.Version{
+		VersionID: p.version(), PackageID: uuid(3000 + p.n), SourceIDs: []string{p.source()}, CreatedAt: "2026-10-01T08:00:00Z",
+		Package: map[string]any{"sizeBytes": 2e9, "durationMs": 7200000,
+			"renditions": map[string]any{"video": []any{map[string]any{"id": "v0", "codec": "hvc1.2.4.L153.B0",
+				"width": 1920, "height": 1080, "bitrateBps": 2e6, "encoder": "hevc_nvenc"}},
+				"audio": []any{map[string]any{"channels": 2, "bitrateBps": 192000}}},
+			"essence": map[string]any{"surround": false, "maxAudioChannels": 2}},
+	})
+	s.Touch(ctx, p.id())
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_compliance WHERE item_id = $1
+		AND uncheckedrules = '{}' AND videobitrate IS NOT NULL`, p.id()); n != 1 {
+		t.Error("checked again with its bit rate measured, its row keeps the rule it could not be held against before")
+	}
+	if got, err := s.Passed(ctx, []string{p.id()}); err != nil || got[p.id()] != "" {
+		t.Errorf("a title of its bit rate measured, within its cap: %q, %v", got[p.id()], err)
+	}
+}
+
+// The installation's upgrade of 051: its table holds no uncheckedrules, and
+// rows the check of the version before wrote (compliance/8, which held no
+// title to the rules it could not hold it against). The startup check finds
+// the column missing and applies 051 again: the rows keep what they hold, the
+// column its default, and the check's word refuses every row the check of the
+// version before wrote, also one an instance of it writes after the upgrade,
+// until a pass of this version checks the titles again.
+func TestTheUpgradeOf051(t *testing.T) {
+	s, st, _ := library4(t)
+	ctx := context.Background()
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := s.state(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := rs.hashAt("compliance/8")
+	if before == rs.hash() {
+		t.Fatal("the check of the version before keeps its titles under the hash of this one")
+	}
+	storetest.Exec(t, st, `ALTER TABLE com_nalet_katalog_compliance DROP COLUMN uncheckedrules`)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_compliance SET ruleshash = $1`, before)
+	if ok, err := st.ComplianceReady(ctx); err != nil || ok {
+		t.Fatalf("051 in place without uncheckedrules: %v, %v", ok, err)
+	}
+	rows := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_compliance`)
+	if err := st.EnsureCompliance(ctx); err != nil {
+		t.Fatalf("051 applied again over the table of the version before: %v", err)
+	}
+	if ok, err := st.ComplianceReady(ctx); err != nil || !ok {
+		t.Fatalf("051 not in place after: %v, %v", ok, err)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_compliance WHERE uncheckedrules = '{}'
+		AND ruleshash = $1`, before); n != rows || rows == 0 {
+		t.Errorf("%d of %d rows kept with the column's default", n, rows)
+	}
+	// an instance of the version before writes a row of no rule after the
+	// upgrade
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_compliance SET rules = '{}', findings = '[]', staleat = NULL,
+		evaluatedat = now() WHERE item_id = $1`, uuid(2))
+	const other = "the compliance check checked it against other rules than the workers report now: it waits to be checked again"
+	if got, err := s.Passed(ctx, []string{uuid(2)}); err != nil || got[uuid(2)] != other {
+		t.Errorf("a row of the check of the version before: %q, %v", got[uuid(2)], err)
+	}
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Passed(ctx, []string{uuid(2)}); err != nil || got[uuid(2)] != "" {
+		t.Errorf("checked again by this version: %q, %v", got[uuid(2)], err)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_compliance WHERE ruleshash = $1`, before); n != 0 {
+		t.Errorf("%d rows of the check of the version before after a pass of this one", n)
+	}
 }
 
 // Without the transcoder's report, or without migration 051, no title is

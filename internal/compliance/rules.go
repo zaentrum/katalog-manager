@@ -318,8 +318,12 @@ const version = "compliance/9"
 // hash is the hash a title checked against s is kept under: both workers'
 // rules, the layout, whether failed steps are retried, and the check's
 // version.
-func (s rulesState) hash() string {
-	parts := []string{version, "legacy", "-", "-", "no retries"}
+func (s rulesState) hash() string { return s.hashAt(version) }
+
+// hashAt is the hash a title checked against s by the check of version v is
+// kept under.
+func (s rulesState) hashAt(v string) string {
+	parts := []string{v, "legacy", "-", "-", "no retries"}
 	if s.v2 {
 		parts[1] = "v2"
 	}
