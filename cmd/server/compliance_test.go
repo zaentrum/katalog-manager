@@ -557,7 +557,10 @@ var compliance7 = []string{"NOT_PACKAGED", "PACKAGING_FAILED", "OVER_BITRATE_CAP
 // the real compliance check: an admin's dry run of two titles answers as it
 // begins, runs in the background, and says of each why it would not be
 // retired (the remux breaks its caps; the episode's version was never
-// verified); a second list is refused while one runs; nothing is touched.
+// verified); a second list is refused while one runs, a run of titles named
+// always; a run of a dry run's titles is refused while library.retire.list
+// is dry-run, and with it on of a dry run that would retire none; an admin
+// stops the list that runs; nothing is touched.
 func TestAListOfOriginalsThroughTheService(t *testing.T) {
 	in := newInstanceWired(t, wiring{compliance: true})
 	st, ctx, admin := in.st, context.Background(), in.iss.Admin(t)
@@ -597,9 +600,22 @@ func TestAListOfOriginalsThroughTheService(t *testing.T) {
 	if r := started.RetireOriginals; r.State != "RUNNING" || !r.DryRun || r.Total != 2 || r.Pending != 2 || r.RequestedBy == "" {
 		t.Errorf("the run as it begins: %+v", r)
 	}
-	_, a = in.gql(t, "/api/manage/query", admin, `mutation { retireOriginals(items: ["`+remuxID+`"], dryRun: false) { id } }`)
-	if len(a.Errors) != 1 || a.Errors[0].Extensions["code"] != "RUNNING" {
-		t.Errorf("a second list while one runs: %v", a.Errors)
+	refused := func(doc string) string {
+		t.Helper()
+		_, a := in.gql(t, "/api/manage/query", admin, doc)
+		if len(a.Errors) != 1 {
+			t.Fatalf("%s: %s %v", doc, a.Data, a.Errors)
+		}
+		code, _ := a.Errors[0].Extensions["code"].(string)
+		return code + ": " + a.Errors[0].Message
+	}
+	if got := refused(`mutation { retireOriginals(items: ["` + remuxID + `"]) { id } }`); !strings.HasPrefix(got, "RUNNING: ") {
+		t.Errorf("a second list while one runs: %s", got)
+	}
+	named := `mutation { retireOriginals(items: ["` + remuxID + `"], dryRun: false) { id } }`
+	if got := refused(named); got != "DRY_RUN_ONLY: library.retire.list is dry-run: a list only says what it would retire; "+
+		"set it to on to retire the titles a dry run found it would" {
+		t.Errorf("a run of titles named while library.retire.list is dry-run: %s", got)
 	}
 	if err := in.list.Work(ctx); err != nil {
 		t.Fatal(err)
@@ -649,7 +665,57 @@ func TestAListOfOriginalsThroughTheService(t *testing.T) {
 		it[0].SourceID == nil || *it[0].SourceID != remuxSrc {
 		t.Errorf("the remux, verified: %+v", it)
 	}
+
+	// a run of the dry run's titles: library.retire.list dry-run (its
+	// default) lets none, and on, the dry run would retire none
+	from := `mutation { retireOriginals(fromRun: "` + run.RetireRun.ID + `", dryRun: false) { id } }`
+	if got := refused(from); got != "DRY_RUN_ONLY: library.retire.list is dry-run: a list only says what it would retire; "+
+		"set it to on to retire the titles a dry run found it would" {
+		t.Errorf("a run while library.retire.list is dry-run: %s", got)
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('set-list', 'library.retire.list', 'on')`)
+	if got := refused(from); got != "FROM_RUN: dry run "+run.RetireRun.ID+" found no title whose original it would retire" {
+		t.Errorf("a run of a dry run that would retire none: %s", got)
+	}
+	if got := refused(named); got != "NAMED_TITLES: a list of titles named is a dry run: retire the titles a dry run found "+
+		"it would, with fromRun (its id)" {
+		t.Errorf("a run of titles named: %s", got)
+	}
+	if got := refused(`mutation { retireOriginals(items: ["A Remux"]) { id } }`); got != `BAD_ID: an id of a title is a `+
+		`lower-case UUID, and these are not: "A Remux"` {
+		t.Errorf("a list of no id: %s", got)
+	}
+
+	// an admin stops the list that runs, after the title it is at
+	var stopped struct {
+		StopRetireRun *struct {
+			ID, State string
+			Error     *string
+			Pending   int
+		}
+	}
+	_, a = in.gql(t, "/api/manage/query", admin, `mutation { stopRetireRun { id state error pending } }`)
+	if len(a.Errors) > 0 || json.Unmarshal(a.Data, &stopped) != nil || stopped.StopRetireRun != nil {
+		t.Errorf("stopRetireRun with none running: %s %v", a.Data, a.Errors)
+	}
+	if _, a = in.gql(t, "/api/manage/query", admin, `mutation { retireOriginals(items: ["`+episodeID+`"]) { id } }`); len(a.Errors) > 0 {
+		t.Fatal(a.Errors)
+	}
+	_, a = in.gql(t, "/api/manage/query", admin, `mutation { stopRetireRun { id state error pending } }`)
+	if len(a.Errors) > 0 || json.Unmarshal(a.Data, &stopped) != nil || stopped.StopRetireRun == nil {
+		t.Fatalf("stopRetireRun: %s %v", a.Data, a.Errors)
+	}
+	if s := stopped.StopRetireRun; s.State != "STOPPED" || s.Error == nil ||
+		*s.Error != "stopped by "+started.RetireOriginals.RequestedBy+" (stopRetireRun)" || s.Pending != 1 {
+		t.Errorf("the run stopped: %+v", s)
+	}
+	if err := in.list.Work(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_retirerunitems WHERE result IS NULL`); n != 1 {
+		t.Errorf("%d titles to come of the run stopped, want 1: it worked on", n)
+	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemsources WHERE state = 'present'`); n != 2 {
-		t.Errorf("%d originals present after two dry runs, want 2", n)
+		t.Errorf("%d originals present after the dry runs, want 2", n)
 	}
 }

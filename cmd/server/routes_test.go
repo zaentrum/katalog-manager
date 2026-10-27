@@ -163,10 +163,21 @@ func (f *fakes) Changed(expected, now int32) graph.ComplianceQueued {
 	f.called(fmt.Sprintf("say the matching titles changed from %d to %d", expected, now))
 	return graph.ComplianceQueued{Message: "changed"}
 }
-func (f *fakes) Start(_ context.Context, items []string, dryRun bool, by string) (library.ListRun, error) {
-	f.called(fmt.Sprintf("retire the originals of %s, dry run %v", strings.Join(items, ","), dryRun))
-	return library.ListRun{ID: "r1", State: library.RunRunning, DryRun: dryRun, RequestedBy: by,
-		StartedAt: time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC), Total: len(items), Pending: len(items)}, nil
+func (f *fakes) Start(_ context.Context, req library.ListRequest) (library.ListRun, error) {
+	what := strings.Join(req.Items, ",")
+	var from *string
+	if req.FromRun != "" {
+		what, from = "the dry run "+req.FromRun, &req.FromRun
+	}
+	f.called(fmt.Sprintf("retire the originals of %s, dry run %v", what, req.DryRun))
+	return library.ListRun{ID: "r1", State: library.RunRunning, DryRun: req.DryRun, FromRun: from, RequestedBy: req.By,
+		StartedAt: time.Date(2026, 10, 27, 9, 0, 0, 0, time.UTC), Total: len(req.Items), Pending: len(req.Items)}, nil
+}
+func (f *fakes) Stop(_ context.Context, by string) (*library.ListRun, error) {
+	f.called("stop the retire run")
+	at, why := time.Date(2026, 10, 27, 9, 5, 0, 0, time.UTC), "stopped by "+by+" (stopRetireRun)"
+	return &library.ListRun{ID: "r1", State: library.RunStopped, RequestedBy: "an-admin", StartedAt: at.Add(-5 * time.Minute),
+		FinishedAt: &at, Error: &why, Total: 2, Retired: 1, Pending: 1}, nil
 }
 func (f *fakes) Latest(context.Context) (*library.ListRun, error) {
 	f.called("the retire run")
@@ -480,8 +491,11 @@ var operations = []struct{ doc, calls string }{
 		`") { queued alreadyQueued skipped message } }`,
 		`compliance matching episode NO_SURROUND ""; rework m1; say 1 queued, 1 already, 0 skipped, matching true`},
 	{`mutation { refreshCompliance(kind: MOVIE) }`, "refresh compliance movie"},
-	{`mutation { retireOriginals(items: ["m1", "m2"]) { id state dryRun requestedBy startedAt total pending } }`,
+	{`mutation { retireOriginals(items: ["m1", "m2"]) { id state dryRun fromRun requestedBy startedAt total pending } }`,
 		"retire the originals of m1,m2, dry run true"},
+	{`mutation { retireOriginals(fromRun: "r0", dryRun: false) { id state dryRun fromRun } }`,
+		"retire the originals of the dry run r0, dry run false"},
+	{`mutation { stopRetireRun { id state error finishedAt retired pending } }`, "stop the retire run"},
 	{`{ retireRun { id state dryRun finishedAt wouldRetire bytes items(first: 50, result: WOULD_RETIRE) { position itemId
 		sourceId result reason at } } }`, `the retire run; the titles of retire run r1: 50 after 0, "would-retire"`},
 	{`mutation { replaceSource(itemId: "m1", path: "/media/a-film-1080p.mkv", deleteOldFile: true) { itemId oldPath path
@@ -532,6 +546,7 @@ func TestOperationsCallEveryRootField(t *testing.T) {
 	}
 	sort.Strings(fields)
 	sort.Strings(called)
+	called = slices.Compact(called) // a field the operations call more than one way
 	if !slices.Equal(fields, called) {
 		t.Errorf("the root fields:\n %v\nthe operations call:\n %v", fields, called)
 	}

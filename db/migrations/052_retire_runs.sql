@@ -2,20 +2,26 @@
 --
 -- library.originals keeps every original unless it is delete-after-package.
 -- An admin who wants exactly the originals of some titles gone, and no
--- policy, names them in a list (GraphQL retireOriginals): a run checks each
--- title, and retires the original of each that holds every condition through
--- the retire job's own path (its event, the trash and its grace, the source's
--- row, what the package lacks of it), one at a time; a dry run, the default,
--- only says what it would retire. One run runs at a time; a run a restart
--- interrupted goes on where it stopped. A run and its titles are kept once it
--- is done, a record of what was retired, on whose word.
+-- policy, names them in a list (GraphQL retireOriginals): a dry run checks
+-- each title and says whether it would retire its original; a run retires the
+-- originals of the titles a dry run found it would (fromrun), each checked
+-- again, through the retire job's own path (its event, the trash and its
+-- grace, the source's row, what the package lacks of it), one at a time. One
+-- run runs at a time; a run a restart interrupted goes on where it stopped,
+-- and an admin stops one (stopRetireRun, library.retire.list off). A run and
+-- its titles are kept once it is done, a record of what was retired, on whose
+-- word.
 --
 -- com_nalet_katalog_retireruns, a run a row:
---   state        running, done, or failed (it could not go on; error says why)
+--   state        running, done, stopped (an admin stopped it, or the setting
+--                library.retire.list does not let it go on), or failed (it
+--                could not go on); error says why of the last two
 --   dryrun       true: nothing is retired, each title says whether it would be
+--   fromrun      the dry run whose titles a run retires; null of a dry run of
+--                titles named
 --   requestedby  who asked for it (the admin's subject)
 --   startedat, finishedat
---   error        why a failed run stopped, or null
+--   error        why a run stopped or failed, or null
 -- com_nalet_katalog_retirerunitems, a title of a run's list a row, in the
 --   list's order (position, from 1):
 --   item_id      the title as listed (no foreign key: a title deleted since
@@ -33,8 +39,9 @@
 -- identifiers, like every com_nalet_katalog_* table.
 CREATE TABLE IF NOT EXISTS com_nalet_katalog_retireruns (
   id VARCHAR(36) PRIMARY KEY,
-  state VARCHAR(8) NOT NULL DEFAULT 'running' CHECK (state IN ('running', 'done', 'failed')),
+  state VARCHAR(8) NOT NULL DEFAULT 'running' CHECK (state IN ('running', 'done', 'stopped', 'failed')),
   dryrun BOOLEAN NOT NULL,
+  fromrun VARCHAR(36) REFERENCES com_nalet_katalog_retireruns (id),
   requestedby VARCHAR(255) NOT NULL,
   startedat TIMESTAMPTZ NOT NULL DEFAULT now(),
   finishedat TIMESTAMPTZ,

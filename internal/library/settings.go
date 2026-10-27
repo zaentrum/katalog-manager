@@ -50,6 +50,11 @@ const (
 	// SettingReencodeWindow is when the queue is sent, "HH:MM-HH:MM" in the
 	// service's local time ("23:00-07:00" crosses midnight); empty, any time.
 	SettingReencodeWindow = "library.reencode.window"
+	// SettingRetireList is what an admin's list of originals to retire may
+	// do (retireOriginals): off (no list runs, and one that runs stops),
+	// dry-run (the default: a list says what it would retire, and retires
+	// none) or on (a run retires the titles a dry run found it would).
+	SettingRetireList = "library.retire.list"
 )
 
 // The values of the settings.
@@ -60,6 +65,9 @@ const (
 	OriginalsDelete  = "delete-after-package"
 	VerifyFull       = "full"
 	VerifyChain      = "chain"
+	RetireListOff    = "off"
+	RetireListDryRun = "dry-run"
+	RetireListOn     = "on"
 	defaultRetireNum = 30
 	defaultReencode  = 4
 )
@@ -79,6 +87,9 @@ type Settings struct {
 	ReencodeRate     int
 	ReencodeInflight int
 	ReencodeWindow   string
+	// RetireList is what an admin's list of originals to retire may do:
+	// RetireListOff, RetireListDryRun or RetireListOn.
+	RetireList string
 	// Problems says of each setting that could not be read what it held and
 	// what is used instead.
 	Problems []string
@@ -89,7 +100,7 @@ func Defaults() Settings {
 	return Settings{Layout: LayoutLegacy, Originals: OriginalsKeep, RetireDelay: 10 * time.Minute,
 		RetireRate: defaultRetireNum, Verify: VerifyFull, VerifyMaxAge: 30 * 24 * time.Hour,
 		SupersededGrace: 24 * time.Hour, TrashGrace: 24 * time.Hour,
-		ReencodeRate: defaultReencode, ReencodeInflight: defaultReencode}
+		ReencodeRate: defaultReencode, ReencodeInflight: defaultReencode, RetireList: RetireListDryRun}
 }
 
 // V2 reports whether the environment runs the v2 layout.
@@ -173,6 +184,12 @@ func (s *Settings) set(key, value string) {
 			s.ReencodeInflight = n
 		} else {
 			bad(fmt.Sprintf("a number of titles, 1 or more; it is %d", defaultReencode))
+		}
+	case SettingRetireList:
+		if lower == RetireListOff || lower == RetireListDryRun || lower == RetireListOn {
+			s.RetireList = lower
+		} else {
+			bad("off, dry-run or on; a list only says what it would retire")
 		}
 	case SettingReencodeWindow:
 		// kept as written: the sweep sends nothing of the queue in a window

@@ -15,9 +15,12 @@ import (
 // Retirement retires the originals of an admin's list of titles, in the
 // background (implemented by library.RetireList).
 type Retirement interface {
-	// Start runs a list of the titles items, a dry run or not, on the word
-	// of by; *library.ListRefused when it is not run.
-	Start(ctx context.Context, items []string, dryRun bool, by string) (library.ListRun, error)
+	// Start runs a list as req asks; *library.ListRefused when it is not
+	// run.
+	Start(ctx context.Context, req library.ListRequest) (library.ListRun, error)
+	// Stop stops the run that runs once the title it is at has its result,
+	// on the word of by; nil when none runs.
+	Stop(ctx context.Context, by string) (*library.ListRun, error)
 	// Latest is the run begun last; nil when none ever ran.
 	Latest(ctx context.Context) (*library.ListRun, error)
 	// Items are a page of the titles of the run id, of result alone when it
@@ -27,14 +30,18 @@ type Retirement interface {
 
 // The refusals of a list, by their code, as the HTTP status they are like.
 var listRefusals = map[string]int{"UNAVAILABLE": http.StatusServiceUnavailable, "LEGACY": http.StatusConflict,
-	"EMPTY": http.StatusBadRequest, "TOO_MANY": http.StatusBadRequest, "RUNNING": http.StatusConflict}
+	"OFF": http.StatusConflict, "DRY_RUN_ONLY": http.StatusConflict, "NAMED_TITLES": http.StatusBadRequest,
+	"BOTH": http.StatusBadRequest, "EMPTY": http.StatusBadRequest, "BAD_ID": http.StatusBadRequest,
+	"TOO_MANY": http.StatusBadRequest, "FROM_RUN": http.StatusConflict, "RUNNING": http.StatusConflict}
 
-// RetireOriginals retires the originals of the titles items names, a dry
-// run unless dryRun is false, in the background, on the word of the admin
-// who asks.
+// RetireOriginals runs a list in the background, on the word of the admin
+// who asks: a dry run of the titles items names, or a run of the titles the
+// dry run fromRun found it would retire, retired unless dryRun is true (the
+// default).
 func (r *Resolver) RetireOriginals(ctx context.Context, args struct {
-	Items  []graphql.ID
-	DryRun bool
+	Items   *[]graphql.ID
+	FromRun *graphql.ID
+	DryRun  bool
 }) (*retireRunResolver, error) {
 	if err := r.allow(ctx, "Mutation.retireOriginals"); err != nil {
 		return nil, err
@@ -42,11 +49,16 @@ func (r *Resolver) RetireOriginals(ctx context.Context, args struct {
 	if r.svc.Retirement == nil {
 		return nil, errNotConfigured
 	}
-	items := make([]string, 0, len(args.Items))
-	for _, id := range args.Items {
-		items = append(items, strings.TrimSpace(string(id)))
+	req := library.ListRequest{DryRun: args.DryRun, By: auth.Actor(ctx, "katalog-manager")}
+	if args.Items != nil {
+		for _, id := range *args.Items {
+			req.Items = append(req.Items, strings.TrimSpace(string(id)))
+		}
 	}
-	run, err := r.svc.Retirement.Start(ctx, items, args.DryRun, auth.Actor(ctx, "katalog-manager"))
+	if args.FromRun != nil {
+		req.FromRun = strings.TrimSpace(string(*args.FromRun))
+	}
+	run, err := r.svc.Retirement.Start(ctx, req)
 	var refused *library.ListRefused
 	if errors.As(err, &refused) {
 		status, ok := listRefusals[refused.Code]
@@ -59,6 +71,23 @@ func (r *Resolver) RetireOriginals(ctx context.Context, args struct {
 		return nil, err
 	}
 	return &retireRunResolver{m: run, svc: r.svc.Retirement}, nil
+}
+
+// StopRetireRun stops the run of retireOriginals that runs once the title it
+// is at has its result, on the word of the admin who asks; nil when none
+// runs.
+func (r *Resolver) StopRetireRun(ctx context.Context) (*retireRunResolver, error) {
+	if err := r.allow(ctx, "Mutation.stopRetireRun"); err != nil {
+		return nil, err
+	}
+	if r.svc.Retirement == nil {
+		return nil, errNotConfigured
+	}
+	run, err := r.svc.Retirement.Stop(ctx, auth.Actor(ctx, "katalog-manager"))
+	if err != nil || run == nil {
+		return nil, err
+	}
+	return &retireRunResolver{m: *run, svc: r.svc.Retirement}, nil
 }
 
 // RetireRun is the run of retireOriginals begun last; nil when none ever ran.
@@ -102,6 +131,7 @@ type retireRunResolver struct {
 func (r *retireRunResolver) ID() graphql.ID          { return graphql.ID(r.m.ID) }
 func (r *retireRunResolver) State() string           { return strings.ToUpper(r.m.State) }
 func (r *retireRunResolver) DryRun() bool            { return r.m.DryRun }
+func (r *retireRunResolver) FromRun() *graphql.ID    { return gidp(r.m.FromRun) }
 func (r *retireRunResolver) RequestedBy() string     { return r.m.RequestedBy }
 func (r *retireRunResolver) StartedAt() graphql.Time { return graphql.Time{Time: r.m.StartedAt.UTC()} }
 func (r *retireRunResolver) FinishedAt() *graphql.Time {
