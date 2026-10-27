@@ -1780,6 +1780,15 @@ func TestARunRetiresOnlyWhatItsDryRunReviewed(t *testing.T) {
 				t.Errorf("the compliance check was asked %d times: nothing changed", calls)
 			}
 			f.kept(t)
+			// before the run, nothing is claimed; at the last, the claim is
+			// called off, saying why
+			step := "none"
+			if c.call > 0 {
+				step = "pending 0 error=- details=" + strings.TrimPrefix(said(items[0]), "skipped: ")
+			}
+			if got := f.step(t, rtFilm); got != step {
+				t.Errorf("the retire step: %s\nwant %s", got, step)
+			}
 			if c.name == "another original and version" {
 				if s := f.source(t, s2); s.State != SourcePresent || !exists(deref(s.ArrivalPath)) {
 					t.Errorf("the original the dry run never checked: %s", s.State)
