@@ -101,6 +101,12 @@ func TestARetirementIsCalledOffWhenItsTitleIsHeldOrAtWork(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "pending 0 error=- details=the title's pipeline reads its original again: the retirement waits for it"},
+		// called off before anything is read again: the original that
+		// changed since is no failure of a retirement called off
+		{"held, its original changed since", func(t *testing.T, f *retireFixture) {
+			storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_items SET retirehold = true WHERE id = $1`, rtFilm)
+			librarytest.Write(t, f.original, bytes.Repeat([]byte("Other Films! "), 40000))
+		}, "pending 0 error=- details=the title holds its originals (retirehold): the original is kept"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newRetireFixture(t)
