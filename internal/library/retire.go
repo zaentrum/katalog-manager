@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/zaentrum/katalog-manager/internal/config"
@@ -67,6 +68,21 @@ const RetiredBy = "katalog-manager (library.originals=delete-after-package)"
 
 // RetireReason is why, as the event says.
 const RetireReason = "originals are not kept: the package is the record"
+
+// Authority is on whose word an original is retired, as its event and its
+// row say: the policy's (library.originals=delete-after-package: the retire
+// job), or an admin's list (retireOriginals: RetireList). A retirement on the
+// policy's word is called off once the policy keeps originals again; one on
+// an admin's is not, as the admin asked for it whatever the policy. Either is
+// called off when the title is held, or its pipeline reads the original
+// again, before its event is recorded.
+type Authority struct {
+	By, Reason string
+	Policy     bool
+}
+
+// byPolicy is the retire job's authority.
+var byPolicy = Authority{By: RetiredBy, Reason: RetireReason, Policy: true}
 
 // retireLock is the advisory lock a pass holds.
 const retireLock = "library-retire"
@@ -301,15 +317,19 @@ func (r *Retirer) dueSources(ctx context.Context, set Settings, now time.Time, n
 	return out, rows.Err()
 }
 
-// retirement is what retiring an original takes: the source, its item's
-// folder, the version that holds it, and its sidecars.
+// retirement is what retiring an original takes: the source, on whose word
+// (auth), its item's folder, the version that holds it, and its sidecars; by
+// is who its recorded event says retires it, and why says why it was not
+// retired when that is no failure (called off, or not claimed after all).
 type retirement struct {
 	src      *Source
+	auth     Authority
 	itemDir  string
 	ver      *Version
 	record   Doc       // the source's record, source.json
 	sidecars []sidecar // its subtitle rows and the files the record lists beside it
 	accepted []string
+	by, why  string
 }
 
 // sidecar is a file beside an original that goes with it: a subtitle file
@@ -322,13 +342,23 @@ type sidecar struct {
 	webvtt bool   // a rendition of the package, which is WebVTT
 }
 
-// retire takes the source s through what is left of its retirement. It
-// answers whether the original is deleted now; an error when it is not and
-// should be: the step and the row say why.
+// retire takes the source s through what is left of its retirement on the
+// policy's word. It answers whether the original is deleted now; an error
+// when it is not and should be: the step and the row say why.
 func (r *Retirer) retire(ctx context.Context, p Paths, set Settings, now time.Time, s *Source) (bool, error) {
-	rt := &retirement{src: s}
+	return r.retireOf(ctx, p, set, now, &retirement{src: s, auth: byPolicy})
+}
+
+// retireOf takes the retirement rt through what is left of it, on its
+// authority's word: the one path the retire job and an admin's list both
+// retire an original by. It answers whether the original is deleted now (and
+// rt.why why not, when that is no failure); an error when it is not and
+// should be: the step and the row say why.
+func (r *Retirer) retireOf(ctx context.Context, p Paths, set Settings, now time.Time, rt *retirement) (bool, error) {
+	s := rt.src
 	pl, err := PlaceOf(ctx, r.pool, s.ItemID)
 	if errors.Is(err, ErrNoItem) {
+		rt.why = "the title was deleted meanwhile"
 		return false, nil // deleted with its item meanwhile
 	}
 	if err != nil {
@@ -345,7 +375,7 @@ func (r *Retirer) retire(ctx context.Context, p Paths, set Settings, now time.Ti
 		}
 	} else {
 		if s.State == SourceRetiring {
-			if why, err := r.calledOff(ctx, set, s.ItemID); err != nil {
+			if why, err := r.calledOff(ctx, set, s.ItemID, rt.auth); err != nil {
 				return false, err
 			} else if why != "" {
 				return false, r.callOff(ctx, rt, why)
@@ -406,6 +436,8 @@ func (r *Retirer) fromEvent(ctx context.Context, rt *retirement, dir string) err
 	}
 	acc, _ := ev.Get("accepted")
 	rt.accepted = stringsOf(acc)
+	by, _ := ev.Get("by")
+	rt.by, _ = by.(string)
 	rt.record, err = readSourceRecord(SourceDir(rt.itemDir, rt.src.ID))
 	if err != nil {
 		return err
@@ -415,10 +447,11 @@ func (r *Retirer) fromEvent(ctx context.Context, rt *retirement, dir string) err
 }
 
 // calledOff says why a retirement whose event is not recorded is called
-// off: the policy keeps originals again, the title is held, or its pipeline
-// reads the original again; "" when it goes on.
-func (r *Retirer) calledOff(ctx context.Context, set Settings, itemID string) (string, error) {
-	if !set.DeleteOriginals() {
+// off: the policy keeps originals again (of a retirement on its word, auth),
+// the title is held, or its pipeline reads the original again; "" when it
+// goes on.
+func (r *Retirer) calledOff(ctx context.Context, set Settings, itemID string, auth Authority) (string, error) {
+	if auth.Policy && !set.DeleteOriginals() {
 		return "library.originals is keep: the original is kept", nil
 	}
 	var held, busy bool
@@ -439,6 +472,7 @@ func (r *Retirer) calledOff(ctx context.Context, set Settings, itemID string) (s
 // present again, and the retire step waits.
 func (r *Retirer) callOff(ctx context.Context, rt *retirement, why string) error {
 	s := rt.src
+	rt.why = why
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -490,6 +524,9 @@ func (r *Retirer) prepare(ctx context.Context, p Paths, set Settings, now time.T
 	}
 	if rt.src.State == SourcePresent {
 		claimed, err := r.claim(ctx, p, now, rt)
+		if err == nil && !claimed {
+			rt.why, err = r.unclaimed(ctx, rt.src.ID, ver.ID)
+		}
 		if err != nil || !claimed {
 			rt.src = nil
 			return err
@@ -517,7 +554,7 @@ func (r *Retirer) prepare(ctx context.Context, p Paths, set Settings, now time.T
 	if err != nil {
 		return r.fail(ctx, rt, fmt.Sprintf("version %s does not verify (%s): %v; the original is kept", rt.ver.ID, level, err))
 	}
-	if why, err := r.calledOff(ctx, set, s.ItemID); err != nil {
+	if why, err := r.calledOff(ctx, set, s.ItemID, rt.auth); err != nil {
 		return err
 	} else if why != "" {
 		err := r.callOff(ctx, rt, why)
@@ -527,12 +564,43 @@ func (r *Retirer) prepare(ctx context.Context, p Paths, set Settings, now time.T
 	if rt.accepted, err = GateOf(rt.itemDir, rt.ver.ID, s.ID); err != nil {
 		return r.fail(ctx, rt, fmt.Sprintf("the deletion gate cannot be read: %v; the original is kept", err))
 	}
-	reason := RetireReason
-	if _, err := WriteEvent(rt.itemDir, Event{ID: *s.RetireEventID, At: *s.RetireEventAt, By: RetiredBy,
+	reason := rt.auth.Reason
+	if _, err := WriteEvent(rt.itemDir, Event{ID: *s.RetireEventID, At: *s.RetireEventAt, By: rt.auth.By,
 		Kind: EventOriginalDeleted, VersionID: rt.ver.ID, SourceID: s.ID, Reason: &reason, Accepted: rt.accepted}); err != nil {
 		return r.fail(ctx, rt, fmt.Sprintf("the event cannot be recorded: %v; the original is kept", err))
 	}
+	rt.by = rt.auth.By
 	return nil
+}
+
+// unclaimed says why the present source sourceID was not claimed for its
+// retirement from the version versionID: it is not present any more, the
+// title is held, the version is no complete one that holds it, or a step
+// reads the original again.
+func (r *Retirer) unclaimed(ctx context.Context, sourceID, versionID string) (string, error) {
+	var state string
+	var held, holds, busy bool
+	err := r.pool.QueryRow(ctx, `SELECT s.state, COALESCE(i.retirehold, false),
+			EXISTS (SELECT 1 FROM com_nalet_katalog_itemversions v
+				WHERE v.id = $2 AND v.item_id = s.item_id AND v.state = 'complete' AND s.id = ANY(v.sourceids)),
+			NOT `+originalStepsOver("s.item_id", "$3")+`
+		FROM com_nalet_katalog_itemsources s LEFT JOIN com_nalet_katalog_items i ON i.id = s.item_id
+		WHERE s.id = $1`, sourceID, versionID, processing.OriginalSteps).Scan(&state, &held, &holds, &busy)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "the original is no original of the title any more", nil
+	case err != nil:
+		return "", err
+	case state != SourcePresent:
+		return "the original is " + state + " meanwhile", nil
+	case held:
+		return "the title holds its originals (holdOriginal)", nil
+	case !holds:
+		return "its version " + versionID + " is no complete one of it any more", nil
+	case busy:
+		return "the title's pipeline reads its original again", nil
+	}
+	return "its retirement could not be claimed", nil
 }
 
 // surroundLost reports whether the package of the version vid lacks the
@@ -1097,9 +1165,13 @@ func (r *Retirer) deleted(ctx context.Context, now time.Time, rt *retirement) er
 	if err := LockItem(ctx, tx, s.ItemID); err != nil {
 		return err
 	}
+	by := rt.by
+	if by == "" {
+		by = rt.auth.By
+	}
 	tag, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET state = 'deleted', deletedat = $2, deletedby = $3,
 			arrivalpath = NULL, error = NULL, lost = $4, modifiedat = now()
-		WHERE id = $1 AND state = 'retiring'`, s.ID, now, RetiredBy, lost)
+		WHERE id = $1 AND state = 'retiring'`, s.ID, now, clip(by, 255), lost)
 	if err != nil {
 		return err
 	}
