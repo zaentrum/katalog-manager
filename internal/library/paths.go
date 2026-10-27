@@ -168,6 +168,14 @@ type Unplaced struct{ Reason string }
 
 func (e *Unplaced) Error() string { return e.Reason }
 
+// notPlaced reports whether err is PlaceOf's word that an item has no folder
+// in the tree (Unplaced, ErrNoItem), not an error of the catalog's (a context
+// that ended among them).
+func notPlaced(err error) bool {
+	var u *Unplaced
+	return errors.As(err, &u) || errors.Is(err, ErrNoItem)
+}
+
 // Place is what puts an item in the tree: its id and type, and an episode's
 // series.
 type Place struct {

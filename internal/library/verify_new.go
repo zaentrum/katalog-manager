@@ -188,8 +188,13 @@ func (v *Verifier) next(ctx context.Context, q Querier) (*waiting, error) {
 	now := v.now()
 	skip := make([]string, 0, len(v.left)) // never nil: NOT (id = ANY(NULL)) would match no row
 	for id, l := range v.left {
-		if now.Sub(l.at) < backoff(l.times) {
+		switch since := now.Sub(l.at); {
+		case since < backoff(l.times):
 			skip = append(skip, id)
+		case since > backoff(l.times)+VerifyNewBackoffMax:
+			// not read again since its wait was over: the catalog holds it
+			// unverified no more
+			delete(v.left, id)
 		}
 	}
 	var w waiting
@@ -277,6 +282,7 @@ func (v *Verifier) verify(ctx context.Context, q Querier, w waiting, rep *Verify
 		log.Printf("library: the verifier did not note version %s of %s: %s", w.id, w.itemID, what)
 		return nil
 	case err != nil:
+		leave("its row could not be read again once its note was not written: " + err.Error())
 		return err
 	}
 	leave("the catalog changed its folder or its package while it was read")

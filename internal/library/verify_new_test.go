@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/zaentrum/katalog-manager/internal/library/librarytest"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
@@ -406,6 +408,59 @@ func TestTheVerifierFollowsItsSettings(t *testing.T) {
 	}
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_unlock(`+verifyLock+`)`); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The verifier needs one connection, the one that holds its lock: on a pool
+// of one it verifies, and is no other worker's wait.
+func TestTheVerifierWorksOnOneConnection(t *testing.T) {
+	f := newRetireFixture(t)
+	cfg := f.st.Pool().Config().Copy()
+	cfg.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	now := verifyClock
+	v := NewVerifier(pool, f.cfg)
+	v.now = func() time.Time { return now }
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	done := make(chan VerifyReport, 1)
+	go func() {
+		rep, _ := v.Pass(ctx)
+		done <- rep
+	}()
+	select {
+	case rep := <-done:
+		if rep.Verified != 1 {
+			t.Errorf("the pass on a pool of one: %+v", rep)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("the verifier waits for a second connection")
+	}
+}
+
+// The verifier's lock is its schema's: one another installation holds, of
+// another schema or of no schema, is none of its.
+func TestTheVerifierIsNotHeldByAnotherSchemasLock(t *testing.T) {
+	ctx := context.Background()
+	f := newRetireFixture(t)
+	conn, err := f.st.Pool().Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	for _, key := range []string{`hashtext('library-verifier')`, `hashtext('library-verifier/another_schema')`} {
+		if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(`+key+`)`); err != nil {
+			t.Fatal(err)
+		}
+		defer func(key string) { _, _ = conn.Exec(ctx, `SELECT pg_advisory_unlock(`+key+`)`) }(key)
+	}
+	now := verifyClock
+	if rep := verifyPass(t, verifierOf(f, &now)); rep.Verified != 1 {
+		t.Errorf("while other schemas' verifiers verify: %+v", rep)
 	}
 }
 

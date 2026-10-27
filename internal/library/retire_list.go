@@ -1027,6 +1027,9 @@ func (l *RetireList) check(ctx context.Context, id string, rv *review, set Setti
 		return f, why, err
 	}
 	pl, err := PlaceOf(ctx, l.pool, id)
+	if err != nil && !notPlaced(err) {
+		return f, "", err
+	}
 	if err != nil {
 		return f, "the title has no folder in the library: " + err.Error(), nil
 	}
@@ -1087,6 +1090,9 @@ func (l *RetireList) recheck(ctx context.Context, s *Source, rv *review) (string
 		return why, err
 	}
 	pl, err := PlaceOf(ctx, l.pool, s.ItemID)
+	if err != nil && !notPlaced(err) {
+		return "", err
+	}
 	if err != nil {
 		return "the title has no folder in the library: " + err.Error(), nil
 	}

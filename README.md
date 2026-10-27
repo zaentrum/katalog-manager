@@ -1831,7 +1831,8 @@ verified in full at the moment its verification began, only while the
 version is what it read (complete, in that folder, of the package its
 `package.json` names, and noted by no one meanwhile). It reads the library
 and writes nothing in it, all of it on one connection, the one that holds
-its lock, and a shutdown stops it at the file it is at, nothing noted. A
+its lock, and a shutdown stops it at the file it is at, nothing noted (one
+that comes once every file is hashed lets it note the version). A
 version whose chain does not hold, whose checksums are pending, whose folder
 lies outside the library or whose `package.json` is another package's, one
 whose folder or package the catalog changed while it was read, and one whose

@@ -1259,8 +1259,13 @@ func nonNil(s []string) []string {
 // item's retire step, which fails. A claimed source whose event is not
 // recorded is present again, its original kept (an event folder begun is
 // deleted); one whose event is recorded stays retiring, and the next pass
-// goes on with it.
+// goes on with it. Once ctx ended (a shutdown) it says nothing, and answers
+// ctx's error: what failed may be the ending itself, and the source stays as
+// a stop leaves it, for the next pass to go on with.
 func (r *Retirer) fail(ctx context.Context, rt *retirement, msg string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s := rt.src
 	rt.why = msg
 	bg := context.WithoutCancel(ctx)
