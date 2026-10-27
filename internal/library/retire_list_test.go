@@ -616,3 +616,35 @@ func TestAListChecksTheTrashIsOnTheOriginalsFilesystem(t *testing.T) {
 	}
 	f.kept(t)
 }
+
+// A list retires an original only while the retire job runs no pass: it
+// waits for the job's lock, and retires once the pass is over.
+func TestAListWaitsForTheRetireJobsPass(t *testing.T) {
+	f := newListFixture(t)
+	ctx := context.Background()
+	conn, err := f.st.Pool().Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(`+retireLockKey+`)`); err != nil {
+		t.Fatal(err)
+	}
+	if rep := f.pass(t); rep != (Report{}) {
+		t.Fatalf("a pass while another holds its lock: %+v", rep)
+	}
+	waited := 0
+	f.l.sleep = func(ctx context.Context, d time.Duration) bool {
+		if d == f.l.lockWait {
+			if waited++; waited == 3 {
+				if _, err := conn.Exec(ctx, `SELECT pg_advisory_unlock(`+retireLockKey+`)`); err != nil {
+					t.Error(err)
+				}
+			}
+		}
+		return ctx.Err() == nil
+	}
+	if _, items := f.run(t, false, rtFilm); said(items[0]) != "retired: " || waited != 3 {
+		t.Errorf("the list once the pass is over: %s, waited %d times", said(items[0]), waited)
+	}
+}
