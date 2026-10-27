@@ -29,6 +29,8 @@ The surface is split deliberately:
   their last errors, how the service retries, and the re-encode queue),
   `pipelineRules` and `libraryCompliance` (the rules the workers report, and
   the titles that break them, see [Library compliance](#library-compliance)),
+  `retireRun` (the list of originals to retire begun last, see
+  [Retiring the originals of a list](#retiring-the-originals-of-a-list)),
   and the operator actions
   (`triggerScan`, `enrichOne`/`enrichPending`, `refreshPeople`, `packageItem`,
   `validateItem`, `retryStep`/`retryFailed` (see
@@ -36,7 +38,8 @@ The surface is split deliberately:
   (see [Encoding a title again](#encoding-a-title-again)),
   `clearReencodeQueue` (see [The re-encode queue](#the-re-encode-queue)),
   `queueRework`, `queueReworkMatching` and `refreshCompliance` (see
-  [Library compliance](#library-compliance)),
+  [Library compliance](#library-compliance)), `retireOriginals` (see
+  [Retiring the originals of a list](#retiring-the-originals-of-a-list)),
   `replaceSource` (see [Replacing a title's file](#replacing-a-titles-file)),
   `backfillSourceProbes`, `backfillSourceSizes`, `backfillRatings` and `setMinAgeOverride` (see
   [Ratings](#ratings); an item's `ageRating` says what it is rated),
@@ -346,6 +349,18 @@ the base schema in the order of their numbers, and each is idempotent:
   checked; see [Library compliance](#library-compliance)). A deleted item's
   row goes with it. Applied at startup when any of it is missing; without it
   no rules are kept and nothing is checked.
+- `052_retire_runs.sql` keeps an admin's lists of titles whose originals
+  are retired (`com_nalet_katalog_retireruns`: a run a row, its state, a dry
+  run or not, who asked, when it began and ended, why a failed one stopped)
+  and how each title of a list fared (`com_nalet_katalog_retirerunitems`, in
+  the list's order: its name when the run began, the original the run
+  retires of it, its result and why, its original's size, and that the run
+  began to retire it, which a run that resumes goes on from); one run runs
+  at a time (`idx_retireruns_running`). A run and its titles are kept once
+  it is done, a deleted title's row too: the record of what was retired, on
+  whose word. Applied at startup when any of it is missing; without it no
+  list is run (see
+  [Retiring the originals of a list](#retiring-the-originals-of-a-list)).
 
 ## Track languages
 
@@ -1664,7 +1679,9 @@ The library's settings are read on every use, as `extras.scan` is:
   `person.json` from the catalog. The layout does not change while a
   title's or an extra's transcode waits for its packager (`LAYOUT_BUSY`).
 - `library.originals`: `keep` (default) or `delete-after-package`: the
-  retire job's policy.
+  retire job's policy, which an admin's list of originals to retire leaves
+  as it is (see
+  [Retiring the originals of a list](#retiring-the-originals-of-a-list)).
 - `library.retire.delay` (`10m`), `library.retire.rate` (`30` a minute),
   `library.verify` (`full` or `chain`), `library.verify.maxAge` (`30d`),
   `library.superseded.grace` (`24h`), `library.trash.grace` (`24h`; `0`
@@ -1874,6 +1891,75 @@ projection follows (migration 050 marks the title). A rebuild restores the
 catalog's marks from the projection, and from the version that plays for a
 projection written before it carried them. One written before is of another
 shape: a refresh writes it again (`shape`).
+
+### Retiring the originals of a list
+
+`library.originals` keeps every original unless it is `delete-after-package`,
+and a list changes nothing of it: an admin who wants exactly the originals of
+some titles gone names them, `retireOriginals(items: [ID!]!, dryRun: Boolean
+= true)` (GraphQL, admins). The run checks each title in the list's order, and
+retires the original of each that holds every condition through the retire
+job's own path — its claim (the step `retire` runs), the original checked
+against its size and quick hash, the source's record and the version
+verified, its `original-deleted` event recorded with what the package does
+not carry of it, the original and its sidecars moved into
+`.work/trash/<day>/<sourceId>/` (unlinked at once with `library.trash.grace`
+`0`), the source deleted and the catalog's rows repointed, the step done —
+on the word of the admin who asked: the event's `by` and the source's
+`deletedBy` say `katalog-manager (retireOriginals, by <subject>)`, its reason
+that an admin listed it. A dry run, the default, checks every title and
+retires none: it says of each whether it would be retired, and touches
+nothing but the run's own rows. A title is retired only when, in this order:
+
+- it is a movie or an episode of the catalog whose file is its own (an
+  episode another episode's file covers names that holder, whose original it
+  is), and it is not held (`holdOriginal`);
+- it has a complete version, verified once at least, made of one original,
+  which is present;
+- no step that reads the original waits, runs or is to be retried, and it is
+  not in the re-encode queue (queued, or sent);
+- the [compliance check](#library-compliance) checked it against the rules
+  both workers report now, it was not marked to be checked again since, its
+  records were read, it breaks no rule and processing it again can help;
+- its package has the surround of its original, as the retire job holds an
+  original for it;
+- its original is where the catalog says, of the size it recorded, and the
+  trash is on its filesystem (a rename across filesystems would fail once its
+  event is recorded), unless `library.trash.grace` is `0`;
+- the episodes its file covers, of a file of several, are not held, and none
+  has a step at work or is in the re-encode queue.
+
+Else it is skipped, saying why, as the clause a sentence says after a colon
+("its originals are held (holdOriginal)", "the compliance check finds it
+breaks OVER_BITRATE_CAP"); the retire path checks the rest (the quick hash,
+the records, the version's checksums, the sidecars) and a mismatch fails the
+title, saying why, its original kept. The library's name of an original is
+all a list retires: a file with a second name, a hard link another tree
+shares, is retired by the library's name, moved into the trash, and its other
+names are none of the library's — it frees no space while one is left.
+
+One run runs at a time, in one instance at a time (an advisory lock), in the
+background: the mutation answers the run as it begins, it goes on when the
+admin goes away, and a run a restart interrupted goes on where it stopped (a
+retirement it claimed is resumed; one the retire job called off meanwhile,
+as `keep` calls off one on the policy's word, is checked anew; one whose
+event it recorded is finished, by the job or by it). Another list is refused
+while one runs (`RUNNING`), as one of no title (`EMPTY`), of more than 10,000
+(`TOO_MANY`), with `library.layout` `legacy` (`LEGACY`) or without migration
+052 (`UNAVAILABLE`). It retires one original at a time, each while the retire
+job runs no pass (it holds the job's lock), at most `library.retire.rate` a
+minute, the job's own pace: the verifications read the share, and nothing is
+read or moved in parallel. A dry run keeps no pace.
+
+`retireRun` is the run begun last, running or not (null when none ran):
+its `state` (`RUNNING`, `DONE`, or `FAILED` with its `error`), `dryRun`, who
+asked (`requestedBy`), when it began and ended, its titles counted (`total`,
+`pending`, `retired`, `wouldRetire`, `skipped`, `failed`) and the size of the
+originals it retired (of a dry run, would retire: `bytes`), and its titles a
+page at a time, `items(first: 100, after: <position>, result: SKIPPED)`:
+each with its `position` in the list, `itemId`, `title` (as a list names it,
+"A Film (1991)"), `sourceId`, `result` (`RETIRED`, `SKIPPED`, `FAILED`,
+`WOULD_RETIRE`; null while it waits), `reason`, `bytes` and `at`.
 
 ## Configuration
 
