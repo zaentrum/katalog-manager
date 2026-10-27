@@ -196,6 +196,10 @@ type result struct {
 	Findings                                    []finding
 	OriginalBytes, PackageBytes, EstimatedBytes *int64
 	Unchecked                                   string
+	// UncheckedRules are the rules in force the title could not be held
+	// against: what one needs of it is not known (uncheckedRules), so that
+	// breaking none of the others is no word that it is within every rule.
+	UncheckedRules []string
 	// Blocked is why processing the title again can't help, as its
 	// original's record or its failed step tells (blockedOf), "" when
 	// nothing tells it can't.
@@ -340,10 +344,86 @@ func evaluate(t title, r records, rs rulesState) result {
 			}
 		}
 	}
+	res.UncheckedRules = uncheckedRules(t, r, rs, res, copied, bucket, bucketed)
 	res.Blocked = blockedBy(t, r, rs)
 	res.EstimatedBytes = estimate(t, r, rs, res)
 	res.Measures = measure(t, r, rs, copied)
 	return res
+}
+
+// uncheckedRules are the rules in force a packaged title could not be held
+// against, in the report's order of them, as the workers report them (a
+// worker that never reported checks none of its rules, which the report and
+// the check's word on retiring an original say of every title):
+//
+//   - OVER_BITRATE_CAP: the cap of its kind and bucket is not reported, or it
+//     has no bucket (its size not known, the 2160p bucket not reported) while
+//     a cap is reported, or, of a cap above 0, its video's bit rate is not
+//     measured; a browser-friendly H.264 copy that the transcoder keeps is
+//     held to none, and a cap of 0 allows any;
+//   - OVER_SIZE_CAP: of a movie, the file size cap is not reported, or, of
+//     one above 0, its original's size is not known, or its original is
+//     larger and whether the package copied its video is not;
+//   - VIDEO_NOT_HEVC: the transcoder does not report its renditions, or they
+//     make every video HEVC and its video's codec is not known;
+//   - NO_SURROUND: the packager does not report its surround track, or it
+//     makes one and an essence of the original or of the package is not
+//     there;
+//   - IMAGE_SUBTITLES_MISSING: the packager does not report the image
+//     subtitles it keeps, or it keeps some and a record of the original or
+//     of the package is not there.
+func uncheckedRules(t title, r records, rs rulesState, res result, copied tri, bucket int, bucketed bool) []string {
+	off := map[string]bool{}
+	if tr := rs.transcoder; tr != nil && tr.t != nil {
+		if !(copied == yes && isH264(t.videoCodec(r)) && tr.t.copiesH264()) {
+			c, reported := tr.t.capOf(t.Kind, bucket)
+			switch {
+			case !bucketed:
+				off[OverBitrateCap] = !tr.t.allowsAnyRate()
+			case !reported:
+				off[OverBitrateCap] = true
+			case c > 0:
+				_, _, measured := videoRate(r, copied)
+				off[OverBitrateCap] = !measured
+			}
+			if t.Kind == "movie" {
+				switch g := tr.t.Caps.MovieMaxGiB; {
+				case g == nil:
+					off[OverSizeCap] = true
+				case *g <= 0:
+				case res.OriginalBytes == nil:
+					off[OverSizeCap] = true
+				case float64(*res.OriginalBytes) > *g*gib && copied == unknown:
+					off[OverSizeCap] = true
+				}
+			}
+		}
+		ok, _ := tr.t.hevcRequired()
+		off[VideoNotHEVC] = tr.t.Ladder == nil || ok && t.videoCodec(r) == ""
+	}
+	if pr := rs.packager; pr != nil && pr.p != nil {
+		off[NoSurround] = pr.p.SurroundAudio == nil || surroundOn(pr.p) && (r.srcEssence == nil || r.pkgEssence == nil)
+		off[ImageSubtitlesMissing] = pr.p.ImageSubtitles == nil ||
+			len(pr.p.ImageSubtitles) > 0 && (r.src == nil || r.pkg == nil)
+	}
+	var out []string
+	for _, rule := range Rules {
+		if off[rule] {
+			out = append(out, rule)
+		}
+	}
+	return out
+}
+
+// allowsAnyRate reports whether the transcoder reports every bit rate cap,
+// each of 0: it allows any bit rate of any title, whatever its bucket.
+func (t *TranscoderRules) allowsAnyRate() bool {
+	for _, c := range []*float64{t.Caps.Movie1080Mbps, t.Caps.Movie2160Mbps, t.Caps.Episode1080Mbps, t.Caps.Episode2160Mbps} {
+		if c == nil || *c > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // measure is what the report's columns show of a title (measures).

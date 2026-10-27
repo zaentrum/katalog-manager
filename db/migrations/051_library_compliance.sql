@@ -38,6 +38,11 @@
 --                   rate (bit/s) and whether that was estimated, the caps
 --                   that hold for it (bit/s, bytes), its duration (s), and
 --                   its package's and its original's audio
+--   uncheckedrules  the rules in force it could not be held against, what
+--                   one needs of it not known (its bit rate, its bucket, its
+--                   video's codec, a record), empty when there are none: a
+--                   title that breaks no rule is within every rule only
+--                   without them
 --   recordkey, records
 --                   the facts the check read of its records (its version's
 --                   package.json, its original's source.json), as JSON, and
@@ -82,6 +87,7 @@ CREATE TABLE IF NOT EXISTS com_nalet_katalog_compliance (
   originalaudio VARCHAR(255),
   recordkey VARCHAR(400) NOT NULL DEFAULT '',
   records JSONB,
+  uncheckedrules VARCHAR(32)[] NOT NULL DEFAULT '{}',
   ruleshash VARCHAR(64) NOT NULL,
   staleat TIMESTAMPTZ,
   evaluatedat TIMESTAMPTZ NOT NULL DEFAULT now());
@@ -93,7 +99,8 @@ ALTER TABLE com_nalet_katalog_compliance ADD COLUMN IF NOT EXISTS blocked VARCHA
   ADD COLUMN IF NOT EXISTS bitratecap DOUBLE PRECISION, ADD COLUMN IF NOT EXISTS sizecap BIGINT,
   ADD COLUMN IF NOT EXISTS durationseconds DOUBLE PRECISION, ADD COLUMN IF NOT EXISTS packageaudio VARCHAR(255),
   ADD COLUMN IF NOT EXISTS originalaudio VARCHAR(255), ADD COLUMN IF NOT EXISTS recordkey VARCHAR(400) NOT NULL DEFAULT '',
-  ADD COLUMN IF NOT EXISTS records JSONB;
+  ADD COLUMN IF NOT EXISTS records JSONB,
+  ADD COLUMN IF NOT EXISTS uncheckedrules VARCHAR(32)[] NOT NULL DEFAULT '{}';
 -- the report sorts a filtered join, which no index of the table serves: an
 -- earlier build's goes
 DROP INDEX IF EXISTS idx_compliance_report;

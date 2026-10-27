@@ -20,7 +20,7 @@ var complianceRelations = []string{WorkerRulesTable, ComplianceTable, "idx_compl
 // complianceColumns are the columns of the compliance a later build of 051
 // added to its table.
 var complianceColumns = []string{"blocked", "resolution", "videocodec", "videobitrate", "bitrateestimated", "bitratecap",
-	"sizecap", "durationseconds", "packageaudio", "originalaudio", "recordkey", "records"}
+	"sizecap", "durationseconds", "packageaudio", "originalaudio", "recordkey", "records", "uncheckedrules"}
 
 // ComplianceReady reports whether migration 051 is in place: its tables,
 // their indexes, and every column of the compliance.
