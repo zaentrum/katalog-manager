@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zaentrum/katalog-manager/db/migrations"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
@@ -83,6 +84,44 @@ func TestMigrationsAppliedByInstancesStartingAtOnce(t *testing.T) {
 			if ok, err := ready(context.Background()); !ok || err != nil {
 				t.Errorf("round %d: %s not in place: %v %v", round, name, ok, err)
 			}
+		}
+	}
+}
+
+// More callers than the pool has connections apply 051 and 052 at once
+// within their time: the one that holds the migrations' lock asks again on
+// its own connection, and needs no second while the others hold theirs,
+// waiting for the lock.
+func TestMigrationsAppliedByMoreCallersThanThePoolHasConnections(t *testing.T) {
+	st := storetest.OpenBase(t)
+	n := int(st.Pool().Config().MaxConns) + 2
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if i%2 == 0 {
+				errs[i] = st.EnsureRetireRuns(ctx)
+			} else {
+				errs[i] = st.EnsureCompliance(ctx)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		t.Fatalf("%d callers on a pool of %d connections were still waiting after 30 s", n, st.Pool().Config().MaxConns)
+	}
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("caller %d: %v", i, err)
+		}
+	}
+	for name, ready := range map[string]func(context.Context) (bool, error){"052": st.RetireRunsReady, "051": st.ComplianceReady} {
+		if ok, err := ready(context.Background()); !ok || err != nil {
+			t.Errorf("%s not in place: %v %v", name, ok, err)
 		}
 	}
 }

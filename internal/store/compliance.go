@@ -25,8 +25,14 @@ var complianceColumns = []string{"blocked", "resolution", "videocodec", "videobi
 // ComplianceReady reports whether migration 051 is in place: its tables,
 // their indexes, and every column of the compliance.
 func (s *Store) ComplianceReady(ctx context.Context) (bool, error) {
+	return complianceReady(ctx, s.pool)
+}
+
+// complianceReady is ComplianceReady read by q: the pool, or the transaction
+// that holds the migrations' lock.
+func complianceReady(ctx context.Context, q querier) (bool, error) {
 	var ok bool
-	err := s.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM unnest($1::text[]) AS r(name)
+	err := q.QueryRow(ctx, `SELECT (SELECT count(*) FROM unnest($1::text[]) AS r(name)
 		WHERE to_regclass(r.name) IS NOT NULL) = cardinality($1::text[])
 		AND (SELECT count(*) FROM pg_attribute WHERE attrelid = to_regclass($2) AND attname = ANY($3::text[])
 			AND attnum > 0 AND NOT attisdropped) = cardinality($3::text[])`,
@@ -39,5 +45,5 @@ func (s *Store) ComplianceReady(ctx context.Context) (bool, error) {
 // migrations' lock (applyLocked). Without it the workers' rules are not kept,
 // and the library's compliance is not checked.
 func (s *Store) EnsureCompliance(ctx context.Context) error {
-	return s.applyLocked(ctx, s.ComplianceReady, migrations.Compliance)
+	return s.applyLocked(ctx, complianceReady, migrations.Compliance)
 }
