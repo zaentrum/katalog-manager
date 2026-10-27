@@ -79,6 +79,12 @@ const RetireReason = "originals are not kept: the package is the record"
 type Authority struct {
 	By, Reason string
 	Policy     bool
+	// Recheck, when it is set, says why the retirement of s no longer
+	// holds on this word, "" when it does: calledOff asks it again before a
+	// retirement whose event is not recorded is resumed, and right before
+	// its event is recorded, once every wait of its own is over (an admin's
+	// list holds the title to every condition again).
+	Recheck func(ctx context.Context, s *Source) (string, error)
 }
 
 // byPolicy is the retire job's authority.
@@ -340,6 +346,10 @@ type sidecar struct {
 	asset  string // the subtitle row's id; "" for a file only the record lists
 	to     string // what the row points at after
 	webvtt bool   // a rendition of the package, which is WebVTT
+	// kept says the file stays where it is, as a row of another item (a
+	// subtitle, a playback asset) or another source names it: the row of
+	// this item points at its copy all the same.
+	kept bool
 }
 
 // retire takes the source s through what is left of its retirement on the
@@ -375,7 +385,7 @@ func (r *Retirer) retireOf(ctx context.Context, p Paths, set Settings, now time.
 		}
 	} else {
 		if s.State == SourceRetiring {
-			if why, err := r.calledOff(ctx, set, s.ItemID, rt.auth); err != nil {
+			if why, err := r.calledOff(ctx, set, rt); err != nil {
 				return false, err
 			} else if why != "" {
 				return false, r.callOff(ctx, rt, why)
@@ -446,11 +456,13 @@ func (r *Retirer) fromEvent(ctx context.Context, rt *retirement, dir string) err
 	return err
 }
 
-// calledOff says why a retirement whose event is not recorded is called
-// off: the policy keeps originals again (of a retirement on its word, auth),
-// the title is held, or its pipeline reads the original again; "" when it
+// calledOff says why the retirement rt, whose event is not recorded, is
+// called off: the policy keeps originals again (of a retirement on its word),
+// the title is held, its pipeline reads the original again, or what its word
+// holds it to does not hold any more (its authority's Recheck); "" when it
 // goes on.
-func (r *Retirer) calledOff(ctx context.Context, set Settings, itemID string, auth Authority) (string, error) {
+func (r *Retirer) calledOff(ctx context.Context, set Settings, rt *retirement) (string, error) {
+	auth, itemID := rt.auth, rt.src.ItemID
 	if auth.Policy && !set.DeleteOriginals() {
 		return "library.originals is keep: the original is kept", nil
 	}
@@ -464,6 +476,8 @@ func (r *Retirer) calledOff(ctx context.Context, set Settings, itemID string, au
 		return "the title holds its originals (retirehold): the original is kept", nil
 	case busy:
 		return "the title's pipeline reads its original again: the retirement waits for it", nil
+	case auth.Recheck != nil:
+		return auth.Recheck(ctx, rt.src)
 	}
 	return "", nil
 }
@@ -554,7 +568,7 @@ func (r *Retirer) prepare(ctx context.Context, p Paths, set Settings, now time.T
 	if err != nil {
 		return r.fail(ctx, rt, fmt.Sprintf("version %s does not verify (%s): %v; the original is kept", rt.ver.ID, level, err))
 	}
-	if why, err := r.calledOff(ctx, set, s.ItemID, rt.auth); err != nil {
+	if why, err := r.calledOff(ctx, set, rt); err != nil {
 		return err
 	} else if why != "" {
 		err := r.callOff(ctx, rt, why)
@@ -769,7 +783,7 @@ func (r *Retirer) verify(ctx context.Context, set Settings, now time.Time, v *Ve
 // isRecordedOriginal checks that the file at path is the original as it
 // was recorded: its size and its quick hash.
 func isRecordedOriginal(path string, size int64, qh1 *string) error {
-	fi, err := os.Stat(path)
+	fi, err := os.Lstat(path)
 	if err != nil {
 		return fmt.Errorf("the original changed since it was recorded: %s cannot be read (%v); nothing is deleted", path, err)
 	}
@@ -893,7 +907,7 @@ func (r *Retirer) sidecarsOf(ctx context.Context, rt *retirement, strict bool) (
 	if len(s.Sidecars) > 0 {
 		var list []mappedSidecar
 		if err := json.Unmarshal(s.Sidecars, &list); err != nil {
-			return nil, fmt.Errorf("the catalog's map of the sidecars of source %s cannot be read: %v", s.ID, err)
+			return nil, &sidecarRefused{fmt.Sprintf("the catalog's map of the sidecars of source %s cannot be read: %v", s.ID, err)}
 		}
 		for _, m := range list {
 			mapped[m.SubtitleAssetID] = m
@@ -965,7 +979,7 @@ func (r *Retirer) sidecarsOf(ctx context.Context, rt *retirement, strict bool) (
 		switch {
 		case isMapped:
 			if rt.ver == nil || deref(rt.ver.Dir) == "" {
-				return nil, fmt.Errorf("the version of the rendition of the subtitle file %s has no folder", path)
+				return nil, &sidecarRefused{fmt.Sprintf("the version of the rendition of the subtitle file %s has no folder", path)}
 			}
 			sc.to, sc.webvtt = filepath.Join(deref(rt.ver.Dir), filepath.FromSlash(m.Path)), true
 		case kept != "":
@@ -973,9 +987,9 @@ func (r *Retirer) sidecarsOf(ctx context.Context, rt *retirement, strict bool) (
 		case !strict:
 			continue
 		default:
-			return nil, fmt.Errorf("the subtitle file %s beside the original is in neither the package of version %s "+
-				"nor the source's record (it was paired after packaging): deleting the original would lose it; "+
-				"package the title again to keep it, then the original is deleted", path, versionIDOf(rt.ver))
+			return nil, &sidecarRefused{fmt.Sprintf("the subtitle file %s beside the original is in neither the package of "+
+				"version %s nor the source's record (it was paired after packaging): deleting the original would lose it; "+
+				"package the title again to keep it, then the original is deleted", path, versionIDOf(rt.ver))}
 		}
 		seen[filepath.Clean(path)] = true
 		out = append(out, sc)
@@ -983,6 +997,7 @@ func (r *Retirer) sidecarsOf(ctx context.Context, rt *retirement, strict bool) (
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	rows.Close()
 	if original != "" {
 		for _, c := range copies {
 			if c.originalName == "" || strings.ContainsAny(c.originalName, `/\`) {
@@ -995,8 +1010,32 @@ func (r *Retirer) sidecarsOf(ctx context.Context, rt *retirement, strict bool) (
 			}
 		}
 	}
+	for i := range out {
+		if out[i].kept, err = r.namedElsewhere(ctx, s, out[i].path); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
 }
+
+// namedElsewhere reports whether a row of another item than the source s's
+// names the file at path (a subtitle, a playback asset), or another source
+// does (its original): a sidecar it is stays where it is.
+func (r *Retirer) namedElsewhere(ctx context.Context, s *Source, path string) (bool, error) {
+	var named bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_subtitleassets WHERE path = $1 AND item_id <> $2)
+		OR EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets WHERE path = $1 AND item_id <> $2)
+		OR EXISTS (SELECT 1 FROM com_nalet_katalog_itemsources WHERE arrivalpath = $1 AND id <> $3)`,
+		filepath.Clean(path), s.ItemID, s.ID).Scan(&named)
+	return named, err
+}
+
+// sidecarRefused is why the files that go with an original can't be told, or
+// one of them would be lost with it: what the records say, no failure of the
+// catalog's.
+type sidecarRefused struct{ msg string }
+
+func (e *sidecarRefused) Error() string { return e.msg }
 
 // othersArrivals are where the item's other originals that are there
 // arrived: the files beside one of them are its own, never the source s's.
@@ -1089,7 +1128,9 @@ func (r *Retirer) deleteFiles(p Paths, set Settings, rt *retirement) error {
 		files = append(files, original)
 	}
 	for _, sc := range rt.sidecars {
-		files = append(files, sc.path)
+		if !sc.kept {
+			files = append(files, sc.path)
+		}
 	}
 	pruned := map[string]string{}
 	for _, f := range files {
@@ -1108,6 +1149,9 @@ func (r *Retirer) deleteFiles(p Paths, set Settings, rt *retirement) error {
 			return fmt.Errorf("%s cannot be read: %v", f, err)
 		}
 		if !fi.Mode().IsRegular() {
+			if f == original {
+				return fmt.Errorf("the original %s is no file of its own (a link, a folder): it is not deleted", f)
+			}
 			continue
 		}
 		if set.TrashGrace == 0 {
