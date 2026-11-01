@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"sync"
 
 	graphql "github.com/graph-gophers/graphql-go"
 	"github.com/zaentrum/katalog-manager/internal/languages"
@@ -23,13 +24,16 @@ type itemResolver struct {
 	// reads it.
 	parent     *model.Item
 	parentRead bool
+	// sizes is the page the item came in, whose sizes are read at once
+	// (itemSizes).
+	sizes *itemSizes
 }
 
 func newItemResolver(m *model.Item, s *store.Store, lib library.Paths) *itemResolver {
 	if m == nil {
 		return nil
 	}
-	return &itemResolver{m: m, s: s, lib: lib}
+	return &itemResolver{m: m, s: s, lib: lib, sizes: pageOf(s, m.ID)}
 }
 
 func newItemResolvers(ms []*model.ItemRow, s *store.Store, lib library.Paths) []*itemResolver {
@@ -37,7 +41,45 @@ func newItemResolvers(ms []*model.ItemRow, s *store.Store, lib library.Paths) []
 	for _, r := range ms {
 		out = append(out, &itemResolver{m: &r.Item, s: s, lib: lib})
 	}
-	return out
+	return onePage(out, s)
+}
+
+// itemSizes is a page of items whose sizes on disk (store.ItemSizes) are read
+// at once: the first field of them asked reads every item's, in one query,
+// and the others take theirs from its answer, so a list of 200 asks the
+// store once, not 200 times. The items of a list are one page (onePage); an
+// item read on its own is a page of one.
+type itemSizes struct {
+	read func(ctx context.Context, ids []string) (map[string]store.ItemSizes, error)
+	ids  []string
+	once sync.Once
+	got  map[string]store.ItemSizes
+	err  error
+}
+
+// pageOf is the page of the items ids, read from s.
+func pageOf(s *store.Store, ids ...string) *itemSizes {
+	return &itemSizes{read: s.SizesOf, ids: ids}
+}
+
+// of is what the item id of the page has on disk; the page is read once,
+// whoever asks first (the fields of a list are resolved in parallel).
+func (p *itemSizes) of(ctx context.Context, id string) (store.ItemSizes, error) {
+	p.once.Do(func() { p.got, p.err = p.read(ctx, p.ids) })
+	return p.got[id], p.err
+}
+
+// onePage has the items rs, a list's, read their sizes as one page, from s.
+func onePage(rs []*itemResolver, s *store.Store) []*itemResolver {
+	ids := make([]string, 0, len(rs))
+	for _, r := range rs {
+		ids = append(ids, r.m.ID)
+	}
+	p := pageOf(s, ids...)
+	for _, r := range rs {
+		r.sizes = p
+	}
+	return rs
 }
 
 func gidptr(p *string) *graphql.ID {
@@ -109,6 +151,44 @@ func (r *itemResolver) MetadataLocked(ctx context.Context) (bool, error) {
 	return r.s.ItemMetadataLocked(ctx, r.m.ID)
 }
 
+// ---- what it has on disk (store.ItemSizes), read with its page ----
+
+// OriginalBytes is the size of the title's originals on disk; nil when it
+// has none.
+func (r *itemResolver) OriginalBytes(ctx context.Context) (*float64, error) {
+	z, err := r.onDisk(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return i64ptrToFloat(z.OriginalBytes), nil
+}
+
+// PackageBytes is the size of the title's package; nil when it has none.
+func (r *itemResolver) PackageBytes(ctx context.Context) (*float64, error) {
+	z, err := r.onDisk(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return i64ptrToFloat(z.PackageBytes), nil
+}
+
+// HasOriginal is whether the title has an original on disk; an episode
+// another's file covers, whether its holder has.
+func (r *itemResolver) HasOriginal(ctx context.Context) (bool, error) {
+	z, err := r.onDisk(ctx)
+	return z.HasOriginal, err
+}
+
+// onDisk is what the item has on disk, read with its page; an item made
+// without one reads it on its own.
+func (r *itemResolver) onDisk(ctx context.Context) (store.ItemSizes, error) {
+	p := r.sizes
+	if p == nil {
+		p = pageOf(r.s, r.m.ID)
+	}
+	return p.of(ctx, r.m.ID)
+}
+
 // ---- relations ----
 
 func (r *itemResolver) Parent(ctx context.Context) (*itemResolver, error) {
@@ -134,7 +214,7 @@ func (r *itemResolver) Children(ctx context.Context) ([]*itemResolver, error) {
 	for _, k := range kids {
 		out = append(out, newItemResolver(k, r.s, r.lib))
 	}
-	return out, nil
+	return onePage(out, r.s), nil
 }
 
 func (r *itemResolver) ExternalIds(ctx context.Context) ([]*externalIDResolver, error) {
@@ -335,7 +415,7 @@ func (r *itemResolver) Covers(ctx context.Context) ([]*itemResolver, error) {
 			out = append(out, newItemResolver(it, r.s, r.lib))
 		}
 	}
-	return out, nil
+	return onePage(out, r.s), nil
 }
 
 // ---- Track ----

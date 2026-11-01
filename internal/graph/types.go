@@ -168,25 +168,32 @@ func (r *personResolver) FieldOrigins() []*fieldOriginResolver {
 	return out
 }
 
-// Credits reads the person's credits with their titles, in one query.
+// Credits reads the person's credits with their titles, in one query; the
+// titles are one page of sizes (itemSizes).
 func (r *personResolver) Credits(ctx context.Context) ([]*personCreditResolver, error) {
 	cs, err := r.s.CreditsByPerson(ctx, r.m.ID)
 	if err != nil {
 		return nil, err
 	}
+	ids := make([]string, 0, len(cs))
+	for _, c := range cs {
+		ids = append(ids, c.Item.ID)
+	}
+	page := pageOf(r.s, ids...)
 	out := make([]*personCreditResolver, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, &personCreditResolver{m: c, s: r.s, lib: r.lib})
+		out = append(out, &personCreditResolver{m: c, s: r.s, lib: r.lib, sizes: page})
 	}
 	return out, nil
 }
 
 // personCreditResolver is a person's credit; its title comes with its parent,
-// read with the credit.
+// read with the credit, and reads its sizes with the person's other titles.
 type personCreditResolver struct {
-	m   *model.PersonCredit
-	s   *store.Store
-	lib library.Paths
+	m     *model.PersonCredit
+	s     *store.Store
+	lib   library.Paths
+	sizes *itemSizes
 }
 
 func (r *personCreditResolver) ID() graphql.ID       { return gid(r.m.ID) }
@@ -196,7 +203,7 @@ func (r *personCreditResolver) Character() *string   { return r.m.Character }
 func (r *personCreditResolver) Order() *int32        { return r.m.Order }
 func (r *personCreditResolver) EpisodeCount() *int32 { return r.m.EpisodeCount }
 func (r *personCreditResolver) Item() *itemResolver {
-	return &itemResolver{m: &r.m.Item, s: r.s, lib: r.lib, parent: r.m.Parent, parentRead: true}
+	return &itemResolver{m: &r.m.Item, s: r.s, lib: r.lib, parent: r.m.Parent, parentRead: true, sizes: r.sizes}
 }
 
 type localizedTextResolver struct{ language, text string }

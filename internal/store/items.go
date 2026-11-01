@@ -33,8 +33,11 @@ type ItemFilter struct {
 	Search   *string // matches title (ILIKE)
 	ParentID *string // direct parent (season for an episode)
 	SeriesID *string // episodes anywhere under a series (parent or grandparent)
-	Limit    int32
-	Offset   int32
+	// HasOriginal: the items that have an original on disk (true) or none
+	// (false), as SizesOf says it of each
+	HasOriginal *bool
+	Limit       int32
+	Offset      int32
 }
 
 func clampLimit(n int32) int32 {
@@ -87,6 +90,14 @@ func (s *Store) ListItems(ctx context.Context, f ItemFilter) ([]*model.ItemRow, 
 		n := len(args)
 		where = append(where, fmt.Sprintf(`(parent_id = $%d OR parent_id IN
 			(SELECT id FROM com_nalet_katalog_items WHERE parent_id = $%d))`, n, n))
+	}
+	if f.HasOriginal != nil {
+		sources, covers, err := s.originalsReady(ctx)
+		if err != nil {
+			return nil, err
+		}
+		add(`id IN (SELECT i.id FROM com_nalet_katalog_items i WHERE (`+hasOriginalOf("i", sources, covers)+`) = $%d)`,
+			*f.HasOriginal)
 	}
 
 	q := `SELECT ` + itemViewCols + ` FROM katalogservice_items`

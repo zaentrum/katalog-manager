@@ -6,6 +6,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -13,6 +14,11 @@ import (
 // Store wraps a pgx connection pool.
 type Store struct {
 	pool *pgxpool.Pool
+	// sources and covers are set once migrations 040 (a title's sources) and
+	// 045 (an episode's holder) were seen in place, which what a title has on
+	// disk reads (SizesOf, ItemFilter.HasOriginal); neither is undone under a
+	// running service.
+	sources, covers atomic.Bool
 }
 
 // New opens a pool against the given DSN. The DSN may be a postgres:// URL or a

@@ -178,7 +178,7 @@ func (r *Resolver) Item(ctx context.Context, args struct{ ID graphql.ID }) (*ite
 	if err != nil || row == nil {
 		return nil, err
 	}
-	return &itemResolver{m: &row.Item, s: r.store, lib: r.lib}, nil
+	return newItemResolver(&row.Item, r.store, r.lib), nil
 }
 
 type itemsArgs struct {
@@ -186,8 +186,10 @@ type itemsArgs struct {
 	Genre  *string
 	Year   *int32
 	Search *string
-	Limit  *int32
-	Offset *int32
+	// HasOriginal is items' alone.
+	HasOriginal *bool
+	Limit       *int32
+	Offset      *int32
 }
 
 func (r *Resolver) listItems(ctx context.Context, f store.ItemFilter) ([]*itemResolver, error) {
@@ -203,7 +205,7 @@ func (r *Resolver) Items(ctx context.Context, args itemsArgs) ([]*itemResolver, 
 		return nil, err
 	}
 	return r.listItems(ctx, store.ItemFilter{
-		Type: args.Type, Genre: args.Genre, Year: args.Year, Search: args.Search,
+		Type: args.Type, Genre: args.Genre, Year: args.Year, Search: args.Search, HasOriginal: args.HasOriginal,
 		Limit: deref32(args.Limit), Offset: deref32(args.Offset),
 	})
 }
