@@ -15,7 +15,9 @@ The surface is split deliberately:
 - **GraphQL** (`/query`) — the operator/UI read graph and mutations: catalog
   reads (`items`, `movies`, `series`, `episodes`, `albums`, `item` with nested
   facets + computed fields; an item's `people` are its credits, each a person
-  in a role with its job, character, order and episode count), `searchItems`
+  in a role with its job, character, order and episode count, and its
+  `originalBytes`, `packageBytes` and `hasOriginal` what it has on disk, see
+  [What a title has on disk](#what-a-title-has-on-disk)), `searchItems`
   (a page of matches, and in `total` how many match in all), `catalogStats`
   (how many movies, series, episodes and people the catalog holds, counted
   rather than paged), `scanJobs` (each with its `report`, see
@@ -1955,6 +1957,36 @@ projection follows (migration 050 marks the title). A rebuild restores the
 catalog's marks from the projection, and from the version that plays for a
 projection written before it carried them. One written before is of another
 shape: a refresh writes it again (`shape`).
+
+### What a title has on disk
+
+The catalog's list shows of each item what it has on disk, as the catalog
+records it (GraphQL `Item.originalBytes`, `packageBytes` and `hasOriginal`):
+
+- **`originalBytes`** is the size of its originals: its sources present, all
+  of them (a version in parts has several; one removed or retired counts
+  not), or, of a title whose file names no source (the legacy layout keeps
+  none), its file. Null when it has none: a title whose original was retired
+  has its package alone. The rules report's `originalBytes` is the size of
+  the original a title was packaged from, retired or not.
+- **`packageBytes`** is the size of its package as its packaged row records
+  it, which packaging-complete writes from its version's `package.json`
+  (`sizeBytes`): the size the rules report shows (see
+  [Library compliance](#library-compliance)). Null when it has none, as a
+  title taken in without one.
+- **`hasOriginal`** is whether it has its `originalBytes`.
+
+An episode another's file covers has no file and no package of its own: its
+sizes are null, that file and its package counted once, on its holder, and
+`hasOriginal` is its holder's (see
+[One file, several episodes](#one-file-several-episodes)). A series, a season
+and an album have none of their own either. `items(hasOriginal: true)` lists
+the items that have an original, `false` those that have none, in SQL with
+the other filters. The sizes of a page are read at once, in one query
+however many items it lists (the console's 200), and only when a field of
+them is asked; an item read on its own reads its own. On a catalog without
+migration 040 a title's original is its file, and on one without 045 no
+episode is covered.
 
 ### Retiring the originals of a list
 
