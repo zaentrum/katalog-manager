@@ -33,8 +33,9 @@ type ItemFilter struct {
 	Search   *string // matches title (ILIKE)
 	ParentID *string // direct parent (season for an episode)
 	SeriesID *string // episodes anywhere under a series (parent or grandparent)
-	// HasOriginal: the items that have an original on disk (true) or none
-	// (false), as SizesOf says it of each
+	// HasOriginal: of the items that may have a file of their own (no
+	// series, season or album), those that have an original on disk (true)
+	// or none (false), as SizesOf says it of each
 	HasOriginal *bool
 	Limit       int32
 	Offset      int32
@@ -96,8 +97,7 @@ func (s *Store) ListItems(ctx context.Context, f ItemFilter) ([]*model.ItemRow, 
 		if err != nil {
 			return nil, err
 		}
-		add(`id IN (SELECT i.id FROM com_nalet_katalog_items i WHERE (`+hasOriginalOf("i", sources, covers)+`) = $%d)`,
-			*f.HasOriginal)
+		where = append(where, hasOriginalFilter(*f.HasOriginal, sources, covers))
 	}
 
 	q := `SELECT ` + itemViewCols + ` FROM katalogservice_items`

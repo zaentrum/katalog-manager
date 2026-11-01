@@ -2,6 +2,9 @@ package graph
 
 import (
 	"context"
+	"fmt"
+	"log"
+	"runtime/debug"
 	"sync"
 
 	graphql "github.com/graph-gophers/graphql-go"
@@ -63,9 +66,19 @@ func pageOf(s *store.Store, ids ...string) *itemSizes {
 }
 
 // of is what the item id of the page has on disk; the page is read once,
-// whoever asks first (the fields of a list are resolved in parallel).
+// whoever asks first (the fields of a list are resolved in parallel). A read
+// that panics is the page's error, every item's, and said in the log: the
+// rest of the page must not read as having nothing.
 func (p *itemSizes) of(ctx context.Context, id string) (store.ItemSizes, error) {
-	p.once.Do(func() { p.got, p.err = p.read(ctx, p.ids) })
+	p.once.Do(func() {
+		defer func() {
+			if v := recover(); v != nil {
+				log.Printf("graph: reading the sizes of a page of %d items panicked: %v\n%s", len(p.ids), v, debug.Stack())
+				p.got, p.err = nil, fmt.Errorf("the sizes of the page could not be read: %v", v)
+			}
+		}()
+		p.got, p.err = p.read(ctx, p.ids)
+	})
 	return p.got[id], p.err
 }
 
@@ -173,10 +186,14 @@ func (r *itemResolver) PackageBytes(ctx context.Context) (*float64, error) {
 }
 
 // HasOriginal is whether the title has an original on disk; an episode
-// another's file covers, whether its holder has.
-func (r *itemResolver) HasOriginal(ctx context.Context) (bool, error) {
+// another's file covers, whether its holder has; nil for a container (a
+// series, a season, an album), and where its page could not be read.
+func (r *itemResolver) HasOriginal(ctx context.Context) (*bool, error) {
 	z, err := r.onDisk(ctx)
-	return z.HasOriginal, err
+	if err != nil {
+		return nil, err
+	}
+	return z.HasOriginal, nil
 }
 
 // onDisk is what the item has on disk, read with its page; an item made

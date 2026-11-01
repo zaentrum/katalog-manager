@@ -87,18 +87,23 @@ type Item {
   # is the size of its originals there: its sources present, all of them
   # (ItemLibrary.sources), or, of a title whose file names no source, as one
   # of the legacy layout, which keeps none, its file; null when it has none,
-  # as once its original was retired after packaging. packageBytes is the
-  # size of its package as packaging-complete recorded it from its version's
-  # package.json, the size the rules report shows (ComplianceRow); null when
-  # it has none, as a title taken in without one. hasOriginal is whether it
-  # has its originalBytes. An episode another's file covers has neither a
-  # file nor a package of its own: its sizes are null, that file and its
-  # package counted once, on its holder (coveredBy), and hasOriginal is its
-  # holder's. A series, a season and an album have no file of their own
-  # either (their episodes and tracks have theirs): null, and no original.
+  # as once its original was retired after packaging. Every source present
+  # counts, an old file replaceSource kept beside the new one too, which the
+  # retire job and the rules report don't take for the title's original.
+  # packageBytes is the size of its package as packaging-complete recorded
+  # it from its version's package.json, the size the rules report shows
+  # (ComplianceRow); null when it has none, as a title taken in without one.
+  # hasOriginal is whether it has its originalBytes: false as soon as its
+  # original is retired, while the file may lie in the library's trash until
+  # its grace ends. An episode another's file covers has neither a file nor
+  # a package of its own: its sizes are null, that file and its package
+  # counted once, on its holder (coveredBy), and hasOriginal is its holder's.
+  # A series, a season and an album have no file of their own (their
+  # episodes and tracks have theirs): all three are null. All three are null
+  # too, with an error, of a page that could not be read.
   originalBytes: Float
   packageBytes: Float
-  hasOriginal: Boolean!
+  hasOriginal: Boolean
 }
 
 # What the library holds of a title: with library.layout=v2 its record on
@@ -1055,8 +1060,9 @@ type ValidateResult {
 type Query {
   item(id: ID!): Item
   # The items, newest first, of type, genre and year, whose title holds
-  # search, and with hasOriginal those whose Item.hasOriginal is that: at
-  # most limit (1 to 200, else 50), from offset.
+  # search, and with hasOriginal those whose Item.hasOriginal is that (never
+  # a series, a season or an album, whose hasOriginal is null): at most limit
+  # (1 to 200, else 50), from offset.
   items(type: String, genre: String, year: Int, search: String, hasOriginal: Boolean, limit: Int, offset: Int): [Item!]!
   movies(genre: String, year: Int, search: String, limit: Int, offset: Int): [Item!]!
   series(genre: String, year: Int, search: String, limit: Int, offset: Int): [Item!]!
