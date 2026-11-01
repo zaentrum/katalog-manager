@@ -720,3 +720,97 @@ func TestAListOfOriginalsThroughTheService(t *testing.T) {
 		t.Errorf("%d originals present after the dry runs, want 2", n)
 	}
 }
+
+// A film whose only surround track the packager's language settings hide,
+// of a packager that makes its 5.1 companions of the tracks shown, through
+// the service as main wires it: the compliance check finds it within every
+// rule, as processing it again adds no 5.1, and a list of originals to
+// retire skips it all the same — the retire job keeps an original whose
+// package lacks the surround it had (owner decision 2026-10-07), a hidden
+// track's too. Of a packager that makes one of every surround track, it
+// breaks NO_SURROUND.
+func TestAnOriginalWhoseOnlySurroundIsHiddenIsKept(t *testing.T) {
+	in := newInstanceWired(t, wiring{compliance: true})
+	st, ctx, admin := in.st, context.Background(), in.iss.Admin(t)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('set-layout', 'library.layout', 'v2'),
+		('set-languages', 'packager.language_whitelist', 'en')`)
+	service := in.iss.Service(t, "zaentrum-manager")
+	transcoder := `{"version": "3f2a9c1", "rules": {"caps": {"movie1080Mbps": 8, "movie2160Mbps": 14, "movieMaxGiB": 15,
+		"episode1080Mbps": 6, "episode2160Mbps": 8}, "bucket2160": {"minHeight": 2000, "minWidth": 3200},
+		"encoder": {"codec": "hevc_nvenc", "preset": "p5", "cq": 23, "maxrate1080Mbps": null, "maxrate2160Mbps": null},
+		"ladder": "source:hevc", "extraLadder": "source:hevc"}}`
+	every := `{"version": "3f2a9c1", "rules": {"surroundAudio": "eac3", "surroundLayout": "5.1", "surroundBitrate": "448k",
+		"stereoAudio": "aac", "stereoBitrate": "192k", "imageSubtitles": ["pgs", "vobsub"]}}`
+	shown := strings.Replace(every, `"surroundBitrate": "448k",`, `"surroundBitrate": "448k", "surroundTracks": "shown",`, 1)
+	for _, r := range []struct{ worker, body string }{{"transcoder", transcoder}, {"packager", shown}} {
+		if code := in.put(t, "/api/analyze/rules/"+r.worker, service, r.body); code != http.StatusOK {
+			t.Fatalf("the %s's report: %d", r.worker, code)
+		}
+	}
+	layOut(t, in, remuxID, "movie", "A Film Dubbed Into Japanese", "", remuxVer, remuxSrc, 1920, 1080, 5e6, 5e9, 4.6e9)
+	dir := library.PathsOf(in.cfg).ItemDir(library.Place{ID: remuxID, Type: "movie"})
+	librarytest.WriteSource(t, library.SourceDir(dir, remuxSrc), map[string]any{"sourceId": remuxSrc,
+		"file": map[string]any{"name": "original.mkv", "sizeBytes": 5e9}, "container": map[string]any{"durationMs": 7200000},
+		"streams": []any{
+			map[string]any{"index": 0, "type": "video", "codec": "hevc", "width": 1920, "height": 1080},
+			map[string]any{"index": 1, "type": "audio", "codec": "aac", "channels": 2, "language": "en", "languageRaw": "eng",
+				"dispositions": map[string]any{"default": true}},
+			map[string]any{"index": 2, "type": "audio", "codec": "ac3", "channels": 6, "language": "ja", "languageRaw": "jpn"}},
+		"essence": map[string]any{"surround": true, "maxAudioChannels": 6}}, nil)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET verifiedat = now(), verifiedlevel = 'full', dir = $2
+		WHERE id = $1`, remuxVer, library.VersionDir(dir, remuxVer))
+	if _, err := in.check.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	word := func() string {
+		t.Helper()
+		got, err := in.check.Passed(ctx, []string{remuxID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got[remuxID]
+	}
+	if got := word(); got != "" {
+		t.Fatalf("the check's word on retiring its original: %q, want nothing against it", got)
+	}
+
+	// a list of it, a dry run: skipped, its package lacking the surround
+	if _, a := in.gql(t, "/api/manage/query", admin, `mutation { retireOriginals(items: ["`+remuxID+`"]) { id } }`); len(a.Errors) > 0 {
+		t.Fatal(a.Errors)
+	}
+	if err := in.list.Work(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var run struct {
+		RetireRun struct {
+			Skipped, WouldRetire int
+			Items                []struct {
+				ItemID         string
+				Result, Reason *string
+			}
+		}
+	}
+	_, a := in.gql(t, "/api/manage/query", admin, `{ retireRun { skipped wouldRetire items { itemId result reason } } }`)
+	if len(a.Errors) > 0 || json.Unmarshal(a.Data, &run) != nil {
+		t.Fatalf("retireRun: %s %v", a.Data, a.Errors)
+	}
+	if r := run.RetireRun; r.Skipped != 1 || r.WouldRetire != 0 || len(r.Items) != 1 || r.Items[0].Result == nil ||
+		*r.Items[0].Result != "SKIPPED" || r.Items[0].Reason == nil || *r.Items[0].Reason != library.SurroundHeld {
+		t.Errorf("the list of it: %+v, want it skipped: %s", r, library.SurroundHeld)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemsources WHERE id = $1 AND state = 'present'`,
+		remuxSrc); n != 1 {
+		t.Error("its original is not present after the dry run")
+	}
+
+	// a packager that makes a companion of every surround track
+	if code := in.put(t, "/api/analyze/rules/packager", service, every); code != http.StatusOK {
+		t.Fatalf("the packager's report: %d", code)
+	}
+	if _, err := in.check.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := word(); got != "the compliance check finds it breaks NO_SURROUND" {
+		t.Errorf("of a packager that makes a companion of every surround track: %q", got)
+	}
+}

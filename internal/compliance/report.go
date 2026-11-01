@@ -736,6 +736,10 @@ func coverage(rs rulesState) ([]string, map[string]bool) {
 		case !surroundOn(p):
 			out = append(out, "The packager makes no surround track, so a package without one breaks no rule.")
 			off[NoSurround] = true
+		case p.tracks() == "":
+			out = append(out, "The packager says it makes its surround track of “"+strings.TrimSpace(*p.SurroundTracks)+
+				"” tracks, which the check doesn’t know, so surround can’t be checked.")
+			off[NoSurround] = true
 		}
 		switch {
 		case p.ImageSubtitles == nil:

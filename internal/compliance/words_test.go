@@ -179,6 +179,8 @@ func serverTexts(t *testing.T) []text {
 		`{"surroundAudio": "off", "surroundBitrate": "448k", "stereoBitrate": "192k", "imageSubtitles": []}`, true, 0)
 	notEval("the packager reports neither its surround track nor its image subtitles", transcoderReport,
 		`{"surroundBitrate": "448k", "stereoBitrate": "192k"}`, true, 0)
+	notEval("the packager makes its surround track of tracks the check doesn’t know", transcoderReport,
+		strings.Replace(packagerShown, `"shown"`, `"every-other"`, 1), true, 0)
 	notEval("the legacy library layout", transcoderReport, packagerReport, false, 0)
 	notEval("the records of 1 title can’t be read", transcoderReport, packagerReport, true, 1)
 	notEval("the records of 2,140 titles can’t be read", transcoderReport, packagerReport, true, 2140)
@@ -306,6 +308,9 @@ func serverTexts(t *testing.T) []text {
 			`"maxrate2160Mbps": null`, `"maxrate2160Mbps": 18`).Replace(transcoderWithTable)},
 		{"transcoder with a ladder at the original’s size, 720p and 576p", strings.Replace(transcoderWithTable, `"ladder": "source:hevc"`,
 			`"ladder": "source:hevc,720p:h264,576p:h264"`, 1)},
+		{"packager making its surround track of the tracks shown", packagerShown},
+		{"packager making its surround track of tracks the words don’t know", strings.Replace(packagerShown, `"shown"`,
+			`"every-other"`, 1)},
 		{"packager making no surround track, of an image that doesn’t report its stereo codec", strings.NewReplacer(
 			`"surroundAudio": "eac3"`, `"surroundAudio": "off"`, `"stereoAudio": "aac", `, ``,
 			`["pgs", "vobsub"]`, `[]`).Replace(packagerReport)},

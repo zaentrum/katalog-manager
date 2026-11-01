@@ -359,6 +359,91 @@ func TestAPassEstimatesTheAudioOfTheOriginal(t *testing.T) {
 	}
 }
 
+// Of a packager that makes a 5.1 companion of the tracks shown alone, the
+// catalog's language settings, as the packager reads them, are of the rules
+// a title is checked against: a film whose only surround track, Japanese,
+// the whitelist (English) hides breaks no rule, so the check's word on
+// retiring its original says nothing against it — the retire job keeps the
+// original all the same, its package having none of the surround the
+// original had — and once the whitelist shows Japanese every title waits to
+// be checked again, and the film breaks NO_SURROUND. A packager that doesn't
+// report which tracks get a companion made one of every surround track, and
+// the language settings are of no title's rules.
+func TestTheLanguageSettingsAreOfTheRules(t *testing.T) {
+	s, st, dir := checkOf(t)
+	ctx := context.Background()
+	reportFor(t, s, Packager, packagerShown)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext)
+		VALUES ('whitelist', ' packager.language_whitelist ', 'en'), ('keep', 'packager.keep_original_if_single', 'true')`)
+	p := packaged{n: 60, kind: "movie", title: "A Film Dubbed Into Japanese", width: 1920, height: 1080, rate: 5e6,
+		encoder: "copy", original: 5e9, size: 4.6e9, srcCh: 6, pkgCh: 2}
+	p.add(t, st, dir)
+	itemDir := library.Paths{Root: dir}.ItemDir(library.Place{ID: p.id(), Type: p.kind})
+	librarytest.WriteSource(t, library.SourceDir(itemDir, p.source()), map[string]any{"sourceId": p.source(),
+		"file": map[string]any{"name": "original.mkv", "sizeBytes": p.original}, "container": map[string]any{"durationMs": 7200000},
+		"streams": []any{
+			map[string]any{"index": 0, "type": "video", "codec": "hevc", "width": 1920, "height": 1080},
+			map[string]any{"index": 1, "type": "audio", "codec": "aac", "channels": 2, "language": "en", "languageRaw": "eng",
+				"dispositions": map[string]any{"default": true}},
+			map[string]any{"index": 2, "type": "audio", "codec": "ac3", "channels": 6, "language": "ja", "languageRaw": "jpn"}},
+		"essence": map[string]any{"surround": true, "maxAudioChannels": 6}}, nil)
+	passed := func() string {
+		t.Helper()
+		got, err := s.Passed(ctx, []string{p.id()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got[p.id()]
+	}
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := rowsOf(reportOf(t, s, graph.ComplianceFilter{}, 100, "")); got != "" {
+		t.Errorf("its Japanese 5.1 hidden: %q, want no rule broken", got)
+	}
+	if got := passed(); got != "" {
+		t.Errorf("the check's word on retiring its original: %q, want nothing against it", got)
+	}
+	src, err := library.Essence(filepath.Join(library.SourceDir(itemDir, p.source()), "source.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := library.Essence(filepath.Join(library.VersionDir(itemDir, p.version()), library.PackageFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !library.SurroundLost(src, pkg) {
+		t.Error("the retire job's gate would let its original go, its package without the original's surround")
+	}
+
+	// the whitelist shows Japanese: every title is checked again
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_settings SET valuetext = 'en, ja' WHERE id = 'whitelist'`)
+	if rep := reportOf(t, s, graph.ComplianceFilter{}, 100, ""); rep.Pending != 1 {
+		t.Errorf("after the whitelist changed: %d titles pending, want it", rep.Pending)
+	}
+	if got := passed(); !strings.HasPrefix(got, "the compliance check checked it against other rules") {
+		t.Errorf("the check's word after the whitelist changed: %q", got)
+	}
+	if n, err := s.Pass(ctx); err != nil || n != 1 {
+		t.Fatalf("the pass after the whitelist changed checked %d, %v", n, err)
+	}
+	if got := rowsOf(reportOf(t, s, graph.ComplianceFilter{}, 100, "")); got != "A Film Dubbed Into Japanese: NO_SURROUND" {
+		t.Errorf("its Japanese 5.1 shown: %q", got)
+	}
+
+	// a packager that makes a companion of every surround track: the
+	// settings are of no title's rules
+	reportFor(t, s, Packager, packagerReport)
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_settings SET valuetext = 'en' WHERE id = 'whitelist'`)
+	if rep := reportOf(t, s, graph.ComplianceFilter{}, 100, ""); rep.Pending != 0 ||
+		rowsOf(rep) != "A Film Dubbed Into Japanese: NO_SURROUND" {
+		t.Errorf("of every surround track, the whitelist changed: %d pending, %q", rep.Pending, rowsOf(rep))
+	}
+}
+
 // The rules a rollout reports - the check's first pass, then the
 // transcoder's rules and the packager's - cost one read of the library's
 // records: the first pass reads them, and the check keeps what it read of

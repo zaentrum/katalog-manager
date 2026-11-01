@@ -28,3 +28,23 @@ func IsSecretSetting(key string) bool {
 	key = strings.TrimSpace(key)
 	return slices.Contains(secretSettingKeys, key) || secretWords.MatchString(key) || secretKeySuffix.MatchString(key)
 }
+
+// WorkerSettings are the settings ss as the workers read them (GET
+// /api/settings), by key: a key without the spaces around it, of a key the
+// table holds twice the setting of the lowest id, and no secret
+// (IsSecretSetting), set or not. The compliance check reads the packager's
+// language settings so too.
+func WorkerSettings(ss []*Setting) map[string]*Setting {
+	out := map[string]*Setting{}
+	for _, s := range ss {
+		key := strings.TrimSpace(s.Key)
+		if key == "" || IsSecretSetting(key) {
+			continue
+		}
+		if twin, ok := out[key]; ok && twin.ID <= s.ID {
+			continue
+		}
+		out[key] = s
+	}
+	return out
+}

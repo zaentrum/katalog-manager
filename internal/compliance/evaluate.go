@@ -176,8 +176,14 @@ type sourceRecord struct {
 		Bitrate      *float64 `json:"bitrate"`
 		Title        *string  `json:"title"`
 		Dispositions struct {
-			AttachedPic bool `json:"attachedPic"`
-			Commentary  bool `json:"commentary"`
+			// as ffprobe read them: of an audio stream, the packager reads
+			// the default track, a commentary and an audio description
+			// (visualImpaired, descriptions) by them
+			AttachedPic    bool `json:"attachedPic"`
+			Default        bool `json:"default"`
+			Commentary     bool `json:"commentary"`
+			VisualImpaired bool `json:"visualImpaired"`
+			Descriptions   bool `json:"descriptions"`
 		} `json:"dispositions"`
 		// Hdr is a video stream's high dynamic range: its Dolby Vision
 		// configuration as ffprobe read it (source.schema.json's
@@ -321,8 +327,8 @@ func evaluate(t title, r records, rs rulesState) result {
 		}
 	}
 	if pr := rs.packager; pr != nil && pr.p != nil {
-		if surroundOn(pr.p) && r.srcEssence != nil && r.pkgEssence != nil && library.SurroundLost(r.srcEssence, r.pkgEssence) &&
-			!noCompanion(t, r, pr.p) {
+		if surroundOn(pr.p) && pr.p.tracks() != "" && r.srcEssence != nil && r.pkgEssence != nil &&
+			library.SurroundLost(r.srcEssence, r.pkgEssence) && !noCompanion(t, r, pr.p, rs.languages) {
 			had, hadOK := essenceNumber(r.srcEssence, "maxAudioChannels")
 			kept, keptOK := essenceNumber(r.pkgEssence, "maxAudioChannels")
 			text, measured, allowed := surroundWords(had, kept, hadOK, keptOK, pr.p)
@@ -368,7 +374,8 @@ func evaluate(t title, r records, rs rulesState) result {
 //     make every video HEVC and its video's codec is not known;
 //   - NO_SURROUND: the packager does not report its surround track, or it
 //     makes one and an essence of the original or of the package is not
-//     there;
+//     there, or the tracks it reports it makes one of are in words the check
+//     doesn't know;
 //   - IMAGE_SUBTITLES_MISSING: the packager does not report the image
 //     subtitles it keeps, or it keeps some and a record of the original or
 //     of the package is not there.
@@ -402,7 +409,8 @@ func uncheckedRules(t title, r records, rs rulesState, res result, copied tri, b
 		off[VideoNotHEVC] = tr.t.Ladder == nil || ok && t.videoCodec(r) == ""
 	}
 	if pr := rs.packager; pr != nil && pr.p != nil {
-		off[NoSurround] = pr.p.SurroundAudio == nil || surroundOn(pr.p) && (r.srcEssence == nil || r.pkgEssence == nil)
+		off[NoSurround] = pr.p.SurroundAudio == nil ||
+			surroundOn(pr.p) && (r.srcEssence == nil || r.pkgEssence == nil || pr.p.tracks() == "")
 		off[ImageSubtitlesMissing] = pr.p.ImageSubtitles == nil ||
 			len(pr.p.ImageSubtitles) > 0 && (r.src == nil || r.pkg == nil)
 	}
@@ -920,12 +928,17 @@ func isH264(codec string) bool {
 }
 
 // noCompanion reports whether the packager makes no 5.1 companion of the
-// title's original, as its record lists the original's tracks: it has no
-// track of more than two channels that is no commentary (planAudio), so a
-// package without one lacks nothing.
-func noCompanion(t title, r records, p *PackagerRules) bool {
-	plan := planAudio(t, r, p)
-	return plan.from == planOriginal && len(plan.companions) == 0
+// title's original, as its record lists the original's tracks (planAudio,
+// under the language settings l): it has no track of more than two channels
+// that is no commentary, or, where the packager makes a companion of the
+// tracks shown alone, none that is for the film and shown or the default
+// one. Processing it again then adds no 5.1, so a package without one lacks
+// nothing it would get — though the retire job still keeps its original
+// while its package has none of the original's surround (library.
+// SurroundLost), a hidden track's too.
+func noCompanion(t title, r records, p *PackagerRules, l languageSettings) bool {
+	plan, ok := planAudio(t, r, p, l)
+	return ok && plan.from == planOriginal && len(plan.companions) == 0
 }
 
 // hevcRequired reports whether the transcoder's rules make a package's video

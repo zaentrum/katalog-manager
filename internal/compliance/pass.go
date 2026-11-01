@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/library"
+	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
@@ -49,8 +50,9 @@ func (s *Service) hasCoveredBy(ctx context.Context) (bool, error) {
 	return ok, err
 }
 
-// state is what the titles are held against now: the workers' rules and the
-// library's layout.
+// state is what the titles are held against now: the workers' rules, the
+// library's layout, and the language settings the packager reads, as it
+// reads them (GET /api/settings).
 func (s *Service) state(ctx context.Context) (rulesState, error) {
 	rs, err := s.loadRules(ctx)
 	if err != nil {
@@ -62,6 +64,11 @@ func (s *Service) state(ctx context.Context) (rulesState, error) {
 	}
 	rs.v2 = set.V2()
 	rs.retries = s.retries
+	all, err := s.st.ListSettings(ctx)
+	if err != nil {
+		return rs, fmt.Errorf("the packager's language settings: %w", err)
+	}
+	rs.languages = languageSettingsOf(model.WorkerSettings(all))
 	return rs, nil
 }
 
@@ -247,8 +254,10 @@ func (s *Service) check(ctx context.Context, ids []string, rs rulesState, hash s
 
 // recordsVersion is the form of the facts the check keeps of a title's
 // records: a check that reads other facts of them gets another, and every
-// title's records are read again.
-const recordsVersion = "records/1"
+// title's records are read again. 2: an audio stream's dispositions default,
+// visualImpaired and descriptions, which the packager picks its default
+// track and tells an audio description by.
+const recordsVersion = "records/2"
 
 // keptRecords are the facts the check keeps of a title's records, as JSON:
 // what it read of its package's record and of its original's, with their

@@ -81,14 +81,17 @@ type TranscoderRules struct {
 
 // PackagerRules is what the check reads of the packager's report: the codec
 // of its surround companion ("off": none) and its layout ("5.1"), the bit
-// rates of an encoded companion and of the stereo rendition, and the forms of
-// image subtitles it carries.
+// rates of an encoded companion and of the stereo rendition, the forms of
+// image subtitles it carries, and which tracks get a companion
+// (surroundTracks: "shown", those the language settings show and the default
+// one; a packager that doesn't report it made one of every surround track).
 type PackagerRules struct {
 	SurroundAudio   *string  `json:"surroundAudio"`
 	SurroundLayout  *string  `json:"surroundLayout"`
 	SurroundBitrate *string  `json:"surroundBitrate"`
 	StereoBitrate   *string  `json:"stereoBitrate"`
 	ImageSubtitles  []string `json:"imageSubtitles"`
+	SurroundTracks  *string  `json:"surroundTracks"`
 }
 
 // checked are the values of a worker's rules the check reads, which its rules
@@ -109,6 +112,9 @@ type checkedTranscoder struct {
 type checkedPackager struct {
 	SurroundAudio, SurroundLayout, SurroundBitrate, StereoBitrate *string
 	ImageSubtitles                                                []string
+	// the tracks that get a companion, of a packager that reports them: a
+	// report without them keeps the hash it had
+	SurroundTracks *string `json:",omitempty"`
 }
 
 // hashOf is the hex SHA-256 of v as JSON.
@@ -131,7 +137,8 @@ func (p *PackagerRules) hash() string {
 		forms = nil
 	}
 	return hashOf(checkedPackager{SurroundAudio: p.SurroundAudio, SurroundLayout: p.SurroundLayout,
-		SurroundBitrate: p.SurroundBitrate, StereoBitrate: p.StereoBitrate, ImageSubtitles: forms})
+		SurroundBitrate: p.SurroundBitrate, StereoBitrate: p.StereoBitrate, ImageSubtitles: forms,
+		SurroundTracks: p.SurroundTracks})
 }
 
 // report is a worker's report as it is sent: its version and its rules.
@@ -308,22 +315,27 @@ type rulesState struct {
 	// retries says the sweep that retries a failed step runs (the
 	// service's KATALOG_RETRY_INTERVAL): a step's next retry is one.
 	retries bool
+	// languages are the catalog's settings the packager shows a title's
+	// tracks by, as it reads them, which say the tracks it makes a 5.1
+	// companion of where it makes one of the tracks shown.
+	languages languageSettings
 }
 
 // version is the check's own: a check that reads its findings otherwise, or
 // writes them in other words, gets a new one, and every title is checked
 // again.
-const version = "compliance/9"
+const version = "compliance/10"
 
 // hash is the hash a title checked against s is kept under: both workers'
-// rules, the layout, whether failed steps are retried, and the check's
+// rules, the layout, whether failed steps are retried, the language
+// settings where the packager's companions read them, and the check's
 // version.
 func (s rulesState) hash() string { return s.hashAt(version) }
 
 // hashAt is the hash a title checked against s by the check of version v is
 // kept under.
 func (s rulesState) hashAt(v string) string {
-	parts := []string{v, "legacy", "-", "-", "no retries"}
+	parts := []string{v, "legacy", "-", "-", "no retries", "-"}
 	if s.v2 {
 		parts[1] = "v2"
 	}
@@ -335,6 +347,9 @@ func (s rulesState) hashAt(v string) string {
 	}
 	if s.packager != nil {
 		parts[3] = s.packager.hash
+		if s.packager.p != nil && s.packager.p.tracks() == tracksShown {
+			parts[5] = s.languages.key()
+		}
 	}
 	return hashOf(parts)
 }
@@ -605,6 +620,20 @@ func surroundTrackRow(got func(string) (any, bool)) (string, *string) {
 	return words, detail
 }
 
+// surroundTracksRow is which tracks the packager makes its surround track
+// of, in words: "the tracks shown, and the default one" of shown (those the
+// catalog's language settings show, a commentary and an audio description
+// aside), its value as reported its detail; a value the words don't know as
+// it is.
+func surroundTracksRow(got func(string) (any, bool)) (string, *string) {
+	v, _ := got("surroundTracks")
+	s, ok := v.(string)
+	if !ok || !strings.EqualFold(strings.TrimSpace(s), tracksShown) {
+		return plain(v), nil
+	}
+	return "the tracks shown, and the default one", rawOf(got, "surroundTracks")
+}
+
 // stereoTrackRow is the packager's stereo track in words: its codec where it
 // reports it, and its bit rate ("AAC, 192 kbit/s"); the report's values its
 // detail.
@@ -682,6 +711,7 @@ var settings = []setting{
 	renditions("ladder", "Renditions"),
 	renditions("extraLadder", "Renditions of extras"),
 	{key: "surroundAudio", label: "Surround track", with: []string{"surroundLayout", "surroundBitrate"}, words: surroundTrackRow},
+	{key: "surroundTracks", label: "Surround track of", words: surroundTracksRow},
 	{key: "stereoAudio", label: "Stereo track", with: []string{"stereoBitrate"}, words: stereoTrackRow},
 	one("imageSubtitles", "Image subtitles kept", forms),
 }

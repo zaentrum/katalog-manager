@@ -21,6 +21,23 @@ const (
 		"stereoBitrate": "192k", "imageSubtitles": ["pgs", "vobsub"]}`
 )
 
+// packagerShown is the packager's report of the tests, of a packager that
+// makes a 5.1 companion of the tracks shown alone.
+var packagerShown = strings.Replace(packagerReport, `"surroundBitrate": "448k",`,
+	`"surroundBitrate": "448k", "surroundTracks": "shown",`, 1)
+
+// under is rs with the language settings the packager shows the tracks by:
+// its whitelist (comma-separated) and keep_original_if_single.
+func under(rs rulesState, whitelist string, keep bool) rulesState {
+	rs.languages = languageSettings{keepOriginal: keep}
+	for _, w := range strings.Split(whitelist, ",") {
+		if w != "" {
+			rs.languages.whitelist = append(rs.languages.whitelist, w)
+		}
+	}
+	return rs
+}
+
 // stateOf is the rules of the reports given ("" for a worker that did not
 // report), on the v2 layout.
 func stateOf(t *testing.T, transcoder, packager string) rulesState {
@@ -411,6 +428,102 @@ func TestSurroundLostVersusKept(t *testing.T) {
 	}
 }
 
+// Of a packager that makes a 5.1 companion of the tracks shown alone, a
+// package that lacks its original's surround breaks NO_SURROUND only where
+// processing it again makes one: of a surround track for the film that the
+// language settings show (English, German and Chinese, a single language
+// kept), or that is the default one. A title whose only surround tracks are
+// hidden, or are an audio description or a commentary, breaks no rule — the
+// deletion gate keeps its original all the same, its package having none of
+// the surround the original had (library.SurroundLost) — and a 5.1 its title
+// says is no commentary gets one. A packager that doesn't report which
+// tracks gets one made one of every surround track but a commentary, by the
+// words of its title alone.
+func TestNoSurroundIsOfTheTracksShown(t *testing.T) {
+	audio := func(lang string, ch int, more string) string {
+		return `{"type": "audio", "codec": "ac3", "channels": ` + itoa(ch) + `, "language": "` + lang + `"` + more + `}`
+	}
+	src := func(streams ...string) string {
+		return `{"file": {"sizeBytes": 5000000000}, "streams": [{"index": 0, "type": "video", "codec": "hevc", "width": 1920,
+			"height": 1080}, ` + strings.Join(streams, ", ") + `], "essence": {"surround": true, "maxAudioChannels": 6}}`
+	}
+	stereo := pkgJSON(1920, 1080, 5e6, "copy")
+	const lost = "NO_SURROUND The package has 2 audio channels, and the original has 6. The 5.1 E-AC-3 track the packager " +
+		"makes is missing. [2 channels / 5.1 E-AC-3]"
+	every := stateOf(t, transcoderReport, packagerReport)
+	shown := under(stateOf(t, transcoderReport, packagerShown), "en,de,zh", true)
+	for _, tc := range []struct {
+		name       string
+		src        string
+		languages  map[int]string
+		keep       bool
+		shown, old string
+	}{
+		{"an English stereo track, a Japanese 5.1 the whitelist hides", src(audio("en", 2, ""), audio("ja", 6, "")), nil, true,
+			"", lost},
+		{"an English 5.1 and a Japanese one", src(audio("en", 6, ""), audio("ja", 6, "")), nil, true, lost, lost},
+		{"an English stereo track and its audio description in 5.1", src(audio("en", 2, ""),
+			audio("en", 6, `, "title": "Audio Description"`)), nil, true, "", lost},
+		{"the same, described by its disposition", src(audio("en", 2, ""),
+			audio("en", 6, `, "dispositions": {"visualImpaired": true}`)), nil, true, "", lost},
+		{"an English 5.1 its title says is no commentary", src(audio("en", 2, ""), audio("en", 6, `, "title": "No commentary"`)),
+			nil, true, lost, ""},
+		{"an English 5.1 commentary", src(audio("en", 2, ""), audio("en", 6, `, "dispositions": {"commentary": true}`)), nil, true,
+			"", ""},
+		{"a 5.1 of no language", src(audio("und", 6, "")), nil, true, lost, lost},
+		{"a Japanese film of a single language, kept", src(audio("ja", 6, ""), audio("ja", 2, "")), nil, true, lost, lost},
+		{"a Japanese film, not kept, its stereo track the default one", src(audio("ja", 2, `, "dispositions": {"default": true}`),
+			audio("ja", 6, "")), nil, false, "", lost},
+		{"a Japanese film, not kept, its 5.1 the default one: hidden, it keeps its companion", src(audio("ja", 2, ""),
+			audio("ja", 6, `, "dispositions": {"default": true}`)), nil, false, lost, lost},
+		{"a Japanese and a Korean track, their stereo one the default", src(audio("ja", 6, ""),
+			audio("ko", 2, `, "dispositions": {"default": true}`)), nil, true, "", lost},
+		{"a 5.1 tagged Japanese, an admin naming it English", src(audio("en", 2, ""), audio("ja", 6, "")), map[int]string{1: "eng"},
+			true, lost, lost},
+		{"a 5.1 tagged English, an admin naming it Japanese", src(audio("en", 6, ""), audio("en", 2, "")), map[int]string{0: "jpn"},
+			true, "", lost},
+	} {
+		ti := packagedTitle("movie")
+		ti.AudioLanguages = tc.languages
+		r := recordsOf(t, stereo, tc.src)
+		rs := shown
+		rs.languages.keepOriginal = tc.keep
+		res := evaluate(ti, r, rs)
+		if got := found(res); got != tc.shown || len(res.UncheckedRules) > 0 {
+			t.Errorf("%s, of the tracks shown:\n got  %q, unchecked %v\n want %q", tc.name, got, res.UncheckedRules, tc.shown)
+		}
+		if got := found(evaluate(ti, r, every)); got != tc.old {
+			t.Errorf("%s, of every surround track:\n got  %q\n want %q", tc.name, got, tc.old)
+		}
+		// the deletion gate compares the essences alone: the original of a
+		// title whose package lacks its surround is kept, a hidden track's too
+		if !library.SurroundLost(r.srcEssence, r.pkgEssence) {
+			t.Errorf("%s: the deletion gate would let its original go", tc.name)
+		}
+	}
+	// a package that keeps a 5.1 of the original's breaks no rule either way
+	kept := strings.NewReplacer(`"essence": {"surround": false, "maxAudioChannels": 2}`,
+		`"essence": {"surround": true, "maxAudioChannels": 6}`).Replace(stereo)
+	if got := found(evaluate(packagedTitle("movie"), recordsOf(t, kept, src(audio("en", 6, ""))), shown)); got != "" {
+		t.Errorf("a package with its 5.1: %q", got)
+	}
+
+	// a packager that makes its companions of tracks the check doesn't know
+	// can't be held to them: NO_SURROUND is not checked, and nothing is
+	// estimated
+	unknown := under(stateOf(t, transcoderReport, strings.Replace(packagerShown, `"shown"`, `"every-other"`, 1)), "en", true)
+	ti := packagedTitle("movie")
+	big := int64(60e9)
+	ti.VersionBytes = &big
+	res := evaluate(ti, recordsOf(t, strings.Replace(stereo, `"bitrateBps": 5000000`, `"bitrateBps": 73000000`, 1),
+		src(audio("en", 6, ""))), unknown)
+	if res.breaks(NoSurround) || strings.Join(res.UncheckedRules, " ") != "NO_SURROUND" || res.EstimatedBytes != nil ||
+		!res.breaks(OverBitrateCap) {
+		t.Errorf("tracks the check doesn't know: %q, unchecked %v, estimated %v", found(res), res.UncheckedRules,
+			deref64(res.EstimatedBytes))
+	}
+}
+
 // The source's image subtitles of a form the packager carries are found
 // missing in each language the package carries none of them in; a form it
 // does not carry (DVB) is not looked for, nor VobSub of an original that is
@@ -736,6 +849,9 @@ func TestTheRulesCheckedAreThoseReported(t *testing.T) {
 			"OVER_SIZE_CAP"},
 		{"no surround track, no image subtitles kept", transcoderReport, strings.NewReplacer(`"surroundAudio": "eac3"`,
 			`"surroundAudio": "off"`, `["pgs", "vobsub"]`, `[]`).Replace(packagerReport), false, "NO_SURROUND IMAGE_SUBTITLES_MISSING"},
+		{"a surround track of the tracks shown", transcoderReport, packagerShown, false, ""},
+		{"a surround track of tracks the check doesn't know", transcoderReport,
+			strings.Replace(packagerShown, `"shown"`, `"every-other"`, 1), false, "NO_SURROUND"},
 		{"the older layout", transcoderReport, packagerReport, true, "OVER_BITRATE_CAP NO_SURROUND IMAGE_SUBTITLES_MISSING"},
 	} {
 		rs := stateOf(t, tc.transcoder, tc.packager)
@@ -1006,6 +1122,100 @@ func TestTheEstimateCountsTheAudioThePackagerMakes(t *testing.T) {
 		if got.EstimatedBytes == nil || *got.EstimatedBytes != tc.want {
 			t.Errorf("%s: %q, estimated %v, want %d", tc.name, found(got), deref64(got.EstimatedBytes), tc.want)
 		}
+	}
+}
+
+// Of a packager that makes a 5.1 companion of the tracks shown alone, the
+// estimate counts the companions of the languages the settings show, and of
+// the default track: a language they hide gets its stereo rendition alone.
+// A 2160 remux over its cap with an English E-AC-3 5.1 of 640 kbit/s, a
+// German DTS-HD MA 5.1 and a Japanese AC-3 5.1.
+func TestTheEstimateCountsTheCompanionsOfTheTracksShown(t *testing.T) {
+	src := srcOf(hevcVideo(3840, 2160, ""),
+		`{"index": 1, "type": "audio", "codec": "eac3", "channels": 6, "language": "en", "languageRaw": "eng", "bitrate": 640000}`,
+		`{"index": 2, "type": "audio", "codec": "dts", "profile": "DTS-HD MA", "channels": 6, "language": "de", "languageRaw": "ger"}`,
+		`{"index": 3, "type": "audio", "codec": "ac3", "channels": 6, "language": "ja", "languageRaw": "jpn"}`)
+	remux := pkgOf("hvc1.2.4.L153.B0", 3840, 2160, 65e6, "copy", 1)
+	shown := stateOf(t, transcoderWithTable, packagerShown)
+	for _, tc := range []struct {
+		name string
+		rs   rulesState
+		want int64
+	}{
+		{"every surround track: three", stateOf(t, transcoderWithTable, packagerReport), at(14e6+3*192e3+640e3+2*448e3) + extras},
+		{"English and German shown: two", under(shown, "en,de", true), at(14e6+3*192e3+640e3+448e3) + extras},
+		{"English shown: one", under(shown, "en", true), at(14e6+3*192e3+640e3) + extras},
+		{"no whitelist: three", under(shown, "", true), at(14e6+3*192e3+640e3+2*448e3) + extras},
+		{"none shown: the default's, the first", under(shown, "zh", true), at(14e6+3*192e3+640e3) + extras},
+	} {
+		got := evaluate(packagedTitle("movie"), recordsOf(t, remux, src), tc.rs)
+		if got.EstimatedBytes == nil || *got.EstimatedBytes != tc.want {
+			t.Errorf("%s: %q, estimated %v, want %d", tc.name, found(got), deref64(got.EstimatedBytes), tc.want)
+		}
+	}
+}
+
+// The packager's rules hash covers which tracks get a 5.1 companion, and a
+// report that doesn't say keeps the hash it had; the rules a title is
+// checked against cover the language settings where the packager makes its
+// companions of the tracks shown, and of no other packager.
+func TestTheHashOfTheTracksAndTheirLanguageSettings(t *testing.T) {
+	var p PackagerRules
+	if err := json.Unmarshal([]byte(packagerReport), &p); err != nil {
+		t.Fatal(err)
+	}
+	before := hashOf(struct {
+		SurroundAudio, SurroundLayout, SurroundBitrate, StereoBitrate *string
+		ImageSubtitles                                                []string
+	}{p.SurroundAudio, p.SurroundLayout, p.SurroundBitrate, p.StereoBitrate, []string{"pgs", "vobsub"}})
+	if p.hash() != before {
+		t.Error("a report that doesn't say which tracks get a companion changed its hash")
+	}
+	every, shown := stateOf(t, "", packagerReport), stateOf(t, "", packagerShown)
+	if every.packager.hash == shown.packager.hash {
+		t.Error("which tracks get a companion is not of the packager's hash")
+	}
+	for _, tc := range []struct {
+		name string
+		a, b rulesState
+		same bool
+	}{
+		{"of every surround track, another whitelist", under(every, "en,de", true), under(every, "en,de,ja", true), true},
+		{"of the tracks shown, the same settings", under(shown, "en,de", true), under(shown, "en,de", true), true},
+		{"of the tracks shown, another whitelist", under(shown, "en,de", true), under(shown, "en,de,ja", true), false},
+		{"of the tracks shown, keep_original_if_single off", under(shown, "en,de", true), under(shown, "en,de", false), false},
+	} {
+		if same := tc.a.hash() == tc.b.hash(); same != tc.same {
+			t.Errorf("%s: the same hash %v, want %v", tc.name, same, tc.same)
+		}
+	}
+}
+
+// The rules panel says which tracks the packager makes its surround track
+// of, as it says its other rules: a row of its own after the surround
+// track's, in words with the report's value its detail; one the words don't
+// know as it is.
+func TestThePanelSaysWhichTracksGetASurroundTrack(t *testing.T) {
+	rows := func(packager string) string {
+		var out []string
+		for _, r := range pipelineRulesOf(stateOf(t, "", packager)).Packager.Rules {
+			s := r.Key + " | " + r.Label + " | " + strings.NewReplacer(nbsp, " ", nbhy, "-").Replace(r.Value)
+			if r.Detail != nil {
+				s += " {" + *r.Detail + "}"
+			}
+			out = append(out, s)
+		}
+		return strings.Join(out, "\n")
+	}
+	if got, want := rows(packagerShown), `surroundAudio | Surround track | 5.1 E-AC-3, 448 kbit/s {surroundAudio=eac3, surroundLayout=5.1, surroundBitrate=448k}
+surroundTracks | Surround track of | the tracks shown, and the default one {surroundTracks=shown}
+stereoAudio | Stereo track | AAC, 192 kbit/s {stereoAudio=aac, stereoBitrate=192k}
+imageSubtitles | Image subtitles kept | PGS, VobSub`; got != want {
+		t.Errorf("the packager's rules:\n%s\nwant:\n%s", got, want)
+	}
+	if got := rows(strings.Replace(packagerShown, `"shown"`, `"every-other"`, 1)); !strings.Contains(got,
+		"\nsurroundTracks | Surround track of | every-other\n") {
+		t.Errorf("a value the words don't know:\n%s", got)
 	}
 }
 

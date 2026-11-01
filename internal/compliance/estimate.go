@@ -3,7 +3,6 @@ package compliance
 import (
 	"strings"
 
-	"github.com/zaentrum/katalog-manager/internal/languages"
 	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 )
@@ -20,7 +19,7 @@ import (
 //     maxrate an encode runs at today;
 //   - the audio today's packager makes of it (planAudio): a stereo
 //     rendition of every audio track, a 5.1 companion of the first
-//     surround track of each language;
+//     surround track of each language it makes one of;
 //   - what the package holds beside its renditions, which processing makes
 //     again (its subtitles, its trickplay pictures, its playlists), as its
 //     record measures it (packageExtras);
@@ -29,7 +28,8 @@ import (
 // are not counted: the original's record gives no size of them. Nil when
 // the records don't tell: a title processing again can't help (no original,
 // a disc image, one the transcoder would refuse again), no duration, a
-// worker that never reported, or a rate neither reports.
+// worker that never reported, a rate neither reports, or tracks of which
+// the packager reports it makes a companion in words the check doesn't know.
 func estimate(t title, r records, rs rulesState, res result) *int64 {
 	if len(res.Findings) == 0 || res.Blocked != "" || t.Original.State != library.OriginalPresent ||
 		(t.Path != nil && processing.IsDiscImage(*t.Path)) {
@@ -40,7 +40,10 @@ func estimate(t title, r records, rs rulesState, res result) *int64 {
 		return nil
 	}
 	p := rs.packager.p
-	plan := planAudio(t, r, p)
+	plan, ok := planAudio(t, r, p, rs.languages)
+	if !ok {
+		return nil
+	}
 	stereo := 0.0
 	if p.StereoBitrate != nil {
 		stereo, _ = parseBitrate(*p.StereoBitrate)
@@ -127,12 +130,15 @@ type audioPlan struct {
 // planAudio is the audio the packager makes of a title's original, as its
 // rules make it (packager.py, package_item and _prepare_source): a stereo
 // rendition of every audio track, whatever its language — its language
-// whitelist (packager.languages) and keep_original_if_single only say which
-// of them the player lists (_visible_indices: "We never drop tracks at the
-// packager level"), so they change nothing of the package's size — and a
-// 5.1 companion of the first track of more than two channels of each
-// language that is no commentary (_surround_plan), the track itself where it
-// is a 5.1 of the companion's codec (at its own bit rate: its record's,
+// whitelist (packager.language_whitelist) and keep_original_if_single only
+// say which of them the player lists (_visible_indices: "We never drop
+// tracks at the packager level"), so they change nothing of the stereo
+// renditions — and the 5.1 companions companionTracks plans: of a packager
+// that reports it makes them of the tracks shown (surroundTracks "shown"),
+// those of the tracks the language settings l show and of the default one,
+// each for the film; of one that reports nothing of it, those of every
+// surround track that is no commentary. A companion is the track itself where
+// it is a 5.1 of the companion's codec (at its own bit rate: its record's,
 // else that of the package's companion of its language), else an encode at
 // the packager's surround bit rate. The transcoder's encode carries every
 // audio track of the original as it is (ffmpeg.py: -map 0:a?, -c:a copy), so
@@ -143,54 +149,46 @@ type audioPlan struct {
 // package.json: renditions.audio, and renditions.audioSurround at the larger
 // of each one's measured bit rate and the packager's); else one stereo
 // rendition. Without the original's streams, a companion is counted when the
-// original had surround or its record doesn't say.
-func planAudio(t title, r records, p *PackagerRules) audioPlan {
+// original had surround or its record doesn't say. False where the packager
+// makes companions of tracks it names in words the check doesn't know.
+//
+// The packager's default track is of its PREFERRED_LANGUAGES first, which
+// its report doesn't give: the plan takes the whitelist's order for them, as
+// a packager that sets none does. Where one names a language the whitelist
+// hides, the packager's default, and so its companion, may be a track the
+// plan takes for hidden.
+func planAudio(t title, r records, p *PackagerRules, l languageSettings) (audioPlan, bool) {
 	rate := 0.0
 	if p.SurroundBitrate != nil {
 		rate, _ = parseBitrate(*p.SurroundBitrate)
 	}
 	on := surroundOn(p)
+	which := p.tracks()
+	if on && which == "" {
+		return audioPlan{}, false
+	}
 	target := ""
 	if on {
 		target = strings.ToLower(strings.TrimSpace(*p.SurroundAudio))
 	}
-	if r.src != nil {
-		plan := audioPlan{from: planOriginal}
-		seen := map[string]bool{}
-		for _, s := range r.src.Streams {
-			if s.Type != "audio" {
-				continue
-			}
-			ordinal := plan.stereo
-			plan.stereo++
-			ch := 0.0
-			if s.Channels != nil {
-				ch = *s.Channels
-			}
-			if !on || ch <= 2 || commentary(s.Title, s.Dispositions.Commentary) {
-				continue
-			}
-			lang := languageKey(s.LanguageRaw, s.Language)
-			if o, ok := t.AudioLanguages[ordinal]; ok {
-				lang = languageKey(&o)
-			}
-			if seen[lang] {
-				continue
-			}
-			seen[lang] = true
+	if tracks := audioTracks(t, r); len(tracks) > 0 {
+		plan := audioPlan{from: planOriginal, stereo: len(tracks)}
+		if !on {
+			return plan, true
+		}
+		for _, i := range companionTracks(tracks, which, l) {
+			a := tracks[i]
 			companion := rate
-			if s.Codec != nil && strings.EqualFold(strings.TrimSpace(*s.Codec), target) && ch == 6 {
-				if s.Bitrate != nil && *s.Bitrate > 0 {
-					companion = *s.Bitrate
-				} else if measured, ok := companionOf(r, lang); ok {
+			if strings.EqualFold(strings.TrimSpace(a.codec), target) && a.channels == 6 {
+				if a.bitrate != nil && *a.bitrate > 0 {
+					companion = *a.bitrate
+				} else if measured, ok := companionOf(r, a.key); ok {
 					companion = measured
 				}
 			}
 			plan.companions = append(plan.companions, companion)
 		}
-		if plan.stereo > 0 {
-			return plan
-		}
+		return plan, true
 	}
 	had := true
 	if r.srcEssence != nil {
@@ -213,54 +211,24 @@ func planAudio(t title, r records, p *PackagerRules) audioPlan {
 	if on && had && len(plan.companions) == 0 {
 		plan.companions = []float64{rate}
 	}
-	return plan
+	return plan, true
 }
 
 // companionOf is the measured bit rate of the package's 5.1 companion of
-// the language lang, bit/s; false for a package with none of it.
-func companionOf(r records, lang string) (float64, bool) {
+// the language whose key is key (languageKey), bit/s; false for a package
+// with none of it.
+func companionOf(r records, key string) (float64, bool) {
 	if r.pkg == nil {
 		return 0, false
 	}
 	for _, a := range r.pkg.Renditions.AudioSurround {
-		if languageKey(a.Language) == lang && a.BitrateBps != nil && *a.BitrateBps > 0 {
+		lang := ""
+		if a.Language != nil {
+			lang = *a.Language
+		}
+		if languageKey(lang) == key && a.BitrateBps != nil && *a.BitrateBps > 0 {
 			return *a.BitrateBps, true
 		}
 	}
 	return 0, false
-}
-
-// commentary reports whether the packager takes an audio track for a
-// commentary, which gets no 5.1 companion (packager.py, _is_commentary): its
-// disposition says it is one, or its title holds "comment" or "kommentar".
-func commentary(title *string, disposition bool) bool {
-	if disposition {
-		return true
-	}
-	if title == nil {
-		return false
-	}
-	t := strings.ToLower(*title)
-	return strings.Contains(t, "comment") || strings.Contains(t, "kommentar")
-}
-
-// languageKey is the key the packager tells a track's language by
-// (packager.py, _lang_key), of the first code that names one: its primary
-// subtag, its ISO 639-1 code where it has one ("de" of "ger", "deu",
-// "de-CH"), else as it is ("zxx", "gsw"); "und" when none does.
-func languageKey(codes ...*string) string {
-	for _, c := range codes {
-		if c == nil {
-			continue
-		}
-		primary, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(strings.ReplaceAll(*c, "_", "-"))), "-")
-		if primary == "" {
-			continue
-		}
-		if tag, ok := languages.Tag(primary); ok {
-			primary, _, _ = strings.Cut(tag, "-")
-		}
-		return primary
-	}
-	return languages.Unknown
 }
