@@ -1966,27 +1966,35 @@ records it (GraphQL `Item.originalBytes`, `packageBytes` and `hasOriginal`):
 - **`originalBytes`** is the size of its originals: its sources present, all
   of them (a version in parts has several; one removed or retired counts
   not), or, of a title whose file names no source (the legacy layout keeps
-  none), its file. Null when it has none: a title whose original was retired
-  has its package alone. The rules report's `originalBytes` is the size of
-  the original a title was packaged from, retired or not.
+  none), its file with its size. Null when it has none: a title whose
+  original was retired has its package alone. It is what lies on disk: every
+  source present counts, an old file `replaceSource` kept beside the new one
+  too, which the retire job and the rules report don't take for the title's
+  original. The rules report's `originalBytes` is the size of the original
+  a title was packaged from, retired or not.
 - **`packageBytes`** is the size of its package as its packaged row records
   it, which packaging-complete writes from its version's `package.json`
   (`sizeBytes`): the size the rules report shows (see
   [Library compliance](#library-compliance)). Null when it has none, as a
   title taken in without one.
-- **`hasOriginal`** is whether it has its `originalBytes`.
+- **`hasOriginal`** is whether it has its `originalBytes`. It is false as
+  soon as its original is retired, while the file lies in the library's
+  trash until `library.trash.grace` ends: the space is freed only then.
 
 An episode another's file covers has no file and no package of its own: its
 sizes are null, that file and its package counted once, on its holder, and
 `hasOriginal` is its holder's (see
 [One file, several episodes](#one-file-several-episodes)). A series, a season
-and an album have none of their own either. `items(hasOriginal: true)` lists
-the items that have an original, `false` those that have none, in SQL with
-the other filters. The sizes of a page are read at once, in one query
-however many items it lists (the console's 200), and only when a field of
-them is asked; an item read on its own reads its own. On a catalog without
-migration 040 a title's original is its file, and on one without 045 no
-episode is covered.
+and an album have no file of their own: all three are null. A page whose
+sizes can't be read has all three null, each with an error, and its items
+listed as they are. `items(hasOriginal: true)` lists the items that have an
+original, `false` those that may have a file and have none (a title whose
+original was retired, or that has no file; never a series, a season or an
+album), in SQL with the other filters. The sizes of a page are read at
+once, in one query however many items it lists (the console's 200), and
+only when a field of them is asked; an item read on its own reads its own.
+On a catalog without migration 040 a title's original is its file, and on
+one without 045 no episode is covered.
 
 ### Retiring the originals of a list
 
