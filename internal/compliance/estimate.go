@@ -135,9 +135,10 @@ type audioPlan struct {
 // tracks at the packager level"), so they change nothing of the stereo
 // renditions — and the 5.1 companions companionTracks plans: of a packager
 // that reports it makes them of the tracks shown (surroundTracks "shown"),
-// those of the tracks the language settings l show and of the default one,
-// each for the film; of one that reports nothing of it, those of every
-// surround track that is no commentary. A companion is the track itself where
+// those of the tracks for the film the language settings l show and of the
+// default one (of the languages it prefers: preferredOf), else of its first
+// track for the film, hidden though it is; of one that reports nothing of
+// it, as the check planned them before. A companion is the track itself where
 // it is a 5.1 of the companion's codec (at its own bit rate: its record's,
 // else that of the package's companion of its language), else an encode at
 // the packager's surround bit rate. The transcoder's encode carries every
@@ -151,12 +152,6 @@ type audioPlan struct {
 // rendition. Without the original's streams, a companion is counted when the
 // original had surround or its record doesn't say. False where the packager
 // makes companions of tracks it names in words the check doesn't know.
-//
-// The packager's default track is of its PREFERRED_LANGUAGES first, which
-// its report doesn't give: the plan takes the whitelist's order for them, as
-// a packager that sets none does. Where one names a language the whitelist
-// hides, the packager's default, and so its companion, may be a track the
-// plan takes for hidden.
 func planAudio(t title, r records, p *PackagerRules, l languageSettings) (audioPlan, bool) {
 	rate := 0.0
 	if p.SurroundBitrate != nil {
@@ -176,7 +171,7 @@ func planAudio(t title, r records, p *PackagerRules, l languageSettings) (audioP
 		if !on {
 			return plan, true
 		}
-		for _, i := range companionTracks(tracks, which, l) {
+		for _, i := range companionTracks(tracks, which, l, p.preferredOf(l)) {
 			a := tracks[i]
 			companion := rate
 			if strings.EqualFold(strings.TrimSpace(a.codec), target) && a.channels == 6 {

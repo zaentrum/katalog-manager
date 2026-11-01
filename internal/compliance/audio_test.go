@@ -1,6 +1,7 @@
 package compliance
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -49,10 +50,11 @@ func TestATitleThatSaysItsTrackIsNoCommentary(t *testing.T) {
 // its title — a commentary's words as TestATitleThatSaysItsTrackIsNoCommentary
 // reads them, an audio description's where it says no commentary — else the
 // film's main audio, which alone gets a 5.1 companion of a packager that
-// makes one of the tracks shown. Python's \b and \s are Unicode's. A
-// packager that doesn't report which tracks get one took every title that
-// holds "comment" or "kommentar" for a commentary, a negation's too, and
-// knew no audio description.
+// makes one of the tracks shown. Python's \b and \s are Unicode's. Of a
+// packager that doesn't report which tracks get one, the check takes a
+// track for a commentary as it took one before (oldCommentary): every title
+// that holds "comment" or "kommentar", a negation's too, and no audio
+// description.
 func TestWhatATrackIsFor(t *testing.T) {
 	for _, tc := range []struct {
 		title                    string
@@ -202,8 +204,10 @@ func TestTheDefaultTrack(t *testing.T) {
 // doesn't report which, the first track of more than two channels of each
 // language that is no commentary; of one that makes one of the tracks shown,
 // the first such track of each language that is for the film and shown or
-// the default one — none of a hidden one, so a title whose only surround
-// tracks are hidden gets no 5.1, and none of an audio description.
+// the default one — of the languages it prefers first, else of the
+// whitelist's — and where none is, the first such track for the film,
+// hidden though it is, alone; none of a hidden one where another gets one,
+// and never one of a commentary or an audio description.
 func TestTheTracksThePackagerMakesACompanionOf(t *testing.T) {
 	en := []string{"en"}
 	for _, tc := range []struct {
@@ -212,25 +216,96 @@ func TestTheTracksThePackagerMakesACompanionOf(t *testing.T) {
 		which     string
 		whitelist []string
 		keep      bool
+		preferred []string
 		want      string
 	}{
-		{"every surround track", tracksOf("en:51", "de:51", "en:51", "fr:51:c", "it"), tracksEvery, en, true, "0 1"},
-		{"every surround track, an audio description's too", tracksOf("en", "en:51:ad"), tracksEvery, en, true, "1"},
-		{"the tracks shown: the English", tracksOf("en:51", "de:51"), tracksShown, en, true, "0"},
-		{"the tracks shown: a German 5.1 hidden", tracksOf("en", "de:51"), tracksShown, en, true, ""},
-		{"no whitelist: every language", tracksOf("en", "de:51", "ja:51"), tracksShown, nil, true, "1 2"},
-		{"an audio description gets none", tracksOf("en:51:ad", "en"), tracksShown, en, true, ""},
-		{"an audio description first in its language", tracksOf("en:51:ad", "en:51"), tracksShown, en, true, "1"},
-		{"a commentary gets none", tracksOf("en:51:c", "en"), tracksShown, en, true, ""},
-		{"a track of no language is shown", tracksOf("und:51", "zxx:51"), tracksShown, en, true, "0 1"},
-		{"a single language the whitelist hides, kept", tracksOf("ja:51", "ja"), tracksShown, en, true, "0"},
-		{"the same, not kept: the default one, hidden, keeps its own", tracksOf("ja", "ja:51:d"), tracksShown, en, false, "1"},
-		{"two languages hidden: the default one's alone", tracksOf("ja:51", "ko:51:d"), tracksShown, en, true, "1"},
-		{"two languages hidden, a stereo default: none", tracksOf("ja:d", "ko:51"), tracksShown, en, true, ""},
+		{"every surround track", tracksOf("en:51", "de:51", "en:51", "fr:51:c", "it"), tracksEvery, en, true, nil, "0 1"},
+		{"every surround track, an audio description's too", tracksOf("en", "en:51:ad"), tracksEvery, en, true, nil, "1"},
+		{"the tracks shown: the English, the German hidden", tracksOf("en:51", "de:51"), tracksShown, en, true, nil, "0"},
+		{"none shown surround: a German 5.1 hidden keeps its own", tracksOf("en", "de:51"), tracksShown, en, true, nil, "1"},
+		{"none shown surround: the first hidden one alone", tracksOf("en", "fr:51", "ja:51"), tracksShown, en, true, nil, "1"},
+		{"no whitelist: every language", tracksOf("en", "de:51", "ja:51"), tracksShown, nil, true, nil, "1 2"},
+		{"an audio description gets none", tracksOf("en:51:ad", "en"), tracksShown, en, true, nil, ""},
+		{"an audio description first in its language", tracksOf("en:51:ad", "en:51"), tracksShown, en, true, nil, "1"},
+		{"a commentary gets none", tracksOf("en:51:c", "en"), tracksShown, en, true, nil, ""},
+		{"a hidden commentary gets none either", tracksOf("en", "ja:51:c"), tracksShown, en, true, nil, ""},
+		{"a track of no language is shown", tracksOf("und:51", "zxx:51"), tracksShown, en, true, nil, "0 1"},
+		// the default is a shown track before a hidden one: a hidden 5.1
+		// beside a shown one gets none
+		{"a hidden 5.1, a shown 5.1 of no language the default", tracksOf("ja:51", "und:51"), tracksShown, en, true, nil, "1"},
+		{"a hidden 5.1, a shown stereo track of no language", tracksOf("ja:51", "und"), tracksShown, en, true, nil, "0"},
+		{"a single language the whitelist hides, kept", tracksOf("ja:51", "ja"), tracksShown, en, true, nil, "0"},
+		{"the same, not kept: the default one, hidden", tracksOf("ja", "ja:51:d"), tracksShown, en, false, nil, "1"},
+		{"two languages hidden: the default one's", tracksOf("ja:51", "ko:51:d"), tracksShown, en, true, nil, "1"},
+		{"two languages hidden, a stereo default: the first surround track's", tracksOf("ja:d", "ko:51"), tracksShown, en, true,
+			nil, "1"},
+		// the languages the packager prefers pick the default first
+		{"Japanese preferred, the whitelist hiding it: its default keeps its own", tracksOf("en:51", "ja:51"), tracksShown, en,
+			true, []string{"ja"}, "0 1"},
+		{"English preferred, of the same", tracksOf("en:51", "ja:51"), tracksShown, en, true, []string{"en"}, "0"},
+		{"a preferred language no track is of: the whitelist's", tracksOf("ja:51", "en:51"), tracksShown, en, true,
+			[]string{"ko"}, "1"},
 	} {
-		got := companionTracks(tc.tracks, tc.which, languageSettings{whitelist: tc.whitelist, keepOriginal: tc.keep})
+		l := languageSettings{whitelist: tc.whitelist, keepOriginal: tc.keep}
+		p := PackagerRules{PreferredLanguages: tc.preferred}
+		got := companionTracks(tc.tracks, tc.which, l, p.preferredOf(l))
 		if s := strings.Trim(fmt.Sprint(got), "[]"); s != tc.want {
 			t.Errorf("%s: %q, want %q", tc.name, s, tc.want)
+		}
+	}
+}
+
+// A track's language is the one an admin set for it, else the code its file
+// carried, as the packager reads its tag — not the record's language read
+// off it: "arm" is a key of its own to the packager, which a whitelist of
+// "hy" doesn't show, where the record reads "hy" of it.
+func TestATracksLanguageIsTheCodeItsFileCarried(t *testing.T) {
+	var src sourceRecord
+	if err := json.Unmarshal([]byte(`{"streams": [
+		{"type": "audio", "codec": "ac3", "channels": 6, "language": "hy", "languageRaw": "arm"},
+		{"type": "audio", "codec": "ac3", "channels": 6, "language": "en", "languageRaw": "eng"},
+		{"type": "audio", "codec": "aac", "channels": 2, "language": "hy"}]}`), &src); err != nil {
+		t.Fatal(err)
+	}
+	r := records{src: &src}
+	l := languageSettings{whitelist: []string{"hy", "en"}, keepOriginal: true}
+	tracks := audioTracks(title{}, r)
+	if got := shownOf(shownTracks(tracks, l)); got != "1 2" {
+		t.Errorf("shown %q, want the English and the stereo track tagged hy, not the one its file tags arm", got)
+	}
+	if got := companionTracks(tracks, tracksShown, l, l.whitelist); fmt.Sprint(got) != "[1]" {
+		t.Errorf("the companions %v, want the English one's alone", got)
+	}
+	// an admin's language wins
+	tracks = audioTracks(title{AudioLanguages: map[int]string{0: "hye", 1: "jpn"}}, r)
+	if got := []string{tracks[0].key, tracks[1].key}; got[0] != "hye" || got[1] != "ja" {
+		t.Errorf("the keys an admin's languages give: %v", got)
+	}
+}
+
+// Which tracks the packager makes a 5.1 companion of, as it reports it: a
+// report that names none, or a blank, is a packager planned as the check
+// planned it before; "shown" in any case and spaces is shown; anything else
+// is no word the check knows.
+func TestTheTracksAPackagerReports(t *testing.T) {
+	for _, tc := range []struct {
+		report string
+		want   string
+	}{
+		{packagerReport, tracksEvery},
+		{strings.Replace(packagerShown, `"shown"`, `null`, 1), tracksEvery},
+		{strings.Replace(packagerShown, `"shown"`, `""`, 1), tracksEvery},
+		{strings.Replace(packagerShown, `"shown"`, `"  "`, 1), tracksEvery},
+		{packagerShown, tracksShown},
+		{strings.Replace(packagerShown, `"shown"`, `" Shown "`, 1), tracksShown},
+		{strings.Replace(packagerShown, `"shown"`, `"every"`, 1), ""},
+	} {
+		var p PackagerRules
+		if err := json.Unmarshal([]byte(tc.report), &p); err != nil {
+			t.Fatal(err)
+		}
+		if got := p.tracks(); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.report, got, tc.want)
 		}
 	}
 }

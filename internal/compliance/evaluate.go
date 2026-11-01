@@ -930,12 +930,12 @@ func isH264(codec string) bool {
 // noCompanion reports whether the packager makes no 5.1 companion of the
 // title's original, as its record lists the original's tracks (planAudio,
 // under the language settings l): it has no track of more than two channels
-// that is no commentary, or, where the packager makes a companion of the
-// tracks shown alone, none that is for the film and shown or the default
-// one. Processing it again then adds no 5.1, so a package without one lacks
-// nothing it would get — though the retire job still keeps its original
-// while its package has none of the original's surround (library.
-// SurroundLost), a hidden track's too.
+// that is no commentary, or, where the packager makes its companions of the
+// tracks shown, none that is for the film — a hidden one gets one where none
+// shown does. Processing it again then adds no 5.1, so a package without one
+// lacks nothing it would get — though the retire job still keeps its
+// original while its package has none of the original's surround (library.
+// SurroundLost), a commentary's or an audio description's too.
 func noCompanion(t title, r records, p *PackagerRules, l languageSettings) bool {
 	plan, ok := planAudio(t, r, p, l)
 	return ok && plan.from == planOriginal && len(plan.companions) == 0

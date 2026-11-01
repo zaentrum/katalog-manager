@@ -21,11 +21,13 @@ import (
 // Which tracks the packager makes a 5.1 companion of, as its report says
 // (surroundTracks).
 const (
-	// tracksEvery is every surround track, as a packager that doesn't
-	// report which made one, a commentary aside (oldCommentary).
+	// tracksEvery is a packager that doesn't report which: it is planned as
+	// the check planned it before (oldCommentary), but for the language
+	// table, which follows the packager's now (languageKey).
 	tracksEvery = "every"
-	// tracksShown is the surround tracks a client is offered, and the
-	// default one, but a commentary or an audio description (forTheFilm).
+	// tracksShown is the surround tracks a client is offered and the
+	// default one, a commentary or an audio description never; of a title
+	// none of whose tracks shown is surround, its first surround track.
 	tracksShown = "shown"
 )
 
@@ -268,12 +270,12 @@ func (a audioTrack) purpose() string {
 // such a track, nor any language's 5.1 companion.
 func (a audioTrack) forTheFilm() bool { return a.purpose() == purposeMain }
 
-// oldCommentary reports whether a packager that doesn't report which tracks
-// get a 5.1 companion takes a track for a commentary, which gets none: its
-// disposition says so, or its title holds "comment" or "kommentar",
-// whatever words around it. It is that packager's own rule, older than
-// record logic 9 (purpose), and holds of it alone: one that reports
-// surroundTracks reads a track as the record logic does.
+// oldCommentary reports whether the check took a track for a commentary,
+// which gets no 5.1 companion, before packagers reported which tracks get
+// one: its disposition says so, or its title holds "comment" or
+// "kommentar". A packager that doesn't report surroundTracks is planned as
+// the check planned it before (tracksEvery), by this; one that reports it
+// is planned by what a track is for as the record logic reads it (purpose).
 func (a audioTrack) oldCommentary() bool {
 	t := strings.ToLower(a.title)
 	return a.comment || strings.Contains(t, "comment") || strings.Contains(t, "kommentar")
@@ -324,11 +326,9 @@ func shownTracks(tracks []audioTrack, l languageSettings) []bool {
 // (packager.py, _pick_default_audio), -1 of none: of the first preferred
 // language a track is of, else of every track, the first by its rank —
 // shown before hidden, for the film before not, flagged default before not,
-// then in their order. Its preferred languages are its PREFERRED_LANGUAGES,
-// else its whitelist's; its report doesn't give the first, so they are the
-// whitelist's, as a packager that sets none prefers (where it prefers a
-// language the whitelist hides, the default may be another track: see
-// planAudio).
+// then in their order. Its preferred languages are those it reports
+// (preferredLanguages: its PREFERRED_LANGUAGES), else the whitelist's in
+// its order (preferredOf).
 func defaultTrack(tracks []audioTrack, shown []bool, preferred []string) int {
 	if len(tracks) == 0 {
 		return -1
@@ -370,15 +370,17 @@ func defaultTrack(tracks []audioTrack, shown []bool, preferred []string) int {
 // where it makes one of the tracks shown (tracksShown), of each language the
 // first such track that is for the film (forTheFilm) and that a client is
 // offered under the language settings l (shownTracks) or is the default one
-// (defaultTrack). A track the settings hide gets none, though its stereo
-// rendition is made; a title whose only surround tracks are hidden gets no
-// 5.1 at all.
-func companionTracks(tracks []audioTrack, which string, l languageSettings) []int {
+// (defaultTrack, of the languages preferred), and where none is, the first
+// track of more than two channels for the film, hidden though it is. A
+// hidden track gets none where another gets one, though its stereo
+// rendition is made; a title whose only surround tracks are hidden keeps a
+// 5.1, of the first; a commentary or an audio description never gets one.
+func companionTracks(tracks []audioTrack, which string, l languageSettings, preferred []string) []int {
 	var shown []bool
 	def := -1
 	if which == tracksShown {
 		shown = shownTracks(tracks, l)
-		def = defaultTrack(tracks, shown, l.whitelist)
+		def = defaultTrack(tracks, shown, preferred)
 	}
 	var out []int
 	seen := map[string]bool{}
@@ -402,5 +404,23 @@ func companionTracks(tracks []audioTrack, which string, l languageSettings) []in
 		seen[a.key] = true
 		out = append(out, i)
 	}
+	if which == tracksShown && len(out) == 0 {
+		for i, a := range tracks {
+			if a.channels > 2 && a.forTheFilm() {
+				return []int{i}
+			}
+		}
+	}
 	return out
+}
+
+// preferredOf are the languages the packager p picks the default track of
+// first (packager.py, build_package): those it reports (preferredLanguages,
+// its PREFERRED_LANGUAGES), else the whitelist's of l, in its order — as a
+// packager that reports none prefers, one that sets none.
+func (p *PackagerRules) preferredOf(l languageSettings) []string {
+	if len(p.PreferredLanguages) > 0 {
+		return p.PreferredLanguages
+	}
+	return l.whitelist
 }

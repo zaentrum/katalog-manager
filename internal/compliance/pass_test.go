@@ -359,23 +359,26 @@ func TestAPassEstimatesTheAudioOfTheOriginal(t *testing.T) {
 	}
 }
 
-// Of a packager that makes a 5.1 companion of the tracks shown alone, the
+// Of a packager that makes a 5.1 companion of the tracks shown, the
 // catalog's language settings, as the packager reads them, are of the rules
-// a title is checked against: a film whose only surround track, Japanese,
-// the whitelist (English) hides breaks no rule, so the check's word on
-// retiring its original says nothing against it — the retire job keeps the
-// original all the same, its package having none of the surround the
-// original had — and once the whitelist shows Japanese every title waits to
-// be checked again, and the film breaks NO_SURROUND. A packager that doesn't
-// report which tracks get a companion made one of every surround track, and
-// the language settings are of no title's rules.
+// a title is checked against: a film with an English and a Japanese 5.1 and
+// a stereo package breaks NO_SURROUND whatever they show — processing it
+// again makes the English one's companion, or the Japanese one's where no
+// track shown is surround — and its estimate counts the companion of each
+// language they show; once the whitelist (English, its key with spaces
+// around it) shows Japanese too, every title waits to be checked again, and
+// the film's estimate counts both. Its original is kept by the retire job's
+// gate meanwhile, its package having none of the surround the original had.
+// A packager that doesn't report which tracks get a companion is planned as
+// the check planned it before, and the language settings are of no title's
+// rules.
 func TestTheLanguageSettingsAreOfTheRules(t *testing.T) {
 	s, st, dir := checkOf(t)
 	ctx := context.Background()
 	reportFor(t, s, Packager, packagerShown)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext)
 		VALUES ('whitelist', ' packager.language_whitelist ', 'en'), ('keep', 'packager.keep_original_if_single', 'true')`)
-	p := packaged{n: 60, kind: "movie", title: "A Film Dubbed Into Japanese", width: 1920, height: 1080, rate: 5e6,
+	p := packaged{n: 60, kind: "movie", title: "A Film In Two Languages", width: 1920, height: 1080, rate: 5e6,
 		encoder: "copy", original: 5e9, size: 4.6e9, srcCh: 6, pkgCh: 2}
 	p.add(t, st, dir)
 	itemDir := library.Paths{Root: dir}.ItemDir(library.Place{ID: p.id(), Type: p.kind})
@@ -383,27 +386,22 @@ func TestTheLanguageSettingsAreOfTheRules(t *testing.T) {
 		"file": map[string]any{"name": "original.mkv", "sizeBytes": p.original}, "container": map[string]any{"durationMs": 7200000},
 		"streams": []any{
 			map[string]any{"index": 0, "type": "video", "codec": "hevc", "width": 1920, "height": 1080},
-			map[string]any{"index": 1, "type": "audio", "codec": "aac", "channels": 2, "language": "en", "languageRaw": "eng",
+			map[string]any{"index": 1, "type": "audio", "codec": "ac3", "channels": 6, "language": "en", "languageRaw": "eng",
 				"dispositions": map[string]any{"default": true}},
 			map[string]any{"index": 2, "type": "audio", "codec": "ac3", "channels": 6, "language": "ja", "languageRaw": "jpn"}},
 		"essence": map[string]any{"surround": true, "maxAudioChannels": 6}}, nil)
-	passed := func() string {
+	estimate := func() float64 {
 		t.Helper()
-		got, err := s.Passed(ctx, []string{p.id()})
-		if err != nil {
-			t.Fatal(err)
+		rep := reportOf(t, s, graph.ComplianceFilter{}, 100, "")
+		if rowsOf(rep) != "A Film In Two Languages: NO_SURROUND" || rep.Rows[0].EstimatedBytes == nil {
+			t.Fatalf("the report: %q", rowsOf(rep))
 		}
-		return got[p.id()]
+		return *rep.Rows[0].EstimatedBytes
 	}
 	if _, err := s.Pass(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := rowsOf(reportOf(t, s, graph.ComplianceFilter{}, 100, "")); got != "" {
-		t.Errorf("its Japanese 5.1 hidden: %q, want no rule broken", got)
-	}
-	if got := passed(); got != "" {
-		t.Errorf("the check's word on retiring its original: %q, want nothing against it", got)
-	}
+	one := estimate()
 	src, err := library.Essence(filepath.Join(library.SourceDir(itemDir, p.source()), "source.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -421,26 +419,78 @@ func TestTheLanguageSettingsAreOfTheRules(t *testing.T) {
 	if rep := reportOf(t, s, graph.ComplianceFilter{}, 100, ""); rep.Pending != 1 {
 		t.Errorf("after the whitelist changed: %d titles pending, want it", rep.Pending)
 	}
-	if got := passed(); !strings.HasPrefix(got, "the compliance check checked it against other rules") {
-		t.Errorf("the check's word after the whitelist changed: %q", got)
+	if got, err := s.Passed(ctx, []string{p.id()}); err != nil ||
+		!strings.HasPrefix(got[p.id()], "the compliance check checked it against other rules") {
+		t.Errorf("the check's word after the whitelist changed: %q, %v", got[p.id()], err)
 	}
 	if n, err := s.Pass(ctx); err != nil || n != 1 {
 		t.Fatalf("the pass after the whitelist changed checked %d, %v", n, err)
 	}
-	if got := rowsOf(reportOf(t, s, graph.ComplianceFilter{}, 100, "")); got != "A Film Dubbed Into Japanese: NO_SURROUND" {
-		t.Errorf("its Japanese 5.1 shown: %q", got)
+	if got, want := estimate()-one, float64(int64(448e3*7200/8)); got != want {
+		t.Errorf("Japanese shown: the estimate grew by %v, want a companion at 448 kbit/s, %v", got, want)
 	}
 
-	// a packager that makes a companion of every surround track: the
-	// settings are of no title's rules
+	// a packager that doesn't say which tracks get a companion: the settings
+	// are of no title's rules
 	reportFor(t, s, Packager, packagerReport)
 	if _, err := s.Pass(ctx); err != nil {
 		t.Fatal(err)
 	}
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_settings SET valuetext = 'en' WHERE id = 'whitelist'`)
-	if rep := reportOf(t, s, graph.ComplianceFilter{}, 100, ""); rep.Pending != 0 ||
-		rowsOf(rep) != "A Film Dubbed Into Japanese: NO_SURROUND" {
-		t.Errorf("of every surround track, the whitelist changed: %d pending, %q", rep.Pending, rowsOf(rep))
+	if rep := reportOf(t, s, graph.ComplianceFilter{}, 100, ""); rep.Pending != 0 {
+		t.Errorf("of a packager that doesn't say which tracks, the whitelist changed: %d pending", rep.Pending)
+	}
+}
+
+// The facts the check keeps of a title's records are read again once it
+// reads others of them (recordsVersion: records/2 reads an audio stream's
+// dispositions default, visualImpaired and descriptions, which the facts kept
+// before lack): a film whose 5.1 is an audio description by its disposition
+// alone breaks no rule, where the facts kept before, which knew no
+// disposition of it, would have it break NO_SURROUND.
+func TestTheFactsKeptOfAnOlderFormAreReadAgain(t *testing.T) {
+	s, st, dir := checkOf(t)
+	ctx := context.Background()
+	reportFor(t, s, Packager, packagerShown)
+	p := packaged{n: 61, kind: "movie", title: "A Film Described", width: 1920, height: 1080, rate: 5e6,
+		encoder: "copy", original: 5e9, size: 4.6e9, srcCh: 6, pkgCh: 2}
+	p.add(t, st, dir)
+	itemDir := library.Paths{Root: dir}.ItemDir(library.Place{ID: p.id(), Type: p.kind})
+	librarytest.WriteSource(t, library.SourceDir(itemDir, p.source()), map[string]any{"sourceId": p.source(),
+		"file": map[string]any{"name": "original.mkv", "sizeBytes": p.original}, "container": map[string]any{"durationMs": 7200000},
+		"streams": []any{
+			map[string]any{"index": 0, "type": "video", "codec": "hevc", "width": 1920, "height": 1080},
+			map[string]any{"index": 1, "type": "audio", "codec": "aac", "channels": 2, "language": "en"},
+			map[string]any{"index": 2, "type": "audio", "codec": "ac3", "channels": 6, "language": "en",
+				"dispositions": map[string]any{"visualImpaired": true}}},
+		"essence": map[string]any{"surround": true, "maxAudioChannels": 6}}, nil)
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := rowsOf(reportOf(t, s, graph.ComplianceFilter{}, 100, "")); got != "" {
+		t.Fatalf("its 5.1 an audio description: %q, want no rule broken", got)
+	}
+	reads := s.reads.Load()
+	// the row as the check that kept the facts of the form before wrote it:
+	// its records' key of that form, the facts without the dispositions it
+	// did not read
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_compliance SET staleat = now(),
+		recordkey = replace(recordkey, $2, 'records/1'),
+		records = jsonb_set(records, '{src,streams}', (SELECT jsonb_agg(x #- '{dispositions,default}'
+			#- '{dispositions,visualImpaired}' #- '{dispositions,descriptions}') FROM jsonb_array_elements(records->'src'->'streams') x))
+		WHERE item_id = $1`, p.id(), recordsVersion)
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_compliance WHERE item_id = $1
+		AND recordkey LIKE 'records/1 %' AND records::text NOT LIKE '%visualImpaired%'`, p.id()); n != 1 {
+		t.Fatal("the row was not made one of the facts kept before")
+	}
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.reads.Load() - reads; got != 2 {
+		t.Errorf("%d records read, want its two read again", got)
+	}
+	if got := rowsOf(reportOf(t, s, graph.ComplianceFilter{}, 100, "")); got != "" {
+		t.Errorf("checked from the facts kept before: %q, want no rule broken", got)
 	}
 }
 

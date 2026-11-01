@@ -309,6 +309,10 @@ func serverTexts(t *testing.T) []text {
 		{"transcoder with a ladder at the original’s size, 720p and 576p", strings.Replace(transcoderWithTable, `"ladder": "source:hevc"`,
 			`"ladder": "source:hevc,720p:h264,576p:h264"`, 1)},
 		{"packager making its surround track of the tracks shown", packagerShown},
+		{"packager preferring Japanese, then English, for the default track", strings.Replace(packagerShown,
+			`"surroundTracks": "shown",`, `"surroundTracks": "shown", "preferredLanguages": ["ja", "en"],`, 1)},
+		{"packager preferring no language for the default track", strings.Replace(packagerShown,
+			`"surroundTracks": "shown",`, `"surroundTracks": "shown", "preferredLanguages": [],`, 1)},
 		{"packager making its surround track of tracks the words don’t know", strings.Replace(packagerShown, `"shown"`,
 			`"every-other"`, 1)},
 		{"packager making no surround track, of an image that doesn’t report its stereo codec", strings.NewReplacer(

@@ -721,15 +721,16 @@ func TestAListOfOriginalsThroughTheService(t *testing.T) {
 	}
 }
 
-// A film whose only surround track the packager's language settings hide,
-// of a packager that makes its 5.1 companions of the tracks shown, through
-// the service as main wires it: the compliance check finds it within every
-// rule, as processing it again adds no 5.1, and a list of originals to
-// retire skips it all the same — the retire job keeps an original whose
-// package lacks the surround it had (owner decision 2026-10-07), a hidden
-// track's too. Of a packager that makes one of every surround track, it
-// breaks NO_SURROUND.
-func TestAnOriginalWhoseOnlySurroundIsHiddenIsKept(t *testing.T) {
+// Of a packager that makes its 5.1 companions of the tracks shown, through
+// the service as main wires it: a film whose only surround track is its
+// English audio description breaks no rule — processing it again makes no
+// companion of an audio description — and a list of originals to retire
+// skips it all the same, as the retire job keeps an original whose package
+// lacks the surround it had (owner decision 2026-10-07); a film whose only
+// surround track the language settings hide (Japanese) breaks NO_SURROUND,
+// processing it again making that track's 5.1. Of a packager that makes one
+// of every surround track, the first breaks NO_SURROUND too.
+func TestAnOriginalWhoseSurroundGetsNoCompanionIsKept(t *testing.T) {
 	in := newInstanceWired(t, wiring{compliance: true})
 	st, ctx, admin := in.st, context.Background(), in.iss.Admin(t)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('set-layout', 'library.layout', 'v2'),
@@ -747,34 +748,48 @@ func TestAnOriginalWhoseOnlySurroundIsHiddenIsKept(t *testing.T) {
 			t.Fatalf("the %s's report: %d", r.worker, code)
 		}
 	}
-	layOut(t, in, remuxID, "movie", "A Film Dubbed Into Japanese", "", remuxVer, remuxSrc, 1920, 1080, 5e6, 5e9, 4.6e9)
-	dir := library.PathsOf(in.cfg).ItemDir(library.Place{ID: remuxID, Type: "movie"})
-	librarytest.WriteSource(t, library.SourceDir(dir, remuxSrc), map[string]any{"sourceId": remuxSrc,
-		"file": map[string]any{"name": "original.mkv", "sizeBytes": 5e9}, "container": map[string]any{"durationMs": 7200000},
-		"streams": []any{
-			map[string]any{"index": 0, "type": "video", "codec": "hevc", "width": 1920, "height": 1080},
-			map[string]any{"index": 1, "type": "audio", "codec": "aac", "channels": 2, "language": "en", "languageRaw": "eng",
-				"dispositions": map[string]any{"default": true}},
-			map[string]any{"index": 2, "type": "audio", "codec": "ac3", "channels": 6, "language": "ja", "languageRaw": "jpn"}},
-		"essence": map[string]any{"surround": true, "maxAudioChannels": 6}}, nil)
-	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET verifiedat = now(), verifiedlevel = 'full', dir = $2
-		WHERE id = $1`, remuxVer, library.VersionDir(dir, remuxVer))
+	// lay a film out with a stereo English track and the 5.1 surround given
+	film := func(id, ver, src, title string, surround map[string]any) {
+		t.Helper()
+		layOut(t, in, id, "movie", title, "", ver, src, 1920, 1080, 5e6, 5e9, 4.6e9)
+		dir := library.PathsOf(in.cfg).ItemDir(library.Place{ID: id, Type: "movie"})
+		librarytest.WriteSource(t, library.SourceDir(dir, src), map[string]any{"sourceId": src,
+			"file": map[string]any{"name": "original.mkv", "sizeBytes": 5e9}, "container": map[string]any{"durationMs": 7200000},
+			"streams": []any{
+				map[string]any{"index": 0, "type": "video", "codec": "hevc", "width": 1920, "height": 1080},
+				map[string]any{"index": 1, "type": "audio", "codec": "aac", "channels": 2, "language": "en", "languageRaw": "eng",
+					"dispositions": map[string]any{"default": true}},
+				surround},
+			"essence": map[string]any{"surround": true, "maxAudioChannels": 6}}, nil)
+		storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET verifiedat = now(), verifiedlevel = 'full', dir = $2
+			WHERE id = $1`, ver, library.VersionDir(dir, ver))
+	}
+	film(remuxID, remuxVer, remuxSrc, "A Film Described", map[string]any{"index": 2, "type": "audio", "codec": "ac3",
+		"channels": 6, "language": "en", "languageRaw": "eng", "title": "Audio Description"})
+	const dubbedID, dubbedVer, dubbedSrc = "0c0c0c0c-0000-4000-8000-000000000105", "0c0c0c0c-0000-4000-8000-000000000205",
+		"0c0c0c0c-0000-4000-8000-000000000305"
+	film(dubbedID, dubbedVer, dubbedSrc, "A Film Dubbed Into Japanese", map[string]any{"index": 2, "type": "audio", "codec": "ac3",
+		"channels": 6, "language": "ja", "languageRaw": "jpn"})
 	if _, err := in.check.Pass(ctx); err != nil {
 		t.Fatal(err)
 	}
-	word := func() string {
+	word := func(id string) string {
 		t.Helper()
-		got, err := in.check.Passed(ctx, []string{remuxID})
+		got, err := in.check.Passed(ctx, []string{id})
 		if err != nil {
 			t.Fatal(err)
 		}
-		return got[remuxID]
+		return got[id]
 	}
-	if got := word(); got != "" {
-		t.Fatalf("the check's word on retiring its original: %q, want nothing against it", got)
+	if got := word(remuxID); got != "" {
+		t.Fatalf("the check's word on retiring the described film's original: %q, want nothing against it", got)
+	}
+	if got := word(dubbedID); got != "the compliance check finds it breaks NO_SURROUND" {
+		t.Errorf("the film whose only 5.1 is hidden: %q", got)
 	}
 
-	// a list of it, a dry run: skipped, its package lacking the surround
+	// a list of the described film, a dry run: skipped, its package lacking
+	// the surround
 	if _, a := in.gql(t, "/api/manage/query", admin, `mutation { retireOriginals(items: ["`+remuxID+`"]) { id } }`); len(a.Errors) > 0 {
 		t.Fatal(a.Errors)
 	}
@@ -810,7 +825,7 @@ func TestAnOriginalWhoseOnlySurroundIsHiddenIsKept(t *testing.T) {
 	if _, err := in.check.Pass(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := word(); got != "the compliance check finds it breaks NO_SURROUND" {
+	if got := word(remuxID); got != "the compliance check finds it breaks NO_SURROUND" {
 		t.Errorf("of a packager that makes a companion of every surround track: %q", got)
 	}
 }
