@@ -89,8 +89,10 @@ The surface is split deliberately:
   - `GET /api/settings` — the settings that are no secret, for the workers:
     `{"<key>": {"valueText": "...", "valueType": "..."}}`. The packager reads
     its language whitelist from it (`packager.language_whitelist`, comma
-    separated) and `packager.keep_original_if_single`. A secret setting is
-    left out, set or not.
+    separated) and `packager.keep_original_if_single`, and the compliance
+    check reads them as it does (see
+    [Library compliance](#library-compliance)). A secret setting is left
+    out, set or not.
   - `POST /api/ingest` — an addon hands a file on disk to the catalog, a
     title by its catalog ids or by its identity (see [Ingest](#ingest); a
     disc image is refused, 400: see [Disc images](#disc-images)).
@@ -749,14 +751,20 @@ with, at their start and every ten minutes, on `PUT
 
 ```json
 {"version": "3f2a9c1", "rules": {"surroundAudio": "eac3", "surroundLayout": "5.1", "surroundBitrate": "448k",
-  "stereoAudio": "aac", "stereoBitrate": "192k", "imageSubtitles": ["pgs", "vobsub"]}}
+  "surroundTracks": "shown", "stereoAudio": "aac", "stereoBitrate": "192k", "imageSubtitles": ["pgs", "vobsub"]}}
 ```
 
 Each value is the one the worker runs with (a cap of 0 a rule switched
 off; see each worker's README, "Rules report"); the transcoder's
 `ladderRungs` are its ladder's rungs in parts, and `rungMaxrateMbps` the
 maxrate its planner gives a rung that sets none, by the height of its box
-and its codec, which the estimate reads. The rules are kept as they
+and its codec, which the estimate reads. The packager's `surroundTracks`
+says which tracks get a 5.1 companion: `shown`, those a client is offered
+under the catalog's language settings and the default one, never a
+commentary or an audio description; a packager that doesn't report it made
+one of every surround track but a commentary (by the words "comment" or
+"kommentar" in its title), and one that reports a value the check doesn't
+know has `NO_SURROUND` checked of no title. The rules are kept as they
 came, and a value the check reads must be of its kind (a cap a number of 0
 or more, a bit rate as `448k`): anything else is 400, as is a worker that
 reports no rules here (`transcoder` and `packager` do); 503 without
@@ -779,7 +787,7 @@ records can't be read …`).
 | `PACKAGING_FAILED` | it has no package, and its transcode or its package failed or was skipped, saying which, and why where the words know the worker's reason ("The transcoder failed.", its detail "ffmpeg exited 1"; "The transcoder left it as it is: Dolby Vision profile 7 needs a tone-mapping encode."; "The packager failed, and tries again by itself." while a retry is really scheduled), or its file is a disc image ("Its file is a disc image, which the transcoder doesn’t encode.") |
 | `OVER_BITRATE_CAP` | its package's video is above the bit rate the transcoder encodes a title of its kind and bucket at, while the cap of them holds: its override (`NVENC_MAXRATE_1080P_MBPS`, `NVENC_MAXRATE_2160P_MBPS`) where one is set, else the cap ("The video runs at 73 Mbit/s, above the 14 Mbit/s the transcoder allows for a 2160p movie."); a browser-friendly H.264 video copied as it is, which today's transcoder copies again whatever its bit rate (an H.264 rung at the original's size does, and so does a CPU transcoder's rung whose codec the ladder leaves to the default), breaks no cap |
 | `OVER_SIZE_CAP` | a movie's original is larger than `movieMaxGiB`, and its package copies its video as it is, such an H.264 copy as above aside ("The original is larger than the 16.1 GB the transcoder allows for a movie, and the package copied its video.") |
-| `NO_SURROUND` | the packager makes a surround track, the package lacks the surround its original had, as the retire job holds an original for it, and the packager makes the original a 5.1 companion: not where its record lists no track of more than two channels but commentaries ("The package has 2 audio channels, and the original has 8. The 5.1 E-AC-3 track the packager makes is missing.") |
+| `NO_SURROUND` | the packager makes a surround track, the package lacks the surround its original had, as the retire job holds an original for it, and processing it again makes the original a 5.1 companion (see the estimate's audio below): not where its record lists no track of more than two channels but commentaries, nor, of a packager that makes its companions of the tracks shown, where its only surround tracks are hidden by the language settings, commentaries or audio descriptions — the retire job keeps its original all the same ("The package has 2 audio channels, and the original has 8. The 5.1 E-AC-3 track the packager makes is missing.") |
 | `IMAGE_SUBTITLES_MISSING` | the original has image subtitles of a form the packager keeps, and the package has none of them in their language; VobSub only of a Matroska original, the only one the packager extracts it of ("The original’s PGS subtitles in German and Portuguese (Brazil), and its VobSub subtitles in Italian, are missing from the package. The packager keeps PGS and VobSub subtitles.") |
 | `VIDEO_NOT_HEVC` | the package's video is not HEVC (`hev1`, `hvc1`) where the transcoder's rules make every package HEVC: its ladder names the source rung's codec, or its encoder is no CPU one ("The video is H.264, and the transcoder makes every video HEVC.", its detail the codec, "avc1.640028") |
 
@@ -812,7 +820,8 @@ size cap isn't reported, whose original's size isn't known, or whose
 original is larger and whether its package copied the video isn't;
 `VIDEO_NOT_HEVC` where the renditions aren't reported, or every video is
 HEVC and the package's codec isn't known; `NO_SURROUND` where the surround
-track isn't reported, or the packager makes one and an essence isn't there;
+track isn't reported, or the packager makes one and an essence isn't there
+or it reports the tracks it makes one of in words the check doesn't know;
 `IMAGE_SUBTITLES_MISSING` where the image subtitles kept aren't reported, or
 some are and a record isn't there. Its row keeps those rules
 (`uncheckedrules`, in the order of the table), and such a title is not
@@ -844,12 +853,30 @@ file's own, and only then the reference database's runtime):
   track of the original, whatever its language, at its stereo bit rate (its
   language whitelist and `keep_original_if_single` only say which of them
   the player lists: the packager never drops a track), and a 5.1 companion
-  of the first track of more than two channels of each language that is no
-  commentary, a hidden one's too: the track itself, at its own bit rate (its
+  of the first track of more than two channels of each language that the
+  packager makes one of: the track itself, at its own bit rate (its
   record's, else that of the package's companion of its language), where
   it is a 5.1 of the companion's codec, else an encode at its surround bit
-  rate. The transcoder's encode carries every audio track of the original
-  as it is. The tracks are counted off the original's record
+  rate. Of a packager that makes them of the tracks shown (`surroundTracks:
+  shown`), a companion is made of a track for the film — no commentary and
+  no audio description, as the record logic reads them (its disposition,
+  else its title: "Director's Commentary" and "Comentario" are
+  commentaries, "No commentary" and "Kommentarlos" are not, "No-spoiler
+  commentary" is one) — that the catalog's language settings show, as the
+  packager reads them (`packager.language_whitelist`, its tracks of no
+  language always shown, all of a title of a single language the whitelist
+  hides while `packager.keep_original_if_single` holds), or that is the
+  default one (of the whitelist's first language that has a track, else of
+  them all: shown first, for the film first, flagged default first, then
+  the first); a track they hide gets its stereo rendition alone. The
+  packager's default prefers its `PREFERRED_LANGUAGES` first, which its
+  report doesn't give: the check takes the whitelist's order, as a packager
+  that sets none does, so where one names a language the whitelist hides
+  its default may be a track the check takes for hidden. Of a packager that
+  doesn't report which tracks get one, a companion is made of every track
+  that is no commentary by its words alone, a hidden one's too. The
+  transcoder's encode carries every audio track of the original as it is.
+  The tracks are counted off the original's record
   (`sources/<id>/source.json`: its audio streams, each in the language an
   admin set for it, which the packager takes over the file's), else off the
   package's record (its renditions), else as one stereo rendition and, when
@@ -940,7 +967,9 @@ background checks, every minute, the titles that need it: every title when
 none was checked (at the first start), every title once a night (after
 `compliance.nightly` of the service's local time, by the database's
 clock), every title checked against rules that changed since (each row
-keeps the hash of the rules it was checked against, with the layout), a
+keeps the hash of the rules it was checked against, with the layout and,
+of a packager that makes its 5.1 companions of the tracks shown, the
+language settings it reads them by), a
 title the catalog gained, a title whose package completed or whose
 transcode, package or take-in ended (packaging-complete and the step routes
 mark it), a title whose re-encode in the queue is done or failed, and the
@@ -974,7 +1003,8 @@ default stands.
   after it a row of each rung of the ladder that reads its maxrate off the
   table, "Video bit rate, 720p rung", "at most 3 Mbit/s" (none of a ladder
   at the original's size alone, or of a rung that sets its own maxrate,
-  which the ladder's words say); "Surround track", "5.1 E-AC-3, 448 kbit/s"; "Stereo track",
+  which the ladder's words say); "Surround track", "5.1 E-AC-3, 448 kbit/s";
+  "Surround track of", "the tracks shown, and the default one"; "Stereo track",
   "AAC, 192 kbit/s" (the codec where the packager reports it); the
   configuration as reported the detail where the value says it in words.
 - `libraryCompliance(kind, rules, search, first, after, sort, descending)`
@@ -1809,9 +1839,12 @@ original's, or holds fewer channels than a 5.1 of it would (a 7.1 original's
 source saying why, and its retire step waits — failed, with no retry of its
 own, its error "its package has no 5.1 of the source's surround; re-encode it
 first", its details `held for version <versionId>` — until another version
-of the title is complete, or an admin retries the step. `{"held": true}`
-queues these titles to be encoded again (see
-[The re-encode queue](#the-re-encode-queue)). The same job deletes an extra's
+of the title is complete, or an admin retries the step. The essences alone
+decide: an original whose only surround tracks the packager makes no 5.1 of
+(hidden by the language settings, commentaries, audio descriptions) is kept
+too, though the compliance check finds its package lacks nothing processing
+again would make. `{"held": true}` queues these titles to be encoded again
+(see [The re-encode queue](#the-re-encode-queue)). The same job deletes an extra's
 original once its folder is recorded and verifies, removes a superseded
 version after its grace (`version-removed`, its folder deleted) once its
 folder holds no original (one there is retired first, against the newest
