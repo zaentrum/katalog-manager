@@ -33,6 +33,8 @@ The surface is split deliberately:
   the titles that break them, see [Library compliance](#library-compliance)),
   `retireRun` (the list of originals to retire begun last, see
   [Retiring the originals of a list](#retiring-the-originals-of-a-list)),
+  `pictureAreas` (how far the titles' picture areas are, and the backfill;
+  an item's `pictureArea` is its own, see [Picture areas](#picture-areas)),
   and the operator actions
   (`triggerScan`, `enrichOne`/`enrichPending`, `refreshPeople`, `packageItem`,
   `validateItem`, `retryStep`/`retryFailed` (see
@@ -398,6 +400,17 @@ the base schema in the order of their numbers, and each is idempotent:
   read of the subtitles' table queues behind its `ALTER` while it waits —
   then left for the next start; without it no styled original or font is
   kept. See [Styled subtitles and their fonts](#styled-subtitles-and-their-fonts).
+- `054_picture_areas.sql` keeps each title's picture area, the part of its
+  frame its picture fills (`com_nalet_katalog_pictureareas`: a movie, an
+  episode or an extra a row, its state, the frame and the area in pixels,
+  the file measured and what it is, the measurement's version, its frames,
+  its cost and why it is unknown or failed, and the backfill's claim of it,
+  its runs and failures), and the view of the rows of what each title plays
+  now (`com_nalet_katalog_currentpictureareas`, which katalog-api reads),
+  with SELECT on both for the read-only role; see
+  [Picture areas](#picture-areas). A deleted item's rows go with it, its
+  extras' too. Applied at startup under the same lock when any of it is
+  missing; without it no area is kept, and the players fit the frame.
 
 ## Track languages
 
@@ -1205,6 +1218,82 @@ hash. A probe that says nothing of a value leaves the value the asset had.
 catalog's records; `backfillSourceSizes` gives every source asset whose
 original is recorded and there the size its source records, where it has
 another or none, and answers how many.
+
+## Picture areas
+
+Many sources keep a full frame with a wider picture letterboxed inside it,
+black bars baked into the video (a 1920x1080 frame whose picture is
+1920x804), or a narrower one pillarboxed. The players fit a title's picture
+area to the screen rather than its frame. The analyzer measures it once,
+the catalog keeps it (migration 054), and katalog-api answers it in the
+playback lookups the stream service makes; the packages stay as they are.
+The area is the union of the picture over the whole title, so a film whose
+aspect changes keeps the largest, and a bar counts only where it is black
+throughout (the analyzer's README says how it is measured).
+
+The analyzer's side, for the service account and admins:
+
+- `PUT /api/picture/items/{id}` (an extra's `/api/picture/extras/{id}`)
+  reports a measurement: `{"path", "method", "frame": {"width", "height"},
+  "area": {"x", "y", "width", "height"}, "samples", "informative",
+  "durationMs", "seconds", "cpuSeconds", "sides"}`, the area the frame
+  itself when there are no bars, in pixels from the frame's top left
+  corner; without an area and with `reason`, one that could not tell
+  (`unknown`); with `error`, one that could not read the file (`failed`);
+  `{"released": true}` gives a title the backfill handed out back
+  unmeasured. It answers the title's area as it is now, 400 for an area
+  outside its frame, a covered episode (its holder is measured: it plays
+  its holder's file) or a series, 404 for no such title. A failure counts
+  and waits its backoff (an hour, doubled each time, a week at most), and
+  never replaces an area of what the title plays now.
+- `GET` of the same answers the title's area and `current`, whether it is
+  of what the title plays now; 404 when it has none. The analyzer's pass of
+  a new title asks it before it measures.
+- `POST /api/picture/claim` `{"worker", "limit"}` hands the backfill the
+  titles to measure: `{"items": [{"kind", "id", "itemId", "type", "path",
+  "durationMs"}], "deadline"}`, or none, `"idle"` (why) and
+  `"retryAfterSeconds"`.
+
+All three answer 503 without migration 054. What a measurement is of comes
+from its file: in a folder of one of the item's versions, that version and
+the original it was made of; else the item's original (its primary asset's
+source); of an extra, its package. An area is of what the title plays now
+while the title's complete version is that version or was made of that
+original, or, without one, while it plays that original (or the package
+from before the library it was measured in); an extra's while its package
+is the one measured. A title whose file was replaced has its old area kept
+and not served, and is measured again.
+
+The backfill hands out the titles without an area of what they play now,
+movies first, then episodes, then extras, each the package where it has
+one (the playlist of its largest video rendition), else its original. It
+reads its settings on every claim, so an instance starts it, slows it or
+moves its hours without a restart:
+
+- `picture.backfill` (`off`): `on` hands titles out;
+- `picture.backfill.window` (`22:00-17:00`): when, `HH:MM-HH:MM` in UTC,
+  never from 17:00 to 22:00 by default; empty, any time; one that is no
+  window hands out nothing;
+- `picture.backfill.inflight` (`1`): titles handed out and not reported at
+  once;
+- `picture.backfill.rate` (`240`): titles handed out an hour at most; `0`
+  none;
+- `picture.backfill.lease` (`30m`): how long a title handed out is its
+  worker's. A claim's `deadline` is the window's end or the lease's,
+  whichever comes first: the analyzer stops a measurement still running
+  then and gives the title back. A title whose run never reported back
+  counts as a failed one once its lease ends.
+
+Every claim, its lease and each failure are rows of the table, so the
+backfill resumes where it was after a restart of either side, and one
+instance hands out titles at a time (an advisory lock). A title whose
+file can't be found counts as a failure, and the next one goes.
+`pictureAreas` (GraphQL, admins) says how far it is: the titles to measure,
+those with an area of what they play now (`letterboxed`, `full`,
+`unknown`), those still to measure, failed and handed out now, those
+handed out in the last hour, the CPU the measurements took an hour of
+video as the analyzer reported it, the settings as read and why it hands
+out nothing now. An item's `pictureArea` is its area with `current`.
 
 ## Ingest
 
