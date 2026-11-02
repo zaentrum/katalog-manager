@@ -28,10 +28,13 @@ const (
 	OriginTranslated = "translated"
 	// OriginConverted: another script of one of the title's subtitles.
 	OriginConverted = "converted"
+	// OriginRecognized: read from one of the title's image subtitles (PGS,
+	// VobSub) by text recognition.
+	OriginRecognized = "recognized"
 )
 
 // Origins are the ways an attached subtitle came to be.
-var Origins = []string{OriginSource, OriginProvider, OriginTranscribed, OriginTranslated, OriginConverted}
+var Origins = []string{OriginSource, OriginProvider, OriginTranscribed, OriginTranslated, OriginConverted, OriginRecognized}
 
 // Subtitle is a subtitle of a title as the attach seam says it: one of the
 // title's own (its package's, a file beside its source, a stream embedded in
@@ -74,15 +77,19 @@ type Attachment struct {
 // AttachLabel is the label of an attached subtitle that was given none: what
 // a viewer is told of it besides its language — "SDH" for one for deaf and
 // hard-of-hearing viewers, "AI" for one a model made (transcribed,
-// translated), both "SDH · AI" — and nil when there is nothing to tell. A
-// player names it by its language and this ("German · AI").
+// translated), "OCR" for one read from an image subtitle (recognized), both
+// "SDH · AI" or "SDH · OCR" — and nil when there is nothing to tell. A player
+// names it by its language and this ("German · AI").
 func AttachLabel(origin string, sdh bool) *string {
 	var parts []string
 	if sdh {
 		parts = append(parts, "SDH")
 	}
-	if origin == OriginTranscribed || origin == OriginTranslated {
+	switch origin {
+	case OriginTranscribed, OriginTranslated:
 		parts = append(parts, "AI")
+	case OriginRecognized:
+		parts = append(parts, "OCR")
 	}
 	if len(parts) == 0 {
 		return nil

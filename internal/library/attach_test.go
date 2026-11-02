@@ -86,3 +86,29 @@ func TestTheVersionASubtitleIsAttachedTo(t *testing.T) {
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET dir = NULL WHERE id = $1`, complete)
 	attachable("a complete version without a folder", "")
 }
+
+// An attached subtitle given no label is named by what it is: for deaf and
+// hard-of-hearing viewers, made by a model, read from an image subtitle.
+func TestAttachLabel(t *testing.T) {
+	for _, c := range []struct {
+		origin string
+		sdh    bool
+		want   string
+	}{
+		{OriginProvider, false, ""},
+		{OriginProvider, true, "SDH"},
+		{OriginTranscribed, false, "AI"},
+		{OriginTranslated, true, "SDH · AI"},
+		{OriginConverted, false, ""},
+		{OriginRecognized, false, "OCR"},
+		{OriginRecognized, true, "SDH · OCR"},
+	} {
+		got := ""
+		if l := AttachLabel(c.origin, c.sdh); l != nil {
+			got = *l
+		}
+		if got != c.want {
+			t.Errorf("AttachLabel(%q, %v) = %q, want %q", c.origin, c.sdh, got, c.want)
+		}
+	}
+}

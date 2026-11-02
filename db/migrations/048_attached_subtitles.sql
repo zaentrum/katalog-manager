@@ -8,9 +8,10 @@
 -- and its row says how it came to be (com_nalet_katalog_subtitleassets):
 --   origin      how the subtitle was made: source (it came with the title's
 --               file), provider (found elsewhere), transcribed (from the
---               title's audio), translated (from another of its subtitles) or
---               converted (another script of one); null for a subtitle of the
---               title's own, its package's or a file beside its source;
+--               title's audio), translated (from another of its subtitles),
+--               converted (another script of one) or recognized (read from one
+--               of its image subtitles); null for a subtitle of the title's
+--               own, its package's or a file beside its source;
 --   issdh       whether it is for deaf and hard-of-hearing viewers (sound
 --               cues, speakers' names); false for the title's own, whose label
 --               says so where it is;

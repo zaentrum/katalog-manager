@@ -1303,7 +1303,9 @@ packaged again.
   language a subtitle is in. `origin` says how it came to be: `source` (it
   came with the title's file and was not taken in with it), `provider`
   (found elsewhere), `transcribed` (from the title's audio), `translated`
-  (from another of its subtitles) or `converted` (another script of one).
+  (from another of its subtitles), `converted` (another script of one) or
+  `recognized` (read from one of its image subtitles, PGS or VobSub, by text
+  recognition).
 - **`content`** is WebVTT or SubRip text in UTF-8, `format` (`webvtt`, `srt`)
   saying which; without it the text does. It is kept as WebVTT: SubRip is
   converted (its numbers go, its times are WebVTT's, the styling of other
@@ -1313,8 +1315,9 @@ packaged again.
   it starts are refused (422), saying why; a body of more than 8 MiB is 413.
 - **`label`** is what a player says of it besides its language. Without
   one, it is `SDH` for one for deaf and hard-of-hearing viewers, `AI` for one
-  a model made (`transcribed`, `translated`), both `SDH · AI`, else none: a
-  player names it "German", "German · SDH", "German · AI". `forced` is a
+  a model made (`transcribed`, `translated`), `OCR` for one read from an
+  image subtitle (`recognized`), both `SDH · AI` or `SDH · OCR`, else none: a
+  player names it "German", "German · SDH", "German · AI", "German · OCR". `forced` is a
   subtitle a player shows by itself (signs, a line in another language).
 
 The file is written into the `subs/` folder of the version it follows — the

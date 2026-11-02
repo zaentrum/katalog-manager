@@ -117,6 +117,23 @@ func TestAnAddonAttachesASubtitle(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(vdir, "subs", "attached-"+hex.EncodeToString(sum[:])+".zh-hans.forced.sdh.vtt")); err != nil {
 		t.Error(err)
 	}
+
+	// Read from one of its image subtitles, forced, without a label: "OCR";
+	// with one, its own.
+	w = do(f.h, http.MethodPost, "/api/library/items/"+filmItem+"/subtitles", attachBody(t, map[string]any{
+		"language": "en", "origin": "recognized", "forced": true, "content": germanVTT}), addon)
+	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"label":"OCR"`) ||
+		!strings.Contains(w.Body.String(), `"origin":"recognized"`) || !strings.Contains(w.Body.String(), `"forced":true`) {
+		t.Errorf("a recognized forced subtitle: %d %s", w.Code, w.Body)
+	}
+	if _, err := os.Stat(filepath.Join(vdir, "subs", "attached-"+hex.EncodeToString(sum[:])+".en.forced.vtt")); err != nil {
+		t.Error(err)
+	}
+	w = do(f.h, http.MethodPost, "/api/library/items/"+filmItem+"/subtitles", attachBody(t, map[string]any{
+		"language": "en", "origin": "recognized", "sdh": true, "label": "English (SDH) · OCR", "content": germanVTT}), addon)
+	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"label":"English (SDH) · OCR"`) {
+		t.Errorf("a recognized subtitle with its own label: %d %s", w.Code, w.Body)
+	}
 }
 
 // The title's subtitles say which are its own and which attached, the
