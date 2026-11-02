@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/zaentrum/katalog-manager/internal/events"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/sourceprobe"
 	"github.com/zaentrum/katalog-manager/internal/sourcetracks"
 )
@@ -202,6 +203,12 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		subsWritten++
+	}
+	// The styled originals beside the package's subtitles, and its fonts
+	// (migration 053), as the manifest names them.
+	if _, err := library.SyncStyled(ctx, pool, itemID, packageRoot, "", manifest); err != nil {
+		http.Error(w, "styled subtitles and fonts insert failed", http.StatusInternalServerError)
+		return
 	}
 
 	// 4. The source's tracks, as the package reports them (best-effort, as

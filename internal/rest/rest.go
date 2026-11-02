@@ -135,6 +135,9 @@ func (h *Handlers) Register(r chi.Router) {
 		r.Post("/api/library/migrations/{run}/names", h.namesRun)
 		r.Post("/api/library/migrations/{run}/checksums", h.checksumsRun)
 		r.Post("/api/library/migrations/{run}/subtitles", h.subtitlesRun)
+		// The styled originals and fonts of the packages the titles play,
+		// registered from the packages' records.
+		r.Post("/api/library/styled", h.registerStyled)
 		// The items' projections written now, as the migration's verify
 		// needs them.
 		r.Post("/api/library/projections", h.refreshProjections)

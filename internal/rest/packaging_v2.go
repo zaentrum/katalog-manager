@@ -639,7 +639,9 @@ func packageSubtitles(pkg map[string]any) []map[string]any {
 
 // writePackaged replaces, in tx, the item's packaged asset with the one of the
 // version (package.json is its record) and the package's subtitles with the
-// version's; it answers how many subtitles it wrote. Every subtitle is
+// version's, each with the styled original the package keeps beside it, and
+// the title's fonts with the package's (library.SyncStyled); it answers how
+// many subtitles it wrote. Every subtitle is
 // written not default: which one comes on is the clients' to decide. The
 // subtitles attached to the title go on with a version of the same file, and
 // go with the package's otherwise (library.CarryAttached).
@@ -712,6 +714,12 @@ func (h *Handlers) writePackaged(ctx context.Context, tx pgx.Tx, itemID, itemDir
 			return 0, err
 		}
 		written++
+	}
+	// A styled subtitle's script beside its WebVTT file, and the fonts the
+	// package carries (migration 053): what a player that draws styles opts
+	// into.
+	if _, err := library.SyncStyled(ctx, tx, itemID, versionDir, versionID, pkg); err != nil {
+		return 0, err
 	}
 	return written, nil
 }

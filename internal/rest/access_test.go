@@ -72,6 +72,7 @@ var routes = []route{
 	{http.MethodPost, "/api/library/migrations/r1/names", "", "worker"},
 	{http.MethodPost, "/api/library/migrations/r1/checksums", "", "worker"},
 	{http.MethodPost, "/api/library/migrations/r1/subtitles", "", "worker"},
+	{http.MethodPost, "/api/library/styled", `{"items": ["m1"]}`, "worker"},
 	{http.MethodPost, "/api/library/projections", `{}`, "worker"},
 	{http.MethodPost, "/api/library/reencode", `{"items": ["m1"]}`, "worker"},
 	{http.MethodGet, "/api/library/reencode", "", "worker"},

@@ -191,3 +191,47 @@ func (h *Handlers) refreshProjections(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, rep)
 	}
 }
+
+// registerStyled serves POST /api/library/styled: the styled originals and
+// the fonts of the packages the titles play, registered from the packages'
+// records (library.RegisterStyled): for each title with a packaged row, the
+// package.json of its version (or the package store's manifest.json) is read
+// again, and each of its subtitle rows given the script its package keeps
+// beside the subtitle's file, and its font rows the package's fonts, in the
+// title's transaction under its lock — what a package the packager made
+// before the catalog kept them carries. For the workers' service account and
+// admins. The body may name the items, {"items": ["<itemId>", …]}; without
+// it, every title with a package. It answers {"items", "subtitles", "fonts",
+// "skipped": [{"itemId", "reason"}]}: how many titles it read, how many rows
+// it changed (none when called again), and the titles it left, why. 503
+// without migration 053.
+func (h *Handlers) registerStyled(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Items []string `json:"items"`
+	}
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "the body cannot be read: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(string(raw)) != "" {
+		if err := json.Unmarshal(raw, &body); err != nil {
+			writeError(w, http.StatusBadRequest, "the body is no {\"items\": [...]}: "+err.Error())
+			return
+		}
+	}
+	pool := h.d.Store.Pool()
+	if ready, err := library.StyledReady(reqCtx(r), pool); err != nil {
+		writeError(w, http.StatusInternalServerError, "the styled subtitles: "+err.Error())
+		return
+	} else if !ready {
+		writeError(w, http.StatusServiceUnavailable, "migration db/migrations/053_styled_subtitles.sql is not applied")
+		return
+	}
+	rep, err := library.RegisterStyled(reqCtx(r), pool, body.Items)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "the styled subtitles: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
+}

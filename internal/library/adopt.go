@@ -768,6 +768,9 @@ type unitBefore struct {
 	Versions  []string          `json:"versions"`          // the versions the adoption makes
 	NewIDs    []string          `json:"sourceIds"`         // every source the adoption writes
 	Covered   []json.RawMessage `json:"covered,omitempty"` // the episodes its file covers: id, coveredby
+	// the item's font rows (migration 053), which the adoption writes again
+	// from the package it plays (SyncStyled); null of a catalog without them
+	Fonts []json.RawMessage `json:"fonts,omitempty"`
 }
 
 // snapshot reads what the adoption of u changes, as it is.
@@ -825,6 +828,14 @@ func (m *Migration) snapshot(ctx context.Context, tx pgx.Tx, u *Unit) (*unitBefo
 	if covered := coveredOf(u); len(covered) > 0 {
 		if err := rows(&b.Covered, `SELECT jsonb_build_object('id', i.id, 'coveredby', to_jsonb(i)->'coveredby')
 			FROM com_nalet_katalog_items i WHERE i.id = ANY($1) ORDER BY i.id`, covered); err != nil {
+			return nil, err
+		}
+	}
+	if ready, err := StyledReady(ctx, tx); err != nil {
+		return nil, err
+	} else if ready {
+		if err := rows(&b.Fonts, `SELECT to_jsonb(f) FROM com_nalet_katalog_fontassets f WHERE f.item_id = $1 ORDER BY f.id`,
+			u.ItemID); err != nil {
 			return nil, err
 		}
 	}
@@ -950,6 +961,14 @@ func (m *Migration) apply(ctx context.Context, tx pgx.Tx, u *Unit, gone []goneEv
 		}
 	}
 	keep := []string{}
+	// the package the title plays once adopted, as its record says: its
+	// styled originals and fonts are registered once its subtitles' rows name
+	// their files there (SyncStyled)
+	type played struct {
+		root, versionID string
+		pkg             map[string]any
+	}
+	var plays []played
 	for _, a := range u.DB.Assets {
 		keep = append(keep, a.ID)
 		var tag interface{ RowsAffected() int64 }
@@ -967,6 +986,7 @@ func (m *Migration) apply(ctx context.Context, tx pgx.Tx, u *Unit, gone []goneEv
 				return fmt.Errorf("%s: %w", a.Path, err)
 			}
 			r := PackagedRowOf(pkg)
+			plays = append(plays, played{root: filepath.Dir(a.Path), versionID: *a.VersionID, pkg: pkg})
 			tag, err = tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET path = $3, versionid = $4, kind = 'packaged',
 					isprimary = false, codec = $5, resolution = $6, bitratekbps = $7, sizebytes = $8, audiocodec = $9,
 					audiolanguage = $10, audiochannels = $11, audiobitratekbps = $12, audiotrackcount = $13,
@@ -1013,6 +1033,11 @@ func (m *Migration) apply(ctx context.Context, tx pgx.Tx, u *Unit, gone []goneEv
 		}
 		if tag.RowsAffected() == 0 {
 			return fmt.Errorf("subtitle row %s is no row of the item", s.ID)
+		}
+	}
+	for _, p := range plays {
+		if _, err := SyncStyled(ctx, tx, u.ItemID, p.root, p.versionID, p.pkg); err != nil {
+			return fmt.Errorf("the styled subtitles and fonts of version %s: %w", p.versionID, err)
 		}
 	}
 	for _, x := range u.DB.Extras {
@@ -1536,6 +1561,21 @@ func (m *Migration) restore(ctx context.Context, tx pgx.Tx, u *Unit, before *uni
 			SELECT * FROM jsonb_populate_record(NULL::com_nalet_katalog_subtitleassets, '{"issdh": false}'::jsonb || $1::jsonb)`,
 			string(s)); err != nil {
 			return err
+		}
+	}
+	// the fonts as they were: those the adoption registered go, and the
+	// snapshot's come back (migration 053)
+	if ready, err := StyledReady(ctx, tx); err != nil {
+		return err
+	} else if ready {
+		if _, err := tx.Exec(ctx, `DELETE FROM com_nalet_katalog_fontassets WHERE item_id = $1`, u.ItemID); err != nil {
+			return err
+		}
+		for _, f := range before.Fonts {
+			if _, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_fontassets
+				SELECT * FROM jsonb_populate_record(NULL::com_nalet_katalog_fontassets, $1::jsonb)`, string(f)); err != nil {
+				return err
+			}
 		}
 	}
 	for _, x := range before.Extras {
