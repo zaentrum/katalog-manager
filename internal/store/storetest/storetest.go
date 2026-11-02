@@ -107,6 +107,9 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	if err := st.EnsureStyledSubtitles(ctx); err != nil {
 		t.Fatalf("apply the styled subtitles migration: %v", err)
 	}
+	if err := st.EnsurePictureAreas(ctx); err != nil {
+		t.Fatalf("apply the picture areas migration: %v", err)
+	}
 	return st
 }
 
@@ -215,6 +218,7 @@ var facets = []struct{ table, insert string }{
 	{"com_nalet_katalog_itemsources", `(id, item_id, filename, sizebytes) VALUES (gen_random_uuid()::varchar, $1, 'a.mkv', 1)`},
 	{"com_nalet_katalog_itemversions", `(id, item_id, state) VALUES (gen_random_uuid()::varchar, $1, 'superseded')`},
 	{"com_nalet_katalog_fontassets", `(id, item_id, path, ordinal) VALUES (gen_random_uuid()::varchar, $1::varchar, '/library/' || $1::varchar || '/subs/fonts/0.ttf', 0)`},
+	{"com_nalet_katalog_pictureareas", `(id, kind, item_id) VALUES (gen_random_uuid()::varchar, 'extra', $1)`},
 }
 
 // AddFacets gives an item one row in every table that hangs off it.

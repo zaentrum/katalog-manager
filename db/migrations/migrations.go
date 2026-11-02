@@ -13,7 +13,8 @@
 // store.EnsureMultiEpisodeFiles, store.EnsureSeriesScanTitle,
 // store.EnsureIdentityIndexes, store.EnsureAttachedSubtitles,
 // store.EnsureLibraryWriteThrough, which applies 050 after 041,
-// store.EnsureCompliance, store.EnsureRetireRuns and store.EnsureStyledSubtitles).
+// store.EnsureCompliance, store.EnsureRetireRuns, store.EnsureStyledSubtitles and
+// store.EnsurePictureAreas).
 // It applies 035, which drops what is left of a retired integration, at every
 // start when any of that is there (store.DropRetiredJobTables), and 049, the
 // catalog search, in the background after startup, one statement at a time:
@@ -176,3 +177,10 @@ var RetireRuns string
 //
 //go:embed 053_styled_subtitles.sql
 var StyledSubtitles string
+
+// PictureAreas is 054_picture_areas.sql: the part of each title's frame its
+// picture fills, as the analyzer measured it, and the view of those of what
+// each title plays now.
+//
+//go:embed 054_picture_areas.sql
+var PictureAreas string

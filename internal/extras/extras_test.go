@@ -391,7 +391,9 @@ func TestAnExtraWaitsWithoutABus(t *testing.T) {
 	if tr := f.triggers(t)[x.ID]; tr == nil || tr["status"] != "queued" || tr["source"] != "api" {
 		t.Errorf("the trigger the sweep sent: %v", tr)
 	}
-	storetest.Exec(t, f.st, `DROP TABLE com_nalet_katalog_itemextras`)
+	// A catalog without 039 has no view of migration 054 either, which
+	// reads the extras.
+	storetest.Exec(t, f.st, `DROP TABLE com_nalet_katalog_itemextras CASCADE`)
 	_, err := f.svc.AddExtra(asAdmin(), graph.AddExtraRequest{ItemID: film, Path: f.write(t, "extras/y.mkv", 10), Kind: "trailer"})
 	if r := refusal(t, err); r.Status != http.StatusServiceUnavailable || !strings.Contains(r.Message, "039_item_extras.sql") {
 		t.Errorf("without the table: %d %s", r.Status, r.Message)
