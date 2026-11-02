@@ -94,9 +94,14 @@ func TestSyncStyledKeepsWhatThePackagesRecordSays(t *testing.T) {
 }
 
 // The same font of the same package keeps its id, a font of the package
-// store's is the title's at its place, and no two places share one.
+// store's is the title's at its place, and no two places share one. The id
+// is the one the library's tools give the font's row
+// (library-v2-rebuild.py: did(item, "font", version, ordinal)).
 func TestFontIDIsTheSameForTheSameFont(t *testing.T) {
 	const item, version = "a1a1a1a1-0000-4000-8000-0000000000a1", "b2b2b2b2-0000-4000-8000-0000000000b2"
+	if got := FontID(item, version, 0); got != "62df731b-f6d8-5eab-af65-87a2ad1779e1" {
+		t.Errorf("FontID: %s, not the id the library's tools give the font", got)
+	}
 	ids := map[string]bool{}
 	for _, id := range []string{FontID(item, version, 0), FontID(item, version, 1), FontID(item, "", 0),
 		FontID(item, "c3c3c3c3-0000-4000-8000-0000000000c3", 0)} {
