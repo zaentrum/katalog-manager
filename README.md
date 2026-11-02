@@ -130,7 +130,7 @@ account, whose token carries the addon role. Everyone else signed in is a
 | `GET /api/play/...`, `GET /api/subtitles/...` | any signed-in caller; a capped viewer as for the artwork |
 | `GET /api/library/subtitles/languages` (the languages every title is to have a subtitle in) | any signed-in caller |
 | `PUT /api/artwork/...`, `/api/analyze/*` (an extra's record and steps too, the workers' rules), segments, chapters, `packaging-complete` (an item's and an extra's), `GET /api/settings` | admin, service account |
-| `POST /api/library/migrations/{run}/adopt`, `…/revert` (the library's migration), `POST /api/library/projections` | admin, service account |
+| `POST /api/library/migrations/{run}/adopt`, `…/revert` (the library's migration), `POST /api/library/projections`, `POST /api/library/styled` | admin, service account |
 | `POST /api/library/reencode`, `GET /api/library/reencode` (the re-encode queue) | admin, service account |
 | `POST /api/ingest`, `POST /api/extras` | admin, service account, addon |
 | `GET`, `POST /api/library/items/{id}/subtitles`, `DELETE …/subtitles/{subtitleId}` (attached subtitles) | admin, service account, addon; a removal the caller's own attach, an admin any |
@@ -375,6 +375,26 @@ the base schema in the order of their numbers, and each is idempotent:
   051 and 052 are applied under an advisory lock of the catalog's, each
   asked for again once it is held: of instances that start at once, one
   applies them and the others find them in place.
+- `053_styled_subtitles.sql` keeps what a styled subtitle's package keeps
+  beside it: the script (ASS/SSA) the packager keeps as it is beside the
+  subtitle's WebVTT file (`com_nalet_katalog_subtitleassets.styledpath` and
+  `styledformat`, `ass`; null of a subtitle without one), and the fonts the
+  original carried, which the package carries for a player that draws
+  styles (`com_nalet_katalog_fontassets`, a font file of the package a title
+  plays a row: its path, its format — `ttf`, `otf`, `ttc`, `woff`, `woff2` or
+  null — the names a style or an override tag asks for it by, its place among
+  the package's fonts, the original's attachment it was taken from, and the
+  version whose package holds it, null for the package store's; its id is
+  name-based, so the same font of the same package keeps its id and its
+  URL). `packaging-complete` writes them with the package's other rows, as
+  `package.json` (or the package store's `manifest.json`) names them —
+  `subtitles[].styled`, `fonts[]` — a subtitle row by the file it names, and
+  takes away what a new package keeps no more; an adoption registers those of
+  the package each title plays, and its revert takes them back. A deleted
+  item's fonts go with it. Every client reads the WebVTT file as before.
+  Applied at startup under the same lock when any of it is missing; without
+  it no styled original or font is kept. See
+  [Styled subtitles and their fonts](#styled-subtitles-and-their-fonts).
 
 ## Track languages
 
@@ -1983,6 +2003,30 @@ any other row is left, with why. It takes `{"items": [...]}`, answers
 journals each row in the run's `subtitles.jsonl`, and writes nothing when
 called again. An original retired while the store before
 still names it frees no space until that name is removed too.
+
+### Styled subtitles and their fonts
+
+The packager keeps a styled subtitle (ASS/SSA) as it is, its script beside
+the subtitle's WebVTT file, and takes the fonts its original carried into
+the package; `package.json` names them (a subtitle's `styled: {path,
+format}`, the package's `fonts: [{path, format, names, sourceStreamIndex}]`)
+and `packaging-complete` keeps them (migration 053): the subtitle's row its
+script, the title's font rows the package's fonts. A package made before the
+catalog kept them is registered from its record by `POST
+/api/library/styled` (the service account and admins): for each title with a
+packaged row — of those named, `{"items": ["<itemId>", …]}`, or with none of
+every title that has a package — the record that row names (a version's
+`package.json`, the package store's `manifest.json`) is read again, and its
+subtitles' rows and its fonts written as `packaging-complete` writes them,
+in the title's transaction under the lock every writer of its versions
+takes. It answers `{"items", "subtitles", "fonts", "skipped": [{"itemId",
+"reason"}]}` — how many titles it read, how many rows it changed, and the
+titles whose record it could not read — changes nothing when called again,
+and answers 503 without migration 053. The export
+(`db/export/library-export.sql`) says each subtitle's `styledPath` and
+`styledFormat`, and each item's `fontAssets` (`[{"id", "versionId", "path",
+"format", "names", "ordinal", "sourceStreamIndex"}]`), none on a catalog
+without the migration.
 
 `POST /api/library/projections` writes the items' projections now, in
 either layout (the migration's verify runs before the layout is v2, which
