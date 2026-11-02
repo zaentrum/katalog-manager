@@ -935,7 +935,8 @@ func isH264(codec string) bool {
 // shown does. Processing it again then adds no 5.1, so a package without one
 // lacks nothing it would get — though the retire job still keeps its
 // original while its package has none of the original's surround (library.
-// SurroundLost), a commentary's or an audio description's too.
+// SurroundLost), a commentary's or an audio description's too, where the
+// packager makes 5.1 companions at all (library.SurroundExpected).
 func noCompanion(t title, r records, p *PackagerRules, l languageSettings) bool {
 	plan, ok := planAudio(t, r, p, l)
 	return ok && plan.from == planOriginal && len(plan.companions) == 0

@@ -1842,7 +1842,9 @@ that came with it from where it arrived, then the catalog says so: the
 playback row is an original's, which points at its record, and the
 sidecars' subtitle rows point at the package's renditions or the copies in
 the record (found by their content), their ids kept. A mismatch fails the step with
-the file's name and keeps the original. No original is retired before its
+the file's name and keeps the original. Where the packager makes 5.1
+companions (the `surroundAudio` of the rules it reported last names a
+codec), no original is retired before its
 title's current package carries the surround it had: when the package's
 essence (which counts its 5.1 companions) lacks the `surround` of the
 original's, or holds fewer channels than a 5.1 of it would (a 7.1 original's
@@ -1854,7 +1856,11 @@ of the title is complete, or an admin retries the step. The essences alone
 decide: an original whose only surround tracks the packager makes no 5.1 of
 (commentaries, audio descriptions) is kept too, though the compliance check
 finds its package lacks nothing processing again would make. `{"held": true}` queues these titles to be encoded again
-(see [The re-encode queue](#the-re-encode-queue)). The same job deletes an extra's
+(see [The re-encode queue](#the-re-encode-queue)). A packager that makes
+stereo alone (`surroundAudio` off or empty) makes no 5.1 of any title, so
+then no original is kept for its surround: what it gives up is in what its
+source lost (`surround`, `maxAudioChannels`), as a list's dry run says it. A
+packager that reported no rules yet is taken to make 5.1 companions. The same job deletes an extra's
 original once its folder is recorded and verifies, removes a superseded
 version after its grace (`version-removed`, its folder deleted) once its
 folder holds no original (one there is retired first, against the newest

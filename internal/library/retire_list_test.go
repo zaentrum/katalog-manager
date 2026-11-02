@@ -1850,3 +1850,21 @@ func TestARunSkipsATitleItsDryRunLeftNoWordOn(t *testing.T) {
 	}
 	f.kept(t)
 }
+
+// A list retires a 5.1 original whose package is stereo as the retire job
+// does, once the packager makes stereo alone (its rules: surroundAudio off,
+// SurroundExpected): its dry run says it would, and what it gives up.
+func TestAListRetiresTheSurroundOriginalOfAStereoPackager(t *testing.T) {
+	ctx := context.Background()
+	f := listFixtureOf(t, newRetireFixtureOf(t, fiveOne, stereo))
+	if err := f.st.EnsureCompliance(ctx); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_workerrules (worker, version, rules, ruleshash, reportedat, changedat)
+		VALUES ('packager', 'test', '{"surroundAudio": "off"}', 'test', now(), now())`)
+	run, items := f.dry(t, rtFilm)
+	if run.WouldRetire != 1 || len(items) != 1 || !strings.HasPrefix(said(items[0]), "would-retire: ") ||
+		!strings.Contains(said(items[0]), "surround") {
+		t.Fatalf("%+v: %s", run, said(items[0]))
+	}
+}

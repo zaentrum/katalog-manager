@@ -884,6 +884,79 @@ func TestAnOriginalIsKeptUntilItsPackageCarriesItsSurround(t *testing.T) {
 	}
 }
 
+// A packager that makes stereo alone (its rules: surroundAudio off, owner
+// decision 2026-11-02 "stereo only is good") makes no 5.1 of any title, so a
+// 5.1 original whose package is stereo lacks nothing processing it again
+// would add, and is retired; once the packager reports a codec again, such an
+// original is kept as before. Its loss stays in what the source lost.
+func TestAStereoPackagerKeepsNoOriginalForItsSurround(t *testing.T) {
+	ctx := context.Background()
+	for name, c := range map[string]struct {
+		rules string
+		held  bool
+	}{
+		"surroundAudio off":   {`{"surroundAudio": "off"}`, false},
+		"surroundAudio empty": {`{"surroundAudio": ""}`, false},
+		"surroundAudio eac3":  {`{"surroundAudio": "eac3"}`, true},
+		"no surroundAudio":    {`{"stereoAudio": "aac"}`, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newRetireFixtureOf(t, fiveOne, stereo)
+			if err := f.st.EnsureCompliance(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.st.Pool().Exec(ctx, `INSERT INTO com_nalet_katalog_workerrules (worker, version, rules, ruleshash, reportedat, changedat)
+				VALUES ('packager', 'test', $1::jsonb, 'test', now(), now())`, c.rules); err != nil {
+				t.Fatal(err)
+			}
+			rep := f.pass(t)
+			if c.held {
+				if rep.Held != 1 || rep.Originals != 0 {
+					t.Fatalf("a packager of %s: %+v, want the original held", c.rules, rep)
+				}
+				return
+			}
+			if rep.Originals != 1 || rep.Held != 0 {
+				t.Fatalf("a packager of %s: %+v, want the original retired", c.rules, rep)
+			}
+			if s := f.source(t, rtSource); s.State != SourceDeleted || !strings.Contains(string(s.Lost), "surround") {
+				t.Errorf("the source: %s, lost %s; want deleted, its surround lost", s.State, s.Lost)
+			}
+		})
+	}
+}
+
+// SurroundExpected is whether the packager's rules name a codec for its 5.1
+// companions: off and empty don't, a codec does, and a packager that reported
+// no rules, or a catalog without their table, is taken to make one.
+func TestSurroundExpected(t *testing.T) {
+	ctx := context.Background()
+	f := newRetireFixtureOf(t, stereo, stereo)
+	if _, err := f.st.Pool().Exec(ctx, `DROP TABLE IF EXISTS com_nalet_katalog_workerrules CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := SurroundExpected(ctx, f.st.Pool()); err != nil || !got {
+		t.Errorf("without the table: %v, %v; want true", got, err)
+	}
+	if err := f.st.EnsureCompliance(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := SurroundExpected(ctx, f.st.Pool()); err != nil || !got {
+		t.Errorf("no packager's rules: %v, %v; want true", got, err)
+	}
+	for rules, want := range map[string]bool{`{"surroundAudio": "off"}`: false, `{"surroundAudio": " OFF "}`: false,
+		`{"surroundAudio": ""}`: false, `{"surroundAudio": null}`: true, `{}`: true, `{"surroundAudio": "eac3"}`: true,
+		`{"surroundAudio": "ac3"}`: true} {
+		if _, err := f.st.Pool().Exec(ctx, `INSERT INTO com_nalet_katalog_workerrules (worker, version, rules, ruleshash, reportedat, changedat)
+			VALUES ('packager', 'test', $1::jsonb, 'test', now(), now()) ON CONFLICT (worker) DO UPDATE SET rules = EXCLUDED.rules`, rules); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := SurroundExpected(ctx, f.st.Pool()); err != nil || got != want {
+			t.Errorf("rules %s: %v, %v; want %v", rules, got, err, want)
+		}
+	}
+}
+
 // heldTitles are the titles HeldForSurround takes, as the re-encode queue
 // selects them, by id.
 func heldTitles(t *testing.T, st *store.Store) string {

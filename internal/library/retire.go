@@ -95,7 +95,9 @@ const retireLock = "library-retire"
 
 // SurroundHeld is why an original whose title's current package has no 5.1
 // of the surround it had is kept (owner decision 2026-10-07): the package
-// must carry it before the original goes.
+// must carry it before the original goes, where the packager makes 5.1
+// companions at all (SurroundExpected; one that makes stereo alone, the
+// owner's choice 2026-11-02, holds none).
 const SurroundHeld = "its package has no 5.1 of the source's surround; re-encode it first"
 
 // heldFor marks, in the details of a retire step held for its surround, the
@@ -526,10 +528,18 @@ func (r *Retirer) prepare(ctx context.Context, p Paths, set Settings, now time.T
 		return r.fail(ctx, rt, "no complete version holds the original any more; nothing is deleted")
 	}
 	rt.ver = ver
-	if lacks, err := surroundLost(rt.itemDir, ver.ID, rt.src.ID); err != nil {
+	lacks, err := surroundLost(rt.itemDir, ver.ID, rt.src.ID)
+	if err != nil {
 		return r.fail(ctx, rt, fmt.Sprintf("the essences of the source and of version %s cannot be read: %v; nothing is deleted",
 			ver.ID, err))
-	} else if lacks {
+	}
+	// a packager that makes stereo alone makes no 5.1 the package lacks
+	if lacks {
+		if lacks, err = SurroundExpected(ctx, r.pool); err != nil {
+			return err
+		}
+	}
+	if lacks {
 		if err := r.hold(ctx, rt); err != nil {
 			return err
 		}
@@ -633,6 +643,31 @@ func surroundLost(itemDir, vid, sid string) (bool, error) {
 		return false, err
 	}
 	return SurroundLost(src, pkg), nil
+}
+
+// SurroundExpected reports whether the packager makes a 5.1 companion of a
+// surround track, as it reported its rules last (com_nalet_katalog_workerrules,
+// PUT /api/analyze/rules/packager): its surroundAudio is a codec, neither off
+// nor empty. Only then does a package without the source's surround lack
+// what the packager makes, and keep its original (surroundLost): a packager
+// that makes stereo alone makes no 5.1 of any title, so its package of a
+// surround source lacks nothing processing it again would add. A packager
+// that reported no rules yet, or a catalog without the table, is taken to
+// make one, as before packagers reported their rules.
+func SurroundExpected(ctx context.Context, q Querier) (bool, error) {
+	var codec *string
+	err := q.QueryRow(ctx, `SELECT rules->>'surroundAudio' FROM com_nalet_katalog_workerrules WHERE worker = 'packager'`).
+		Scan(&codec)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows), isUndefinedTable(err):
+		return true, nil
+	case err != nil:
+		return false, err
+	case codec == nil:
+		return true, nil
+	}
+	c := strings.ToLower(strings.TrimSpace(*codec))
+	return c != "" && c != "off", nil
 }
 
 // SurroundLost reports whether a package whose essence is pkg lacks the

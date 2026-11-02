@@ -1044,7 +1044,12 @@ func (l *RetireList) check(ctx context.Context, id string, rv *review, set Setti
 	if lost, err := surroundLost(itemDir, v.ID, s.ID); err != nil {
 		return f, fmt.Sprintf("the essences of its original's and its package's records can’t be read: %v", err), nil
 	} else if lost {
-		return f, SurroundHeld, nil
+		// as the retire job: a packager that makes stereo alone makes no 5.1 the package lacks
+		if expected, err := SurroundExpected(ctx, l.pool); err != nil {
+			return f, "", err
+		} else if expected {
+			return f, SurroundHeld, nil
+		}
 	}
 	if why := l.fileOf(s, itemDir, set); why != "" {
 		return f, why, nil
