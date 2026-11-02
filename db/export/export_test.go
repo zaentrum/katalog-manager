@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"reflect"
@@ -736,5 +737,71 @@ func TestExportCoveredBy(t *testing.T) {
 	storetest.AddItem(t, base, "f0000000-0000-4000-8000-000000000001", "movie", "A Film", "")
 	if got := coveredBy(runExport(t, base)); got["f0000000-0000-4000-8000-000000000001"] != nil {
 		t.Errorf("without 045: %v", got)
+	}
+}
+
+// An item's subtitles say the styled original beside each (migration 053),
+// and its fontAssets are its package's fonts in their order; a shard's export
+// holds its items' alone; a catalog without the migration exports none of
+// either, and still exports.
+func TestExportStyledSubtitlesAndFonts(t *testing.T) {
+	const film, other = "f5000000-0000-4000-8000-000000000001", "a7000000-0000-4000-8000-000000000002"
+	st := storetest.Open(t)
+	storetest.AddItem(t, st, film, "movie", "A Film", "")
+	storetest.AddItem(t, st, other, "movie", "Another Film", "")
+	root := "/library/movies/f5/" + film + "/versions/v1"
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_subtitleassets (id, item_id, path, format, lang, styledpath, styledformat)
+		VALUES ('s0', $1, $2 || '/subs/0.vtt', 'webvtt', 'eng', $2 || '/subs/0.ass', 'ass'),
+		       ('s1', $1, $2 || '/subs/1.vtt', 'webvtt', 'ger', NULL, NULL)`, film, root)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_fontassets (id, item_id, versionid, path, format, names, ordinal, sourcestreamindex)
+		VALUES ('f1', $1, 'v1', $2 || '/subs/fonts/1.otf', 'otf', '["Example Serif"]', 1, NULL),
+		       ('f0', $1, 'v1', $2 || '/subs/fonts/0.ttf', 'ttf', '["Example Sans", "ExampleSans-Regular"]', 0, 5),
+		       ('g0', $3, NULL, '/packages/movies/a7/x/subs/fonts/0.ttf', NULL, '[]', 0, NULL)`, film, root, other)
+	items := func(doc []byte) map[string]map[string]any {
+		t.Helper()
+		var list []map[string]any
+		if err := json.Unmarshal(section(t, doc, "items"), &list); err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]map[string]any{}
+		for _, it := range list {
+			out[it["id"].(string)] = it
+		}
+		return out
+	}
+	got := items(runExport(t, st))
+	styled := map[string]string{}
+	for _, x := range got[film]["subtitleAssets"].([]any) {
+		s := x.(map[string]any)
+		styled[s["id"].(string)] = fmt.Sprint(s["styledPath"], " ", s["styledFormat"])
+	}
+	if want := map[string]string{"s0": root + "/subs/0.ass ass", "s1": "<nil> <nil>"}; fmt.Sprint(styled) != fmt.Sprint(want) {
+		t.Errorf("the film's subtitles' styled originals: %v, want %v", styled, want)
+	}
+	var fonts []string
+	for _, x := range got[film]["fontAssets"].([]any) {
+		f := x.(map[string]any)
+		fonts = append(fonts, fmt.Sprint(f["id"], f["versionId"], f["path"], f["format"], f["names"], f["ordinal"],
+			f["sourceStreamIndex"]))
+	}
+	if want := []string{fmt.Sprint("f0", "v1", root+"/subs/fonts/0.ttf", "ttf", []any{"Example Sans", "ExampleSans-Regular"},
+		0.0, 5.0), fmt.Sprint("f1", "v1", root+"/subs/fonts/1.otf", "otf", []any{"Example Serif"}, 1.0, nil)}; fmt.Sprint(fonts) != fmt.Sprint(want) {
+		t.Errorf("the film's fonts:\n%v\nwant:\n%v", fonts, want)
+	}
+	if n := len(got[other]["fontAssets"].([]any)); n != 1 {
+		t.Errorf("the other film's fonts: %d", n)
+	}
+	shard := items(runExportShard(t, st, "f5"))
+	if len(shard) != 1 || len(shard[film]["fontAssets"].([]any)) != 2 {
+		t.Errorf("the shard's items: %v", shard)
+	}
+	base := storetest.OpenBase(t)
+	storetest.AddItem(t, base, film, "movie", "A Film", "")
+	storetest.Exec(t, base, `INSERT INTO com_nalet_katalog_subtitleassets (id, item_id, path, format, lang)
+		VALUES ('s0', $1, '/media/a.srt', 'srt', 'en')`, film)
+	old := items(runExport(t, base))[film]
+	sub := old["subtitleAssets"].([]any)[0].(map[string]any)
+	if v, ok := sub["styledPath"]; !ok || v != nil || sub["styledFormat"] != nil || len(old["fontAssets"].([]any)) != 0 {
+		t.Errorf("without 053: %v %v", sub, old["fontAssets"])
 	}
 }

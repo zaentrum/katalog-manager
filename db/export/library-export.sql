@@ -13,6 +13,14 @@
 -- of the row for that reason. The holder's covers are its own id and every
 -- item whose coveredBy names it, in episode order.
 --
+-- An item's subtitleAssets each say the styled original beside the subtitle's
+-- file — the script a styled subtitle keeps (db/migrations/053): styledPath
+-- and styledFormat, null of a subtitle without one, and on a catalog without
+-- 053, whose columns are read through to_jsonb of the row for that reason. Its
+-- fontAssets are the fonts of the package it plays, in their order:
+--   [{"id", "versionId", "path", "format", "names": [], "ordinal", "sourceStreamIndex"}]
+-- [] of an item whose package carries none, and on a catalog without 053.
+--
 -- An item's people are its credits, in the order a title lists them: by role
 -- (actor, creator, director, writer, producer, composer, cinematographer,
 -- editor, then any other role, by role), then by order (unknown last), then
@@ -104,6 +112,25 @@ shard_list as (
   select case when :'shard' = '' then null
               else (select coalesce('(' || string_agg(quote_literal(id::text), ', ' order by id) || ')', '(null)') from shard)
          end as ids
+),
+-- The fonts of the packages the shard's items play (db/migrations/053), an
+-- item's in their order, read through query_to_xml for the reason the extras
+-- are: a catalog without the table gives none.
+fonts as (
+  select f.r->>'item_id' as item_id,
+         json_agg(json_build_object('id', f.r->>'id', 'versionId', f.r->>'versionid', 'path', f.r->>'path',
+                                    'format', f.r->>'format', 'names', coalesce(f.r->'names', '[]'),
+                                    'ordinal', (f.r->>'ordinal')::int,
+                                    'sourceStreamIndex', (f.r->>'sourcestreamindex')::int)
+                  order by (f.r->>'ordinal')::int, f.r->>'id') as list
+  from (select j::jsonb as r from xmltable('//row'
+          passing query_to_xml(case when to_regclass('com_nalet_katalog_fontassets') is null
+                                    then 'select null::text as j where false'
+                                    else 'select row_to_json(t)::text as j from com_nalet_katalog_fontassets t'
+                                         || coalesce(' where t.item_id in ' || (select ids from shard_list), '') end,
+                               false, false, '')
+          columns j text path 'j')) f
+  group by 1
 )
 select json_build_object(
     'exportedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
@@ -128,7 +155,8 @@ select json_build_object(
         'chapters', (select coalesce(json_agg(json_build_object('startMs', c.startms, 'endMs', c.endms, 'title', c.title, 'ordinal', c.ordinal) order by c.ordinal), '[]') from com_nalet_katalog_itemchapters c where c.item_id = i.id),
         'segments', (select coalesce(json_agg(json_build_object('kind', s.kind, 'startMs', s.startms, 'endMs', s.endms, 'source', s.source, 'confidence', s.confidence, 'label', s.label) order by s.startms), '[]') from com_nalet_katalog_mediasegments s where s.item_id = i.id),
         'playbackAssets', (select coalesce(json_agg(json_build_object('id', a.id, 'path', a.path, 'kind', a.kind, 'codec', a.codec, 'resolution', a.resolution, 'bitrateKbps', a.bitratekbps, 'sizeBytes', a.sizebytes, 'hash', a.hash, 'isPrimary', a.isprimary, 'audioCodec', a.audiocodec, 'audioLanguage', a.audiolanguage, 'audioChannels', a.audiochannels, 'audioBitrateKbps', a.audiobitratekbps, 'audioTrackCount', a.audiotrackcount, 'subtitleTrackCount', a.subtitletrackcount, 'durationMs', a.durationms)), '[]') from com_nalet_katalog_playbackassets a where a.item_id = i.id),
-        'subtitleAssets', (select coalesce(json_agg(json_build_object('id', s.id, 'path', s.path, 'format', s.format, 'language', s.lang, 'label', s.label, 'isDefault', s.isdefault)), '[]') from com_nalet_katalog_subtitleassets s where s.item_id = i.id),
+        'subtitleAssets', (select coalesce(json_agg(json_build_object('id', s.id, 'path', s.path, 'format', s.format, 'language', s.lang, 'label', s.label, 'isDefault', s.isdefault, 'styledPath', to_jsonb(s)->>'styledpath', 'styledFormat', to_jsonb(s)->>'styledformat')), '[]') from com_nalet_katalog_subtitleassets s where s.item_id = i.id),
+        'fontAssets', coalesce((select f.list from fonts f where f.item_id = i.id), '[]'),
         'trailers', (select coalesce(json_agg(json_build_object('source', tl.source, 'site', tl.site, 'externalId', tl.externalid, 'url', tl.url, 'title', tl.title, 'durationSec', tl.durationsec, 'localPath', tl.localpath)), '[]') from com_nalet_katalog_itemtrailerlinks tl where tl.item_id = i.id),
         'artwork', (select coalesce(json_agg(json_build_object('kind', d.kind, 'contentType', d.contenttype, 'fetchedAt', to_char(d.fetchedat at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'base64', replace(encode(d.bytes, 'base64'), E'\n', ''))), '[]') from com_nalet_katalog_itemartworkdata d where d.item_id = i.id and d.bytes is not null)
       ) as x
