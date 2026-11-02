@@ -104,6 +104,12 @@ type Item {
   originalBytes: Float
   packageBytes: Float
   hasOriginal: Boolean
+  # The part of its frame its picture fills (see PictureArea), as the
+  # analyzer measured it; null when it was never measured, and on a catalog
+  # older than migration 054. An episode another's file covers is answered
+  # its holder's, whose file it plays; a series, a season and an album have
+  # no frame of their own.
+  pictureArea: PictureArea
 }
 
 # What the library holds of a title: with library.layout=v2 its record on
@@ -1766,4 +1772,89 @@ extend type Mutation {
   # Stops the run that runs once the title it is at has its result (STOPPED,
   # its titles still to come left as they are); null when none runs.
   stopRetireRun: RetireRun
+}
+
+# ---------------------------------------------------------------------------
+# Picture areas (migration 054). Many sources keep a full frame with a wider
+# picture letterboxed inside it, black bars baked into the video (a 1920x1080
+# frame whose picture is 1920x804), or a narrower one pillarboxed. The
+# players fit the picture area to the screen rather than the frame. The
+# analyzer measures it: its pass of a new title reads the original, and the
+# backfill hands it the titles that have none (picture.backfill, README
+# "Picture areas"). The packages stay as they are.
+# ---------------------------------------------------------------------------
+
+# A title's picture area, in pixels of the frame measured, from its top left
+# corner. state is pending (the backfill handed it out, nothing measured yet),
+# measured (frame and area set; full when the area is the frame itself: no
+# bars), unknown (the analyzer could not tell, reason says why) or failed (it
+# could not read the file, reason says why; handed out again from
+# nextAttemptAt). current says it is of what the title plays now: one of
+# another file (an original replaced since) is not served to the players,
+# and the backfill measures the title again.
+type PictureArea {
+  state: String!
+  current: Boolean!
+  frameWidth: Int
+  frameHeight: Int
+  x: Int
+  y: Int
+  width: Int
+  height: Int
+  full: Boolean!
+  # the file measured, and what it is: an original (sourceId), a version's
+  # package (versionId, and the original it was made of)
+  path: String
+  sourceId: ID
+  versionId: ID
+  # the measurement's version, the frames it decoded and those that showed
+  # a picture
+  method: String
+  samples: Int
+  informative: Int
+  reason: String
+  measuredAt: Time
+  # the backfill's runs of it, its failures in a row (a run that never
+  # reported back among them), when it may run again, and its claim now
+  attempts: Int!
+  failures: Int!
+  nextAttemptAt: Time
+  claimedAt: Time
+  claimedBy: String
+}
+
+# How far the picture areas are: of the titles to measure (movies and
+# episodes with a file, extras with a package), those with an area of what
+# they play now (letterboxed: bars on a side or more; full: none; unknown:
+# the analyzer could not tell), those still to measure, those whose last run
+# failed and those handed out now; the CPU the measurements took an hour of
+# video (null before one reported it); and the backfill's settings, and idle,
+# why it hands out nothing now (null when it may).
+type PictureAreaProgress {
+  titles: Int!
+  letterboxed: Int!
+  full: Int!
+  unknown: Int!
+  toMeasure: Int!
+  failed: Int!
+  inFlight: Int!
+  handedOutLastHour: Int!
+  cpuSecondsPerHour: Float
+  lastMeasuredAt: Time
+  # the settings as read: picture.backfill (backfill), picture.backfill.window
+  # (UTC), .inflight (maxInFlight), .rate (maxPerHour) and .lease; problems,
+  # of a setting that could not be read
+  backfill: Boolean!
+  window: String!
+  maxInFlight: Int!
+  maxPerHour: Int!
+  lease: String!
+  idle: String
+  problems: [String!]!
+}
+
+extend type Query {
+  # How far the picture areas are, and the backfill; an error on a catalog
+  # older than migration 054.
+  pictureAreas: PictureAreaProgress!
 }
