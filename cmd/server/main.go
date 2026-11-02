@@ -178,6 +178,11 @@ func run() error {
 	if err := st.EnsureRetireRuns(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/052_retire_runs.sql is missing and could not be applied: %v; no list of originals is retired until it is", err)
 	}
+	// A subtitle's styled original and the fonts a title's package carries
+	// (migration 053).
+	if err := st.EnsureStyledSubtitles(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/053_styled_subtitles.sql is missing and could not be applied: %v; no package's styled originals and fonts are kept until it is", err)
+	}
 	// An item the scanner made before it wrote its own name into the row has
 	// it in its record alone: the row follows the record (bounded, in the
 	// background).

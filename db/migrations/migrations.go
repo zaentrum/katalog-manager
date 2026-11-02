@@ -13,7 +13,7 @@
 // store.EnsureMultiEpisodeFiles, store.EnsureSeriesScanTitle,
 // store.EnsureIdentityIndexes, store.EnsureAttachedSubtitles,
 // store.EnsureLibraryWriteThrough, which applies 050 after 041,
-// store.EnsureCompliance and store.EnsureRetireRuns).
+// store.EnsureCompliance, store.EnsureRetireRuns and store.EnsureStyledSubtitles).
 // It applies 035, which drops what is left of a retired integration, at every
 // start when any of that is there (store.DropRetiredJobTables), and 049, the
 // catalog search, in the background after startup, one statement at a time:
@@ -170,3 +170,9 @@ var Compliance string
 //
 //go:embed 052_retire_runs.sql
 var RetireRuns string
+
+// StyledSubtitles is 053_styled_subtitles.sql: a subtitle's styled original
+// (its script beside its WebVTT copy), and the fonts a title's package carries.
+//
+//go:embed 053_styled_subtitles.sql
+var StyledSubtitles string

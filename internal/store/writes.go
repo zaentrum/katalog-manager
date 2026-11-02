@@ -183,7 +183,8 @@ func (s *Store) UpdateItem(ctx context.Context, id string, w ItemWrite) (*model.
 // itemChildTables hold rows keyed by item_id that must be removed with the item
 // (the CAP compositions). Ordered children-first. The tables of a migration
 // that may not be applied go with them where they exist (trackTables, the
-// extras, the originals and versions of migration 040).
+// fonts of migration 053, the extras, the originals and versions of migration
+// 040).
 var itemChildTables = []string{
 	"com_nalet_katalog_itemgenres",
 	"com_nalet_katalog_itempeople",
@@ -265,6 +266,9 @@ func (s *Store) DeleteItemsAndUnlink(ctx context.Context, ids []string, d Deleti
 		}
 	}
 	if err := deleteTracksOf(ctx, tx, ids); err != nil {
+		return 0, nil, err
+	}
+	if err := deleteFontsOf(ctx, tx, ids); err != nil {
 		return 0, nil, err
 	}
 	if err := deleteExtrasOf(ctx, tx, ids); err != nil {
