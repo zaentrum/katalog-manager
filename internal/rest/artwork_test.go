@@ -21,6 +21,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/extras"
 	"github.com/zaentrum/katalog-manager/internal/itemactions"
+	"github.com/zaentrum/katalog-manager/internal/picture"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/retry"
 	"github.com/zaentrum/katalog-manager/internal/store"
@@ -81,7 +82,7 @@ func serverWith(t *testing.T, st *store.Store, cfg config.Config, pub retry.Publ
 		retries := retry.New(st, steps.Policy(), pub, 0).WithCompliance(check)
 		New(Deps{Store: st, Cfg: cfg, Steps: steps, Packager: itemactions.New(st, cfg, steps, nil),
 			Extras: extras.New(st, cfg, steps.Policy(), nil), Reencode: retries, TakeIn: retries,
-			Compliance: check}).Register(pr)
+			Compliance: check, Picture: picture.New(st, cfg)}).Register(pr)
 	})
 	return r, iss
 }

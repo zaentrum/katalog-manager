@@ -23,6 +23,7 @@ type Deps struct {
 	Reencode   Reencoder        // nil: /api/library/reencode answers 503
 	TakeIn     TakeIn           // nil: a title that gets no package is taken in by the sweep alone; POST /api/items/{id}/takein answers 503
 	Compliance Compliance       // nil: PUT /api/analyze/rules/{worker} and GET /api/manage/compliance.csv answer 503, and only the nightly pass checks a title packaged again
+	Picture    PictureAreas     // nil: /api/picture/* answers 503
 }
 
 // Handlers groups the REST handlers.
@@ -46,8 +47,9 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 //     title of the instance is to have a subtitle in, which are no secret;
 //   - workers (an admin, or the platform's service account the analyzer,
 //     transcoder and packager mint tokens with): the worker protocol, which
-//     hands out paths on disk and writes the pipeline's results, and the
-//     settings that are no secret;
+//     hands out paths on disk and writes the pipeline's results (the titles'
+//     picture areas and their backfill among them), and the settings that
+//     are no secret;
 //   - ingest (a worker, or an addon's service account): POST /api/ingest,
 //     POST /api/extras, which takes a file in as a title's extra, and the
 //     attach seam, /api/library/items/{itemId}/subtitles, a subtitle attached
@@ -63,7 +65,8 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 // report of the rules they run with. Bodies are implemented in the per-area
 // files (artwork.go, play.go, subtitles.go, analyzer.go, segments.go,
 // chapters.go, packaging.go, package.go, settings.go, ingest.go, extras.go,
-// migrations.go, reencode.go, takein.go, rules.go, compliance.go).
+// migrations.go, reencode.go, takein.go, rules.go, compliance.go,
+// picture.go).
 func (h *Handlers) Register(r chi.Router) {
 	pol := h.d.Cfg.Policy()
 
@@ -145,6 +148,15 @@ func (h *Handlers) Register(r chi.Router) {
 		// it holds.
 		r.Post("/api/library/reencode", h.postReencode)
 		r.Get("/api/library/reencode", h.getReencode)
+
+		// A title's picture area (picture.go): the analyzer reads it,
+		// reports what it measured, and asks the backfill for the titles
+		// to measure.
+		r.Get("/api/picture/items/{id}", h.getPictureArea)
+		r.Put("/api/picture/items/{id}", h.putPictureArea)
+		r.Get("/api/picture/extras/{id}", h.getPictureArea)
+		r.Put("/api/picture/extras/{id}", h.putPictureArea)
+		r.Post("/api/picture/claim", h.postPictureClaim)
 	})
 
 	// An admin's packaging action, as chino-api's admin route forwards it with

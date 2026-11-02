@@ -28,6 +28,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/graph"
 	"github.com/zaentrum/katalog-manager/internal/itemactions"
 	"github.com/zaentrum/katalog-manager/internal/library"
+	"github.com/zaentrum/katalog-manager/internal/picture"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/rest"
 	"github.com/zaentrum/katalog-manager/internal/retry"
@@ -182,6 +183,11 @@ func run() error {
 	// (migration 053).
 	if err := st.EnsureStyledSubtitles(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/053_styled_subtitles.sql is missing and could not be applied: %v; no package's styled originals and fonts are kept until it is", err)
+	}
+	// Each title's picture area, the part of its frame its picture fills, as
+	// the analyzer measured it (migration 054).
+	if err := st.EnsurePictureAreas(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/054_picture_areas.sql is missing and could not be applied: %v; no picture area is kept, and the players fit the frame, until it is", err)
 	}
 	// An item the scanner made before it wrote its own name into the row has
 	// it in its record alone: the row follows the record (bounded, in the
@@ -384,10 +390,15 @@ func wire(ctx context.Context, cfg config.Config, st *store.Store) (*service, er
 	// tail starts with start.
 	broker := stream.NewBroker()
 
+	// Each title's picture area: the analyzer reports what it measured, and
+	// the backfill hands it the titles that have none, at the pace of the
+	// settings picture.backfill*.
+	pictures := picture.New(st, cfg)
+
 	// Authenticated surface.
 	routes(r, authMW.Handler, cfg.Policy(), schema, broker.Handler,
 		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: steps, Events: eventProducer, Packager: actions, Extras: extrasSvc,
-			Reencode: retries, TakeIn: retries, Compliance: check}))
+			Reencode: retries, TakeIn: retries, Compliance: check, Picture: pictures}))
 
 	start := func(ctx context.Context) {
 		// A scan runs in the process that started it, so one a previous process
