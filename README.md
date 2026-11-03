@@ -390,11 +390,14 @@ the base schema in the order of their numbers, and each is idempotent:
   `package.json` (or the package store's `manifest.json`) names them —
   `subtitles[].styled`, `fonts[]` — a subtitle row by the file it names, and
   takes away what a new package keeps no more; an adoption registers those of
-  the package each title plays, and its revert takes them back. A deleted
-  item's fonts go with it. Every client reads the WebVTT file as before.
-  Applied at startup under the same lock when any of it is missing; without
-  it no styled original or font is kept. See
-  [Styled subtitles and their fonts](#styled-subtitles-and-their-fonts).
+  the package each title plays, and its revert takes them back. A font goes
+  with its title (a foreign key, `ON DELETE CASCADE`), however the title is
+  deleted. Every client reads the WebVTT file as before. Applied at startup
+  under the same lock when any of it is missing, waiting for each lock 3
+  seconds at a time and giving way 2 seconds between, 6 times in all — every
+  read of the subtitles' table queues behind its `ALTER` while it waits —
+  then left for the next start; without it no styled original or font is
+  kept. See [Styled subtitles and their fonts](#styled-subtitles-and-their-fonts).
 
 ## Track languages
 
@@ -2011,18 +2014,28 @@ the subtitle's WebVTT file, and takes the fonts its original carried into
 the package; `package.json` names them (a subtitle's `styled: {path,
 format}`, the package's `fonts: [{path, format, names, sourceStreamIndex}]`)
 and `packaging-complete` keeps them (migration 053): the subtitle's row its
-script, the title's font rows the package's fonts. A package made before the
-catalog kept them is registered from its record by `POST
-/api/library/styled` (the service account and admins): for each title with a
-packaged row — of those named, `{"items": ["<itemId>", …]}`, or with none of
-every title that has a package — the record that row names (a version's
-`package.json`, the package store's `manifest.json`) is read again, and its
-subtitles' rows and its fonts written as `packaging-complete` writes them,
-in the title's transaction under the lock every writer of its versions
-takes. It answers `{"items", "subtitles", "fonts", "skipped": [{"itemId",
-"reason"}]}` — how many titles it read, how many rows it changed, and the
-titles whose record it could not read — changes nothing when called again,
-and answers 503 without migration 053. The export
+script, the title's font rows the package's fonts. They are never a reason
+for a package not to be taken: what of them the catalog cannot keep as the
+record gives it — a font's name or a path with a NUL, which PostgreSQL's
+text holds none of, a path longer than its column, an attachment's index no
+integer column holds — is left out and logged, and so is one whose write
+fails for any other reason (each write a savepoint of its own); the version
+completes, and the package store's handover answers 200, with the rest. A
+package made before the catalog kept them is registered from its record by
+`POST /api/library/styled` (the service account and admins): for each title
+with a packaged row — of those named, `{"items": ["<itemId>", …]}`, or with
+none of every title that has a package — the record that row names (a
+version's `package.json`, the package store's `manifest.json`) is read
+again, and its subtitles' rows and its fonts written as `packaging-complete`
+writes them, in the title's transaction under the lock every writer of its
+versions takes, once that transaction has found the title and the same
+packaged row again and holds both to its end: a title packaged again or
+deleted while its record was read is left, and none of it written. It
+answers `{"items", "subtitles", "fonts", "left", "skipped": [{"itemId",
+"reason"}]}` — how many titles it read, how many rows it changed, how many
+styled originals and fonts it left out, and the titles it left, why —
+changes nothing when called again, and answers 503 without migration 053.
+The export
 (`db/export/library-export.sql`) says each subtitle's `styledPath` and
 `styledFormat`, and each item's `fontAssets` (`[{"id", "versionId", "path",
 "format", "names", "ordinal", "sourceStreamIndex"}]`), none on a catalog
