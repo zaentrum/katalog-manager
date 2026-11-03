@@ -1234,41 +1234,59 @@ throughout (the analyzer's README says how it is measured).
 The analyzer's side, for the service account and admins:
 
 - `PUT /api/picture/items/{id}` (an extra's `/api/picture/extras/{id}`)
-  reports a measurement: `{"path", "method", "frame": {"width", "height"},
-  "area": {"x", "y", "width", "height"}, "samples", "informative",
-  "durationMs", "seconds", "cpuSeconds", "sides"}`, the area the frame
-  itself when there are no bars, in pixels from the frame's top left
-  corner; without an area and with `reason`, one that could not tell
-  (`unknown`); with `error`, one that could not read the file (`failed`);
-  `{"released": true}` gives a title the backfill handed out back
-  unmeasured. It answers the title's area as it is now, 400 for an area
-  outside its frame, a covered episode (its holder is measured: it plays
-  its holder's file) or a series, 404 for no such title. A failure counts
-  and waits its backoff (an hour, doubled each time, a week at most), and
-  never replaces an area of what the title plays now.
+  reports a measurement: `{"path", "method", "token", "frame": {"width",
+  "height"}, "area": {"x", "y", "width", "height"}, "samples",
+  "informative", "durationMs", "seconds", "cpuSeconds", "bytesRead",
+  "measuredOn": {"kind", "size"}, "sampling", "video", "decoder",
+  "sides"}`, the area the frame itself when there are no bars, in pixels
+  from the frame's top left corner; without an area and with `reason`, one
+  that could not tell (`unknown`); with `error`, one that could not read
+  the file (`failed`); `{"released": true, "token"}` gives a title the
+  backfill handed out back unmeasured. `measuredOn` says what was read
+  (`original` with its size, or `package`), `sampling`, `video` and
+  `decoder` how (kept as they come, in `sampling`). It answers the title's
+  area as it is now, 400 for an area outside its frame, a covered episode
+  (its holder is measured: it plays its holder's file) or a series, 404
+  for no such title. A failure counts and waits its backoff (an hour,
+  doubled each time, a week at most), and never replaces an area of what
+  the title plays now. A report ends the claim its `token` names and no
+  other: the analyzer's pass of a new title reports without one and leaves
+  a claim as it is; a run whose lease ended was counted a failure then, and
+  its own failure, reported late, is not counted again.
 - `GET` of the same answers the title's area and `current`, whether it is
   of what the title plays now; 404 when it has none. The analyzer's pass of
-  a new title asks it before it measures.
-- `POST /api/picture/claim` `{"worker", "limit"}` hands the backfill the
-  titles to measure: `{"items": [{"kind", "id", "itemId", "type", "path",
-  "durationMs"}], "deadline"}`, or none, `"idle"` (why) and
-  `"retryAfterSeconds"`.
+  a new title asks it before it measures, and measures again an area of
+  another method than its own.
+- `POST /api/picture/claim` `{"worker", "limit", "method"}` hands the
+  backfill the titles to measure: `{"items": [{"kind", "id", "itemId",
+  "type", "path", "durationMs", "token"}], "deadline"}`, or none, `"idle"`
+  (why) and `"retryAfterSeconds"`.
 
 All three answer 503 without migration 054. What a measurement is of comes
 from its file: in a folder of one of the item's versions, that version and
 the original it was made of; else the item's original (its primary asset's
 source); of an extra, its package. An area is of what the title plays now
-while the title's complete version is that version or was made of that
-original, or, without one, while it plays that original (or the package
-from before the library it was measured in); an extra's while its package
-is the one measured. A title whose file was replaced has its old area kept
-and not served, and is measured again.
+while the title's complete version is that version, or was made of that
+original and its package's frame has the original's shape (its packaged
+asset's resolution, within 1 %: an anamorphic original packaged with square
+pixels is measured again, of its package); without one, while it plays that
+original (by its source where both name one, else by its path, and of the
+size the asset says) or the package from before the library it was measured
+in; an extra's while its package is the one measured (one from before the
+library: measured since it was packaged). A title whose file was replaced
+has its old area kept and not served, and is measured again.
 
 The backfill hands out the titles without an area of what they play now,
 movies first, then episodes, then extras, each the package where it has
-one (the playlist of its largest video rendition), else its original. It
-reads its settings on every claim, so an instance starts it, slows it or
-moves its hours without a restart:
+one (the playlist of its largest video rendition), else its original; the
+titles never measured go before those measured again: of an older method
+than the analyzer's that asks, one it could not tell of 30 days ago, one
+whose area is of another file. No title is measured again within a day of
+its last measurement. A title given back unmeasured waits 15 minutes before
+it is handed out again, twice as long after each release in a row, a day
+at most, and the titles after it go meanwhile. It reads its settings on
+every claim, so an instance starts it, slows it or moves its hours without
+a restart:
 
 - `picture.backfill` (`off`): `on` hands titles out;
 - `picture.backfill.window` (`22:00-17:00`): when, `HH:MM-HH:MM` in UTC,
