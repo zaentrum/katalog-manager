@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"maps"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
 
@@ -150,5 +153,98 @@ func TestAnAdoptionRegistersTheStyledOriginalsAndFonts(t *testing.T) {
 	}
 	if got := f.rows(t, "subtitleassets", "t.item_id = $1", mgFilm) + "\n" + f.rows(t, "fontassets", "true"); got != before {
 		t.Errorf("after the revert:\n%s\nbefore the adopt:\n%s", got, before)
+	}
+}
+
+// What the catalog cannot keep as the record gives it is left out, counted
+// and logged, and the rest kept: a font whose name holds a NUL, one whose
+// attachment's index no integer column holds, one whose path holds a NUL or
+// is longer than its column, and a styled original whose path is.
+func TestSyncStyledLeavesOutWhatTheCatalogCannotKeep(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	const item, version = "a1a1a1a1-0000-4000-8000-0000000000a1", "b2b2b2b2-0000-4000-8000-0000000000b2"
+	root := "/library/movies/a1/" + item + "/versions/" + version
+	storetest.AddItem(t, st, item, "movie", "A Film", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_subtitleassets (id, item_id, path, format, lang) VALUES
+		('s0', $1, $2, 'webvtt', 'en'), ('s1', $1, $3, 'webvtt', 'de')`, item, root+"/subs/0.vtt", root+"/subs/1.vtt")
+	long := "subs/fonts/" + strings.Repeat("x", 2048) + ".ttf"
+	pkg := map[string]any{
+		"subtitles": []any{
+			map[string]any{"id": "s0", "path": "subs/0.vtt", "styled": map[string]any{"path": "subs/0.ass", "format": "ass"}},
+			map[string]any{"id": "s1", "path": "subs/1.vtt", "styled": map[string]any{"path": "subs/1\x00.ass", "format": "ass"}},
+		},
+		"fonts": []any{
+			map[string]any{"path": "subs/fonts/0.ttf", "format": "ttf", "names": []any{"Example\x00Sans"}},
+			map[string]any{"path": "subs/fonts/1.ttf", "format": "ttf", "names": []any{"Example Serif"},
+				"sourceStreamIndex": json.Number("2147483648")},
+			map[string]any{"path": "subs/fonts/2\x00.ttf", "format": "ttf", "names": []any{"Example Mono"}},
+			map[string]any{"path": long, "format": "ttf", "names": []any{"Example Wide"}},
+			map[string]any{"path": "subs/fonts/4.otf", "format": "otf", "names": []any{"Example Round"},
+				"sourceStreamIndex": json.Number("2147483647")},
+		},
+	}
+	n, err := SyncStyled(ctx, st.Pool(), item, root, version, pkg)
+	if err != nil || n != (StyledCounts{Subtitles: 1, Fonts: 1, Left: 5}) {
+		t.Fatalf("SyncStyled: %+v, %v", n, err)
+	}
+	if got := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_subtitleassets WHERE item_id = $1
+		AND ((id = 's0' AND styledpath = $2) OR (id = 's1' AND styledpath IS NULL))`, item, root+"/subs/0.ass"); got != 2 {
+		t.Errorf("the styled originals: %d of 2 as they should be", got)
+	}
+	if got := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_fontassets WHERE item_id = $1`, item); got != 1 ||
+		storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_fontassets WHERE id = $1 AND ordinal = 4
+			AND sourcestreamindex = 2147483647`, FontID(item, version, 4)) != 1 {
+		t.Errorf("the fonts kept: %d, want the one the catalog can keep", got)
+	}
+	// in a transaction the same, the transaction going on
+	tx, err := st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if n, err := SyncStyled(ctx, tx, item, root, version, pkg); err != nil || n != (StyledCounts{Left: 5}) {
+		t.Errorf("SyncStyled in a transaction: %+v, %v", n, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Errorf("the transaction after it: %v", err)
+	}
+}
+
+// A title deleted while its fonts are written keeps none: the delete waits
+// for the writer's transaction (the fonts' foreign key holds the title's row)
+// and then takes the fonts it wrote with the title.
+func TestATitleDeletedWhileItsFontsAreWrittenKeepsNone(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	const item, version = "a1a1a1a1-0000-4000-8000-0000000000a1", "b2b2b2b2-0000-4000-8000-0000000000b2"
+	storetest.AddItem(t, st, item, "movie", "A Film", "")
+	tx, err := st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if n, err := SyncStyled(ctx, tx, item, "/library/movies/a1/"+item+"/versions/"+version, version, styledPackage()); err != nil ||
+		n.Fonts != 2 {
+		t.Fatalf("SyncStyled: %+v, %v", n, err)
+	}
+	deleted := make(chan error, 1)
+	go func() {
+		_, _, err := st.DeleteItemsAndUnlink(ctx, []string{item}, store.Deletion{By: "a test", Reason: "deleted while its fonts are written"})
+		deleted <- err
+	}()
+	select {
+	case err := <-deleted:
+		t.Fatalf("the delete did not wait for the writer: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-deleted; err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_fontassets`); n != 0 {
+		t.Errorf("%d font row(s) of the deleted title", n)
 	}
 }

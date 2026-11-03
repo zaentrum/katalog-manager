@@ -205,10 +205,11 @@ func (h *Handlers) packagingComplete(w http.ResponseWriter, r *http.Request) {
 		subsWritten++
 	}
 	// The styled originals beside the package's subtitles, and its fonts
-	// (migration 053), as the manifest names them.
+	// (migration 053), as the manifest names them: best-effort, as the
+	// tracks below — the package plays whatever the catalog keeps of them,
+	// and what it cannot keep is left out and logged.
 	if _, err := library.SyncStyled(ctx, pool, itemID, packageRoot, "", manifest); err != nil {
-		http.Error(w, "styled subtitles and fonts insert failed", http.StatusInternalServerError)
-		return
+		log.Printf("packagingComplete: the styled originals and fonts of %s: %v; POST /api/library/styled keeps them once they can be", itemID, err)
 	}
 
 	// 4. The source's tracks, as the package reports them (best-effort, as

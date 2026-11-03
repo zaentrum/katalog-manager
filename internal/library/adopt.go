@@ -1035,10 +1035,10 @@ func (m *Migration) apply(ctx context.Context, tx pgx.Tx, u *Unit, gone []goneEv
 			return fmt.Errorf("subtitle row %s is no row of the item", s.ID)
 		}
 	}
+	// never a reason for the title not to be adopted: what of them the
+	// catalog cannot keep is left out and logged
 	for _, p := range plays {
-		if _, err := SyncStyled(ctx, tx, u.ItemID, p.root, p.versionID, p.pkg); err != nil {
-			return fmt.Errorf("the styled subtitles and fonts of version %s: %w", p.versionID, err)
-		}
+		KeepStyled(ctx, tx, u.ItemID, p.root, p.versionID, p.pkg)
 	}
 	for _, x := range u.DB.Extras {
 		var err error

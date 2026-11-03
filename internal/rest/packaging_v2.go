@@ -717,10 +717,9 @@ func (h *Handlers) writePackaged(ctx context.Context, tx pgx.Tx, itemID, itemDir
 	}
 	// A styled subtitle's script beside its WebVTT file, and the fonts the
 	// package carries (migration 053): what a player that draws styles opts
-	// into.
-	if _, err := library.SyncStyled(ctx, tx, itemID, versionDir, versionID, pkg); err != nil {
-		return 0, err
-	}
+	// into. Never a reason for the version not to complete: what of them the
+	// catalog cannot keep is left out and logged (library.KeepStyled).
+	library.KeepStyled(ctx, tx, itemID, versionDir, versionID, pkg)
 	return written, nil
 }
 

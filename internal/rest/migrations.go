@@ -198,13 +198,15 @@ func (h *Handlers) refreshProjections(w http.ResponseWriter, r *http.Request) {
 // package.json of its version (or the package store's manifest.json) is read
 // again, and each of its subtitle rows given the script its package keeps
 // beside the subtitle's file, and its font rows the package's fonts, in the
-// title's transaction under its lock — what a package the packager made
-// before the catalog kept them carries. For the workers' service account and
-// admins. The body may name the items, {"items": ["<itemId>", …]}; without
-// it, every title with a package. It answers {"items", "subtitles", "fonts",
-// "skipped": [{"itemId", "reason"}]}: how many titles it read, how many rows
-// it changed (none when called again), and the titles it left, why. 503
-// without migration 053.
+// title's transaction under its lock, once it has found the title and the
+// same packaged row again (library.RegisterStyled) — what a package the
+// packager made before the catalog kept them carries. For the workers'
+// service account and admins. The body may name the items, {"items":
+// ["<itemId>", …]}; without it, every title with a package. It answers
+// {"items", "subtitles", "fonts", "left", "skipped": [{"itemId", "reason"}]}:
+// how many titles it read, how many rows it changed (none when called
+// again), how many styled originals and fonts it left out as the catalog
+// cannot keep them, and the titles it left, why. 503 without migration 053.
 func (h *Handlers) registerStyled(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Items []string `json:"items"`
