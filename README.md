@@ -1267,9 +1267,11 @@ from its file: in a folder of one of the item's versions, that version and
 the original it was made of; else the item's original (its primary asset's
 source); of an extra, its package. An area is of what the title plays now
 while the title's complete version is that version, or was made of that
-original and its package's frame has the original's shape (its packaged
-asset's resolution, within 1 %: an anamorphic original packaged with square
-pixels is measured again, of its package); without one, while it plays that
+original and its package's picture has the original's shape (the measured
+frame's display aspect, with the pixel aspect the measurement read, and the
+packaged asset's resolution within 1 %: an anamorphic original's area holds
+for its package of square pixels, one of another shape is measured again);
+without one, while it plays that
 original (by its source where both name one, else by its path, and of the
 size the asset says) or the package from before the library it was measured
 in; an extra's while its package is the one measured (one from before the
@@ -1277,16 +1279,22 @@ library: measured since it was packaged). A title whose file was replaced
 has its old area kept and not served, and is measured again.
 
 The backfill hands out the titles without an area of what they play now,
-movies first, then episodes, then extras, each the package where it has
-one (the playlist of its largest video rendition), else its original; the
-titles never measured go before those measured again: of an older method
-than the analyzer's that asks, one it could not tell of 30 days ago, one
-whose area is of another file. No title is measured again within a day of
-its last measurement. A title given back unmeasured waits 15 minutes before
-it is handed out again, twice as long after each release in a row, a day
-at most, and the titles after it go meanwhile. It reads its settings on
-every claim, so an instance starts it, slows it or moves its hours without
-a restart:
+movies first, then episodes, then extras. A movie or an episode is measured
+of its original while that is on disk, else of its package (the playlist of
+its largest video rendition): an original has a keyframe at its cuts, a
+package's encoded rung one every 6 s and none at a cut, of which the
+analyzer can't tell an area. The titles that still have their original go
+first, so that they are measured before a deletion wave retires it; then
+the titles never measured; then those measured again: of an older method
+than the analyzer's that asks, one it could not tell of 30 days ago (but
+not a package it could not tell for its keyframes' gaps, `sampling.doubt`
+`gap`: that answer stays until the package changes), one a package could
+not tell while the original is there, one whose area is of another file.
+No title is measured again within a day of its last measurement. A title
+given back unmeasured waits 15 minutes before it is handed out again, twice
+as long after each release in a row, a day at most, and the titles after it
+go meanwhile. It reads its settings on every claim, so an instance starts
+it, slows it or moves its hours without a restart:
 
 - `picture.backfill` (`off`): `on` hands titles out;
 - `picture.backfill.window` (`22:00-17:00`): when, `HH:MM-HH:MM` in UTC,
@@ -1301,6 +1309,14 @@ a restart:
   whichever comes first: the analyzer stops a measurement still running
   then and gives the title back. A title whose run never reported back
   counts as a failed one once its lease ends.
+
+A deletion wave keeps a title's original while `picture.NeedsOriginal`
+says so: the title has no area of what it plays now that says the
+picture's area (state `measured`), and none measured of that original
+(`measuredOn` `original`, its `sourceId`) that says it can't tell (state
+`unknown`). The same reads off `com_nalet_katalog_currentpictureareas` (its
+`state`, `measuredon` and `sourceid`) and `GET /api/picture/items/{id}`
+(`state`, `current`, `measuredOn`, `sourceId`).
 
 Every claim, its lease and each failure are rows of the table, so the
 backfill resumes where it was after a restart of either side, and one
