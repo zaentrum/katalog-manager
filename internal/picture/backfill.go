@@ -5,9 +5,14 @@ package picture
 // settings allow, never in the quiet hours, a title at a time by default. A
 // title handed out is claimed until its report comes back (Record) or its
 // lease ends: one whose run never reported back counts as a failure and is
-// handed out again after its backoff. Everything it keeps is in the catalog,
-// so it resumes where it was after a restart of either side. The movies go
-// first, then the episodes, then the extras.
+// handed out again after its backoff, one given back unmeasured after its
+// release backoff, the titles after it first. Everything it keeps is in the
+// catalog, so it resumes where it was after a restart of either side. The
+// titles never measured go first (movies, then episodes, then extras), then
+// those measured again: of an older method than the analyzer's that asks,
+// one it could not tell of a month ago (UnknownAgain), one whose area is of
+// another file than the title plays now. No title is measured again within
+// a day of its last measurement (MeasureAgainAfter), whatever it plays.
 
 import (
 	"context"
@@ -226,7 +231,8 @@ func (w Window) Opens(t time.Time) time.Time {
 }
 
 // Job is a title the backfill hands out: what to measure (Path, an original
-// or a package's video rendition, its HLS playlist) and how long it is.
+// or a package's video rendition, its HLS playlist), how long it is, and the
+// token its run reports with (Report.Token).
 type Job struct {
 	Kind       string `json:"kind"`
 	ID         string `json:"id"`
@@ -234,7 +240,16 @@ type Job struct {
 	Type       string `json:"type"`
 	Path       string `json:"path"`
 	DurationMs *int64 `json:"durationMs"`
+	Token      string `json:"token"`
 }
+
+// UnknownAgain is how long an area the analyzer could not tell of stands
+// before the title is measured again; MeasureAgainAfter the least time
+// between two measurements of a title, whatever it plays since.
+const (
+	UnknownAgain      = 30 * 24 * time.Hour
+	MeasureAgainAfter = 24 * time.Hour
+)
 
 // Claim is what a claim hands out: its titles and the time their runs end by
 // (the window's end, or the lease's), or none and why, and when to ask again.
@@ -301,9 +316,10 @@ const candidates = 8
 // Claim hands out up to limit titles to the worker (1 at least, at most what
 // the pace allows), or none and why: the backfill is off, outside its window,
 // titles enough are in flight, the hour's rate is reached, or every title has
-// a picture area of what it plays now. A claim of a lease that ended first
-// counts as a failure of its title.
-func (s *Service) Claim(ctx context.Context, worker string, limit int) (Claim, error) {
+// a picture area of what it plays now. method is the analyzer's measurement
+// ("" for any): an area of another is measured again. A claim of a lease that
+// ended first counts as a failure of its title.
+func (s *Service) Claim(ctx context.Context, worker string, limit int, method string) (Claim, error) {
 	if err := s.ready(ctx); err != nil {
 		return Claim{}, err
 	}
@@ -354,7 +370,8 @@ func (s *Service) Claim(ctx context.Context, worker string, limit int) (Claim, e
 	}
 	n := min(max(limit, 1), set.Inflight-inflight, set.Rate-recent)
 
-	rows, err := tx.Query(ctx, candidatesSQL, now, n*candidates)
+	rows, err := tx.Query(ctx, candidatesSQL, now, n*candidates, clip(strings.TrimSpace(method), 32),
+		now.Add(-UnknownAgain), now.Add(-MeasureAgainAfter))
 	if err != nil {
 		return Claim{}, err
 	}
@@ -390,16 +407,18 @@ func (s *Service) Claim(ctx context.Context, worker string, limit int) (Claim, e
 			}
 			continue
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO `+store.PictureAreasTable+`
-				(id, kind, item_id, state, claimedat, claimedby, lastclaimedat, attempts, createdat, modifiedat)
-			VALUES ($1, $2, $3, 'pending', $4, $5, $4, 1, $4, $4)
-			ON CONFLICT (id) DO UPDATE SET claimedat = $4, claimedby = $5, lastclaimedat = $4,
-				attempts = `+store.PictureAreasTable+`.attempts + 1, modifiedat = $4`,
-			c.id, c.kind, c.itemID, now, clip(worker, 255)); err != nil {
+		var token string
+		if err := tx.QueryRow(ctx, `INSERT INTO `+store.PictureAreasTable+`
+				(id, kind, item_id, state, claimedat, claimedby, claimtoken, lastclaimedat, attempts, createdat, modifiedat)
+			VALUES ($1, $2, $3, 'pending', $4, $5, gen_random_uuid()::varchar, $4, 1, $4, $4)
+			ON CONFLICT (id) DO UPDATE SET claimedat = $4, claimedby = $5, claimtoken = gen_random_uuid()::varchar,
+				lastclaimedat = $4, attempts = `+store.PictureAreasTable+`.attempts + 1, modifiedat = $4
+			RETURNING claimtoken`,
+			c.id, c.kind, c.itemID, now, clip(worker, 255)).Scan(&token); err != nil {
 			return Claim{}, err
 		}
 		out.Items = append(out.Items, Job{Kind: c.kind, ID: c.id, ItemID: c.itemID, Type: c.typ, Path: path,
-			DurationMs: c.duration})
+			DurationMs: c.duration, Token: token})
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Claim{}, err
@@ -426,8 +445,10 @@ func idle(why string, after time.Duration) Claim {
 // they are handed out: movies, episodes (none another's file covers, none of a
 // disc image), extras (packaged, not removed), each with a file, without a
 // picture area of what it plays now (measured, or unknown: the analyzer could
-// not tell), not claimed now, and not waiting out a failure's backoff ($1 is
-// now).
+// not tell) of the method $3 ("" for any), one unknown since before $4 (a
+// month ago) counting as none, not claimed now, not waiting out a failure's
+// or a release's backoff ($1 is now), and not measured since $5 (a day ago);
+// the titles never measured first.
 var candidatesSQL = `
 	SELECT t.kind, t.id, t.item_id, t.type, t.durationms
 	FROM (
@@ -447,13 +468,17 @@ var candidatesSQL = `
 	) t
 	LEFT JOIN ` + store.PictureAreasTable + ` pa ON pa.id = t.id
 	WHERE NOT EXISTS (SELECT 1 FROM ` + store.CurrentPictureAreasView + ` c
-	                  WHERE c.id = t.id AND c.state IN ('measured', 'unknown'))
-	  AND (pa.id IS NULL OR (pa.claimedat IS NULL AND (pa.nextattemptat IS NULL OR pa.nextattemptat <= $1)))
-	ORDER BY t.rank, t.id
+	                  WHERE c.id = t.id AND c.state IN ('measured', 'unknown')
+	                    AND ($3 = '' OR c.method = $3)
+	                    AND (c.state = 'measured' OR c.measuredat > $4))
+	  AND (pa.id IS NULL OR (pa.claimedat IS NULL AND (pa.nextattemptat IS NULL OR pa.nextattemptat <= $1)
+	                         AND (pa.measuredat IS NULL OR pa.measuredat <= $5)))
+	ORDER BY pa.measuredat IS NOT NULL, t.rank, t.id
 	LIMIT $2`
 
 // expire takes the claims whose lease ended for failures of their titles:
-// their runs never reported back.
+// their runs never reported back. A claim's token is kept as the lapsed one:
+// its run's failure, reported late, is counted already.
 func expire(ctx context.Context, tx pgx.Tx, now time.Time, lease time.Duration) error {
 	rows, err := tx.Query(ctx, `SELECT id, failures FROM `+store.PictureAreasTable+`
 		WHERE claimedat IS NOT NULL AND claimedat <= $1 FOR UPDATE`, now.Add(-lease))
@@ -480,7 +505,7 @@ func expire(ctx context.Context, tx pgx.Tx, now time.Time, lease time.Duration) 
 	for _, l := range ls {
 		f := l.failures + 1
 		if _, err := tx.Exec(ctx, `UPDATE `+store.PictureAreasTable+` SET claimedat = NULL, claimedby = NULL,
-			failures = $2, nextattemptat = $3, modifiedat = $4,
+			lapsedtoken = claimtoken, claimtoken = NULL, failures = $2, nextattemptat = $3, modifiedat = $4,
 			state = CASE WHEN state = 'pending' THEN 'failed' ELSE state END,
 			reason = CASE WHEN state IN ('pending', 'failed') THEN $5 ELSE reason END
 			WHERE id = $1`, l.id, f, now.Add(backoff(f)), now,

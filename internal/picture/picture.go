@@ -64,19 +64,23 @@ type Area struct {
 	FrameWidth, FrameHeight *int32
 	X, Y, Width, Height     *int32
 	// Path is the file measured; SourceID, VersionID and PackageID what it is
-	// (an original, a version's package, an extra's package).
+	// (an original, a version's package, an extra's package), MeasuredOn which
+	// of the two the analyzer read and FileSize the original's size.
 	Path, SourceID, VersionID, PackageID *string
+	MeasuredOn                           *string
+	FileSize                             *int64
 	Method, Reason                       *string
 	Samples, Informative                 *int32
-	DurationMs                           *int64
+	DurationMs, BytesRead                *int64
 	Seconds, CPUSeconds                  *float64
-	Evidence                             json.RawMessage
+	Evidence, Sampling                   json.RawMessage
 	MeasuredAt                           *time.Time
 	ClaimedAt                            *time.Time
-	ClaimedBy                            *string
+	ClaimedBy, ClaimToken                *string
 	LastClaimedAt                        *time.Time
-	Attempts, Failures                   int32
+	Attempts, Failures, Releases         int32
 	NextAttemptAt                        *time.Time
+	LapsedToken                          *string
 	ModifiedAt                           time.Time
 	// Current says it is of what the title plays now.
 	Current bool
@@ -91,18 +95,20 @@ func (a *Area) Full() bool {
 
 // areaColumns are the columns an Area is read from, of the table aliased pa.
 const areaColumns = `pa.id, pa.kind, pa.item_id, pa.state, pa.framewidth, pa.frameheight, pa.areax, pa.areay,
-	pa.areawidth, pa.areaheight, pa.path, pa.sourceid, pa.versionid, pa.packageid, pa.method, pa.reason,
-	pa.samples, pa.informative, pa.durationms, pa.seconds, pa.cpuseconds, pa.evidence, pa.measuredat,
-	pa.claimedat, pa.claimedby, pa.lastclaimedat, pa.attempts, pa.failures, pa.nextattemptat, pa.modifiedat,
+	pa.areawidth, pa.areaheight, pa.path, pa.sourceid, pa.versionid, pa.packageid, pa.measuredon, pa.filesize,
+	pa.method, pa.reason, pa.samples, pa.informative, pa.durationms, pa.bytesread, pa.seconds, pa.cpuseconds,
+	pa.evidence, pa.sampling, pa.measuredat, pa.claimedat, pa.claimedby, pa.claimtoken, pa.lastclaimedat,
+	pa.attempts, pa.failures, pa.releases, pa.nextattemptat, pa.lapsedtoken, pa.modifiedat,
 	EXISTS (SELECT 1 FROM ` + store.CurrentPictureAreasView + ` c WHERE c.id = pa.id)`
 
 func scanArea(row pgx.Row) (*Area, error) {
 	a := &Area{}
 	var seconds, cpu *float32
 	err := row.Scan(&a.ID, &a.Kind, &a.ItemID, &a.State, &a.FrameWidth, &a.FrameHeight, &a.X, &a.Y,
-		&a.Width, &a.Height, &a.Path, &a.SourceID, &a.VersionID, &a.PackageID, &a.Method, &a.Reason,
-		&a.Samples, &a.Informative, &a.DurationMs, &seconds, &cpu, &a.Evidence, &a.MeasuredAt,
-		&a.ClaimedAt, &a.ClaimedBy, &a.LastClaimedAt, &a.Attempts, &a.Failures, &a.NextAttemptAt, &a.ModifiedAt,
+		&a.Width, &a.Height, &a.Path, &a.SourceID, &a.VersionID, &a.PackageID, &a.MeasuredOn, &a.FileSize,
+		&a.Method, &a.Reason, &a.Samples, &a.Informative, &a.DurationMs, &a.BytesRead, &seconds, &cpu,
+		&a.Evidence, &a.Sampling, &a.MeasuredAt, &a.ClaimedAt, &a.ClaimedBy, &a.ClaimToken, &a.LastClaimedAt,
+		&a.Attempts, &a.Failures, &a.Releases, &a.NextAttemptAt, &a.LapsedToken, &a.ModifiedAt,
 		&a.Current)
 	if err != nil {
 		return nil, err
@@ -161,9 +167,14 @@ type Rect struct {
 // bars); one that could not tell has Frame, no Area, and Reason; one that
 // could not read the file has Error. Released gives a title the backfill
 // handed out back unmeasured (its run was stopped): nothing else is read.
+// Token is the claim's the run measured for (Job.Token), none for the
+// analyzer's own pass of a new title. MeasuredOn says what the analyzer read
+// (original or package, and its size); Sampling, Video and Decoder how it
+// sampled, what the video is and its decoder's version, kept as they come.
 type Report struct {
 	Path        string          `json:"path"`
 	Method      string          `json:"method"`
+	Token       string          `json:"token"`
 	Frame       *Size           `json:"frame"`
 	Area        *Rect           `json:"area"`
 	Samples     *int32          `json:"samples"`
@@ -171,10 +182,22 @@ type Report struct {
 	DurationMs  *int64          `json:"durationMs"`
 	Seconds     *float64        `json:"seconds"`
 	CPUSeconds  *float64        `json:"cpuSeconds"`
+	BytesRead   *int64          `json:"bytesRead"`
+	MeasuredOn  *MeasuredOn     `json:"measuredOn"`
+	Sampling    json.RawMessage `json:"sampling"`
+	Video       json.RawMessage `json:"video"`
+	Decoder     string          `json:"decoder"`
 	Sides       json.RawMessage `json:"sides"`
 	Reason      string          `json:"reason"`
 	Error       string          `json:"error"`
 	Released    bool            `json:"released"`
+}
+
+// MeasuredOn is what a measurement read: an original or a package's video
+// rendition (Kind), and the original's size in bytes.
+type MeasuredOn struct {
+	Kind string `json:"kind"`
+	Size *int64 `json:"size"`
 }
 
 // state is the state the report leaves its title in, or why it can't be
@@ -186,11 +209,16 @@ func (r Report) state() (string, error) {
 	if strings.TrimSpace(r.Path) == "" {
 		return "", &BadReport{"a report names the file it measured (path)"}
 	}
-	if len(r.Sides) > 0 && string(r.Sides) != "null" {
-		var o map[string]json.RawMessage
-		if json.Unmarshal(r.Sides, &o) != nil {
-			return "", &BadReport{"sides is a JSON object, of each side's bar"}
+	for name, raw := range map[string]json.RawMessage{"sides": r.Sides, "sampling": r.Sampling, "video": r.Video} {
+		if len(raw) > 0 && string(raw) != "null" {
+			var o map[string]json.RawMessage
+			if json.Unmarshal(raw, &o) != nil {
+				return "", &BadReport{name + " is a JSON object"}
+			}
 		}
+	}
+	if m := r.MeasuredOn; m != nil && m.Kind != "" && m.Kind != "original" && m.Kind != "package" {
+		return "", &BadReport{"measuredOn.kind is original or package, not " + m.Kind}
 	}
 	if strings.TrimSpace(r.Error) != "" {
 		return StateFailed, nil
@@ -210,31 +238,49 @@ func (r Report) state() (string, error) {
 }
 
 // MaxBackoff is the longest a failed title waits before the backfill hands it
-// out again; the first wait is FirstBackoff, doubled after each failure.
+// out again; the first wait is FirstBackoff, doubled after each failure. A
+// title given back unmeasured waits FirstRelease, doubled after each release
+// in a row, MaxRelease at most: the titles after it go first.
 const (
 	FirstBackoff = time.Hour
 	MaxBackoff   = 7 * 24 * time.Hour
+	FirstRelease = 15 * time.Minute
+	MaxRelease   = 24 * time.Hour
 )
 
 // backoff is the wait after the failures-th failure in a row.
 func backoff(failures int32) time.Duration {
-	d := FirstBackoff
-	for i := int32(1); i < failures && d < MaxBackoff; i++ {
+	return doubled(FirstBackoff, MaxBackoff, failures)
+}
+
+// releaseBackoff is the wait after the releases-th release in a row.
+func releaseBackoff(releases int32) time.Duration {
+	return doubled(FirstRelease, MaxRelease, releases)
+}
+
+func doubled(first, most time.Duration, n int32) time.Duration {
+	d := first
+	for i := int32(1); i < n && d < most; i++ {
 		d *= 2
 	}
-	return min(d, MaxBackoff)
+	return min(d, most)
 }
 
 // Record keeps what the analyzer reported of the title id of kind, and answers
 // the title's picture area as it is now. A measurement (measured or unknown)
-// replaces what was kept, and ends any claim of it. A failure counts as one
-// and waits its backoff, and leaves an area of what the title plays now as it
-// is. Released ends the title's claim, nothing else. What the file measured
-// is: of an item, the version whose folder holds it (and the original that
-// version was made of), else its original (the source of its primary asset of
-// that path); of an extra, its package, when the file is in the package's
-// folder. A covered episode is measured with its holder (400), a series or a
-// season has no frame (400), an unknown title is ErrNoTitle.
+// replaces what was kept. A failure counts as one and waits its backoff, and
+// leaves an area of what the title plays now as it is. Released gives the
+// title's claim back, which waits its release backoff before the backfill
+// hands the title out again, nothing else. A report ends the claim it
+// names (its token) and only that one: one of a claim whose lease ended
+// leaves the claim made since as it is, its failure counted already when the
+// lease ended; one without a token (the analyzer's pass of a new title)
+// leaves any claim as it is. What the file measured is: of an item, the
+// version whose folder holds it (and the original that version was made of),
+// else its original (the source of its primary asset of that path); of an
+// extra, its package, when the file is in the package's folder. A covered
+// episode is measured with its holder (400), a series or a season has no
+// frame (400), an unknown title is ErrNoTitle.
 func Record(ctx context.Context, st *store.Store, kind, id string, r Report, now time.Time) (*Area, error) {
 	state, err := r.state()
 	if err != nil {
@@ -290,16 +336,6 @@ func Record(ctx context.Context, st *store.Store, kind, id string, r Report, now
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	if r.Released {
-		if _, err := tx.Exec(ctx, `UPDATE `+store.PictureAreasTable+` SET claimedat = NULL, claimedby = NULL,
-			modifiedat = $3 WHERE id = $1 AND kind = $2`, id, kind, now); err != nil {
-			return nil, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return nil, err
-		}
-		return Of(ctx, pool, kind, id)
-	}
 	if _, err := tx.Exec(ctx, `INSERT INTO `+store.PictureAreasTable+` (id, kind, item_id, state, createdat, modifiedat)
 		VALUES ($1, $2, $3, 'pending', $4, $4) ON CONFLICT (id) DO NOTHING`, id, kind, itemID, now); err != nil {
 		return nil, err
@@ -312,24 +348,66 @@ func Record(ctx context.Context, st *store.Store, kind, id string, r Report, now
 	if kept.Kind != kind {
 		return nil, &BadReport{"id " + id + " has the picture area of an " + kept.Kind}
 	}
-	evidence := sidesEvidence(r.Sides)
+	token := strings.TrimSpace(r.Token)
+	// owns: the report is of the claim the title is under; lapsed: of the
+	// claim whose lease ended last, counted a failure then
+	owns := kept.ClaimedAt != nil && (kept.ClaimToken == nil || token == *kept.ClaimToken)
+	if token == "" {
+		owns = false
+	}
+	lapsed := token != "" && kept.LapsedToken != nil && token == *kept.LapsedToken
+	if r.Released {
+		if r.Token == "" && kept.ClaimedAt != nil && kept.ClaimToken == nil {
+			owns = true // a claim of an analyzer that sends no token
+		}
+		if owns {
+			releases := kept.Releases + 1
+			if _, err := tx.Exec(ctx, `UPDATE `+store.PictureAreasTable+` SET claimedat = NULL, claimedby = NULL,
+				claimtoken = NULL, releases = $3, nextattemptat = GREATEST(nextattemptat, $4), modifiedat = $5
+				WHERE id = $1 AND kind = $2`, id, kind, releases, now.Add(releaseBackoff(releases)), now); err != nil {
+				return nil, err
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return Of(ctx, pool, kind, id)
+	}
+	// What the claim fields become: the claim ends with the report of it.
+	claim := `claimedat = CASE WHEN $2 THEN NULL ELSE claimedat END,
+		claimedby = CASE WHEN $2 THEN NULL ELSE claimedby END,
+		claimtoken = CASE WHEN $2 THEN NULL ELSE claimtoken END,
+		lapsedtoken = CASE WHEN $3 THEN NULL ELSE lapsedtoken END`
+	evidence := rawObject(r.Sides)
+	sampling := samplingOf(r)
+	measuredOn, fileSize := measuredOnOf(r, versionID, packageID)
 	if state == StateFailed {
 		why := clip(strings.TrimSpace(r.Error), 500)
-		failures := kept.Failures + 1
+		failures := kept.Failures
+		if !lapsed {
+			failures++
+		}
 		next := now.Add(backoff(failures))
-		if kept.Current && (kept.State == StateMeasured || kept.State == StateUnknown) {
+		switch {
+		case lapsed:
+			// counted when its lease ended: this only says why
+			_, err = tx.Exec(ctx, `UPDATE `+store.PictureAreasTable+` SET `+claim+`,
+				reason = CASE WHEN state IN ('pending', 'failed') THEN $4 ELSE reason END, modifiedat = $5
+				WHERE id = $1`, id, owns, lapsed, why, now)
+		case kept.Current && (kept.State == StateMeasured || kept.State == StateUnknown):
 			// A measurement of what plays now stays: the failure only counts.
-			_, err = tx.Exec(ctx, `UPDATE `+store.PictureAreasTable+` SET failures = $2, claimedat = NULL,
-				claimedby = NULL, modifiedat = $3 WHERE id = $1`, id, failures, now)
-		} else {
-			_, err = tx.Exec(ctx, `UPDATE `+store.PictureAreasTable+` SET state = 'failed', item_id = $2,
-				framewidth = $3, frameheight = $4, areax = NULL, areay = NULL, areawidth = NULL, areaheight = NULL,
-				path = $5, sourceid = $6, versionid = $7, packageid = $8, method = NULLIF($9, ''), reason = $10,
-				samples = $11, informative = $12, durationms = $13, seconds = $14, cpuseconds = $15, evidence = $16,
-				failures = $17, nextattemptat = $18, claimedat = NULL, claimedby = NULL, modifiedat = $19
-				WHERE id = $1`, id, itemID, width(r.Frame), height(r.Frame), r.Path, sourceID, versionID, packageID,
-				r.Method, why, r.Samples, r.Informative, r.DurationMs, r.Seconds, r.CPUSeconds, evidence,
-				failures, next, now)
+			_, err = tx.Exec(ctx, `UPDATE `+store.PictureAreasTable+` SET `+claim+`, failures = $4,
+				modifiedat = $5 WHERE id = $1`, id, owns, lapsed, failures, now)
+		default:
+			_, err = tx.Exec(ctx, `UPDATE `+store.PictureAreasTable+` SET `+claim+`, state = 'failed', item_id = $4,
+				framewidth = $5, frameheight = $6, areax = NULL, areay = NULL, areawidth = NULL, areaheight = NULL,
+				path = $7, sourceid = $8, versionid = $9, packageid = $10, method = NULLIF($11, ''), reason = $12,
+				samples = $13, informative = $14, durationms = $15, seconds = $16, cpuseconds = $17, evidence = $18,
+				failures = $19, nextattemptat = $20, measuredon = $21, filesize = $22, bytesread = $23, sampling = $24,
+				modifiedat = $25
+				WHERE id = $1`, id, owns, lapsed, itemID, width(r.Frame), height(r.Frame), r.Path, sourceID, versionID,
+				packageID, r.Method, why, r.Samples, r.Informative, r.DurationMs, r.Seconds, r.CPUSeconds, evidence,
+				failures, next, measuredOn, fileSize, r.BytesRead, sampling, now)
 		}
 	} else {
 		var x, y, w, h *int32
@@ -344,13 +422,15 @@ func Record(ctx context.Context, st *store.Store, kind, id string, r Report, now
 			}
 			why = &s
 		}
-		_, err = tx.Exec(ctx, `UPDATE `+store.PictureAreasTable+` SET state = $2, item_id = $3,
-			framewidth = $4, frameheight = $5, areax = $6, areay = $7, areawidth = $8, areaheight = $9,
-			path = $10, sourceid = $11, versionid = $12, packageid = $13, method = NULLIF($14, ''), reason = $15,
-			samples = $16, informative = $17, durationms = $18, seconds = $19, cpuseconds = $20, evidence = $21,
-			measuredat = $22, failures = 0, nextattemptat = NULL, claimedat = NULL, claimedby = NULL, modifiedat = $22
-			WHERE id = $1`, id, state, itemID, r.Frame.Width, r.Frame.Height, x, y, w, h, r.Path, sourceID, versionID,
-			packageID, r.Method, why, r.Samples, r.Informative, r.DurationMs, r.Seconds, r.CPUSeconds, evidence, now)
+		_, err = tx.Exec(ctx, `UPDATE `+store.PictureAreasTable+` SET `+claim+`, state = $4, item_id = $5,
+			framewidth = $6, frameheight = $7, areax = $8, areay = $9, areawidth = $10, areaheight = $11,
+			path = $12, sourceid = $13, versionid = $14, packageid = $15, method = NULLIF($16, ''), reason = $17,
+			samples = $18, informative = $19, durationms = $20, seconds = $21, cpuseconds = $22, evidence = $23,
+			measuredon = $24, filesize = $25, bytesread = $26, sampling = $27,
+			measuredat = $28, failures = 0, releases = 0, nextattemptat = NULL, modifiedat = $28
+			WHERE id = $1`, id, owns, lapsed, state, itemID, r.Frame.Width, r.Frame.Height, x, y, w, h, r.Path,
+			sourceID, versionID, packageID, r.Method, why, r.Samples, r.Informative, r.DurationMs, r.Seconds,
+			r.CPUSeconds, evidence, measuredOn, fileSize, r.BytesRead, sampling, now)
 	}
 	if err != nil {
 		return nil, err
@@ -359,6 +439,52 @@ func Record(ctx context.Context, st *store.Store, kind, id string, r Report, now
 		return nil, err
 	}
 	return Of(ctx, pool, kind, id)
+}
+
+// measuredOnOf is what a report measured (original or package) and the
+// original's size: as it says, else by what its file is.
+func measuredOnOf(r Report, versionID, packageID *string) (*string, *int64) {
+	kind := ""
+	var size *int64
+	if m := r.MeasuredOn; m != nil {
+		kind, size = m.Kind, m.Size
+	}
+	if kind == "" {
+		kind = "original"
+		if versionID != nil || packageID != nil || strings.HasSuffix(strings.ToLower(r.Path), ".m3u8") {
+			kind = "package"
+		}
+	}
+	if kind != "original" || (size != nil && *size <= 0) {
+		size = nil
+	}
+	return &kind, size
+}
+
+// samplingOf is what is kept of how a report sampled: its sampling, with
+// the video and the decoder it names.
+func samplingOf(r Report) []byte {
+	out := map[string]json.RawMessage{}
+	if raw := rawObject(r.Sampling); raw != nil {
+		if json.Unmarshal(raw, &out) != nil {
+			out = map[string]json.RawMessage{}
+		}
+	}
+	if raw := rawObject(r.Video); raw != nil {
+		out["video"] = raw
+	}
+	if d := strings.TrimSpace(r.Decoder); d != "" {
+		b, _ := json.Marshal(clip(d, 200))
+		out["decoder"] = b
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // itemFileOf says what the file at path of the item id is: in a folder of one
@@ -396,13 +522,13 @@ func underDir(dir, path string) bool {
 	return dir != "" && strings.HasPrefix(path, dir+"/")
 }
 
-// sidesEvidence is the evidence kept of a report: its sides, as the analyzer
-// wrote them, when they are a JSON object.
-func sidesEvidence(sides json.RawMessage) []byte {
-	if len(sides) == 0 || string(sides) == "null" {
+// rawObject is a report's JSON object as the analyzer wrote it; nil for
+// none (state() refuses one that is no object).
+func rawObject(raw json.RawMessage) []byte {
+	if len(raw) == 0 || string(raw) == "null" {
 		return nil
 	}
-	return sides
+	return raw
 }
 
 func width(s *Size) *int32 {

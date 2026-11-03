@@ -50,6 +50,14 @@ func (l lib) version(st *store.Store, item, id, state, source string, bare bool)
 	}
 	storetest.Exec(l.t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, state, dir, sourceids)
 		VALUES ($1, $2, $3, $4, ARRAY[$5]::varchar[])`, id, item, state, dir, source)
+	if state == "complete" {
+		// its packaged asset, as the handover writes it (its first video
+		// rendition's size)
+		storetest.Exec(l.t, st, `DELETE FROM com_nalet_katalog_playbackassets WHERE item_id = $1 AND kind = 'packaged'`, item)
+		storetest.Exec(l.t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind,
+			versionid, resolution) VALUES (gen_random_uuid()::varchar, $1, $2, false, 'packaged', $3, '1280x720')`,
+			item, filepath.Join(dir, "package.json"), id)
+	}
 	return dir
 }
 
@@ -71,8 +79,16 @@ func setting(t *testing.T, st *store.Store, key, value string) {
 }
 
 func letterbox(path string) Report {
-	return Report{Path: path, Method: "picture/1", Frame: &Size{1920, 1080}, Area: &Rect{0, 138, 1920, 804},
+	return Report{Path: path, Method: "picture/2", Frame: &Size{1920, 1080}, Area: &Rect{0, 138, 1920, 804},
 		Samples: i32(300), Informative: i32(290)}
+}
+
+// measured is the report of a job the backfill handed out: a letterbox, with
+// the job's token.
+func measured(j Job) Report {
+	r := letterbox(j.Path)
+	r.Token = j.Token
+	return r
 }
 
 func service(t *testing.T, st *store.Store, root string, now *time.Time) *Service {
@@ -243,7 +259,7 @@ func TestTheBackfillHandsOutTitlesAtItsPace(t *testing.T) {
 
 	claim := func(want ...string) Claim {
 		t.Helper()
-		c, err := s.Claim(ctx, "analyzer-0", 1)
+		c, err := s.Claim(ctx, "analyzer-0", 1, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -273,7 +289,7 @@ func TestTheBackfillHandsOutTitlesAtItsPace(t *testing.T) {
 	if c := claim(); !strings.Contains(c.Idle, "being measured") {
 		t.Errorf("one in flight: %+v", c)
 	}
-	if _, err := s.Record(ctx, KindItem, "m1", letterbox(c.Items[0].Path)); err != nil {
+	if _, err := s.Record(ctx, KindItem, "m1", measured(c.Items[0])); err != nil {
 		t.Fatal(err)
 	}
 	// m2's original is nowhere: it fails, and m3's original goes instead.
@@ -283,16 +299,17 @@ func TestTheBackfillHandsOutTitlesAtItsPace(t *testing.T) {
 	}
 	// m3's run never reports back: after the lease it fails, and waits.
 	now = night.Add(DefaultLease + time.Minute)
-	claim("e1 " + strings.TrimPrefix(epAt, l.root))
+	ce := claim("e1 " + strings.TrimPrefix(epAt, l.root))
 	if a, _ := s.Of(ctx, KindItem, "m3"); a.State != StateFailed || a.Failures != 1 || a.ClaimedAt != nil ||
 		!strings.Contains(*a.Reason, "did not report back within 30m") {
 		t.Errorf("the lost claim: %+v", a)
 	}
-	if _, err := s.Record(ctx, KindItem, "e1", Report{Path: epAt, Frame: &Size{1920, 1080}, Reason: "too few frames"}); err != nil {
+	if _, err := s.Record(ctx, KindItem, "e1", Report{Path: epAt, Frame: &Size{1920, 1080}, Reason: "too few frames",
+		Method: "picture/2", Token: ce.Items[0].Token}); err != nil {
 		t.Fatal(err)
 	}
-	claim("x1 /movies/m1/extras/x1/hls/v0/playlist.m3u8")
-	if _, err := s.Record(ctx, KindExtra, "x1", letterbox(xdir+"/hls/v0/playlist.m3u8")); err != nil {
+	cx := claim("x1 /movies/m1/extras/x1/hls/v0/playlist.m3u8")
+	if _, err := s.Record(ctx, KindExtra, "x1", measured(cx.Items[0])); err != nil {
 		t.Fatal(err)
 	}
 	// Every title has an area or waits out a failure.
@@ -302,8 +319,8 @@ func TestTheBackfillHandsOutTitlesAtItsPace(t *testing.T) {
 	// After its backoff m3 goes again; the rate stops the hour's next.
 	now = night.Add(3 * time.Hour)
 	setting(t, st, SettingRate, "1")
-	claim("m3 " + strings.TrimPrefix(takenAt, l.root))
-	if _, err := s.Record(ctx, KindItem, "m3", letterbox(takenAt)); err != nil {
+	c3 := claim("m3 " + strings.TrimPrefix(takenAt, l.root))
+	if _, err := s.Record(ctx, KindItem, "m3", measured(c3.Items[0])); err != nil {
 		t.Fatal(err)
 	}
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_pictureareas SET nextattemptat = NULL WHERE id = 'm2'`)
@@ -318,5 +335,276 @@ func TestTheBackfillHandsOutTitlesAtItsPace(t *testing.T) {
 	if p.Titles != 5 || p.Letterboxed != 3 || p.Unknown != 1 || p.ToMeasure != 1 || p.Failed != 1 || p.InFlight != 0 ||
 		!p.Settings.On || p.Settings.Rate != 1 || !strings.Contains(p.Idle, "picture.backfill.rate") {
 		t.Errorf("progress: %+v", p)
+	}
+}
+
+// claimOne hands out a title to the worker, the analyzer's method named; it
+// fails the test unless it is want.
+func claimOne(t *testing.T, s *Service, worker, want string) Job {
+	t.Helper()
+	c, err := s.Claim(context.Background(), worker, 1, "picture/2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Items) != 1 || c.Items[0].ID != want {
+		t.Fatalf("handed out %+v (idle %q), want %s", c.Items, c.Idle, want)
+	}
+	if c.Items[0].Token == "" {
+		t.Fatalf("a job without a token: %+v", c.Items[0])
+	}
+	return c.Items[0]
+}
+
+// A title given back unmeasured (its run's deadline came first) waits its
+// release backoff, twice as long after each release in a row, and the titles
+// after it go meanwhile; a release of another claim changes nothing, and a
+// measurement ends the waits.
+func TestAReleasedTitleWaitsAndTheNextGoes(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	now := night
+	l := lib{t, t.TempDir()}
+	s := service(t, st, l.root, &now)
+	storetest.AddItem(t, st, "m1", "movie", "A Slow Film", "")
+	storetest.AddItem(t, st, "m2", "movie", "The Next Film", "")
+	l.version(st, "m1", "v1", "complete", "s1", false)
+	l.version(st, "m2", "v2", "complete", "s2", false)
+	setting(t, st, SettingBackfill, "on")
+
+	j := claimOne(t, s, "analyzer-0", "m1")
+	now = now.Add(DefaultLease - time.Second)
+	a, err := s.Record(ctx, KindItem, "m1", Report{Released: true, Token: j.Token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ClaimedAt != nil || a.Releases != 1 || a.Failures != 0 || a.NextAttemptAt == nil ||
+		!a.NextAttemptAt.Equal(now.Add(FirstRelease)) {
+		t.Fatalf("given back: %+v", a)
+	}
+	j2 := claimOne(t, s, "analyzer-0", "m2")
+	if _, err := s.Record(ctx, KindItem, "m2", measured(j2)); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := s.Claim(ctx, "analyzer-0", 1, "picture/2"); err != nil || len(c.Items) != 0 {
+		t.Fatalf("while m1 waits: %+v, %v", c, err)
+	}
+	now = now.Add(FirstRelease)
+	j = claimOne(t, s, "analyzer-0", "m1")
+	now = now.Add(time.Minute)
+	if a, err = s.Record(ctx, KindItem, "m1", Report{Released: true, Token: j.Token}); err != nil {
+		t.Fatal(err)
+	}
+	if a.Releases != 2 || !a.NextAttemptAt.Equal(now.Add(2*FirstRelease)) {
+		t.Errorf("given back again: %+v", a)
+	}
+	now = now.Add(2 * FirstRelease)
+	j = claimOne(t, s, "analyzer-0", "m1")
+	if a, err = s.Record(ctx, KindItem, "m1", Report{Released: true, Token: "another claim's"}); err != nil ||
+		a.ClaimedAt == nil || a.Releases != 2 {
+		t.Errorf("a release of another claim: %+v, %v", a, err)
+	}
+	if a, err = s.Record(ctx, KindItem, "m1", measured(j)); err != nil {
+		t.Fatal(err)
+	}
+	if a.State != StateMeasured || a.Releases != 0 || a.NextAttemptAt != nil || a.ClaimedAt != nil {
+		t.Errorf("measured: %+v", a)
+	}
+}
+
+// A report ends the claim it is of and no other. A claim whose lease ended
+// counts a failure then: its run's own failure, reported late, is not
+// counted again, and its measurement, reported late, is kept and leaves the
+// claim another run holds now as it is. The analyzer's pass of a new title
+// reports without a token, and leaves a claim as it is too.
+func TestAReportEndsOnlyItsOwnClaim(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	now := night
+	l := lib{t, t.TempDir()}
+	s := service(t, st, l.root, &now)
+	storetest.AddItem(t, st, "m1", "movie", "A Film", "")
+	storetest.AddItem(t, st, "m2", "movie", "Another", "")
+	l.version(st, "m1", "v1", "complete", "s1", false)
+	l.version(st, "m2", "v2", "complete", "s2", false)
+	setting(t, st, SettingBackfill, "on")
+	setting(t, st, SettingInflight, "2")
+	inflight := func() int {
+		return storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_pictureareas WHERE claimedat IS NOT NULL`)
+	}
+
+	j1 := claimOne(t, s, "w1", "m1")
+	now = night.Add(DefaultLease + time.Minute)
+	j2 := claimOne(t, s, "w2", "m2") // w1's lease ended: m1 failed, and waits
+	if _, err := s.Record(ctx, KindItem, "m2", measured(j2)); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.Record(ctx, KindItem, "m1", Report{Path: j1.Path, Error: "2 of 30 samples failed", Token: j1.Token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Failures != 1 || a.State != StateFailed || *a.Reason != "2 of 30 samples failed" || a.LapsedToken != nil {
+		t.Errorf("the late failure: %+v", a)
+	}
+	now = now.Add(backoff(1))
+	j3 := claimOne(t, s, "w2", "m1")
+	if a, err = s.Record(ctx, KindItem, "m1", measured(j1)); err != nil {
+		t.Fatal(err)
+	}
+	if a.State != StateMeasured || a.ClaimedAt == nil || *a.ClaimedBy != "w2" || inflight() != 1 {
+		t.Errorf("a late measurement: %+v, %d in flight", a, inflight())
+	}
+	if a, err = s.Record(ctx, KindItem, "m1", letterbox(j1.Path)); err != nil || a.ClaimedAt == nil {
+		t.Errorf("a report without a token: %+v, %v", a, err)
+	}
+	if a, err = s.Record(ctx, KindItem, "m1", measured(j3)); err != nil || a.ClaimedAt != nil || inflight() != 0 {
+		t.Errorf("the claim's own report: %+v, %v, %d in flight", a, err, inflight())
+	}
+}
+
+// An area is of the file it was measured in: of an original by its source
+// where the title's asset and the area both name one, else by its path, and
+// by its size where both say one; of a legacy extra (no package id) by its
+// package's folder, measured since the extra was packaged.
+func TestAnotherFileAtTheSamePathHasNoCurrentArea(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	now := night
+	l := lib{t, t.TempDir()}
+	s := service(t, st, l.root, &now)
+	current := func(kind, id string) bool {
+		t.Helper()
+		a, err := s.Of(ctx, kind, id)
+		if err != nil || a == nil {
+			t.Fatalf("%s: %+v, %v", id, a, err)
+		}
+		return a.Current
+	}
+	storetest.AddItem(t, st, "m1", "movie", "A Film", "")
+	orig := l.original(st, "m1", "s1")
+	if _, err := s.Record(ctx, KindItem, "m1", letterbox(orig)); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_playbackassets SET sourceid = 's2' WHERE item_id = 'm1'`)
+	if current(KindItem, "m1") {
+		t.Error("current after a new source at the same path")
+	}
+
+	storetest.AddItem(t, st, "m2", "movie", "An Old Film", "")
+	p2 := l.file("incoming/m2.mkv", "a film")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, sizebytes)
+		VALUES ('a2', 'm2', $1, true, 'primary', 6)`, p2)
+	r := letterbox(p2)
+	six := int64(6)
+	r.MeasuredOn = &MeasuredOn{Kind: "original", Size: &six}
+	a, err := s.Record(ctx, KindItem, "m2", r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.Current || a.FileSize == nil || *a.FileSize != 6 || *a.MeasuredOn != "original" {
+		t.Errorf("a legacy original: %+v", a)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_playbackassets SET sizebytes = 7 WHERE id = 'a2'`)
+	if current(KindItem, "m2") {
+		t.Error("current after the file at its path changed its size")
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_playbackassets SET sizebytes = NULL WHERE id = 'a2'`)
+	if !current(KindItem, "m2") {
+		t.Error("not current while the asset says no size")
+	}
+
+	dir := filepath.Join(l.root, "packages", "extras", "x1")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemextras (id, item_id, kind, title, registeredby, state,
+		packagepath, packagedat) VALUES ('x1', 'm1', 'trailer', 'Trailer', 'api', 'ready', $1, $2)`, dir, night.Add(-time.Hour))
+	if a, err := s.Record(ctx, KindExtra, "x1", letterbox(dir+"/hls/v0/playlist.m3u8")); err != nil || !a.Current ||
+		*a.MeasuredOn != "package" {
+		t.Fatalf("a legacy extra: %+v, %v", a, err)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemextras SET packagedat = $1 WHERE id = 'x1'`, night.Add(time.Hour))
+	if current(KindExtra, "x1") {
+		t.Error("current after the legacy extra was packaged anew in its folder")
+	}
+}
+
+// An original measured before its version was packaged is the title's area
+// only while the package's frame has its shape: an anamorphic original (720x576,
+// its pixels wide) packaged with square pixels (1024x576) is measured again,
+// of its package, once a day has passed since it was measured.
+func TestAnAnamorphicOriginalIsMeasuredAgainOfItsPackage(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	now := night
+	l := lib{t, t.TempDir()}
+	s := service(t, st, l.root, &now)
+	storetest.AddItem(t, st, "m1", "movie", "A Film on a Disc", "")
+	orig := l.original(st, "m1", "s1")
+	dvd := Report{Path: orig, Method: "picture/2", Frame: &Size{720, 576}, Area: &Rect{0, 70, 720, 436}}
+	if a, err := s.Record(ctx, KindItem, "m1", dvd); err != nil || !a.Current {
+		t.Fatalf("measured of the original: %+v, %v", a, err)
+	}
+	l.version(st, "m1", "v1", "complete", "s1", false)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_playbackassets SET resolution = '1024x576'
+		WHERE item_id = 'm1' AND kind = 'packaged'`)
+	if a, _ := s.Of(ctx, KindItem, "m1"); a.Current {
+		t.Fatal("current while the package's frame has another shape")
+	}
+	setting(t, st, SettingBackfill, "on")
+	if c, err := s.Claim(ctx, "analyzer-0", 1, "picture/2"); err != nil || len(c.Items) != 0 {
+		t.Fatalf("within a day of its measurement: %+v, %v", c, err)
+	}
+	now = now.Add(MeasureAgainAfter)
+	j := claimOne(t, s, "analyzer-0", "m1")
+	if !strings.HasSuffix(j.Path, "/versions/v1/hls/v0/playlist.m3u8") {
+		t.Errorf("handed out %s, not its package", j.Path)
+	}
+	r := Report{Path: j.Path, Method: "picture/2", Token: j.Token, Frame: &Size{1024, 576}, Area: &Rect{0, 70, 1024, 436}}
+	if a, err := s.Record(ctx, KindItem, "m1", r); err != nil || !a.Current || *a.VersionID != "v1" ||
+		*a.MeasuredOn != "package" {
+		t.Errorf("measured of the package: %+v, %v", a, err)
+	}
+}
+
+// The backfill measures again what an older method measured and what the
+// analyzer could not tell of a month ago, after the titles never measured.
+func TestOlderMethodsAndOldUnknownsAreMeasuredAgain(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	now := night
+	l := lib{t, t.TempDir()}
+	s := service(t, st, l.root, &now)
+	for _, id := range []string{"m1", "m2", "m3", "m4", "m5"} {
+		storetest.AddItem(t, st, id, "movie", "Film "+id, "")
+		l.version(st, id, "v"+id, "complete", "s"+id, false)
+	}
+	pkg := func(id string) string {
+		return filepath.Join(l.root, "movies", id, "versions", "v"+id, "hls", "v0", "playlist.m3u8")
+	}
+	old := letterbox(pkg("m1"))
+	old.Method = "picture/1"
+	for id, r := range map[string]Report{
+		"m1": old,
+		"m2": {Path: pkg("m2"), Method: "picture/2", Frame: &Size{1920, 1080}, Reason: "too few samples show a picture"},
+		"m3": {Path: pkg("m3"), Method: "picture/2", Frame: &Size{1920, 1080}, Reason: "too few samples show a picture"},
+		"m5": letterbox(pkg("m5")),
+	} {
+		if _, err := s.Record(ctx, KindItem, id, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_pictureareas SET measuredat = $1 WHERE id IN ('m1', 'm3', 'm5')`,
+		night.Add(-2*24*time.Hour))
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_pictureareas SET measuredat = $1 WHERE id = 'm2'`,
+		night.Add(-UnknownAgain-time.Hour))
+	setting(t, st, SettingBackfill, "on")
+	setting(t, st, SettingInflight, "10")
+	c, err := s.Claim(ctx, "analyzer-0", 10, "picture/2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, j := range c.Items {
+		got = append(got, j.ID)
+	}
+	if strings.Join(got, ",") != "m4,m1,m2" {
+		t.Errorf("handed out %v, want m4 (never measured), m1 (an older method), m2 (unknown a month ago)", got)
 	}
 }

@@ -19,7 +19,7 @@ import (
 type PictureAreas interface {
 	Of(ctx context.Context, kind, id string) (*picture.Area, error)
 	Record(ctx context.Context, kind, id string, r picture.Report) (*picture.Area, error)
-	Claim(ctx context.Context, worker string, limit int) (picture.Claim, error)
+	Claim(ctx context.Context, worker string, limit int, method string) (picture.Claim, error)
 }
 
 // pictureAreaJSON is a title's picture area on the wire.
@@ -35,24 +35,30 @@ type pictureAreaJSON struct {
 	SourceID      *string         `json:"sourceId"`
 	VersionID     *string         `json:"versionId"`
 	PackageID     *string         `json:"packageId"`
+	MeasuredOn    *string         `json:"measuredOn"`
+	FileSize      *int64          `json:"fileSize"`
 	Method        *string         `json:"method"`
 	Samples       *int32          `json:"samples"`
 	Informative   *int32          `json:"informative"`
+	BytesRead     *int64          `json:"bytesRead"`
 	Reason        *string         `json:"reason"`
 	Evidence      json.RawMessage `json:"evidence,omitempty"`
+	Sampling      json.RawMessage `json:"sampling,omitempty"`
 	MeasuredAt    *time.Time      `json:"measuredAt"`
 	Attempts      int32           `json:"attempts"`
 	Failures      int32           `json:"failures"`
+	Releases      int32           `json:"releases"`
 	NextAttemptAt *time.Time      `json:"nextAttemptAt"`
 	ClaimedAt     *time.Time      `json:"claimedAt"`
 }
 
 func pictureAreaOut(a *picture.Area) pictureAreaJSON {
 	out := pictureAreaJSON{ID: a.ID, Kind: a.Kind, ItemID: a.ItemID, State: a.State, Current: a.Current,
-		Path: a.Path, SourceID: a.SourceID, VersionID: a.VersionID, PackageID: a.PackageID, Method: a.Method,
-		Samples: a.Samples, Informative: a.Informative, Reason: a.Reason, Evidence: a.Evidence,
-		MeasuredAt: utc(a.MeasuredAt), Attempts: a.Attempts, Failures: a.Failures,
-		NextAttemptAt: utc(a.NextAttemptAt), ClaimedAt: utc(a.ClaimedAt)}
+		Path: a.Path, SourceID: a.SourceID, VersionID: a.VersionID, PackageID: a.PackageID,
+		MeasuredOn: a.MeasuredOn, FileSize: a.FileSize, Method: a.Method, Samples: a.Samples,
+		Informative: a.Informative, BytesRead: a.BytesRead, Reason: a.Reason, Evidence: a.Evidence,
+		Sampling: a.Sampling, MeasuredAt: utc(a.MeasuredAt), Attempts: a.Attempts, Failures: a.Failures,
+		Releases: a.Releases, NextAttemptAt: utc(a.NextAttemptAt), ClaimedAt: utc(a.ClaimedAt)}
 	if a.FrameWidth != nil && a.FrameHeight != nil {
 		out.Frame = &picture.Size{Width: *a.FrameWidth, Height: *a.FrameHeight}
 	}
@@ -134,10 +140,12 @@ func (h *Handlers) putPictureArea(w http.ResponseWriter, r *http.Request) {
 
 // postPictureClaim serves POST /api/picture/claim, for the workers' service
 // account and admins: the analyzer's backfill asks for the titles to measure,
-// {"worker": "<its name>", "limit": n}, and is handed out at most what the
-// backfill's pace allows (picture.Claim): {"items": [{"kind", "id", "itemId",
-// "type", "path", "durationMs"}], "deadline"}, or no items, "idle" (why) and
-// "retryAfterSeconds". 503 without migration 054.
+// {"worker": "<its name>", "limit": n, "method": "<its measurement>"}, and is
+// handed out at most what the backfill's pace allows (picture.Claim):
+// {"items": [{"kind", "id", "itemId", "type", "path", "durationMs",
+// "token"}], "deadline"}, or no items, "idle" (why) and "retryAfterSeconds".
+// A title whose area is of another method than the one named is measured
+// again. 503 without migration 054.
 func (h *Handlers) postPictureClaim(w http.ResponseWriter, r *http.Request) {
 	if h.d.Picture == nil {
 		writeError(w, http.StatusServiceUnavailable, "the picture areas are not configured")
@@ -146,6 +154,7 @@ func (h *Handlers) postPictureClaim(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Worker string `json:"worker"`
 		Limit  int    `json:"limit"`
+		Method string `json:"method"`
 	}
 	if r.ContentLength != 0 {
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
@@ -157,7 +166,7 @@ func (h *Handlers) postPictureClaim(w http.ResponseWriter, r *http.Request) {
 	if worker == "" {
 		worker = "a worker"
 	}
-	c, err := h.d.Picture.Claim(reqCtx(r), worker, body.Limit)
+	c, err := h.d.Picture.Claim(reqCtx(r), worker, body.Limit, body.Method)
 	if pictureError(w, err) {
 		return
 	}
