@@ -58,7 +58,8 @@ const (
 	// hands out none.
 	SettingRate = "picture.backfill.rate"
 	// SettingLease is how long a title handed out is the worker's before it
-	// is taken for lost (30m).
+	// is taken for lost (6h: the whole measurement of a 3-hour 4K remux, with
+	// room to spare).
 	SettingLease = "picture.backfill.lease"
 )
 
@@ -67,7 +68,7 @@ const (
 	DefaultWindow   = "22:00-17:00"
 	DefaultInflight = 1
 	DefaultRate     = 240
-	DefaultLease    = 30 * time.Minute
+	DefaultLease    = 6 * time.Hour
 )
 
 // Settings are the backfill's settings as they are read.
@@ -240,7 +241,11 @@ func (w Window) Opens(t time.Time) time.Time {
 
 // Job is a title the backfill hands out: what to measure (Path, an original
 // or a package's video rendition, its HLS playlist), how long it is, and the
-// token its run reports with (Report.Token).
+// token its run reports with (Report.Token). CostlyRuns are its runs in a
+// row that had their whole lease and gave it back; Last says this run has
+// its whole lease too and is the last: one that does not finish in it
+// reports the title too costly to measure (unknown, sampling.doubt "cost")
+// rather than give it back.
 type Job struct {
 	Kind       string `json:"kind"`
 	ID         string `json:"id"`
@@ -249,6 +254,8 @@ type Job struct {
 	Path       string `json:"path"`
 	DurationMs *int64 `json:"durationMs"`
 	Token      string `json:"token"`
+	CostlyRuns int32  `json:"costlyRuns"`
+	Last       bool   `json:"last"`
 }
 
 // UnknownAgain is how long an area the analyzer could not tell of stands
@@ -386,11 +393,12 @@ func (s *Service) Claim(ctx context.Context, worker string, limit int, method st
 	type candidate struct {
 		kind, id, itemID, typ string
 		duration              *int64
+		costly                int32
 	}
 	var cs []candidate
 	for rows.Next() {
 		var c candidate
-		if err := rows.Scan(&c.kind, &c.id, &c.itemID, &c.typ, &c.duration); err != nil {
+		if err := rows.Scan(&c.kind, &c.id, &c.itemID, &c.typ, &c.duration, &c.costly); err != nil {
 			rows.Close()
 			return Claim{}, err
 		}
@@ -399,6 +407,13 @@ func (s *Service) Claim(ctx context.Context, worker string, limit int, method st
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return Claim{}, err
+	}
+	// the runs' deadline: the lease's end, or the window's when it comes
+	// first (a run cut short so is no measure of its cost)
+	deadline := now.Add(set.Lease)
+	whole := true
+	if closes := set.Window.Closes(now); !closes.IsZero() && closes.Before(deadline) {
+		deadline, whole = closes, false
 	}
 	out := Claim{Items: []Job{}}
 	for _, c := range cs {
@@ -426,7 +441,7 @@ func (s *Service) Claim(ctx context.Context, worker string, limit int, method st
 			return Claim{}, err
 		}
 		out.Items = append(out.Items, Job{Kind: c.kind, ID: c.id, ItemID: c.itemID, Type: c.typ, Path: path,
-			DurationMs: c.duration, Token: token})
+			DurationMs: c.duration, Token: token, CostlyRuns: c.costly, Last: whole && c.costly+1 >= CostlyRuns})
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Claim{}, err
@@ -436,10 +451,6 @@ func (s *Service) Claim(ctx context.Context, worker string, limit int, method st
 			return idle("every title has a picture area of what it plays now", time.Hour), nil
 		}
 		return idle("the titles looked at had nothing to measure", time.Minute), nil
-	}
-	deadline := now.Add(set.Lease)
-	if closes := set.Window.Closes(now); !closes.IsZero() && closes.Before(deadline) {
-		deadline = closes
 	}
 	out.Deadline = &deadline
 	return out, nil
@@ -455,12 +466,14 @@ func idle(why string, after time.Duration) Claim {
 // picture area of what it plays now (measured, or unknown: the analyzer could
 // not tell) of the method $3 ("" for any), one unknown since before $4 (a
 // month ago) counting as none unless a package could not tell for its
-// keyframes' gaps, one a package could not tell counting as none while the
-// title has its original, not claimed now, not waiting out a failure's or a
-// release's backoff ($1 is now), and not measured since $5 (a day ago); the
-// titles with their original first, then those never measured.
+// keyframes' gaps or the title was too costly to measure (sampling.doubt
+// "cost": those answers stay until the file or the method changes), one a
+// package could not tell counting as none while the title has its original,
+// not claimed now, not waiting out a failure's or a release's backoff ($1 is
+// now), and not measured since $5 (a day ago); the titles with their original
+// first, then those never measured; with each, its costly runs in a row.
 var candidatesSQL = `
-	SELECT t.kind, t.id, t.item_id, t.type, t.durationms
+	SELECT t.kind, t.id, t.item_id, t.type, t.durationms, COALESCE(pa.costlyruns, 0)
 	FROM (
 		SELECT 'item' AS kind, i.id, i.id AS item_id, i.type, i.durationms,
 		       CASE i.type WHEN 'movie' THEN 0 ELSE 1 END AS rank,
@@ -483,7 +496,8 @@ var candidatesSQL = `
 	                  WHERE c.id = t.id AND c.state IN ('measured', 'unknown')
 	                    AND ($3 = '' OR c.method = $3)
 	                    AND (c.state = 'measured' OR c.measuredat > $4
-	                      OR (c.measuredon = 'package' AND c.sampling->'doubt' @> '["gap"]'::jsonb))
+	                      OR (c.measuredon = 'package' AND c.sampling->'doubt' @> '["gap"]'::jsonb)
+	                      OR c.sampling->'doubt' @> '["cost"]'::jsonb)
 	                    AND NOT (t.original AND c.state = 'unknown' AND c.measuredon IS DISTINCT FROM 'original'))
 	  AND (pa.id IS NULL OR (pa.claimedat IS NULL AND (pa.nextattemptat IS NULL OR pa.nextattemptat <= $1)
 	                         AND (pa.measuredat IS NULL OR pa.measuredat <= $5)))

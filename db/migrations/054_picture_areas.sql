@@ -57,6 +57,10 @@
 --                 not counted again
 --   releases      the runs in a row that gave it back unmeasured (their
 --                 deadline came first); each waits longer before the next
+--   costlyruns    of those, the runs in a row that had their whole lease
+--                 (not cut by the window's end, nor stopped with their
+--                 worker): the run after the last of them reports the title
+--                 too costly to measure, an unknown, rather than give it back
 --
 -- com_nalet_katalog_currentpictureareas holds the rows that are of what the
 -- title plays now, and only those; a row of another file stays in the table,
@@ -114,6 +118,7 @@ CREATE TABLE IF NOT EXISTS com_nalet_katalog_pictureareas (
   nextattemptat TIMESTAMPTZ,
   lapsedtoken VARCHAR(36),
   releases INTEGER NOT NULL DEFAULT 0,
+  costlyruns INTEGER NOT NULL DEFAULT 0,
   createdat TIMESTAMPTZ NOT NULL DEFAULT now(),
   modifiedat TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT pictureareas_area CHECK (state <> 'measured' OR (

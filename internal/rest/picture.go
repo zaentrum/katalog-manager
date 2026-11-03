@@ -48,6 +48,7 @@ type pictureAreaJSON struct {
 	Attempts      int32           `json:"attempts"`
 	Failures      int32           `json:"failures"`
 	Releases      int32           `json:"releases"`
+	CostlyRuns    int32           `json:"costlyRuns"`
 	NextAttemptAt *time.Time      `json:"nextAttemptAt"`
 	ClaimedAt     *time.Time      `json:"claimedAt"`
 }
@@ -58,7 +59,8 @@ func pictureAreaOut(a *picture.Area) pictureAreaJSON {
 		MeasuredOn: a.MeasuredOn, FileSize: a.FileSize, Method: a.Method, Samples: a.Samples,
 		Informative: a.Informative, BytesRead: a.BytesRead, Reason: a.Reason, Evidence: a.Evidence,
 		Sampling: a.Sampling, MeasuredAt: utc(a.MeasuredAt), Attempts: a.Attempts, Failures: a.Failures,
-		Releases: a.Releases, NextAttemptAt: utc(a.NextAttemptAt), ClaimedAt: utc(a.ClaimedAt)}
+		Releases: a.Releases, CostlyRuns: a.CostlyRuns, NextAttemptAt: utc(a.NextAttemptAt),
+		ClaimedAt: utc(a.ClaimedAt)}
 	if a.FrameWidth != nil && a.FrameHeight != nil {
 		out.Frame = &picture.Size{Width: *a.FrameWidth, Height: *a.FrameHeight}
 	}

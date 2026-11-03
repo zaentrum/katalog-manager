@@ -96,7 +96,7 @@ func TestTheWindowIsUTC(t *testing.T) {
 // default and says so, a window that can't be read hands out nothing.
 func TestTheBackfillsSettings(t *testing.T) {
 	s := DefaultSettings()
-	if s.On || s.Inflight != 1 || s.Rate != 240 || s.Lease != 30*time.Minute || s.Window.String() != "22:00-17:00 UTC" {
+	if s.On || s.Inflight != 1 || s.Rate != 240 || s.Lease != 6*time.Hour || s.Window.String() != "22:00-17:00 UTC" {
 		t.Fatalf("defaults %+v", s)
 	}
 	s.set(SettingBackfill, " on ")

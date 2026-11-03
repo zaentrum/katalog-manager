@@ -278,6 +278,9 @@ func TestTheBackfillHandsOutTitlesAtItsPace(t *testing.T) {
 		t.Errorf("off: %+v", c)
 	}
 	setting(t, st, SettingBackfill, "on")
+	// a lease of 30 minutes, so the lost claim lapses within the night
+	lease := 30 * time.Minute
+	setting(t, st, SettingLease, "30m")
 	now = time.Date(2026, 11, 3, 18, 0, 0, 0, time.UTC)
 	if c := claim(); !strings.HasPrefix(c.Idle, "outside picture.backfill.window") || c.RetryAfterSeconds != 4*3600 {
 		t.Errorf("in the quiet hours: %+v", c)
@@ -286,7 +289,7 @@ func TestTheBackfillHandsOutTitlesAtItsPace(t *testing.T) {
 	// m2's original is nowhere and it has no package: it fails, and m3's
 	// original goes instead, the titles with their original first.
 	c := claim("m3 " + strings.TrimPrefix(takenAt, l.root))
-	if c.Deadline == nil || !c.Deadline.Equal(night.Add(DefaultLease)) || c.Items[0].Type != "movie" {
+	if c.Deadline == nil || !c.Deadline.Equal(night.Add(lease)) || c.Items[0].Type != "movie" {
 		t.Errorf("the claim: %+v", c)
 	}
 	if a, _ := s.Of(ctx, KindItem, "m2"); a == nil || a.State != StateFailed || !strings.HasPrefix(*a.Reason, "nothing to measure") {
@@ -301,7 +304,7 @@ func TestTheBackfillHandsOutTitlesAtItsPace(t *testing.T) {
 	claim("e1 " + strings.TrimPrefix(epAt, l.root))
 	// e1's run never reports back: after the lease it fails, and waits; the
 	// package of m1 goes.
-	now = night.Add(DefaultLease + time.Minute)
+	now = night.Add(lease + time.Minute)
 	c1 := claim("m1 /movies/m1/versions/v1/hls/v0/playlist.m3u8")
 	if a, _ := s.Of(ctx, KindItem, "e1"); a.State != StateFailed || a.Failures != 1 || a.ClaimedAt != nil ||
 		!strings.Contains(*a.Reason, "did not report back within 30m") {
@@ -723,5 +726,82 @@ func TestOlderMethodsAndOldUnknownsAreMeasuredAgain(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "m4,m1,m2" {
 		t.Errorf("handed out %v, want m4 (never measured), m1 (an older method), m2 (unknown a month ago)", got)
+	}
+}
+
+// A run that has its whole lease and does not finish in it counts a costly
+// run; one given back before its lease's end (its worker stopped), or one the
+// window's end cuts short, does not. The run after CostlyRuns-1 of them is
+// the last (Job.Last), unless the window cuts its lease: its report of the
+// title as too costly to measure, an unknown of the original, ends the count,
+// settles what a deletion wave asks, and stands a month later.
+func TestATitleTooCostlyToMeasureIsSaidSo(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	now := night
+	l := lib{t, t.TempDir()}
+	s := service(t, st, l.root, &now)
+	storetest.AddItem(t, st, "m1", "movie", "A Long Film", "")
+	orig := l.original(st, "m1", "s1")
+	setting(t, st, SettingBackfill, "on")
+	setting(t, st, SettingLease, "6h")
+	release := func(j Job, after time.Duration) *Area {
+		t.Helper()
+		now = now.Add(after)
+		a, err := s.Record(ctx, KindItem, "m1", Report{Released: true, Path: j.Path, Token: j.Token})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	next := func() Job {
+		t.Helper()
+		storetest.Exec(t, st, `UPDATE com_nalet_katalog_pictureareas SET nextattemptat = NULL WHERE id = 'm1'`)
+		return claimOne(t, s, "analyzer-0", "m1")
+	}
+
+	j := claimOne(t, s, "analyzer-0", "m1")
+	if j.CostlyRuns != 0 || j.Last {
+		t.Fatalf("the first run: %+v", j)
+	}
+	if a := release(j, time.Hour); a.CostlyRuns != 0 || a.Releases != 1 {
+		t.Errorf("given back an hour in: %+v", a)
+	}
+	for i := int32(1); i < CostlyRuns; i++ {
+		if j = next(); j.Last || j.CostlyRuns != i-1 {
+			t.Fatalf("run %d: %+v", i, j)
+		}
+		if a := release(j, 6*time.Hour); a.CostlyRuns != i {
+			t.Errorf("given back at its lease's end: %+v", a)
+		}
+	}
+	// 16:00 UTC: the window closes at 17:00, before the lease ends
+	if j = next(); j.Last || j.CostlyRuns != CostlyRuns-1 {
+		t.Fatalf("a run the window cuts short: %+v", j)
+	}
+	if a := release(j, time.Hour); a.CostlyRuns != CostlyRuns-1 {
+		t.Errorf("given back at the window's end: %+v", a)
+	}
+	now = night.Add(24 * time.Hour)
+	if j = next(); !j.Last || j.CostlyRuns != CostlyRuns-1 {
+		t.Fatalf("the last run: %+v", j)
+	}
+	r := Report{Path: orig, Token: j.Token, Method: "picture/2", Frame: &Size{1920, 1080},
+		Reason:     "can't tell: too costly to measure",
+		MeasuredOn: &MeasuredOn{Kind: "original"}, Sampling: json.RawMessage(`{"doubt": ["cost"]}`)}
+	now = now.Add(6 * time.Hour)
+	a, err := s.Record(ctx, KindItem, "m1", r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.State != StateUnknown || a.CostlyRuns != 0 || a.Releases != 0 || !a.Current {
+		t.Errorf("too costly: %+v", a)
+	}
+	if n, err := NeedsOriginal(ctx, st.Pool(), "m1", "s1"); err != nil || n {
+		t.Errorf("needs its original after it was too costly to measure: %v, %v", n, err)
+	}
+	now = now.Add(UnknownAgain + 2*24*time.Hour)
+	if c, err := s.Claim(ctx, "analyzer-0", 1, "picture/2"); err != nil || len(c.Items) != 0 {
+		t.Errorf("handed out again a month later: %+v, %v", c, err)
 	}
 }

@@ -79,9 +79,12 @@ type Area struct {
 	ClaimedBy, ClaimToken                *string
 	LastClaimedAt                        *time.Time
 	Attempts, Failures, Releases         int32
-	NextAttemptAt                        *time.Time
-	LapsedToken                          *string
-	ModifiedAt                           time.Time
+	// CostlyRuns are the releases in a row of runs that had their whole
+	// lease and did not finish in it.
+	CostlyRuns    int32
+	NextAttemptAt *time.Time
+	LapsedToken   *string
+	ModifiedAt    time.Time
 	// Current says it is of what the title plays now.
 	Current bool
 }
@@ -98,7 +101,7 @@ const areaColumns = `pa.id, pa.kind, pa.item_id, pa.state, pa.framewidth, pa.fra
 	pa.areawidth, pa.areaheight, pa.path, pa.sourceid, pa.versionid, pa.packageid, pa.measuredon, pa.filesize,
 	pa.method, pa.reason, pa.samples, pa.informative, pa.durationms, pa.bytesread, pa.seconds, pa.cpuseconds,
 	pa.evidence, pa.sampling, pa.measuredat, pa.claimedat, pa.claimedby, pa.claimtoken, pa.lastclaimedat,
-	pa.attempts, pa.failures, pa.releases, pa.nextattemptat, pa.lapsedtoken, pa.modifiedat,
+	pa.attempts, pa.failures, pa.releases, pa.costlyruns, pa.nextattemptat, pa.lapsedtoken, pa.modifiedat,
 	EXISTS (SELECT 1 FROM ` + store.CurrentPictureAreasView + ` c WHERE c.id = pa.id)`
 
 func scanArea(row pgx.Row) (*Area, error) {
@@ -108,7 +111,7 @@ func scanArea(row pgx.Row) (*Area, error) {
 		&a.Width, &a.Height, &a.Path, &a.SourceID, &a.VersionID, &a.PackageID, &a.MeasuredOn, &a.FileSize,
 		&a.Method, &a.Reason, &a.Samples, &a.Informative, &a.DurationMs, &a.BytesRead, &seconds, &cpu,
 		&a.Evidence, &a.Sampling, &a.MeasuredAt, &a.ClaimedAt, &a.ClaimedBy, &a.ClaimToken, &a.LastClaimedAt,
-		&a.Attempts, &a.Failures, &a.Releases, &a.NextAttemptAt, &a.LapsedToken, &a.ModifiedAt,
+		&a.Attempts, &a.Failures, &a.Releases, &a.CostlyRuns, &a.NextAttemptAt, &a.LapsedToken, &a.ModifiedAt,
 		&a.Current)
 	if err != nil {
 		return nil, err
@@ -281,6 +284,15 @@ func backoff(failures int32) time.Duration {
 	return doubled(FirstBackoff, MaxBackoff, failures)
 }
 
+// CostlyRuns is how many runs in a row, each with its whole lease, a title
+// gets: the last of them (Job.Last), when it does not finish either, reports
+// the title too costly to measure, an unknown. A release up to leaseSlack
+// before its lease's end counts as one at its end.
+const (
+	CostlyRuns = 3
+	leaseSlack = time.Minute
+)
+
 // releaseBackoff is the wait after the releases-th release in a row.
 func releaseBackoff(releases int32) time.Duration {
 	return doubled(FirstRelease, MaxRelease, releases)
@@ -389,10 +401,19 @@ func Record(ctx context.Context, st *store.Store, kind, id string, r Report, now
 			owns = true // a claim of an analyzer that sends no token
 		}
 		if owns {
-			releases := kept.Releases + 1
+			releases, costly := kept.Releases+1, kept.CostlyRuns
+			set, err := ReadSettings(ctx, tx)
+			if err != nil {
+				return nil, err
+			}
+			if kept.ClaimedAt != nil && !now.Before(kept.ClaimedAt.Add(set.Lease-leaseSlack)) {
+				// its run had the whole lease, and did not finish in it
+				costly++
+			}
 			if _, err := tx.Exec(ctx, `UPDATE `+store.PictureAreasTable+` SET claimedat = NULL, claimedby = NULL,
-				claimtoken = NULL, releases = $3, nextattemptat = GREATEST(nextattemptat, $4), modifiedat = $5
-				WHERE id = $1 AND kind = $2`, id, kind, releases, now.Add(releaseBackoff(releases)), now); err != nil {
+				claimtoken = NULL, releases = $3, costlyruns = $4, nextattemptat = GREATEST(nextattemptat, $5),
+				modifiedat = $6
+				WHERE id = $1 AND kind = $2`, id, kind, releases, costly, now.Add(releaseBackoff(releases)), now); err != nil {
 				return nil, err
 			}
 		}
@@ -455,7 +476,7 @@ func Record(ctx context.Context, st *store.Store, kind, id string, r Report, now
 			path = $12, sourceid = $13, versionid = $14, packageid = $15, method = NULLIF($16, ''), reason = $17,
 			samples = $18, informative = $19, durationms = $20, seconds = $21, cpuseconds = $22, evidence = $23,
 			measuredon = $24, filesize = $25, bytesread = $26, sampling = $27,
-			measuredat = $28, failures = 0, releases = 0, nextattemptat = NULL, modifiedat = $28
+			measuredat = $28, failures = 0, releases = 0, costlyruns = 0, nextattemptat = NULL, modifiedat = $28
 			WHERE id = $1`, id, owns, lapsed, state, itemID, r.Frame.Width, r.Frame.Height, x, y, w, h, r.Path,
 			sourceID, versionID, packageID, r.Method, why, r.Samples, r.Informative, r.DurationMs, r.Seconds,
 			r.CPUSeconds, evidence, measuredOn, fileSize, r.BytesRead, sampling, now)

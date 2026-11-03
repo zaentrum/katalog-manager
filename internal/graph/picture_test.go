@@ -53,7 +53,7 @@ func TestAnItemSaysItsPictureArea(t *testing.T) {
 		t.Fatal(resp.Errors)
 	}
 	wantJSON := `{"pictureAreas":{"titles":2,"letterboxed":1,"full":0,"toMeasure":1,"cpuSecondsPerHour":60,"backfill":false,` +
-		`"window":"22:00-17:00 UTC","maxInFlight":1,"maxPerHour":240,"lease":"30m","idle":"picture.backfill is off","problems":[]}}`
+		`"window":"22:00-17:00 UTC","maxInFlight":1,"maxPerHour":240,"lease":"6h","idle":"picture.backfill is off","problems":[]}}`
 	if got := string(resp.Data); got != wantJSON {
 		t.Fatalf("got  %s\nwant %s", got, wantJSON)
 	}
