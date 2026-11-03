@@ -1259,8 +1259,8 @@ The analyzer's side, for the service account and admins:
   another method than its own.
 - `POST /api/picture/claim` `{"worker", "limit", "method"}` hands the
   backfill the titles to measure: `{"items": [{"kind", "id", "itemId",
-  "type", "path", "durationMs", "token"}], "deadline"}`, or none, `"idle"`
-  (why) and `"retryAfterSeconds"`.
+  "type", "path", "durationMs", "token", "costlyRuns", "last"}],
+  "deadline"}`, or none, `"idle"` (why) and `"retryAfterSeconds"`.
 
 All three answer 503 without migration 054. What a measurement is of comes
 from its file: in a folder of one of the item's versions, that version and
@@ -1288,13 +1288,24 @@ first, so that they are measured before a deletion wave retires it; then
 the titles never measured; then those measured again: of an older method
 than the analyzer's that asks, one it could not tell of 30 days ago (but
 not a package it could not tell for its keyframes' gaps, `sampling.doubt`
-`gap`: that answer stays until the package changes), one a package could
-not tell while the original is there, one whose area is of another file.
-No title is measured again within a day of its last measurement. A title
-given back unmeasured waits 15 minutes before it is handed out again, twice
-as long after each release in a row, a day at most, and the titles after it
-go meanwhile. It reads its settings on every claim, so an instance starts
-it, slows it or moves its hours without a restart:
+`gap`, nor a title too costly to measure, `cost`: those answers stay until
+the file or the method changes), one a package could not tell while the
+original is there, one whose area is of another file. No title is measured
+again within a day of its last measurement. A title given back unmeasured
+waits 15 minutes before it is handed out again, twice as long after each
+release in a row, a day at most, and the titles after it go meanwhile.
+
+A run that had its whole lease (not cut short by the window's end, nor
+given back before the lease's end because its worker stopped) and did not
+finish in it counts a costly run (`costlyRuns`). After two in a row the
+next run that has its whole lease is the last (`last`): if it does not
+finish either, the analyzer reports the title too costly to measure, an
+unknown (`sampling.doubt` `cost`) of what it read, which a deletion wave
+takes as any unknown of the original, and which stands until its file or
+the method changes. A measurement ends the count.
+
+The backfill reads its settings on every claim, so an instance starts it,
+slows it or moves its hours without a restart:
 
 - `picture.backfill` (`off`): `on` hands titles out;
 - `picture.backfill.window` (`22:00-17:00`): when, `HH:MM-HH:MM` in UTC,
@@ -1304,11 +1315,14 @@ it, slows it or moves its hours without a restart:
   once;
 - `picture.backfill.rate` (`240`): titles handed out an hour at most; `0`
   none;
-- `picture.backfill.lease` (`30m`): how long a title handed out is its
+- `picture.backfill.lease` (`6h`): how long a title handed out is its
   worker's. A claim's `deadline` is the window's end or the lease's,
   whichever comes first: the analyzer stops a measurement still running
   then and gives the title back. A title whose run never reported back
-  counts as a failed one once its lease ends.
+  counts as a failed one once its lease ends. Six hours hold the whole
+  measurement of a 3-hour 4K remux with room to spare (the analyzer's
+  README has what a measurement costs); a crashed run's claim holds its
+  title, and with `inflight` 1 the backfill, that long.
 
 A deletion wave keeps a title's original while `picture.NeedsOriginal`
 says so: the title has no area of what it plays now that says the
