@@ -58,6 +58,13 @@ const migrationLockTimeout = "1min"
 // second: of more callers than the pool has connections, the one that holds
 // the lock goes on.
 func (s *Store) applyLocked(ctx context.Context, ready func(context.Context, querier) (bool, error), sql string) error {
+	return s.applyLockedWithin(ctx, ready, sql, migrationLockTimeout)
+}
+
+// applyLockedWithin is applyLocked waiting for each lock no longer than
+// lockTimeout (a PostgreSQL interval).
+func (s *Store) applyLockedWithin(ctx context.Context, ready func(context.Context, querier) (bool, error), sql,
+	lockTimeout string) error {
 	if ok, err := ready(ctx, s.pool); err != nil || ok {
 		return err
 	}
@@ -66,7 +73,7 @@ func (s *Store) applyLocked(ctx context.Context, ready func(context.Context, que
 		return err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '`+migrationLockTimeout+`'`); err != nil {
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '`+lockTimeout+`'`); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(`+migrationLock+`)`); err != nil {
