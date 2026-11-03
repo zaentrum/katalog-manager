@@ -1284,8 +1284,12 @@ of its original while that is on disk, else of its package (the playlist of
 its largest video rendition): an original has a keyframe at its cuts, a
 package's encoded rung one every 6 s and none at a cut, of which the
 analyzer can't tell an area. The titles that still have their original go
-first, so that they are measured before a deletion wave retires it; then
-the titles never measured; then those measured again: of an older method
+first, so that they are measured before a deletion wave retires it, and of
+them first those the analyzer could not tell of their original by an older
+method than its own (not those too costly to measure): what a new method
+tells better is told the day after their last measurement, not after every
+title never measured. Then the titles never measured; then those measured
+again: of an older method
 than the analyzer's that asks, one it could not tell of 30 days ago (but
 not a package it could not tell for its keyframes' gaps, `sampling.doubt`
 `gap`, nor a title too costly to measure, `cost`: those answers stay until
