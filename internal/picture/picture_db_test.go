@@ -2,6 +2,7 @@ package picture
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -282,30 +283,32 @@ func TestTheBackfillHandsOutTitlesAtItsPace(t *testing.T) {
 		t.Errorf("in the quiet hours: %+v", c)
 	}
 	now = night
-	c := claim("m1 /movies/m1/versions/v1/hls/v0/playlist.m3u8")
+	// m2's original is nowhere and it has no package: it fails, and m3's
+	// original goes instead, the titles with their original first.
+	c := claim("m3 " + strings.TrimPrefix(takenAt, l.root))
 	if c.Deadline == nil || !c.Deadline.Equal(night.Add(DefaultLease)) || c.Items[0].Type != "movie" {
 		t.Errorf("the claim: %+v", c)
+	}
+	if a, _ := s.Of(ctx, KindItem, "m2"); a == nil || a.State != StateFailed || !strings.HasPrefix(*a.Reason, "nothing to measure") {
+		t.Errorf("the title with nothing to measure: %+v", a)
 	}
 	if c := claim(); !strings.Contains(c.Idle, "being measured") {
 		t.Errorf("one in flight: %+v", c)
 	}
-	if _, err := s.Record(ctx, KindItem, "m1", measured(c.Items[0])); err != nil {
+	if _, err := s.Record(ctx, KindItem, "m3", measured(c.Items[0])); err != nil {
 		t.Fatal(err)
 	}
-	// m2's original is nowhere: it fails, and m3's original goes instead.
-	claim("m3 " + strings.TrimPrefix(takenAt, l.root))
-	if a, _ := s.Of(ctx, KindItem, "m2"); a == nil || a.State != StateFailed || !strings.HasPrefix(*a.Reason, "nothing to measure") {
-		t.Errorf("the title with nothing to measure: %+v", a)
-	}
-	// m3's run never reports back: after the lease it fails, and waits.
+	claim("e1 " + strings.TrimPrefix(epAt, l.root))
+	// e1's run never reports back: after the lease it fails, and waits; the
+	// package of m1 goes.
 	now = night.Add(DefaultLease + time.Minute)
-	ce := claim("e1 " + strings.TrimPrefix(epAt, l.root))
-	if a, _ := s.Of(ctx, KindItem, "m3"); a.State != StateFailed || a.Failures != 1 || a.ClaimedAt != nil ||
+	c1 := claim("m1 /movies/m1/versions/v1/hls/v0/playlist.m3u8")
+	if a, _ := s.Of(ctx, KindItem, "e1"); a.State != StateFailed || a.Failures != 1 || a.ClaimedAt != nil ||
 		!strings.Contains(*a.Reason, "did not report back within 30m") {
 		t.Errorf("the lost claim: %+v", a)
 	}
-	if _, err := s.Record(ctx, KindItem, "e1", Report{Path: epAt, Frame: &Size{1920, 1080}, Reason: "too few frames",
-		Method: "picture/2", Token: ce.Items[0].Token}); err != nil {
+	if _, err := s.Record(ctx, KindItem, "m1", Report{Path: c1.Items[0].Path, Frame: &Size{1920, 1080},
+		Reason: "too few frames", Method: "picture/2", Token: c1.Items[0].Token}); err != nil {
 		t.Fatal(err)
 	}
 	cx := claim("x1 /movies/m1/extras/x1/hls/v0/playlist.m3u8")
@@ -316,11 +319,11 @@ func TestTheBackfillHandsOutTitlesAtItsPace(t *testing.T) {
 	if c := claim(); c.Idle != "every title has a picture area of what it plays now" {
 		t.Errorf("done: %+v", c)
 	}
-	// After its backoff m3 goes again; the rate stops the hour's next.
+	// After its backoff e1 goes again; the rate stops the hour's next.
 	now = night.Add(3 * time.Hour)
 	setting(t, st, SettingRate, "1")
-	c3 := claim("m3 " + strings.TrimPrefix(takenAt, l.root))
-	if _, err := s.Record(ctx, KindItem, "m3", measured(c3.Items[0])); err != nil {
+	ce := claim("e1 " + strings.TrimPrefix(epAt, l.root))
+	if _, err := s.Record(ctx, KindItem, "e1", measured(ce.Items[0])); err != nil {
 		t.Fatal(err)
 	}
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_pictureareas SET nextattemptat = NULL WHERE id = 'm2'`)
@@ -526,10 +529,12 @@ func TestAnotherFileAtTheSamePathHasNoCurrentArea(t *testing.T) {
 }
 
 // An original measured before its version was packaged is the title's area
-// only while the package's frame has its shape: an anamorphic original (720x576,
-// its pixels wide) packaged with square pixels (1024x576) is measured again,
-// of its package, once a day has passed since it was measured.
-func TestAnAnamorphicOriginalIsMeasuredAgainOfItsPackage(t *testing.T) {
+// while the package's picture has its shape: the frame's display aspect (with
+// the pixel aspect the measurement read) and the package's within 1 %. An
+// anamorphic original's (720x576, its pixels 64:45) holds for its package of
+// square pixels (1024x576); one of another shape is measured again, of the
+// original while it is on disk, of the package once it is gone.
+func TestAnOriginalsAreaHoldsForAPackageOfItsShape(t *testing.T) {
 	st := storetest.Open(t)
 	ctx := context.Background()
 	now := night
@@ -537,29 +542,141 @@ func TestAnAnamorphicOriginalIsMeasuredAgainOfItsPackage(t *testing.T) {
 	s := service(t, st, l.root, &now)
 	storetest.AddItem(t, st, "m1", "movie", "A Film on a Disc", "")
 	orig := l.original(st, "m1", "s1")
-	dvd := Report{Path: orig, Method: "picture/2", Frame: &Size{720, 576}, Area: &Rect{0, 70, 720, 436}}
+	dvd := Report{Path: orig, Method: "picture/2", Frame: &Size{720, 576}, Area: &Rect{0, 70, 720, 436},
+		Video: json.RawMessage(`{"codec": "mpeg2video", "sar": "64:45"}`)}
 	if a, err := s.Record(ctx, KindItem, "m1", dvd); err != nil || !a.Current {
 		t.Fatalf("measured of the original: %+v, %v", a, err)
 	}
 	l.version(st, "m1", "v1", "complete", "s1", false)
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_playbackassets SET resolution = '1024x576'
 		WHERE item_id = 'm1' AND kind = 'packaged'`)
+	if a, _ := s.Of(ctx, KindItem, "m1"); !a.Current {
+		t.Fatal("not current for a package of the same display shape")
+	}
+	// a package of another shape (cropped to 1024x436)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_playbackassets SET resolution = '1024x436'
+		WHERE item_id = 'm1' AND kind = 'packaged'`)
 	if a, _ := s.Of(ctx, KindItem, "m1"); a.Current {
-		t.Fatal("current while the package's frame has another shape")
+		t.Fatal("current while the package's picture has another shape")
 	}
 	setting(t, st, SettingBackfill, "on")
 	if c, err := s.Claim(ctx, "analyzer-0", 1, "picture/2"); err != nil || len(c.Items) != 0 {
 		t.Fatalf("within a day of its measurement: %+v, %v", c, err)
 	}
 	now = now.Add(MeasureAgainAfter)
+	if j := claimOne(t, s, "analyzer-0", "m1"); j.Path != orig {
+		t.Errorf("handed out %s while the original is there, not the original", j.Path)
+	} else if _, err := s.Record(ctx, KindItem, "m1", Report{Released: true, Token: j.Token}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(orig); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(MaxRelease)
 	j := claimOne(t, s, "analyzer-0", "m1")
 	if !strings.HasSuffix(j.Path, "/versions/v1/hls/v0/playlist.m3u8") {
-		t.Errorf("handed out %s, not its package", j.Path)
+		t.Errorf("handed out %s, not its package, once the original is gone", j.Path)
 	}
-	r := Report{Path: j.Path, Method: "picture/2", Token: j.Token, Frame: &Size{1024, 576}, Area: &Rect{0, 70, 1024, 436}}
+	r := Report{Path: j.Path, Method: "picture/2", Token: j.Token, Frame: &Size{1024, 436}, Area: &Rect{0, 0, 1024, 436}}
 	if a, err := s.Record(ctx, KindItem, "m1", r); err != nil || !a.Current || *a.VersionID != "v1" ||
 		*a.MeasuredOn != "package" {
 		t.Errorf("measured of the package: %+v, %v", a, err)
+	}
+}
+
+// The backfill hands out the titles that still have their original first, and
+// measures each of its original; a package that could not tell an area for
+// its keyframes' gaps is measured again of the original while there is one,
+// and not again of itself after a month.
+func TestTitlesWithTheirOriginalGoFirst(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	now := night
+	l := lib{t, t.TempDir()}
+	s := service(t, st, l.root, &now)
+	storetest.AddItem(t, st, "m1", "movie", "A Packaged Film", "")
+	storetest.AddItem(t, st, "m2", "movie", "A Film With Its Original", "")
+	l.version(st, "m1", "v1", "complete", "s1", false)
+	l.version(st, "m2", "v2", "complete", "s2", false)
+	orig := l.original(st, "m2", "s2")
+	setting(t, st, SettingBackfill, "on")
+	setting(t, st, SettingInflight, "2")
+	c, err := s.Claim(ctx, "analyzer-0", 2, "picture/2")
+	if err != nil || len(c.Items) != 2 {
+		t.Fatalf("claim: %+v, %v", c, err)
+	}
+	if c.Items[0].ID != "m2" || c.Items[0].Path != orig || c.Items[1].ID != "m1" ||
+		!strings.HasSuffix(c.Items[1].Path, "/versions/v1/hls/v0/playlist.m3u8") {
+		t.Fatalf("handed out %+v", c.Items)
+	}
+	gap := func(j Job) Report {
+		return Report{Path: j.Path, Method: "picture/2", Token: j.Token, Frame: &Size{1920, 1080},
+			Reason:   "can't tell: its samples are up to 6.0 s apart (from 1002.0 s), more than 3 s",
+			Sampling: json.RawMessage(`{"mode": "package", "doubt": ["gap"]}`)}
+	}
+	for _, j := range c.Items {
+		if _, err := s.Record(ctx, KindItem, j.ID, gap(j)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// m2 was told of its original: it needs it no more; m1 was told of a
+	// package only
+	if needs, err := NeedsOriginal(ctx, st.Pool(), "m2", "s2"); err != nil || needs {
+		t.Errorf("m2 needs its original: %v, %v", needs, err)
+	}
+	if needs, err := NeedsOriginal(ctx, st.Pool(), "m1", "s1"); err != nil || !needs {
+		t.Errorf("m1 needs no original: %v, %v", needs, err)
+	}
+	// a month on: m1's package answer stays (it would say the same), m2's
+	// original answer is retried as any unknown is
+	now = now.Add(UnknownAgain + time.Hour)
+	c, err = s.Claim(ctx, "analyzer-0", 2, "picture/2")
+	if err != nil || len(c.Items) != 1 || c.Items[0].ID != "m2" {
+		t.Fatalf("a month on: %+v, %v", c.Items, err)
+	}
+}
+
+// NeedsOriginal: an item needs its original until it has an area of what it
+// plays now that says the picture's area, or one of that original that says
+// it can't tell.
+func TestAnItemNeedsItsOriginalUntilItIsMeasured(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	now := night
+	l := lib{t, t.TempDir()}
+	s := service(t, st, l.root, &now)
+	storetest.AddItem(t, st, "m1", "movie", "A Film", "")
+	orig := l.original(st, "m1", "s1")
+	needs := func() bool {
+		t.Helper()
+		n, err := NeedsOriginal(ctx, st.Pool(), "m1", "s1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if !needs() {
+		t.Error("needs no original before any measurement")
+	}
+	if _, err := s.Record(ctx, KindItem, "m1", Report{Path: orig, Error: "the file can't be opened"}); err != nil {
+		t.Fatal(err)
+	}
+	if !needs() {
+		t.Error("needs no original after a failure")
+	}
+	r := Report{Path: orig, Method: "picture/2", Frame: &Size{1920, 1080}, Reason: "can't tell: a gap",
+		MeasuredOn: &MeasuredOn{Kind: "original"}}
+	if _, err := s.Record(ctx, KindItem, "m1", r); err != nil {
+		t.Fatal(err)
+	}
+	if needs() {
+		t.Error("needs its original after it could not tell of it")
+	}
+	if _, err := s.Record(ctx, KindItem, "m1", letterbox(orig)); err != nil {
+		t.Fatal(err)
+	}
+	if needs() {
+		t.Error("needs its original after its area was measured")
 	}
 }
 

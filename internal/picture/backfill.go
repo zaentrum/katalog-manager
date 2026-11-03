@@ -7,12 +7,20 @@ package picture
 // lease ends: one whose run never reported back counts as a failure and is
 // handed out again after its backoff, one given back unmeasured after its
 // release backoff, the titles after it first. Everything it keeps is in the
-// catalog, so it resumes where it was after a restart of either side. The
-// titles never measured go first (movies, then episodes, then extras), then
-// those measured again: of an older method than the analyzer's that asks,
-// one it could not tell of a month ago (UnknownAgain), one whose area is of
-// another file than the title plays now. No title is measured again within
-// a day of its last measurement (MeasureAgainAfter), whatever it plays.
+// catalog, so it resumes where it was after a restart of either side. A
+// movie or an episode is measured of its original while it has one (its
+// primary asset, on disk), else of its package: an original has a keyframe
+// at its cuts, a package's encoded rung one every few seconds and none at a
+// cut, which the analyzer can't tell an area from. The titles that still
+// have their original go first (before a deletion wave retires it; see
+// NeedsOriginal), the titles never measured next (movies, then episodes,
+// then extras), then those measured again: of an older method than the
+// analyzer's that asks, one it could not tell of a month ago
+// (UnknownAgain) but not a package it could not tell for its keyframes'
+// gaps (that answer stays until the package changes), one a package could
+// not tell while the original is there, one whose area is of another file
+// than the title plays now. No title is measured again within a day of its
+// last measurement (MeasureAgainAfter), whatever it plays.
 
 import (
 	"context"
@@ -446,14 +454,18 @@ func idle(why string, after time.Duration) Claim {
 // disc image), extras (packaged, not removed), each with a file, without a
 // picture area of what it plays now (measured, or unknown: the analyzer could
 // not tell) of the method $3 ("" for any), one unknown since before $4 (a
-// month ago) counting as none, not claimed now, not waiting out a failure's
-// or a release's backoff ($1 is now), and not measured since $5 (a day ago);
-// the titles never measured first.
+// month ago) counting as none unless a package could not tell for its
+// keyframes' gaps, one a package could not tell counting as none while the
+// title has its original, not claimed now, not waiting out a failure's or a
+// release's backoff ($1 is now), and not measured since $5 (a day ago); the
+// titles with their original first, then those never measured.
 var candidatesSQL = `
 	SELECT t.kind, t.id, t.item_id, t.type, t.durationms
 	FROM (
 		SELECT 'item' AS kind, i.id, i.id AS item_id, i.type, i.durationms,
-		       CASE i.type WHEN 'movie' THEN 0 ELSE 1 END AS rank
+		       CASE i.type WHEN 'movie' THEN 0 ELSE 1 END AS rank,
+		       EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets a
+		               WHERE a.item_id = i.id AND a.isprimary AND COALESCE(a.kind, 'primary') = 'primary') AS original
 		FROM com_nalet_katalog_items i
 		WHERE i.type IN ('movie', 'episode') AND i.coveredby IS NULL AND NOT ` + processing.DiscImageOf("i.id") + `
 		  AND (EXISTS (SELECT 1 FROM com_nalet_katalog_itemversions v
@@ -462,7 +474,7 @@ var candidatesSQL = `
 		               WHERE a.item_id = i.id AND ((a.isprimary AND COALESCE(a.kind, 'primary') = 'primary')
 		                                          OR a.kind = 'packaged')))
 		UNION ALL
-		SELECT 'extra', x.id, x.item_id, 'extra', x.durationms, 2
+		SELECT 'extra', x.id, x.item_id, 'extra', x.durationms, 2, false
 		FROM com_nalet_katalog_itemextras x
 		WHERE x.removedat IS NULL AND x.packagedat IS NOT NULL AND x.packagepath IS NOT NULL
 	) t
@@ -470,10 +482,12 @@ var candidatesSQL = `
 	WHERE NOT EXISTS (SELECT 1 FROM ` + store.CurrentPictureAreasView + ` c
 	                  WHERE c.id = t.id AND c.state IN ('measured', 'unknown')
 	                    AND ($3 = '' OR c.method = $3)
-	                    AND (c.state = 'measured' OR c.measuredat > $4))
+	                    AND (c.state = 'measured' OR c.measuredat > $4
+	                      OR (c.measuredon = 'package' AND c.sampling->'doubt' @> '["gap"]'::jsonb))
+	                    AND NOT (t.original AND c.state = 'unknown' AND c.measuredon IS DISTINCT FROM 'original'))
 	  AND (pa.id IS NULL OR (pa.claimedat IS NULL AND (pa.nextattemptat IS NULL OR pa.nextattemptat <= $1)
 	                         AND (pa.measuredat IS NULL OR pa.measuredat <= $5)))
-	ORDER BY pa.measuredat IS NOT NULL, t.rank, t.id
+	ORDER BY t.original DESC, pa.measuredat IS NOT NULL, t.rank, t.id
 	LIMIT $2`
 
 // expire takes the claims whose lease ended for failures of their titles:
@@ -532,9 +546,9 @@ func fail(ctx context.Context, tx pgx.Tx, kind, id, itemID, why string, now time
 }
 
 // fileOf is the file the backfill measures of a title: a movie's or an
-// episode's package where it has one (its complete version's video rendition,
-// or that of the package from before the library), else its original; an
-// extra's package. "" and why when there is none to read.
+// episode's original while it has one on disk, else its package (its complete
+// version's video rendition, or that of the package from before the library);
+// an extra's package. "" and why when there is none to read.
 func (s *Service) fileOf(ctx context.Context, q pgx.Tx, kind, id string) (string, string, error) {
 	if kind == KindExtra {
 		var dir, pid, src *string
@@ -558,6 +572,23 @@ func (s *Service) fileOf(ctx context.Context, q pgx.Tx, kind, id string) (string
 		}
 		return "", "its package has no video rendition to read", nil
 	}
+	var packaged, original *string
+	err := q.QueryRow(ctx, `SELECT
+			(SELECT path FROM com_nalet_katalog_playbackassets WHERE item_id = $1 AND kind = 'packaged' ORDER BY path LIMIT 1),
+			(SELECT path FROM com_nalet_katalog_playbackassets
+			 WHERE item_id = $1 AND isprimary AND COALESCE(kind, 'primary') = 'primary' ORDER BY path LIMIT 1)`, id).
+		Scan(&packaged, &original)
+	if err != nil {
+		return "", "", err
+	}
+	missing := "it has no original"
+	if original != nil {
+		at := s.originalAt(ctx, q, id, *original)
+		if fi, err := os.Stat(at); err == nil && fi.Mode().IsRegular() {
+			return at, "", nil
+		}
+		missing = "its original is not at " + at
+	}
 	var vdir *string
 	if err := q.QueryRow(ctx, `SELECT dir FROM com_nalet_katalog_itemversions
 		WHERE item_id = $1 AND state = 'complete' AND dir IS NOT NULL ORDER BY id LIMIT 1`, id).Scan(&vdir); err != nil &&
@@ -569,28 +600,12 @@ func (s *Service) fileOf(ctx context.Context, q pgx.Tx, kind, id string) (string
 			return p, "", nil
 		}
 	}
-	var packaged, original *string
-	err := q.QueryRow(ctx, `SELECT
-			(SELECT path FROM com_nalet_katalog_playbackassets WHERE item_id = $1 AND kind = 'packaged' ORDER BY path LIMIT 1),
-			(SELECT path FROM com_nalet_katalog_playbackassets
-			 WHERE item_id = $1 AND isprimary AND COALESCE(kind, 'primary') = 'primary' ORDER BY path LIMIT 1)`, id).
-		Scan(&packaged, &original)
-	if err != nil {
-		return "", "", err
-	}
 	if vdir == nil && packaged != nil && filepath.Base(*packaged) == "manifest.json" {
 		if p := videoPlaylist(filepath.Dir(*packaged), "manifest.json"); p != "" {
 			return p, "", nil
 		}
 	}
-	if original != nil {
-		at := s.originalAt(ctx, q, id, *original)
-		if fi, err := os.Stat(at); err == nil && fi.Mode().IsRegular() {
-			return at, "", nil
-		}
-		return "", "its package can't be read, and its original is not at " + at, nil
-	}
-	return "", "its package can't be read, and it has no original", nil
+	return "", missing + ", and its package can't be read", nil
 }
 
 // originalAt is where the original at path lies: there, or, where a run left

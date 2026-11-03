@@ -62,10 +62,12 @@
 -- title plays now, and only those; a row of another file stays in the table,
 -- and the title is measured again:
 --   an item with a complete version: one of that version's package, or of an
---     original the version was made of (its sourceids) whose frame has the
---     shape of the version's package (its packaged asset's resolution, their
---     aspect ratios within 1 %: an anamorphic original, packaged with square
---     pixels, is measured again of its package);
+--     original the version was made of (its sourceids) whose picture has the
+--     shape of the version's package: the frame's display aspect (its size
+--     and the pixel aspect the measurement read, sampling.video.sar; square
+--     without one) and the packaged asset's resolution within 1 %, so an
+--     anamorphic original's area holds for its package of square pixels,
+--     and one of another shape (a crop) is measured again;
 --   an item without one: one of its original (the primary asset: of its
 --     source where both name one, else of its path), of the size the asset
 --     has where both say one, or of the folder of the package it plays from
@@ -136,6 +138,10 @@ WHERE (pa.kind = 'item' AND (
                            WHERE k.item_id = pa.id AND k.kind = 'packaged' AND k.versionid = v.id
                              AND k.resolution ~ '^[1-9][0-9]*x[1-9][0-9]*$'
                              AND abs(split_part(k.resolution, 'x', 1)::numeric * pa.frameheight
+                                     * CASE WHEN pa.sampling->'video'->>'sar' ~ '^[1-9][0-9]*:[1-9][0-9]*$'
+                                            THEN split_part(pa.sampling->'video'->>'sar', ':', 2)::numeric
+                                                 / split_part(pa.sampling->'video'->>'sar', ':', 1)::numeric
+                                            ELSE 1 END
                                      / (split_part(k.resolution, 'x', 2)::numeric * pa.framewidth) - 1) <= 0.01))))
          OR (NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemversions v
                          WHERE v.item_id = pa.id AND v.state = 'complete')

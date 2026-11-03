@@ -148,6 +148,34 @@ func Of(ctx context.Context, q library.Querier, kind, id string) (*Area, error) 
 	return a, err
 }
 
+// NeedsOriginal reports whether the item id still needs its original source
+// sourceID for its picture area: it has no area of what it plays now that
+// says the picture's area (measured), and none measured of that original that
+// says it can't tell (unknown) either. A deletion wave keeps the original
+// while it does. A covered episode is answered its holder's; a catalog
+// without migration 054 is ErrNotReady.
+func NeedsOriginal(ctx context.Context, q library.Querier, id, sourceID string) (bool, error) {
+	var ready bool
+	if err := q.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, store.CurrentPictureAreasView).
+		Scan(&ready); err != nil {
+		return true, err
+	}
+	if !ready {
+		return true, ErrNotReady
+	}
+	holder, err := library.HolderOrSelf(ctx, q, id)
+	if err != nil {
+		return true, err
+	}
+	var settled bool
+	err = q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM `+store.CurrentPictureAreasView+` c
+		WHERE c.id = $1 AND c.kind = 'item'
+		  AND (c.state = 'measured'
+		    OR (c.state = 'unknown' AND c.measuredon = 'original' AND c.sourceid = $2)))`, holder, sourceID).
+		Scan(&settled)
+	return !settled, err
+}
+
 // Size is a frame's size, in pixels.
 type Size struct {
 	Width  int32 `json:"width"`
