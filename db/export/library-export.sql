@@ -156,11 +156,14 @@ select json_build_object(
         'segments', (select coalesce(json_agg(json_build_object('kind', s.kind, 'startMs', s.startms, 'endMs', s.endms, 'source', s.source, 'confidence', s.confidence, 'label', s.label) order by s.startms), '[]') from com_nalet_katalog_mediasegments s where s.item_id = i.id),
         'playbackAssets', (select coalesce(json_agg(json_build_object('id', a.id, 'path', a.path, 'kind', a.kind, 'codec', a.codec, 'resolution', a.resolution, 'bitrateKbps', a.bitratekbps, 'sizeBytes', a.sizebytes, 'hash', a.hash, 'isPrimary', a.isprimary, 'audioCodec', a.audiocodec, 'audioLanguage', a.audiolanguage, 'audioChannels', a.audiochannels, 'audioBitrateKbps', a.audiobitratekbps, 'audioTrackCount', a.audiotrackcount, 'subtitleTrackCount', a.subtitletrackcount, 'durationMs', a.durationms)), '[]') from com_nalet_katalog_playbackassets a where a.item_id = i.id),
         'subtitleAssets', (select coalesce(json_agg(json_build_object('id', s.id, 'path', s.path, 'format', s.format, 'language', s.lang, 'label', s.label, 'isDefault', s.isdefault, 'styledPath', to_jsonb(s)->>'styledpath', 'styledFormat', to_jsonb(s)->>'styledformat')), '[]') from com_nalet_katalog_subtitleassets s where s.item_id = i.id),
-        'fontAssets', coalesce((select f.list from fonts f where f.item_id = i.id), '[]'),
+        'fontAssets', coalesce(fa.list, '[]'),
         'trailers', (select coalesce(json_agg(json_build_object('source', tl.source, 'site', tl.site, 'externalId', tl.externalid, 'url', tl.url, 'title', tl.title, 'durationSec', tl.durationsec, 'localPath', tl.localpath)), '[]') from com_nalet_katalog_itemtrailerlinks tl where tl.item_id = i.id),
         'artwork', (select coalesce(json_agg(json_build_object('kind', d.kind, 'contentType', d.contenttype, 'fetchedAt', to_char(d.fetchedat at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'base64', replace(encode(d.bytes, 'base64'), E'\n', ''))), '[]') from com_nalet_katalog_itemartworkdata d where d.item_id = i.id and d.bytes is not null)
       ) as x
+      -- the fonts are read once and joined, an item's list by its id: a
+      -- subquery of the CTE for each item would read all of it again
       from com_nalet_katalog_items i
+      left join fonts fa on fa.item_id = i.id
       where i.id in (select id from shard)
     ) s), '[]'),
     -- The log is read through table_to_xml, which takes the table by name when
