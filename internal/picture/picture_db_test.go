@@ -729,6 +729,63 @@ func TestOlderMethodsAndOldUnknownsAreMeasuredAgain(t *testing.T) {
 	}
 }
 
+// What the analyzer could not tell of a title's original by an older method
+// than its own is measured again the day after, before the titles never
+// measured, but not a title too costly to measure, nor one it could not tell
+// of a package.
+func TestAnUnknownOfAnOlderMethodOfItsOriginalGoesFirst(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	now := night
+	l := lib{t, t.TempDir()}
+	s := service(t, st, l.root, &now)
+	for _, id := range []string{"m1", "m2", "m3", "m4", "m5"} {
+		storetest.AddItem(t, st, id, "movie", "Film "+id, "")
+		l.original(st, id, "s"+id)
+	}
+	unknown := func(id, doubt string, on MeasuredOn) Report {
+		return Report{Path: filepath.Join(l.root, "incoming", id+".mkv"), Method: "picture/4",
+			Frame: &Size{1920, 1080}, Reason: "can't tell: " + doubt, MeasuredOn: &on,
+			Sampling: json.RawMessage(`{"mode": "keyframes", "doubt": ["` + doubt + `"]}`)}
+	}
+	for id, r := range map[string]Report{
+		"m4": unknown("m4", "gap", MeasuredOn{Kind: "original"}),
+		"m5": unknown("m5", "cost", MeasuredOn{Kind: "original"}),
+	} {
+		if _, err := s.Record(ctx, KindItem, id, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setting(t, st, SettingBackfill, "on")
+	setting(t, st, SettingInflight, "10")
+	claim := func(method string) string {
+		t.Helper()
+		c, err := s.Claim(ctx, "analyzer-0", 10, method)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, j := range c.Items {
+			got = append(got, j.ID)
+		}
+		storetest.Exec(t, st, `UPDATE com_nalet_katalog_pictureareas SET claimedat = NULL, claimedby = NULL`)
+		return strings.Join(got, ",")
+	}
+	now = night.Add(time.Hour)
+	if got := claim("picture/5"); got != "m1,m2,m3" {
+		t.Errorf("within a day: handed out %v, want m1,m2,m3 (never measured)", got)
+	}
+	now = night.Add(MeasureAgainAfter + time.Hour)
+	if got := claim("picture/5"); got != "m4,m1,m2,m3,m5" {
+		t.Errorf("a day on: handed out %v, want m4 (an older method's unknown), m1,m2,m3 (never "+
+			"measured), m5 (too costly, of an older method)", got)
+	}
+	// of the analyzer's own method, the unknowns stand
+	if got := claim("picture/4"); got != "m1,m2,m3" {
+		t.Errorf("of the same method: handed out %v, want m1,m2,m3", got)
+	}
+}
+
 // A run that has its whole lease and does not finish in it counts a costly
 // run; one given back before its lease's end (its worker stopped), or one the
 // window's end cuts short, does not. The run after CostlyRuns-1 of them is

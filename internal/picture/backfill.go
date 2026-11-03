@@ -13,8 +13,11 @@ package picture
 // at its cuts, a package's encoded rung one every few seconds and none at a
 // cut, which the analyzer can't tell an area from. The titles that still
 // have their original go first (before a deletion wave retires it; see
-// NeedsOriginal), the titles never measured next (movies, then episodes,
-// then extras), then those measured again: of an older method than the
+// NeedsOriginal), and of them first those it could not tell of their
+// original by an older method than the analyzer's that asks (but not those
+// too costly to measure): what a new method tells better. The titles never
+// measured go next (movies, then episodes, then extras), then those
+// measured again: of an older method than the
 // analyzer's that asks, one it could not tell of a month ago
 // (UnknownAgain) but not a package it could not tell for its keyframes'
 // gaps (that answer stays until the package changes), one a package could
@@ -471,7 +474,9 @@ func idle(why string, after time.Duration) Claim {
 // package could not tell counting as none while the title has its original,
 // not claimed now, not waiting out a failure's or a release's backoff ($1 is
 // now), and not measured since $5 (a day ago); the titles with their original
-// first, then those never measured; with each, its costly runs in a row.
+// first, of them first one its original could not tell by an older method
+// than $3 (not for its cost), then those never measured; with each, its
+// costly runs in a row.
 var candidatesSQL = `
 	SELECT t.kind, t.id, t.item_id, t.type, t.durationms, COALESCE(pa.costlyruns, 0)
 	FROM (
@@ -501,7 +506,11 @@ var candidatesSQL = `
 	                    AND NOT (t.original AND c.state = 'unknown' AND c.measuredon IS DISTINCT FROM 'original'))
 	  AND (pa.id IS NULL OR (pa.claimedat IS NULL AND (pa.nextattemptat IS NULL OR pa.nextattemptat <= $1)
 	                         AND (pa.measuredat IS NULL OR pa.measuredat <= $5)))
-	ORDER BY t.original DESC, pa.measuredat IS NOT NULL, t.rank, t.id
+	ORDER BY t.original DESC,
+	         NOT (pa.state IS NOT DISTINCT FROM 'unknown' AND $3 <> '' AND pa.method IS DISTINCT FROM $3
+	              AND pa.measuredon IS NOT DISTINCT FROM 'original'
+	              AND NOT COALESCE(pa.sampling->'doubt' @> '["cost"]'::jsonb, false)),
+	         pa.measuredat IS NOT NULL, t.rank, t.id
 	LIMIT $2`
 
 // expire takes the claims whose lease ended for failures of their titles:
