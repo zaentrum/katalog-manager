@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -634,5 +635,49 @@ func TestAFileIsReplacedOnACatalogOlderThanTheTracksAndTheExtras(t *testing.T) {
 	}
 	if got := assetOf(t, st, "a-bunny"); got != bunny+" "+cur+" 5000 primary=true kind=primary holds=" {
 		t.Errorf("the film's source asset: %s", got)
+	}
+}
+
+// Every replace is logged, whatever it comes to: who asked it — the token's
+// subject, the client it was issued to and what the catalog takes it for —,
+// the title, its old and new file, what was asked, and the outcome: what it
+// did, or why it was refused.
+func TestEveryReplaceIsLoggedWithWhoAskedIt(t *testing.T) {
+	f := newReplacing(t)
+	f.cfg.AdminRole, f.cfg.AddonRole, f.cfg.ServiceClients = "zaentrum-admin", "zaentrum-addon", []string{"zaentrum-manager"}
+	svc := New(f.st, f.cfg, processing.New(f.st.Pool()), nil).WithReencoder(f.re)
+	var logged strings.Builder
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	addon := auth.WithPrincipal(context.Background(), &auth.Principal{Subject: "addon-1", Client: "example-addon",
+		Claims: map[string]any{"realm_access": map[string]any{"roles": []any{"zaentrum-addon"}}}})
+
+	if _, err := svc.ReplaceSource(addon, graph.ReplaceSourceRequest{ItemID: bunny, Path: f.cur, DeleteOldFile: true, Reencode: true}); err != nil {
+		t.Fatal(err)
+	}
+	if line := logged.String(); !strings.Contains(line, "replaceSource asked by addon-1 (client example-addon, an addon (zaentrum-addon)): item "+
+		bunny+` ("Big Buck Bunny", movie), old file `+f.old+", new file "+f.cur+", deleteOldFile true, reencode true, ifIdle false: "+
+		"replaced: the title's file is "+f.cur+" now, in place of "+f.old+"; the old file is deleted") {
+		t.Errorf("the replace's log line:\n%s", line)
+	}
+	for _, tc := range []struct {
+		ctx  context.Context
+		who  string
+		in   graph.ReplaceSourceRequest
+		says string
+	}{
+		{addon, "addon-1 (client example-addon, an addon (zaentrum-addon))", graph.ReplaceSourceRequest{ItemID: "no-such-item", Path: f.cur},
+			"item no-such-item (?), old file -, new file " + f.cur + ", deleteOldFile false, reencode false, ifIdle false: refused (NOT_FOUND): unknown item: no-such-item"},
+		{asOperator, operator + " (client -, a viewer)", graph.ReplaceSourceRequest{ItemID: bunny, Path: f.cur},
+			"item " + bunny + ` ("Big Buck Bunny", movie), old file ` + f.cur + ", new file " + f.cur + ", deleteOldFile false, reencode false, " +
+				"ifIdle false: nothing changed: " + f.cur + " is the title's file already: nothing changed"},
+		{context.Background(), "nobody signed in", graph.ReplaceSourceRequest{Path: "relative.mkv"},
+			"item - (?), old file -, new file relative.mkv, deleteOldFile false, reencode false, ifIdle false: refused (SOURCE_REFUSED): relative.mkv is no absolute path"},
+	} {
+		logged.Reset()
+		_, _ = svc.ReplaceSource(tc.ctx, tc.in)
+		if line := logged.String(); !strings.Contains(line, "replaceSource asked by "+tc.who+": "+tc.says) {
+			t.Errorf("the log says\n%s\nwant\n%s", line, "replaceSource asked by "+tc.who+": "+tc.says)
+		}
 	}
 }

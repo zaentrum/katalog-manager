@@ -114,8 +114,8 @@ type source struct {
 // An episode another episode's file covers (migration 045) has that file:
 // named by its id, its holder is given the new one, the answer the holder's
 // and saying so. The episodes the holder's file covers stay covered.
-func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceRequest) (graph.ReplaceSourceResult, error) {
-	var res graph.ReplaceSourceResult
+func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceRequest) (res graph.ReplaceSourceResult, err error) {
+	defer func() { s.logReplace(ctx, in, res, err) }()
 	path := strings.TrimSpace(in.Path)
 	switch {
 	case path == "":
@@ -145,11 +145,77 @@ func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceReque
 			note, itemID = library.CoveredNote(itemID, holder), holder
 		}
 	}
-	res, err := s.replaceSource(ctx, in, path, itemID, itemPath)
+	res, err = s.replaceSource(ctx, in, path, itemID, itemPath)
 	if note != "" && err == nil {
 		res.Message = note + res.Message
 	}
 	return res, err
+}
+
+// logReplace logs a replace, whatever came of it: who asked it — the token's
+// subject, the client it was issued to and what the catalog takes it for —,
+// the title, its old file and the new one, and what it came to (what it did,
+// or why it was refused). An addon's replaces can be read back so.
+func (s *Service) logReplace(ctx context.Context, in graph.ReplaceSourceRequest, res graph.ReplaceSourceResult, err error) {
+	item, old, cur := res.ItemID, res.OldPath, res.Path
+	if item == "" {
+		item = strings.TrimSpace(in.ItemID)
+	}
+	if old == "" {
+		old = strings.TrimSpace(in.ItemPath)
+	}
+	if cur == "" {
+		cur = strings.TrimSpace(in.Path)
+	}
+	title := "?"
+	if item != "" {
+		var t, typ string
+		if s.st.Pool().QueryRow(context.WithoutCancel(ctx), `SELECT title, type FROM com_nalet_katalog_items WHERE id = $1`, item).
+			Scan(&t, &typ) == nil {
+			title = fmt.Sprintf("%q, %s", t, typ)
+		}
+	}
+	outcome := "replaced: " + res.Message
+	var refused *graph.SourceRefused
+	switch {
+	case errors.As(err, &refused):
+		outcome = "refused (" + refused.Code + "): " + refused.Message
+	case err != nil:
+		outcome = "failed: " + err.Error()
+	case !res.Replaced:
+		outcome = "nothing changed: " + res.Message
+	}
+	log.Printf("replaceSource asked by %s: item %s (%s), old file %s, new file %s, deleteOldFile %v, reencode %v, ifIdle %v: %s",
+		s.callerOf(ctx), orDash(item), title, orDash(old), orDash(cur), in.DeleteOldFile, in.Reencode, in.IfIdle, outcome)
+}
+
+// callerOf names who asks a replace: the token's subject, the client it was
+// issued to, and what the catalog takes it for.
+func (s *Service) callerOf(ctx context.Context) string {
+	p, _ := auth.PrincipalFrom(ctx)
+	if p == nil {
+		return "nobody signed in"
+	}
+	pol := s.cfg.Policy()
+	role := "a viewer"
+	switch {
+	case p.Unrestricted:
+		role = "auth off"
+	case pol.IsAdmin(p):
+		role = "an admin (" + pol.AdminRole + ")"
+	case pol.IsService(p):
+		role = "the platform's service account"
+	case pol.IsAddon(p):
+		role = "an addon (" + pol.AddonRole + ")"
+	}
+	return fmt.Sprintf("%s (client %s, %s)", orDash(p.Subject), orDash(p.Client), role)
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // replaceSource is ReplaceSource of the title named by itemID or itemPath,
@@ -270,7 +336,6 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 		res.Reencode = s.encodeAgain(ctx, src.itemID)
 	}
 	res.Message = replacedMessage(res, said, sidecars)
-	log.Printf("replaced the file of item %s (%q, %s), by %s: %s", src.itemID, src.title, src.typ, by, res.Message)
 	return res, nil
 }
 
