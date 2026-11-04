@@ -160,9 +160,12 @@ type LibraryVersion {
 
 # An original a title was given: present while it is there (arrivalPath:
 # where it arrived, or, from its first version on, versions/<versionId>/ of
-# its title's folder), retiring while the retire job deletes it, deleted
-# after packaging (its event retireEventId, and what its package does not
-# carry of it, lost), or removed (no original of the title after all).
+# its title's folder), superseded once another file took its place as the
+# title's (replaceSource with deleteOldFile) and while it is there still,
+# until a version of the title made without it is complete and verified,
+# retiring while the retire job deletes it, deleted after packaging or once
+# superseded (its event retireEventId, and what its package does not carry
+# of it, lost), or removed (no original of the title after all).
 type LibrarySource {
   id: ID!
   # its name: the one the library gives it (original.<ext>) once its record
@@ -188,7 +191,8 @@ type LibrarySource {
 }
 
 # A fact the title's folder records (events/): an original deleted, a
-# package superseded, a version or an extra removed.
+# package superseded, a version or an extra removed, or a note (what became
+# of an original another file took the place of, by whoever asked).
 type LibraryEvent {
   id: ID!
   kind: String!

@@ -341,6 +341,64 @@ func TestAnOldOriginalAskedToGoIsSuperseded(t *testing.T) {
 	}
 }
 
+// The lifecycle of a replaced title's old original: superseded by the
+// replace, kept in its version's folder while the title's master is the old
+// version — a retire pass leaves it —, and once the version made of the new
+// file is complete and verified, moved into the library's trash by the
+// retire job, its original-deleted event naming the old version, its source
+// deleted; the old version, superseded, goes after its grace.
+func TestAReplacedTitlesOldOriginalIsRetiredOnceItsNewVersionIsVerified(t *testing.T) {
+	iv := newInVersion(t)
+	ctx := context.Background()
+	st := iv.f.st
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('g', 'library.superseded.grace', '0')`)
+	res, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true})
+	if err != nil || !res.OldFileSuperseded {
+		t.Fatalf("the replace: %+v %v", res, err)
+	}
+	retirer := library.NewRetirer(st.Pool(), iv.f.cfg, processing.New(st.Pool()))
+	if rep, err := retirer.Pass(ctx); err != nil || rep.Superseded != 0 {
+		t.Fatalf("a pass while the old version is the master: %+v %v", rep, err)
+	}
+	if _, err := os.Stat(iv.old); err != nil {
+		t.Fatalf("the old original left before the new version: %v", err)
+	}
+	newSource, err := library.SupersededBy(ctx, st.Pool(), ivSource)
+	if err != nil || newSource == "" {
+		t.Fatalf("superseded by: %q %v", newSource, err)
+	}
+	const newVersion = "9d0b0b0b-0000-4000-8000-00000000000d"
+	vdir := library.VersionDir(iv.itemDir, newVersion)
+	librarytest.WriteVersion(t, vdir, librarytest.Version{VersionID: newVersion, PackageID: "4d0b0b0b-0000-4000-8000-00000000000d",
+		SourceIDs: []string{newSource}, CreatedAt: "2026-11-04T10:00:00Z"})
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2, supersededat = now()
+		WHERE id = $1`, ivVersion, newVersion)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
+		VALUES ($1, $2, ARRAY[$3::varchar], 'complete', '4d0b0b0b-0000-4000-8000-00000000000d', $4, now() - interval '1 hour')`,
+		newVersion, bunny, newSource, vdir)
+	rep, err := retirer.Pass(ctx)
+	if err != nil || rep.Superseded != 1 || rep.Versions != 1 {
+		t.Fatalf("the pass once the new version is complete: %+v %v", rep, err)
+	}
+	src, err := library.SourceByID(ctx, st.Pool(), ivSource)
+	if err != nil || src == nil || src.State != library.SourceDeleted || src.RetireEventAt == nil {
+		t.Fatalf("the old source: %+v %v", src, err)
+	}
+	trash := filepath.Join(library.PathsOf(iv.f.cfg).TrashDir(*src.RetireEventAt, ivSource), "original.mkv")
+	if _, err := os.Stat(trash); err != nil {
+		t.Errorf("the old original is not in the trash: %v", err)
+	}
+	if dir, _ := library.FindEvent(iv.itemDir, derefTest(src.RetireEventID), library.EventOriginalDeleted); dir == "" {
+		t.Error("no original-deleted event recorded")
+	}
+	if _, err := os.Stat(library.VersionDir(iv.itemDir, ivVersion)); !os.IsNotExist(err) {
+		t.Errorf("the old version's folder is there: %v", err)
+	}
+	if _, err := os.Stat(iv.arrive); err != nil {
+		t.Errorf("the new file is gone: %v", err)
+	}
+}
+
 // A title that holds its originals (holdOriginal) is given its new file all
 // the same, its old original superseded, and kept so: the answer says it
 // stays while the title holds them.

@@ -53,8 +53,10 @@ import (
 // policy is keep again, the title is held, or its pipeline reads the
 // original again.
 //
-// The same job deletes an extra's original once its folder is recorded and
-// verified (extras get no event), removes a superseded version after
+// The same job retires an original another file took the place of as its
+// title's (superseded) once the title's master is verified
+// (retire_superseded.go), deletes an extra's original once its folder is
+// recorded and verified (extras get no event), removes a superseded version after
 // library.superseded.grace (cleanup.go), moves a legacy package folder a
 // version replaced to .work/legacy/, and deletes the trash's and the legacy
 // folder's days once their grace is over. A pass runs at most once a minute,
@@ -213,6 +215,9 @@ type Report struct {
 	Purged    int // days of the trash and of the legacy folder deleted
 	Held      int // originals kept: their package has no 5.1 of their surround
 	Failed    int // originals, extras and versions that could not be
+	// Superseded is how many superseded originals were deleted
+	// (retire_superseded.go).
+	Superseded int
 }
 
 // String says what the pass did; "" when it did nothing.
@@ -223,7 +228,7 @@ func (r Report) String() string {
 		what string
 	}{{r.Originals, "originals deleted"}, {r.Extras, "extras' originals deleted"}, {r.Versions, "superseded versions removed"},
 		{r.Legacy, "legacy package folders moved aside"}, {r.Purged, "days of the trash and the legacy folder deleted"},
-		{r.Held, "originals kept for their surround"}, {r.Failed, "failed"}} {
+		{r.Superseded, "superseded originals deleted"}, {r.Held, "originals kept for their surround"}, {r.Failed, "failed"}} {
 		if c.n > 0 {
 			out = append(out, fmt.Sprintf("%d %s", c.n, c.what))
 		}
@@ -271,8 +276,15 @@ func (r *Retirer) Pass(ctx context.Context) (Report, error) {
 	n, held, failed, err := r.originals(ctx, p, set, now, set.RetireRate)
 	rep.Originals, rep.Held, rep.Failed = n, held, failed
 	errs = append(errs, err)
-	if set.DeleteOriginals() && n+held+failed < set.RetireRate {
-		n, failed, err = r.extras(ctx, p, set, now, set.RetireRate-n-held-failed)
+	// A superseded original goes on the replace's word, whatever
+	// library.originals says.
+	if left := set.RetireRate - n - held - failed; left > 0 {
+		n, held, failed, err = r.supersededOriginals(ctx, p, set, now, left)
+		rep.Superseded, rep.Held, rep.Failed = n, rep.Held+held, rep.Failed+failed
+		errs = append(errs, err)
+	}
+	if used := rep.Originals + rep.Superseded + rep.Held + rep.Failed; set.DeleteOriginals() && used < set.RetireRate {
+		n, failed, err = r.extras(ctx, p, set, now, set.RetireRate-used)
 		rep.Extras, rep.Failed = n, rep.Failed+failed
 		errs = append(errs, err)
 	}
@@ -398,6 +410,21 @@ type retirement struct {
 	sidecars []sidecar // its subtitle rows and the files the record lists beside it
 	accepted []string
 	by, why  string
+	// superseded is the source that took the place of a superseded
+	// original, whose retirement this is (retire_superseded.go): ver is its
+	// title's master, its sidecars stay, and its title's retire step is
+	// left alone; called off or failed before its event, it is superseded
+	// again.
+	superseded string
+}
+
+// back is the state the source of rt is in again when its retirement is
+// called off, or fails, before its event: present, or superseded.
+func (rt *retirement) back() string {
+	if rt.superseded != "" {
+		return SourceSuperseded
+	}
+	return SourcePresent
 }
 
 // sidecar is a file beside an original that goes with it: a subtitle file
@@ -428,6 +455,18 @@ func (r *Retirer) retire(ctx context.Context, p Paths, set Settings, now time.Ti
 // should be: the step and the row say why.
 func (r *Retirer) retireOf(ctx context.Context, p Paths, set Settings, now time.Time, rt *retirement) (bool, error) {
 	s := rt.src
+	// A superseded original's retirement, resumed, is told by the source
+	// that took its place.
+	if rt.superseded == "" && s.State == SourceRetiring {
+		by, err := SupersededBy(ctx, r.pool, s.ID)
+		if err != nil {
+			return false, err
+		}
+		rt.superseded = by
+	}
+	if rt.superseded != "" {
+		return r.retireSuperseded(ctx, p, set, now, rt)
+	}
 	pl, err := PlaceOf(ctx, r.pool, s.ItemID)
 	if errors.Is(err, ErrNoItem) {
 		rt.why = "the title was deleted meanwhile"
@@ -573,7 +612,8 @@ func (r *Retirer) calledOff(ctx context.Context, set Settings, rt *retirement) (
 }
 
 // callOff calls a retirement off before its event is recorded: the source is
-// present again, and the retire step waits.
+// present again, and the retire step waits; a superseded original's is
+// superseded again, its title's retire step left alone.
 func (r *Retirer) callOff(ctx context.Context, rt *retirement, why string) error {
 	s := rt.src
 	rt.why = why
@@ -585,13 +625,15 @@ func (r *Retirer) callOff(ctx context.Context, rt *retirement, why string) error
 	if err := LockItem(ctx, tx, s.ItemID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET state = 'present', retireeventid = NULL,
+	if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET state = $2, retireeventid = NULL,
 			retireeventat = NULL, trashpath = NULL, error = NULL, modifiedat = now()
-		WHERE id = $1 AND state = 'retiring'`, s.ID); err != nil {
+		WHERE id = $1 AND state = 'retiring'`, s.ID, rt.back()); err != nil {
 		return err
 	}
-	if err := r.steps.UpsertIn(ctx, tx, s.ItemID, processing.StepRetire, processing.StatusPending, nil, &why); err != nil {
-		return err
+	if rt.superseded == "" {
+		if err := r.steps.UpsertIn(ctx, tx, s.ItemID, processing.StepRetire, processing.StatusPending, nil, &why); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
@@ -1376,8 +1418,12 @@ func (r *Retirer) deleted(ctx context.Context, now time.Time, rt *retirement) er
 	if len(rt.accepted) > 0 {
 		details = "lost: " + strings.Join(rt.accepted, ", ")
 	}
-	if err := r.steps.UpsertIn(ctx, tx, s.ItemID, processing.StepRetire, processing.StatusDone, nil, &details); err != nil {
-		return err
+	// A superseded original is no retirement of the title's original: its
+	// retire step is the new original's to come.
+	if rt.superseded == "" {
+		if err := r.steps.UpsertIn(ctx, tx, s.ItemID, processing.StepRetire, processing.StatusDone, nil, &details); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
@@ -1393,7 +1439,8 @@ func nonNil(s []string) []string {
 // item's retire step, which fails. A claimed source whose event is not
 // recorded is present again, its original kept (an event folder begun is
 // deleted); one whose event is recorded stays retiring, and the next pass
-// goes on with it. Once ctx ended (a shutdown) it says nothing, and answers
+// goes on with it. A superseded original's is superseded again, or retiring
+// still, its row alone saying why: its title's retire step is left alone. Once ctx ended (a shutdown) it says nothing, and answers
 // ctx's error: what failed may be the ending itself, and the source stays as
 // a stop leaves it, for the next pass to go on with.
 func (r *Retirer) fail(ctx context.Context, rt *retirement, msg string) error {
@@ -1405,17 +1452,19 @@ func (r *Retirer) fail(ctx context.Context, rt *retirement, msg string) error {
 	bg := context.WithoutCancel(ctx)
 	recorded, begun, _ := r.eventOf(rt)
 	if _, err := r.pool.Exec(bg, `UPDATE com_nalet_katalog_itemsources SET error = $2, modifiedat = now(),
-			state = CASE WHEN state = 'retiring' AND NOT $3 THEN 'present' ELSE state END,
+			state = CASE WHEN state = 'retiring' AND NOT $3 THEN $4 ELSE state END,
 			retireeventid = CASE WHEN state = 'retiring' AND NOT $3 THEN NULL ELSE retireeventid END,
 			retireeventat = CASE WHEN state = 'retiring' AND NOT $3 THEN NULL ELSE retireeventat END,
 			trashpath = CASE WHEN state = 'retiring' AND NOT $3 THEN NULL ELSE trashpath END
-		WHERE id = $1 AND state IN ('present', 'retiring')`, s.ID, clip(msg, 500), recorded != ""); err != nil {
+		WHERE id = $1 AND state IN ($4, 'retiring')`, s.ID, clip(msg, 500), recorded != "", rt.back()); err != nil {
 		log.Printf("library: the failure of the retirement of original %s could not be noted: %v", s.ID, err)
 	} else if recorded == "" && begun != "" {
 		_ = os.RemoveAll(begun)
 	}
-	if err := r.steps.Upsert(bg, s.ItemID, processing.StepRetire, processing.StatusFailed, &msg, nil); err != nil {
-		log.Printf("library: the retire step of item %s could not be failed: %v", s.ItemID, err)
+	if rt.superseded == "" {
+		if err := r.steps.Upsert(bg, s.ItemID, processing.StepRetire, processing.StatusFailed, &msg, nil); err != nil {
+			log.Printf("library: the retire step of item %s could not be failed: %v", s.ItemID, err)
+		}
 	}
 	r.say("source:"+s.ID, fmt.Sprintf("original %s of item %s is not deleted: %s", s.ID, s.ItemID, msg))
 	return &retireFailed{fmt.Sprintf("original %s of item %s: %s", s.ID, s.ItemID, msg)}
