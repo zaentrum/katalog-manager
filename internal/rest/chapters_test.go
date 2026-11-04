@@ -2,7 +2,9 @@ package rest
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -139,9 +141,14 @@ func TestTheAnalyzerReportsAReadOfAnOriginalsChapters(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(rec), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(rec, []byte(`{"chapters": [{"start_time": "0.000000", "end_time": "60.000000", "tags": {"title": "One"}},
-		{"start_time": "60.000000", "end_time": "120.000000", "tags": {"title": "Two"}}], "format": {"duration": "120.0"}}`),
-		0o644); err != nil {
+	probe := []byte(`{"chapters": [{"start_time": "0.000000", "end_time": "60.000000", "tags": {"title": "One"}},
+		{"start_time": "60.000000", "end_time": "120.000000", "tags": {"title": "Two"}}], "format": {"duration": "120.0"}}`)
+	sum := sha256.Sum256(probe)
+	if err := os.WriteFile(rec, probe, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(rec), "source.json"), []byte(`{"file": {"sizeBytes": 6}, `+
+		`"probe": {"sha256": "sha256:`+hex.EncodeToString(sum[:])+`"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	put(`{"chapters": [], "read": {"path": "` + media + `", "found": 0}}`)

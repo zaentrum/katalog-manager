@@ -1,6 +1,8 @@
 package chapters
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
@@ -142,5 +144,35 @@ func TestTheBackfillsSettings(t *testing.T) {
 	s.set(SettingWindow, "")
 	if !s.Window.Contains(time.Date(2026, 11, 4, 18, 0, 0, 0, time.UTC)) || s.Window.String() != "any time" {
 		t.Errorf("no window: %s", s.Window.String())
+	}
+}
+
+// A source record is taken only when its source.json names its probe (the
+// sha256 of its bytes) and an original of the size the catalog holds, and
+// the probe says that size where it says one.
+func TestARecordIsVerifiedAgainstItsSourceJSON(t *testing.T) {
+	probe := []byte(`{"chapters": [], "format": {"duration": "10.0", "size": "6"}}`)
+	sum := sha256.Sum256(probe)
+	named := "sha256:" + hex.EncodeToString(sum[:])
+	six, seven := int64(6), int64(7)
+	for _, tc := range []struct {
+		name, src string
+		size      *int64
+		why       string
+	}{
+		{"its own", `{"file": {"sizeBytes": 6}, "probe": {"sha256": "` + named + `"}}`, &six, ""},
+		{"a size the catalog does not know", `{"file": {"sizeBytes": 6}, "probe": {"sha256": "` + named + `"}}`, nil, ""},
+		{"another probe", `{"file": {"sizeBytes": 6}, "probe": {"sha256": "sha256:00"}}`, &six, "not the one its source.json names"},
+		{"no probe named", `{"file": {"sizeBytes": 6}}`, &six, "not the one its source.json names"},
+		{"another original", `{"file": {"sizeBytes": 6}, "probe": {"sha256": "` + named + `"}}`, &seven,
+			"of a file of 6 bytes, the catalog's original of 7"},
+		{"no size", `{"probe": {"sha256": "` + named + `"}}`, &six, "names no size"},
+		{"the probe of another size", `{"file": {"sizeBytes": 7}, "probe": {"sha256": "` + named + `"}}`, &seven,
+			"its probe is of a file of 6 bytes, its source.json of 7"},
+		{"no record", `[`, &six, "is no record"},
+	} {
+		if got := verify(probe, []byte(tc.src), tc.size); (tc.why == "") != (got == "") || !strings.Contains(got, tc.why) {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.why)
+		}
 	}
 }

@@ -2,6 +2,8 @@ package chapters
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -94,12 +96,13 @@ func (l lib) file(path, content string) {
 	}
 }
 
-// record writes the source record's probe of the movie id's original source,
-// with the chapter marks given ([start, end, title] each, in seconds; an end
-// below 0 is none) and the file's duration.
+// record writes the source record of the movie id's original source: its
+// probe, with the chapter marks given ([start, end, title] each, in seconds;
+// an end below 0 is none) and the file's duration, and its source.json, which
+// names that probe (its sha256) and an original of 6 bytes (the catalog's).
 func (l lib) record(id, source string, duration float64, marks ...[3]any) string {
 	l.t.Helper()
-	var chs []string
+	chs := []string{}
 	for _, m := range marks {
 		end := ""
 		if e, _ := m[1].(float64); e >= 0 {
@@ -107,10 +110,31 @@ func (l lib) record(id, source string, duration float64, marks ...[3]any) string
 		}
 		chs = append(chs, fmt.Sprintf(`{"start_time": "%f"%s, "tags": {"title": %q}}`, m[0], end, m[2]))
 	}
-	path := filepath.Join(library.SourceDir(l.paths.MovieDir(id), source), ProbeFile)
-	l.file(path, fmt.Sprintf(`{"streams": [{"codec_type": "video"}], "chapters": [%s], "format": {"duration": "%f"}}`,
-		strings.Join(chs, ", "), duration))
+	path := filepath.Join(l.recordDir(id, source), ProbeFile)
+	probe := fmt.Sprintf(`{"streams": [{"codec_type": "video"}], "chapters": [%s], "format": {"duration": "%f"}}`,
+		strings.Join(chs, ", "), duration)
+	l.file(path, probe)
+	l.sourceJSON(id, source, sha(probe), 6)
 	return path
+}
+
+// recordDir is the folder of the source record of the movie id's source.
+func (l lib) recordDir(id, source string) string {
+	return library.SourceDir(l.paths.MovieDir(id), source)
+}
+
+// sourceJSON writes the source.json of the movie id's original source: it
+// names the probe of the sha256 sum, of an original of size bytes.
+func (l lib) sourceJSON(id, source, sum string, size int64) {
+	l.t.Helper()
+	l.file(filepath.Join(l.recordDir(id, source), "source.json"),
+		fmt.Sprintf(`{"file": {"sizeBytes": %d}, "probe": {"sha256": %q}}`, size, sum))
+}
+
+// sha is the sha256 a source.json names the probe s by.
+func sha(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // packaged gives the item a complete version made of its source.
@@ -133,6 +157,16 @@ func (l lib) rows(id string, chs ...Chapter) {
 
 func (l lib) count(id string) int {
 	return storetest.Count(l.t, l.st, `SELECT count(*) FROM com_nalet_katalog_itemchapters WHERE item_id = $1`, id)
+}
+
+// read is the title's last read.
+func (l lib) read(id string) *Read {
+	l.t.Helper()
+	r, err := ReadOf(context.Background(), l.st.Pool(), id)
+	if err != nil || r == nil {
+		l.t.Fatalf("the read of %s: %+v, %v", id[:8], r, err)
+	}
+	return r
 }
 
 func setting(t *testing.T, st *store.Store, key, value string) {
@@ -699,5 +733,68 @@ func TestADeletedTitleAndNoMigration(t *testing.T) {
 	}
 	if n, err := NeedsOriginal(ctx, base.Pool(), m1, s1); !n || !errors.Is(err, ErrNotReady) {
 		t.Errorf("NeedsOriginal: %v, %v", n, err)
+	}
+}
+
+// A source record is taken only when it is the one its source.json names and
+// of the original the catalog holds: a probe written over since its
+// source.json, a source.json of a file of another size than the catalog's
+// original, a probe of a file of another size than its source.json's, or no
+// source.json can't say. The title goes to the analyzer, its chapters as they
+// are, and a header read that finds none is not confirmed by such a record.
+func TestARecordIsTakenOnlyOfItsOriginal(t *testing.T) {
+	l := newLib(t)
+	ctx := context.Background()
+	now := night
+	s := service(l, &now)
+	setting(t, l.st, SettingBackfill, "on")
+	setting(t, l.st, SettingInflight, "8")
+
+	m1, s1 := uid('a', 1), uid('b', 1) // its probe written over since: no chapters in it now
+	l.title(m1, s1, opts{chapters: true})
+	l.record(m1, s1, 1300, threeMarks()...)
+	l.file(filepath.Join(l.recordDir(m1, s1), ProbeFile), `{"chapters": [], "format": {"duration": "1300.000000"}}`)
+	l.rows(m1, Chapter{StartMs: 0, EndMs: 9000, Title: str("Old"), Ordinal: 1})
+	m2, s2 := uid('a', 2), uid('b', 2) // its source.json of a file of 7 bytes, the catalog's original of 6
+	orig2 := l.title(m2, s2, opts{chapters: true})
+	probe, err := os.ReadFile(l.record(m2, s2, 1300, threeMarks()...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.sourceJSON(m2, s2, sha(string(probe)), 7)
+	m3, s3 := uid('a', 3), uid('b', 3) // no source.json
+	l.title(m3, s3, opts{chapters: true})
+	l.record(m3, s3, 1300, threeMarks()...)
+	if err := os.Remove(filepath.Join(l.recordDir(m3, s3), "source.json")); err != nil {
+		t.Fatal(err)
+	}
+	m4, s4 := uid('a', 4), uid('b', 4) // its probe of a file of 7 bytes, its source.json of 6
+	l.title(m4, s4, opts{chapters: true})
+	p4 := `{"chapters": [{"start_time": "0.000000", "end_time": "60.000000"}], "format": {"duration": "1300.000000", "size": "7"}}`
+	l.file(filepath.Join(l.recordDir(m4, s4), ProbeFile), p4)
+	l.sourceJSON(m4, s4, sha(p4), 6)
+
+	c, err := s.Claim(ctx, "analyzer-0", 8)
+	if err != nil || c.Settled != 0 || len(c.Items) != 4 {
+		t.Fatalf("the claim: %+v, %v", c, err)
+	}
+	for _, tc := range []struct{ id, source, why string }{
+		{m1, s1, "its probe is not the one its source.json names (sha256:"},
+		{m2, s2, "its source.json is of a file of 7 bytes, the catalog's original of 6"},
+		{m3, s3, "its source record has no source.json"},
+		{m4, s4, "its probe is of a file of 7 bytes, its source.json of 6"},
+	} {
+		if r := l.read(tc.id); !strings.HasPrefix(deref(r.RecordNote), tc.why) || deref(r.RecordSourceID) != tc.source ||
+			!needs(t, l.st, tc.id) {
+			t.Errorf("%s: %+v", tc.id[:8], r)
+		}
+	}
+	if l.count(m1) != 1 || l.count(m2) != 0 || l.count(m4) != 0 {
+		t.Errorf("records that can't say wrote chapters: %d, %d, %d", l.count(m1), l.count(m2), l.count(m4))
+	}
+	// the analyzer's read of m2's header finds none: its record can't confirm
+	// that, and the compliance check's says chapters
+	if r := l.record_(m2, header(orig2, []Chapter{}, 0), now); r.State != StateFailed || r.Confirmed || !needs(t, l.st, m2) {
+		t.Errorf("an empty read held against a record of another file: %+v", r)
 	}
 }
