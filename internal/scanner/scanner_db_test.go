@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/processing"
@@ -93,5 +94,55 @@ func TestAScanTakesAFileThroughALink(t *testing.T) {
 	}
 	if res.itemsInserted != 1 || storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE path = $1`, link) != 1 {
 		t.Errorf("a file through a link: %d title(s) made, want one of the link's path", res.itemsInserted)
+	}
+}
+
+// A file a scan met that is a folder once the scan has its lock - another
+// put one at its name while the scan waited - makes no title, with the
+// legacy layout too.
+func TestAScanMakesNoTitleOfAFolderAtTheNameItMet(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	path := filepath.Join(root, "Example (2024).mkv")
+	if err := os.WriteFile(path, []byte("a film"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('com_nalet_katalog_playbackassets:' || $1))`, path); err != nil {
+		t.Fatal(err)
+	}
+	s := New(st, config.Config{NFSRoot: root}, processing.New(st.Pool()), nil)
+	done := make(chan scanResult, 1)
+	go func() {
+		res, err := s.walk(ctx, func() {})
+		if err != nil {
+			t.Error(err)
+		}
+		done <- res
+	}()
+	select {
+	case res := <-done:
+		t.Fatalf("the scan did not wait for the lock: %+v", res)
+	case <-time.After(400 * time.Millisecond):
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = tx.Rollback(ctx)
+	select {
+	case res := <-done:
+		if res.itemsInserted != 0 {
+			t.Errorf("the scan made %d title(s) of a folder", res.itemsInserted)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the scan did not end once the lock was let go")
 	}
 }
