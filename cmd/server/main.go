@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/zaentrum/katalog-manager/internal/auth"
+	"github.com/zaentrum/katalog-manager/internal/chapters"
 	"github.com/zaentrum/katalog-manager/internal/chaptersdb"
 	"github.com/zaentrum/katalog-manager/internal/compliance"
 	"github.com/zaentrum/katalog-manager/internal/config"
@@ -189,6 +190,12 @@ func run() error {
 	if err := st.EnsurePictureAreas(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/054_picture_areas.sql is missing and could not be applied: %v; no picture area is kept, and the players fit the frame, until it is", err)
 	}
+	// What reading each title's chapters from its original found, and the
+	// titles whose original is still needed for them (migration 055; its view
+	// reads 040's originals and 051's records).
+	if err := st.EnsureChapterReads(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/055_chapter_reads.sql is missing and could not be applied: %v; a read of a title's chapters writes them and keeps nothing else, and no backfill reads them again, until it is", err)
+	}
 	// An item the scanner made before it wrote its own name into the row has
 	// it in its record alone: the row follows the record (bounded, in the
 	// background).
@@ -301,7 +308,7 @@ func wire(ctx context.Context, cfg config.Config, st *store.Store) (*service, er
 	}
 
 	// Integration services. Each no-ops cleanly when its feature is unconfigured.
-	chapters := chaptersdb.New(cfg)
+	chaptersDB := chaptersdb.New(cfg)
 	// Resolve enrichment API keys from the settings table at runtime (the
 	// `tmdb.api_key` / `omdb.api_key` / `fanart.api_key` / `fanart.client_key`
 	// settings override the env/build defaults, so the settings editor can change
@@ -313,7 +320,7 @@ func wire(ctx context.Context, cfg config.Config, st *store.Store) (*service, er
 		}
 		return row.ValueText, true
 	}
-	enricher := tmdb.New(st, cfg, steps, chapters, settingLookup)
+	enricher := tmdb.New(st, cfg, steps, chaptersDB, settingLookup)
 	// A title's extras: taken in by an operator or the scanner, and packaged
 	// on a chain of their own (catalog.extra.*), retried by the same policy.
 	extrasSvc := extras.New(st, cfg, cfg.RetryPolicy(), eventProducer)
@@ -394,11 +401,15 @@ func wire(ctx context.Context, cfg config.Config, st *store.Store) (*service, er
 	// the backfill hands it the titles that have none, at the pace of the
 	// settings picture.backfill*.
 	pictures := picture.New(st, cfg)
+	// Each title's chapters: the analyzer reports every read of an original
+	// with the chapters it found, and the backfill hands it the titles that
+	// miss theirs, at the pace of the settings chapters.backfill*.
+	chapterReads := chapters.New(st, cfg)
 
 	// Authenticated surface.
 	routes(r, authMW.Handler, cfg.Policy(), schema, broker.Handler,
 		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: steps, Events: eventProducer, Packager: actions, Extras: extrasSvc,
-			Reencode: retries, TakeIn: retries, Compliance: check, Picture: pictures}))
+			Reencode: retries, TakeIn: retries, Compliance: check, Picture: pictures, Chapters: chapterReads}))
 
 	start := func(ctx context.Context) {
 		// A scan runs in the process that started it, so one a previous process

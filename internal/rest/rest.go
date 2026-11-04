@@ -24,6 +24,7 @@ type Deps struct {
 	TakeIn     TakeIn           // nil: a title that gets no package is taken in by the sweep alone; POST /api/items/{id}/takein answers 503
 	Compliance Compliance       // nil: PUT /api/analyze/rules/{worker} and GET /api/manage/compliance.csv answer 503, and only the nightly pass checks a title packaged again
 	Picture    PictureAreas     // nil: /api/picture/* answers 503
+	Chapters   ChapterReads     // nil: a chapters PUT keeps no read, GET /api/chapters/items/{id} and /api/chapters/claim answer 503
 }
 
 // Handlers groups the REST handlers.
@@ -48,8 +49,8 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 //   - workers (an admin, or the platform's service account the analyzer,
 //     transcoder and packager mint tokens with): the worker protocol, which
 //     hands out paths on disk and writes the pipeline's results (the titles'
-//     picture areas and their backfill among them), and the settings that
-//     are no secret;
+//     picture areas and chapters, and their backfills, among them), and the
+//     settings that are no secret;
 //   - ingest (a worker, or an addon's service account): POST /api/ingest,
 //     POST /api/extras, which takes a file in as a title's extra, and the
 //     attach seam, /api/library/items/{itemId}/subtitles, a subtitle attached
@@ -113,8 +114,13 @@ func (h *Handlers) Register(r chi.Router) {
 		// Fused analyzer output
 		r.Put("/api/segments/items/{itemId}", h.putSegments)
 		r.Delete("/api/segments/items/{itemId}", h.deleteSegments)
+		// A title's chapters, read from its original, with what the read
+		// was (chapters.go): the analyzer writes and reads them, and asks
+		// the backfill for the titles that miss theirs.
 		r.Put("/api/chapters/items/{itemId}", h.putChapters)
+		r.Get("/api/chapters/items/{itemId}", h.getChapters)
 		r.Delete("/api/chapters/items/{itemId}", h.deleteChapters)
+		r.Post("/api/chapters/claim", h.postChaptersClaim)
 
 		// Packager machine sink
 		r.Post("/api/items/{id}/packaging-complete", h.packagingComplete)

@@ -61,6 +61,8 @@ var routes = []route{
 	{http.MethodDelete, "/api/segments/items/m1", "", "worker"},
 	{http.MethodPut, "/api/chapters/items/m1", `{"chapters": []}`, "worker"},
 	{http.MethodDelete, "/api/chapters/items/m1", "", "worker"},
+	{http.MethodGet, "/api/chapters/items/m1", "", "worker"},
+	{http.MethodPost, "/api/chapters/claim", `{"worker": "analyzer-0"}`, "worker"},
 	{http.MethodPost, "/api/items/m1/packaging-complete", `{}`, "worker"},
 	{http.MethodGet, "/api/settings", "", "worker"},
 	{http.MethodGet, "/api/analyze/extras/" + extraX1, "", "worker"},

@@ -1,15 +1,73 @@
 package rest
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
+
+	"github.com/zaentrum/katalog-manager/internal/chapters"
 )
 
-// putChapters ports ChaptersController#replaceForItem: atomic DELETE + batch
-// INSERT of file-internal chapter atoms. Validates 0 <= start < end; blank
-// title -> NULL; ordinal fallback = 1-based array position. 404 unknown item.
+// ChapterReads are the titles' chapters, what reading them from the
+// originals found, and the backfill that reads them again (chapters.Service):
+// the analyzer reports each read with the chapters it found, reads a
+// title's, and asks the backfill for the titles to read.
+type ChapterReads interface {
+	Of(ctx context.Context, itemID string) (*chapters.Title, error)
+	Record(ctx context.Context, itemID string, r chapters.Report) (*chapters.Read, error)
+	Claim(ctx context.Context, worker string, limit int) (chapters.Claim, error)
+}
+
+// chapterReadJSON is a title's last read on the wire.
+type chapterReadJSON struct {
+	State         string     `json:"state"`
+	SourceID      *string    `json:"sourceId"`
+	Path          *string    `json:"path"`
+	FileSize      *int64     `json:"fileSize"`
+	Found         *int32     `json:"found"`
+	Written       *int32     `json:"written"`
+	Probe         *string    `json:"probe"`
+	Seconds       *float64   `json:"seconds"`
+	Reason        *string    `json:"reason"`
+	ReadAt        *time.Time `json:"readAt"`
+	Attempts      int32      `json:"attempts"`
+	Failures      int32      `json:"failures"`
+	NextAttemptAt *time.Time `json:"nextAttemptAt"`
+	ClaimedAt     *time.Time `json:"claimedAt"`
+}
+
+func chapterReadOut(r *chapters.Read) *chapterReadJSON {
+	if r == nil {
+		return nil
+	}
+	return &chapterReadJSON{State: r.State, SourceID: r.SourceID, Path: r.Path, FileSize: r.FileSize, Found: r.Found,
+		Written: r.Written, Probe: r.Probe, Seconds: r.Seconds, Reason: r.Reason, ReadAt: utc(r.ReadAt),
+		Attempts: r.Attempts, Failures: r.Failures, NextAttemptAt: utc(r.NextAttemptAt), ClaimedAt: utc(r.ClaimedAt)}
+}
+
+// putChapters serves PUT /api/chapters/items/{itemId}, for the workers'
+// service account and admins: the chapters of a title, read from its
+// original, in place of its own ({"chapters": [{"startMs", "endMs", "title",
+// "ordinal"}]}: 0 <= start < end; a blank title is none, one longer than 120
+// characters is cut; an ordinal left out is the chapter's place in the
+// list). With "read", what the read was ({"path", "fileSize", "found",
+// "error", "note", "probe", "seconds"}), and the token of the backfill's
+// claim it read for ("token"), the catalog keeps the read with the chapters,
+// in the same transaction (chapters.Record): a read that found none
+// ("chapters": []) settles the title as one that wrote chapters does; one
+// that failed ("read": {"error"}, no "chapters") leaves the title's chapters
+// as they are and counts a failure. {"released": true, "token"} gives a
+// claim back unread. 400 for chapters or a read that can't be taken, 404 for
+// no such item; a read is answered with the title's read as it is now. A
+// catalog without migration 055 writes the chapters and keeps no read (503
+// for a read without chapters).
 func (h *Handlers) putChapters(w http.ResponseWriter, r *http.Request) {
 	itemID := chi.URLParam(r, "itemId")
 	ctx := reqCtx(r)
@@ -23,92 +81,189 @@ func (h *Handlers) putChapters(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "unknown item: "+itemID)
 		return
 	}
-
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "the body could not be read: "+err.Error())
+		return
+	}
 	var body map[string]any
-	if err := decodeJSON(r, &body); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&body); err != nil || body == nil {
 		writeError(w, http.StatusBadRequest, "missing 'chapters' array")
 		return
 	}
-	raw, present := body["chapters"]
-	list, isList := raw.([]any)
-	if !present || !isList {
-		writeError(w, http.StatusBadRequest, "missing 'chapters' array")
+	var meta struct {
+		Read     *chapters.ReadReport `json:"read"`
+		Token    string               `json:"token"`
+		Released bool                 `json:"released"`
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		writeError(w, http.StatusBadRequest, "the body is no report of a read: "+err.Error())
 		return
 	}
+	rows, present, why := chapterRows(body)
+	if why != "" {
+		writeError(w, http.StatusBadRequest, why)
+		return
+	}
+	if meta.Read == nil && !meta.Released {
+		if !present {
+			writeError(w, http.StatusBadRequest, "missing 'chapters' array")
+			return
+		}
+		h.replaceChapters(w, r, itemID, rows)
+		return
+	}
+	if h.d.Chapters == nil {
+		if present {
+			h.replaceChapters(w, r, itemID, rows)
+			return
+		}
+		writeError(w, http.StatusServiceUnavailable, "the chapters' reads are not configured")
+		return
+	}
+	rep := chapters.Report{Token: meta.Token, Released: meta.Released}
+	if meta.Read != nil {
+		rep.Read = *meta.Read
+	}
+	if present {
+		rep.Chapters = rows
+	}
+	read, err := h.d.Chapters.Record(ctx, itemID, rep)
+	if errors.Is(err, chapters.ErrNotReady) && present {
+		h.replaceChapters(w, r, itemID, rows)
+		return
+	}
+	if chaptersError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"itemId": itemID, "written": len(rows), "read": chapterReadOut(read)})
+}
 
-	type chapRow struct {
-		start, end int64
-		title      *string
-		ordinal    int
+// chapterRows are the chapters of a body's "chapters" list, each as the
+// catalog keeps it, and whether the body has the list; why the list can't be
+// taken, when it can't.
+func chapterRows(body map[string]any) ([]chapters.Chapter, bool, string) {
+	raw, present := body["chapters"]
+	if !present {
+		return nil, false, ""
 	}
-	rows := make([]chapRow, 0, len(list))
-	pos := 0
-	for _, o := range list {
+	list, isList := raw.([]any)
+	if !isList {
+		return nil, false, "missing 'chapters' array"
+	}
+	rows := make([]chapters.Chapter, 0, len(list))
+	for i, o := range list {
 		ch, isMap := o.(map[string]any)
 		if !isMap {
-			writeError(w, http.StatusBadRequest, "chapter entries must be objects")
-			return
+			return nil, false, "chapter entries must be objects"
 		}
 		start, startOK := asLong(ch["startMs"])
 		end, endOK := asLong(ch["endMs"])
-		title := asString(ch["title"])
-		ord, ordOK := asInt(ch["ordinal"])
-
 		if !startOK || !endOK || end <= start || start < 0 {
-			writeError(w, http.StatusBadRequest, "startMs/endMs invalid (need 0 <= start < end)")
-			return
+			return nil, false, "startMs/endMs invalid (need 0 <= start < end)"
 		}
-		pos++
-		var titleVal *string
-		if title != nil && trimBlank(*title) != "" {
-			titleVal = title
-		}
-		ordinal := pos
-		if ordOK {
+		ordinal := i + 1
+		if ord, ok := asInt(ch["ordinal"]); ok {
 			ordinal = ord
 		}
-		rows = append(rows, chapRow{start: start, end: end, title: titleVal, ordinal: ordinal})
+		rows = append(rows, chapters.Chapter{StartMs: start, EndMs: end, Title: chapters.CleanTitle(asString(ch["title"])),
+			Ordinal: ordinal})
 	}
+	return rows, true, ""
+}
 
-	pool := h.d.Store.Pool()
-	tx, err := pool.Begin(ctx)
+// replaceChapters writes rows as the chapters of the item itemID, in place
+// of its own, and answers how many it wrote: what a PUT without a read does.
+func (h *Handlers) replaceChapters(w http.ResponseWriter, r *http.Request, itemID string, rows []chapters.Chapter) {
+	ctx := reqCtx(r)
+	tx, err := h.d.Store.Pool().Begin(ctx)
 	if err != nil {
 		http.Error(w, "chapters tx failed", http.StatusInternalServerError)
 		return
 	}
-	defer tx.Rollback(ctx)
-
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM com_nalet_katalog_itemchapters WHERE item_id = $1`, itemID); err != nil {
-		http.Error(w, "chapters delete failed", http.StatusInternalServerError)
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	if err := chapters.Replace(ctx, tx, itemID, rows); err != nil {
+		http.Error(w, "chapters write failed", http.StatusInternalServerError)
 		return
-	}
-	if len(rows) > 0 {
-		batch := &pgx.Batch{}
-		for _, c := range rows {
-			batch.Queue(`INSERT INTO com_nalet_katalog_itemchapters
-				(id, createdat, modifiedat, item_id, startms, endms, title, ordinal)
-				VALUES (gen_random_uuid()::varchar, now(), now(), $1, $2, $3, $4, $5)`,
-				itemID, c.start, c.end, c.title, c.ordinal)
-		}
-		br := tx.SendBatch(ctx, batch)
-		for range rows {
-			if _, err := br.Exec(); err != nil {
-				br.Close()
-				http.Error(w, "chapters insert failed", http.StatusInternalServerError)
-				return
-			}
-		}
-		if err := br.Close(); err != nil {
-			http.Error(w, "chapters insert failed", http.StatusInternalServerError)
-			return
-		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		http.Error(w, "chapters commit failed", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"itemId": itemID, "written": len(rows)})
+}
+
+// getChapters serves GET /api/chapters/items/{itemId}, for the workers'
+// service account and admins: the title's chapters, its last read
+// (chapterReadJSON; null when it has none) and whether it misses its chapters
+// ("missing": its original's record says it has chapters, the catalog has
+// none of the title, and no read of that original settled it), which a
+// deletion wave keeps its original for. 404 for no such item, 503 without
+// migration 055.
+func (h *Handlers) getChapters(w http.ResponseWriter, r *http.Request) {
+	if h.d.Chapters == nil {
+		writeError(w, http.StatusServiceUnavailable, "the chapters' reads are not configured")
+		return
+	}
+	itemID := chi.URLParam(r, "itemId")
+	t, err := h.d.Chapters.Of(reqCtx(r), itemID)
+	if chaptersError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"itemId": itemID, "chapters": t.Chapters, "read": chapterReadOut(t.Read),
+		"missing": t.Missing})
+}
+
+// postChaptersClaim serves POST /api/chapters/claim, for the workers' service
+// account and admins: the analyzer's backfill asks for the titles to read,
+// {"worker": "<its name>", "limit": n}, and is handed out at most what the
+// backfill's pace allows (chapters.Claim): {"items": [{"id", "type", "path",
+// "sourceId", "durationMs", "token"}], "deadline"}, or no items, "idle" (why)
+// and "retryAfterSeconds". 503 without migration 055.
+func (h *Handlers) postChaptersClaim(w http.ResponseWriter, r *http.Request) {
+	if h.d.Chapters == nil {
+		writeError(w, http.StatusServiceUnavailable, "the chapters' reads are not configured")
+		return
+	}
+	var body struct {
+		Worker string `json:"worker"`
+		Limit  int    `json:"limit"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "the body is no claim: "+err.Error())
+			return
+		}
+	}
+	worker := strings.TrimSpace(body.Worker)
+	if worker == "" {
+		worker = "a worker"
+	}
+	c, err := h.d.Chapters.Claim(reqCtx(r), worker, body.Limit)
+	if chaptersError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
+
+// chaptersError answers err, true when there was one.
+func chaptersError(w http.ResponseWriter, err error) bool {
+	var bad *chapters.BadReport
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, chapters.ErrNotReady):
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+	case errors.Is(err, chapters.ErrNoTitle):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.As(err, &bad):
+		writeError(w, http.StatusBadRequest, bad.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "the chapters could not be read or kept: "+err.Error())
+	}
+	return true
 }
 
 // deleteChapters ports ChaptersController#deleteForItem.
