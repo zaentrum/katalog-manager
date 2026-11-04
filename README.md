@@ -438,6 +438,17 @@ the base schema in the order of their numbers, and each is idempotent:
   [Replacing a title's file](#replacing-a-titles-file). Applied at startup
   under the same lock when any of it is missing; without it a replace that
   deletes the old file, or is asked with a key, is refused (`SOURCE_BUSY`).
+- `057_superseded_decisions.sql` keeps what holds a superseded original for
+  an admin and what an admin decided of it (`com_nalet_katalog_itemsources`):
+  why it waits (`supersededhold`: what deleting it gives up against its
+  title's master, and what of that `library.superseded.accept` does not
+  name), the master it waits against (`supersededholdfor`), what it gives up
+  (`supersededlosses`, the deletion gate; none when no record tells), the
+  decision (`supersededdecision`, `accept` or `keep`), what an accept gave up
+  (`supersededaccepted`), by whom and when (`supersededdecidedby`,
+  `supersededdecidedat`); see [The library](#the-library). Applied at startup
+  under the same lock when any of it is missing; without it the retire job
+  retires no superseded original, and `supersededOriginals` lists none.
 
 ## Track languages
 
@@ -561,13 +572,14 @@ mutation {
   changes nothing (`replaced: false`).
 - **What stays**: the title's id and everything that hangs off it, its
   metadata, external ids, artwork, credits, genres, tags, extras, segments,
-  chapters and steps; its package and its subtitles, which play until the
-  new package is in place; the languages an admin set for its tracks, which
-  name a track by its kind and its place among the source's streams, and so
-  apply to the new file's track at that place (one the new file does not
-  have is passed over); and everything kept elsewhere by the title's id, as
-  everyone's progress and ratings. The title is modified (`modifiedAt`,
-  `modifiedBy`).
+  chapters and steps (the chapters until the version made of the new file is
+  taken, see [Chapters](#chapters)); its package and its subtitles, which
+  play until the new package is in place; the languages an admin set for
+  its tracks, which name a track by its kind and its place among the
+  source's streams, and so apply to the new file's track at that place (one
+  the new file does not have is passed over); and everything kept elsewhere
+  by the title's id, as everyone's progress and ratings. The title is
+  modified (`modifiedAt`, `modifiedBy`).
 - **What goes** is what described the old file: the source asset's hash,
   probe (codec, resolution, bit rate, duration), audio and track counts (its
   size is the new file's), the tracks a package reported of the old file and
@@ -591,8 +603,12 @@ mutation {
   source that took its place, so that a wrong file given in its place can be
   taken back; a scan and an ingest take it, and a copy of it, for the
   title's old original, never a title of its own. The retire job retires it
-  once a version of the title made without it is complete and verified (see
-  [The library](#the-library)): moved into the library's trash,
+  once the title's master — its complete version made of the latest file
+  that took its place — has been complete for `library.superseded.delay` (a
+  week) and verifies, and only while what deleting it gives up against the
+  master lies within `library.superseded.accept`, else it waits for an
+  admin's `decideSupersededOriginal` (see [The library](#the-library)):
+  moved into the library's trash,
   `.work/trash/<day>/<sourceId>/`, for `library.trash.grace`, its
   `original-deleted` event recorded when it has a record, its source
   `deleted`. Until then nothing deletes it; while the title holds its
@@ -623,7 +639,14 @@ mutation {
   source, a replace of the title asked again with it changes nothing and
   answers what it did (`repeated: true`, with the title's file and the old
   original it superseded), so that one whose answer was lost is never done
-  twice.
+  twice. A repeated answer says what became of that file since
+  (`fileState`: `present`, `superseded`, `retiring`, `deleted` — retired, and
+  no `path` then — or `removed`), so that an addon finishes its hand-over
+  whatever the library did with the file meanwhile.
+  `replaceSourceDone(itemId, key)` answers the same without a replace, null
+  when no replace of the title was asked with the key: an addon asks it
+  before it hands a file over again. Whom `replaceSource` is for may ask it,
+  and it is refused as `replaceSource` refuses a key.
 - **A refusal** is an error whose `extensions.code` is `NOT_FOUND` (a title
   there is not), `SOURCE_COVERED` (an episode another's file covers),
   `SOURCE_COVERS` (the holder of a file that covers other episodes too),
@@ -650,7 +673,21 @@ failed is read back, and finished when it went through. One stopped halfway
 is finished by the next ask: its link left in the arrivals is taken as it
 is, and the name left in `.work/replace` of a file that is the title's
 already goes. A scan that meets the file while the replace runs waits for it,
-and then finds the title's.
+and then finds the title's. The replace waits for the lock 30 seconds at
+most, then is refused (`SOURCE_BUSY`), nothing changed; a caller that stops
+waiting ends the wait, nothing changed; and the lock is let go once the
+files are where they go, before the title is encoded again. On a filesystem
+that links no file the file is renamed onto its name in the arrivals, which
+an empty file made exclusively takes first: a file another puts there
+meanwhile finds the name taken, and is never written over.
+
+Two things a replace does not do. It hands no file over from a
+`.work/replace` on another filesystem than the arrivals: a link across two
+fails, and the replace is refused (`SOURCE_BUSY`); a deployment keeps both on
+the one share. And it is not taken back by the catalog: a wrong file given
+in a title's place is undone by an admin while the old original is
+superseded — kept with `decideSupersededOriginal` `KEEP`, and given back to
+the title by hand.
 
 `replaceSource` is an administrator's and the platform's service
 account's, and an addon's whose service account's client the setting
@@ -684,7 +721,10 @@ replaceSource asked by <subject> (client <client>, an addon (zaentrum-addon)): i
 
 A scan that meets a file while a replace or an ingest gives a title it waits
 for that: it records a new title of a file only under the lock both take on
-the path, reading the path again under it.
+the path, reading the path again under it, and the file: one gone meanwhile
+(a replace that failed handed it back), one that is no file of its own, and
+with the v2 layout one the library has as an original now or of another
+size than the scan met make no title; the next scan sees what is there.
 
 ## Ratings
 
@@ -1482,6 +1522,18 @@ without a read, after a `DELETE`, or by the chapters database), and the
 chapters a read replaced last (`replaced`), in the transaction that writes
 the chapters.
 
+**A title given another file** (`replaceSource`): the version made of the
+new file carries none of the catalog's chapters while they are of another
+original — read of the old one, or of none known while the title has had
+another —, and the packager takes the chapters its new file holds, as it
+does for a title the catalog has none of. Once that version is taken, the
+catalog takes the chapters of the new original's source record, written in
+the run that made it, as a read of the record settles a title: the old
+original's replaced, kept to undo. A record that can't say leaves the title
+to the backfill, which finds it missing its chapters (its current original
+is the new one). The detected ranges (intros, credits) are the old file's
+until they are detected again.
+
 The analyzer's side, for the service account and admins:
 
 - `PUT /api/chapters/items/{id}` `{"chapters": [{"startMs", "endMs",
@@ -2270,6 +2322,20 @@ The library's settings are read on every use, as `extras.scan` is:
   file with `replaceSource`, and have its old original go: the OIDC clients
   of their service accounts (a token's `azp`), separated by commas or spaces.
   An addon it does not name is refused (`FORBIDDEN`).
+- `library.superseded.delay` (`7d`): how long the master of a superseded
+  original has been complete at least before the retire job retires that
+  original, counted from the master's completion, so that a wrong file given
+  in its place can be taken back meanwhile; `0` none. The trash's grace
+  follows as for any retired original.
+- `library.superseded.accept`
+  (`maxAudioChannels,surround,losslessAudio,objectAudio,stereo3d`): what the
+  retire job may give up of a superseded original against its title's master
+  on its own — the deletion gate's names, by commas or spaces (a flag or a
+  count it compares, or a language list's name with a language,
+  `subtitleLanguages:de`), or `none` —; `maxAudioChannels` only while the
+  master keeps a stereo track. Any other loss, Dolby Vision's among them,
+  holds the original for an admin. A value with any other name is a problem
+  of the settings, and the default holds.
 - `library.verify.new` (`on`): whether the verifier verifies each new
   version in full once (see below); `off` leaves new versions unverified
   until the retire job verifies one.
@@ -2377,27 +2443,59 @@ The same job retires an original another file took the place of as its
 title's (superseded, by `replaceSource` with `deleteOldFile`) once the
 title's master no longer needs it, whatever `library.originals` says — it is
 the replace's word that has it go —, and as it retires an original
-otherwise: due once a version of the title made without it (its master) has
-been complete for the delay, while the title does not hold its originals and
-no step that reads an original runs; kept, superseded, while the master's
-package lacks its surround (its source saying why); claimed under the
-title's lock, superseded by the source that took its place still; checked
-to be the file recorded (its size and quick hash), where the catalog says,
+otherwise. Its **master** is the title's complete version made of the latest
+file that took its place — the chain of files the title was given one after
+the other followed (`supersededby`, 64 at most) — and not of it: while the
+latest file has no complete version (given without a re-encode, or its
+re-encode failed, and then given another), nothing it took the place of is
+retired, whatever complete version the title has. It is due once its master
+has been complete for `library.superseded.delay` (a week), while the title
+does not hold its originals and no step that reads an original runs.
+
+What deleting it gives up is the deletion gate of the master's package for
+its record. It is retired on its own only while every loss lies within
+`library.superseded.accept` — by default `maxAudioChannels` (while the
+master keeps a stereo track), `surround`, `losslessAudio`, `objectAudio` and
+`stereo3d`, the owner's rules for retiring an original. Any other loss —
+Dolby Vision, a language, a track — and an original whose record does not
+tell what it carries hold it for an admin: superseded still, its row saying
+what it gives up, against which master, and what of that the setting does
+not name (`supersededHold`, migration 057), looked at again once another
+version is its master. `supersededOriginals(held: true)` lists them (a
+title's `library.sources` say the same), and
+`decideSupersededOriginal(sourceId, decision)` decides one: `ACCEPT` has the
+job retire it at its next turn, giving up what its hold names (anything,
+when no record tells), `KEEP` keeps it, never retired by the job.
+
+Then it is claimed under the title's lock, its chain read again; checked to
+be the file recorded (its size and quick hash), where the catalog says,
 under a root the job deletes under or in its version's folder, no title's
 file any more, its record verifying when it has one; the master verified as
 a version is before an original goes; its `original-deleted` event recorded
-— naming the version made of it, what that version's package does not carry
-of it accepted, its reason the master that took its place — when it has a
-record (an original replaced before any version was made of it has none, and
-its row records its deletion); moved into the trash alone, the subtitle files
-beside it staying the title's where they are; its source `deleted`, by the
-retire job, the title's retire step left alone. Called off, or failed,
-before its event — the title held, its pipeline reading an original again,
-its master changed — it is superseded again, never present, its source
-saying why, and looked at again an hour later; one whose event is recorded,
-or with no record whose file left its place, is finished by the next pass.
-Each counts against `library.retire.rate`. The version made of it, superseded,
-is removed after its grace once its folder holds no original.
+when it has a record — naming the version made of it and accepting what of
+the gate against the master that version's package lacks too, its reason
+the master that took its place, all it gives up against it, and on whose
+word (the setting's, an admin's too) —, else its row recording its deletion
+(an original replaced before any version was made of it has no record);
+moved into the trash alone, the subtitle files beside it staying the
+title's where they are; its source `deleted`, by the retire job, the title's
+retire step left alone. Called off, or failed, before its event — the title
+held, its pipeline reading an original again, its master changed meanwhile,
+the rules no longer letting it go — it is superseded again, never present,
+its source saying why, and looked at again an hour later (one the rules
+hold, at its next turn); one whose event is recorded, or with no record
+whose file left its place, is finished by the next pass. Each counts against
+`library.retire.rate`. The version made of it, superseded, is removed after
+its grace once its folder holds no original, and versions whose folders
+hold one take no other's turn of that.
+
+A superseded original's life, then: superseded by the replace, where it
+lies (the arrivals, or its version's folder); kept while the latest file has
+no complete version, then for `library.superseded.delay` after that version
+completed; held for an admin when it gives up more than
+`library.superseded.accept`, until an admin accepts or keeps it; then
+claimed, checked, its master verified, its event recorded, moved into the
+trash, `deleted`; gone from the trash after `library.trash.grace`.
 
 The same job deletes an extra's
 original once its folder is recorded and verifies, removes a superseded
