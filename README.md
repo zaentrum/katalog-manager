@@ -522,7 +522,7 @@ would be left without its file.
 mutation {
   replaceSource(itemPath: "/var/lib/katalog/media/BigBuckBunny_320x180.mp4",
                 path: "/var/lib/katalog/media/Big Buck Bunny (2008).mov", deleteOldFile: true) {
-    itemId oldPath path replaced oldFileDeleted oldSidecars
+    itemId oldPath path replaced oldFileDeleted oldFileTrash oldSidecars
     reencode { reencoded busy notSent message }
     message
   }
@@ -566,7 +566,26 @@ mutation {
   package store, only when no title's file or extra is it any more and the
   new file does not lead to it; the folders it leaves empty go. An old file
   kept under the media root is taken in as a title of its own by the next
-  scan: move it out of the media root, or delete it.
+  scan: move it out of the media root, or delete it. With the library's v2
+  layout an old file of the arrivals is deleted so (its source `removed`),
+  and the title's original in its version's folder
+  (`versions/<versionId>/original.<ext>`, where every original lies from its
+  first version on) goes the way the retire job takes an original, whatever
+  holds a retirement back (the title held, originals kept): its source is
+  claimed as `retiring`, its `original-deleted` event is recorded in the
+  title's folder with the reason that the title was given another file in
+  its place, the file is moved into the library's trash,
+  `.work/trash/<day>/<sourceId>/` (unlinked with a `library.trash.grace` of
+  0), and the source is `deleted`, by whoever asked the replace; the answer's
+  `oldFileTrash` says where it lies. The retire job purges the trash's day
+  once `library.trash.grace` (24h) is over after it; until then the file can
+  be put back from there. The subtitle files that
+  came with it stay the title's where they are, and the title's retire step
+  is left alone. A replace stopped between those steps is finished by the
+  retire job the same way. Such a replace holds the retire job's lock from
+  its start to its end, waiting a minute at most for a pass (or an admin's
+  list) that runs, and is refused with `SOURCE_BUSY`, nothing changed, when
+  it is not given up.
 - **`reencode`** (true when omitted) encodes the title again from the new
   file, as `reencodeItem` does (see
   [Encoding a title again](#encoding-a-title-again)), and `reencode` is its
@@ -605,7 +624,21 @@ for an admin who asked it hands it over with its own service account, from
 `deleteOldFile: true` is an administrator's or an addon's: the platform's
 service account, which every worker and Job mints its tokens with, may move a
 title onto a file, never have the catalog delete one. An addon may, as it
-carries out what an admin asked it, long after the admin's own token ran out.
+carries out what an admin asked it, long after the admin's own token ran out;
+an original it has go lies in the library's trash for its grace, so a wrong
+replace can be undone until then. Every replace is logged, whatever it comes
+to, with who asked it — the token's subject, the client it was issued to and
+whether it is an admin, the platform's service account or an addon —, the
+title, its old and new file, and the outcome:
+
+```
+replaceSource asked by <subject> (client <client>, an addon (zaentrum-addon)): item <id> ("<title>", movie),
+  old file <path>, new file <path>, deleteOldFile true, reencode true, ifIdle true: replaced: <what it did>
+```
+
+A scan that meets a file while a replace or an ingest gives a title it waits
+for that: it records a new title of a file only under the lock both take on
+the path, reading the path again under it.
 
 ## Ratings
 
