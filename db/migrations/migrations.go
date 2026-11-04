@@ -14,7 +14,8 @@
 // store.EnsureIdentityIndexes, store.EnsureAttachedSubtitles,
 // store.EnsureLibraryWriteThrough, which applies 050 after 041,
 // store.EnsureCompliance, store.EnsureRetireRuns, store.EnsureStyledSubtitles,
-// store.EnsurePictureAreas and store.EnsureChapterReads).
+// store.EnsurePictureAreas, store.EnsureChapterReads and
+// store.EnsureSupersededSources).
 // It applies 035, which drops what is left of a retired integration, at every
 // start when any of that is there (store.DropRetiredJobTables), and 049, the
 // catalog search, in the background after startup, one statement at a time:
@@ -191,3 +192,11 @@ var PictureAreas string
 //
 //go:embed 055_chapter_reads.sql
 var ChapterReads string
+
+// SupersededSources is 056_superseded_sources.sql: an original another file
+// took the place of as its title's (superseded), kept where it lies until the
+// retire job retires it, the source that took its place, and the key a
+// replace was asked with.
+//
+//go:embed 056_superseded_sources.sql
+var SupersededSources string

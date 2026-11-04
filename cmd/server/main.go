@@ -196,6 +196,12 @@ func run() error {
 	if err := st.EnsureChapterReads(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/055_chapter_reads.sql is missing and could not be applied: %v; a read of a title's chapters writes them and keeps nothing else, and no backfill reads them again, until it is", err)
 	}
+	// An original another file took the place of, kept superseded until the
+	// retire job retires it, and the key a replace was asked with
+	// (migration 056).
+	if err := st.EnsureSupersededSources(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/056_superseded_sources.sql is missing and could not be applied: %v; a replace that deletes the old file is refused, and a replace's key is not kept, until it is", err)
+	}
 	// An item the scanner made before it wrote its own name into the row has
 	// it in its record alone: the row follows the record (bounded, in the
 	// background).

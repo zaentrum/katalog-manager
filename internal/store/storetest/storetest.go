@@ -113,6 +113,9 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	if err := st.EnsureChapterReads(ctx); err != nil {
 		t.Fatalf("apply the chapter reads migration: %v", err)
 	}
+	if err := st.EnsureSupersededSources(ctx); err != nil {
+		t.Fatalf("apply the superseded sources migration: %v", err)
+	}
 	return st
 }
 
