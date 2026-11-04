@@ -77,9 +77,11 @@ The surface is split deliberately:
   - `GET /api/play/{itemId}` — HTTP byte-range streaming.
   - `GET /api/subtitles/...` — VTT/SRT→VTT/passthrough.
   - `GET /api/analyze/items/{id}`, `PUT /api/analyze/items/{id}/steps/{step}`,
-    `PUT/DELETE /api/segments|chapters/items/{id}`,
+    `PUT/DELETE /api/segments|chapters/items/{id}`, `GET
+    /api/chapters/items/{id}`, `POST /api/chapters/claim`,
     `POST /api/items/{id}/packaging-complete` — the analyzer/packager worker
-    protocol. The item record names the languages an admin set for the
+    protocol (a title's chapters and their reads: see
+    [Chapters](#chapters)). The item record names the languages an admin set for the
     source's tracks and the subtitle files beside the source (see
     [Track languages](#track-languages)); packaging-complete replaces the
     package's subtitles, each with whether it is forced, keeps those files
@@ -411,6 +413,18 @@ the base schema in the order of their numbers, and each is idempotent:
   [Picture areas](#picture-areas). A deleted item's rows go with it, its
   extras' too. Applied at startup under the same lock when any of it is
   missing; without it no area is kept, and the players fit the frame.
+- `055_chapter_reads.sql` keeps the last read of each title's chapters from
+  its original (`com_nalet_katalog_chapterreads`: a movie or an episode a
+  row, its state, the original read, the marks its header held and the
+  chapters written of them, what read it, why it failed, and the
+  backfill's claim of it, its runs and failures), and the view of the
+  titles whose original is still needed for their chapters
+  (`com_nalet_katalog_chaptersmissing`), with SELECT on both for the
+  read-only role; see [Chapters](#chapters). The view reads 040's originals
+  and 051's records, so it is applied after them, at startup under the same
+  lock when any of it is missing; without it a read writes the chapters and
+  keeps nothing else, and no backfill reads them again. A deleted item's
+  row goes with it.
 
 ## Track languages
 
@@ -1346,6 +1360,106 @@ those with an area of what they play now (`letterboxed`, `full`,
 handed out in the last hour, the CPU the measurements took an hour of
 video as the analyzer reported it, the settings as read and why it hands
 out nothing now. An item's `pictureArea` is its area with `current`.
+
+## Chapters
+
+A title's chapters live in the catalog (`com_nalet_katalog_itemchapters`),
+not in its package, which carries none: the original is the only place
+they are read from, and a deletion wave keeps an original until its
+chapters are in the catalog. The analyzer reads them from the original's
+header (ffprobe's chapters; nothing is decoded), in its pass of a new title
+and in the backfill below, and the catalog keeps each read with what it
+found (migration 055), in the same transaction as the chapters it writes.
+
+The analyzer's side, for the service account and admins:
+
+- `PUT /api/chapters/items/{id}` `{"chapters": [{"startMs", "endMs",
+  "title", "ordinal"}]}` replaces the title's chapters (0 <= start < end; a
+  blank title is none, a NUL or another control character is dropped, a
+  title longer than 120 characters is cut; an ordinal left out is the
+  chapter's place in the list). With `"read": {"path", "fileSize",
+  "found", "error", "note", "probe", "seconds"}`, what the read was, and
+  the `token` of the backfill's claim it read for, the catalog keeps the
+  read and answers it: a read that wrote chapters is `read`; one whose
+  header holds no chapter with a length is `none` (`"chapters": []`,
+  `found` the marks it held, `note` what was left out); one that failed
+  (`error`, no `chapters`) leaves the title's chapters as they are and is
+  `failed`. A failure waits its backoff (an hour, doubled each time, a day
+  at most), and one reported before the last one's backoff ended (the
+  step's quick retries of a pass) only says why, counted once; the fifth
+  counted in a row, at least 15 hours after the first, settles the title as
+  `unreadable`, read no more while its original is the same. A
+  read that finds chapters ends the count, and a failure of a title whose
+  chapters are in the catalog, or whose original a read settled, leaves
+  what was read as it is. `{"released": true, "token"}` gives a title the
+  backfill handed out back unread; it waits 15 minutes. A report ends the
+  claim its `token` names and no other: the analyzer's pass reports
+  without one and leaves a claim as it is; a run whose lease ended was
+  counted a failure then, and its own failure, reported late, is not
+  counted again. 400 for chapters or a read that can't be taken (a failed
+  read with chapters, a read with neither, a series), 404 for no such item.
+  A PUT without `read` writes the chapters as it always did, and keeps no
+  read.
+- `GET /api/chapters/items/{id}` answers the title's `chapters`, its last
+  `read` (`state`, `sourceId`, `path`, `fileSize`, `found`, `written`,
+  `probe`, `seconds`, `reason`, `readAt`, `attempts`, `failures`,
+  `nextAttemptAt`, `claimedAt`; null when it has none) and `missing`.
+- `POST /api/chapters/claim` `{"worker", "limit"}` hands the backfill the
+  titles to read: `{"items": [{"id", "type", "path", "sourceId",
+  "durationMs", "token"}], "deadline"}`, or none, `"idle"` (why) and
+  `"retryAfterSeconds"`.
+
+The GET and the claim answer 503 without migration 055. The original a
+read is of comes from its file: in a folder of one of the item's versions,
+the first original that version was made of; else the item's primary
+asset's source.
+
+A title misses its chapters while its original's record says it has
+chapters (the compliance check's `srcEssence.chapters`, of that source),
+the catalog has none of the title, and no read of that original settled it
+(`none` or `unreadable`): the view `com_nalet_katalog_chaptersmissing`
+lists these titles, an original a row (`item_id`, `sourceid`, and the
+read's `state`, `failures`, `nextattemptat`, `reason` and `readat`), and
+`chapters.NeedsOriginal` and the GET's `missing` say the same of a title.
+A deletion wave keeps the original of a title in the view. A reader tells
+"read, none" from "not read yet" by the read's state of that original:
+`com_nalet_katalog_chapterreads.state` `none` (the header holds no chapter
+with a length) or `unreadable` (settled for good) with `sourceid` the
+original's, against no row, `pending` (handed out) or `failed` (read
+again after its backoff) — none of which takes a title out of the view. A
+title whose original changes is read again: the read was of another.
+
+The backfill hands out the titles in the view, those whose version is
+complete first (their originals are the deletion waves' next), movies
+before episodes, none whose original is not on disk (that counts a
+failure, and the next goes), nor a disc image, nor an episode another's
+file covers. It reads its settings on every claim, so an instance starts
+it, slows it or moves its hours without a restart:
+
+- `chapters.backfill` (`off`): `on` hands titles out;
+- `chapters.backfill.window` (`22:00-17:00`): when, `HH:MM-HH:MM` in UTC,
+  never from 17:00 to 22:00 by default; empty, any time; one that is no
+  window hands out nothing;
+- `chapters.backfill.inflight` (`1`): titles handed out and not reported at
+  once;
+- `chapters.backfill.rate` (`120`): titles handed out an hour at most; `0`
+  none;
+- `chapters.backfill.lease` (`30m`): how long a title handed out is its
+  worker's. A claim's `deadline` is the window's end or the lease's,
+  whichever comes first: the analyzer starts no read past it and gives the
+  title back. A title whose run never reported back counts as a failed
+  read once its lease ends.
+
+Every claim, its lease and each failure are rows of the table, so the
+backfill resumes where it was after a restart of either side, and one
+instance hands out titles at a time (an advisory lock). Once every title is
+settled it hands out nothing, and tells the analyzer to ask again an hour
+later: a title that comes to miss its chapters (one packaged without an
+analysis, an original replaced) is read then. `chapterReads` (GraphQL, admins) says how far it
+is: the titles that miss their chapters (`missing`, `missingPackaged`), the
+reads by what they found (`read`, `none`, `unreadable`, `failed`), those
+handed out now and in the last hour, when the last read was reported, the
+settings as read and why it hands out nothing now.
 
 ## Ingest
 
