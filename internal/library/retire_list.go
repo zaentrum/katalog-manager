@@ -804,7 +804,7 @@ func (l *RetireList) finish(ctx context.Context, run, state, why string) error {
 // retireLockKey is the retire job's advisory lock (retireLock), which a list
 // holds while it checks and retires an original: the job runs no pass
 // meanwhile.
-const retireLockKey = `hashtext('` + retireLock + `')`
+const retireLockKey = `hashtext('` + retireLock + `/' || current_schema())`
 
 // lockRetire waits for the retire job's lock on conn and answers how to let
 // it go; nil when ctx ended first.

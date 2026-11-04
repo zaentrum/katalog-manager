@@ -6,11 +6,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/graph"
+	"github.com/zaentrum/katalog-manager/internal/library"
+	"github.com/zaentrum/katalog-manager/internal/library/librarytest"
 	"github.com/zaentrum/katalog-manager/internal/processing"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
@@ -226,4 +230,125 @@ func TestReplaceSourceIfIdle(t *testing.T) {
 	if ids := re.take(); len(ids) != 1 || ids[0] != bunny {
 		t.Errorf("encoded again: %v", ids)
 	}
+}
+
+// inVersion is a v2 catalog whose movie's original lies in the folder of its
+// complete version (versions/<versionId>/original.mkv), its source present
+// there and its asset naming it, and a file handed over in .work/replace/.
+type inVersion struct {
+	f              *replacing
+	svc            *Service
+	itemDir, old   string
+	handed, arrive string
+}
+
+const (
+	ivVersion = "9c0b0b0b-0000-4000-8000-00000000000c"
+	ivPackage = "4c0b0b0b-0000-4000-8000-00000000000c"
+)
+
+func newInVersion(t *testing.T) *inVersion {
+	t.Helper()
+	st := storetest.Open(t)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('l', 'library.layout', 'v2')`)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{NFSRoot: dir + "/media", PackagesRoot: dir + "/packages", LibraryRoot: dir, WorkRoot: dir + "/.work",
+		ArrivalsRoot: dir + "/.work/incoming", ExtrasRoot: dir + "/.work/extras", AdminRole: "zaentrum-admin", AddonRole: "zaentrum-addon",
+		ServiceClients: []string{"zaentrum-manager"}}
+	iv := &inVersion{f: &replacing{st: st, cfg: cfg, dir: dir, re: &fakeReencoder{}}}
+	iv.svc = New(st, cfg, processing.New(st.Pool()), nil).WithReencoder(&busyReencoder{})
+	p := library.PathsOf(cfg)
+	iv.itemDir = p.MovieDir(bunny)
+	vdir := library.VersionDir(iv.itemDir, ivVersion)
+	librarytest.WriteVersion(t, vdir, librarytest.Version{VersionID: ivVersion, PackageID: ivPackage, SourceIDs: []string{"s-old"},
+		CreatedAt: "2026-10-06T10:00:00Z"})
+	iv.old = filepath.Join(vdir, "original.mkv")
+	librarytest.Write(t, iv.old, make([]byte, 100))
+	storetest.AddItem(t, st, bunny, "movie", "Big Buck Bunny", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state)
+		VALUES ('s-old', $1, 'original.mkv', $2, 100, 'present')`, bunny, iv.old)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
+		VALUES ($1, $2, ARRAY['s-old'::varchar], 'complete', $3, $4, now() - interval '1 day')`, ivVersion, bunny, ivPackage, vdir)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, sizebytes, isprimary, kind, sourceid)
+		VALUES ('a-bunny', $1, $2, 100, true, 'primary', 's-old')`, bunny, iv.old)
+	iv.handed = iv.f.write(t, ".work/replace/acquire/tg_1/Big.Buck.Bunny.2008.2160p.mkv", 5000)
+	iv.arrive = filepath.Join(cfg.ArrivalsRoot, "Big.Buck.Bunny.2008.2160p.mkv")
+	return iv
+}
+
+// asAddon is an addon's service account, as acquire's token is.
+var asAddon = auth.WithPrincipal(context.Background(), &auth.Principal{Subject: "addon-1", Client: "example-addon",
+	Claims: map[string]any{"realm_access": map[string]any{"roles": []any{"zaentrum-addon"}}}})
+
+// A title given another file in place of its original in its version's
+// folder, the old file asked to go, has the old one go the way the retire
+// job takes an original: into the library's trash, its source deleted by the
+// addon that asked, its original-deleted event recorded — the answer says
+// where it lies and until when.
+func TestAnOriginalInItsVersionsFolderGoesIntoTheTrash(t *testing.T) {
+	iv := newInVersion(t)
+	res, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true,
+		Reencode: true, IfIdle: true})
+	if err != nil || !res.Replaced || !res.OldFileDeleted || res.Path != iv.arrive || res.OldPath != iv.old {
+		t.Fatalf("the replace: %+v %v", res, err)
+	}
+	src, err := library.SourceByID(context.Background(), iv.f.st.Pool(), "s-old")
+	if err != nil || src == nil || src.State != library.SourceDeleted || src.RetireEventAt == nil ||
+		derefTest(src.DeletedBy) != "replaceSource, asked by addon-1 (client example-addon, an addon (zaentrum-addon))" {
+		t.Fatalf("the old source: %+v %v", src, err)
+	}
+	trash := filepath.Join(library.PathsOf(iv.f.cfg).TrashDir(*src.RetireEventAt, "s-old"), "original.mkv")
+	if _, err := os.Stat(trash); err != nil || res.OldFileTrash != trash {
+		t.Errorf("the old file is not in the trash at %s (the answer says %q): %v", trash, res.OldFileTrash, err)
+	}
+	if _, err := os.Stat(iv.old); !os.IsNotExist(err) {
+		t.Errorf("the old file is still in its version's folder: %v", err)
+	}
+	if dir, _ := library.FindEvent(iv.itemDir, derefTest(src.RetireEventID), library.EventOriginalDeleted); dir == "" {
+		t.Error("no original-deleted event recorded")
+	}
+	if !strings.Contains(res.Message, "the old file, the title's original in version "+ivVersion+", is in the library's trash, "+trash+
+		", until ") || !strings.Contains(res.Message, "from where it can be put back; its source s-old is noted deleted") {
+		t.Errorf("the message: %s", res.Message)
+	}
+}
+
+// While the retire job's lock is held — a pass, or an admin's list —, a
+// replace that asks its old file to go is refused as busy once its wait is
+// over, before anything changes: the title keeps its file, the old one stays
+// in its version's folder, the file handed over in .work/replace.
+func TestAReplaceWaitsForTheRetireJob(t *testing.T) {
+	iv := newInVersion(t)
+	release, err := library.HoldRetire(context.Background(), iv.f.st.Pool(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	retireWait = 300 * time.Millisecond
+	t.Cleanup(func() { retireWait = time.Minute })
+	_, err = iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true, Reencode: true})
+	if r := sourceRefusal(t, err); r.Code != codeSourceBusy || !strings.Contains(r.Message, "the library's retire job is running") {
+		t.Errorf("a replace while the retire job runs: %+v", r)
+	}
+	if n := storetest.Count(t, iv.f.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE id = 'a-bunny' AND path = $1`, iv.old); n != 1 {
+		t.Error("the title lost its file")
+	}
+	for _, p := range []string{iv.old, iv.handed} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s went: %v", p, err)
+		}
+	}
+	if src, _ := library.SourceByID(context.Background(), iv.f.st.Pool(), "s-old"); src == nil || src.State != library.SourcePresent {
+		t.Errorf("the old source: %+v", src)
+	}
+}
+
+func derefTest(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

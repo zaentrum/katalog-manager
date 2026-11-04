@@ -990,8 +990,14 @@ type ReplaceSourceResult {
   replaced: Boolean!
   # whether the old file was deleted (deleteOldFile): only one under the media
   # root and outside the package store, that no title's file or extra is any
-  # more, and that the new file does not lead to
+  # more, and that the new file does not lead to; with the library's v2
+  # layout, one of the arrivals, or the title's original in its version's
+  # folder, which goes into the library's trash as a retired one does
   oldFileDeleted: Boolean!
+  # where the old file lies in the library's trash (.work/trash/<day>/
+  # <sourceId>/), until library.trash.grace is over after its day, from where
+  # it can be put back; null when it is not there (unlinked, or kept)
+  oldFileTrash: String
   # the subtitle files beside the old file named after it (Film.srt,
   # Film.en.srt beside Film.mp4), which stay the title's subtitles as they
   # are. Beside a new file of the same name (Film.mkv) they pair with it as
@@ -1248,7 +1254,15 @@ type Mutation {
   # when it is under the media root, outside the package store, and no
   # title's file or extra is it any more; one kept under the media root is
   # taken in as a title of its own by the next scan, unless it is moved out or
-  # deleted. reencode (true when omitted) encodes the title again from the new
+  # deleted. With the library's v2 layout an old file of the arrivals is
+  # deleted so, and the title's original in its version's folder goes the way
+  # the retire job takes an original: into the library's trash
+  # (.work/trash/<day>/<sourceId>/) for library.trash.grace — purged with its
+  # day once that is over, put back from there until then —, its source
+  # deleted by whoever asked, its original-deleted event recorded in the
+  # title's folder, saying it was replaced. Such a replace holds the retire
+  # job's lock, waiting a minute at most for a pass that runs, and is refused
+  # with SOURCE_BUSY, nothing changed, when it is not given up. reencode (true when omitted) encodes the title again from the new
   # file, as reencodeItem does: a title whose transcode or package is running
   # is left alone (busy), and that run is the old file's. ifIdle (false when
   # omitted) gives the title no file while its transcode or package is

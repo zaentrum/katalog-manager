@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -218,6 +219,11 @@ func orDash(s string) string {
 	return s
 }
 
+// retireWait is how long a replace that deletes an old file with the v2
+// layout waits for the retire job's lock (library.HoldRetire) before it is
+// refused as busy. A variable for the tests.
+var retireWait = time.Minute
+
 // replaceSource is ReplaceSource of the title named by itemID or itemPath,
 // which no other's file covers, and the new file at path, absolute and clean.
 func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceRequest, path, itemID, itemPath string) (
@@ -236,6 +242,23 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 		if _, err := os.Lstat(arrival); err == nil {
 			return res, graph.RefuseSource(codeSourceConflict, "%s cannot be taken into the arrivals: %s is there already", path, arrival)
 		}
+	}
+
+	// With the v2 layout an old file asked to go may be an original in its
+	// version's folder, which goes the way the retire job takes one, under
+	// its lock (library.TrashReplaced): held from here to the end, so no pass
+	// retires the title's sources meanwhile. A pass that runs on refuses the
+	// replace as busy, nothing changed.
+	if v2 && in.DeleteOldFile {
+		release, err := library.HoldRetire(ctx, s.st.Pool(), retireWait)
+		if errors.Is(err, library.ErrRetireBusy) {
+			return res, graph.RefuseSource(codeSourceBusy, "%v, and an old file asked to go goes through its trash: "+
+				"the title is given no other file now; ask again in a minute", err)
+		}
+		if err != nil {
+			return res, err
+		}
+		defer release()
 	}
 
 	tx, err := s.st.Pool().Begin(ctx)
@@ -331,7 +354,7 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	res.Replaced, res.OldSidecars = true, int32(len(sidecars))
 
 	var said string
-	res.OldFileDeleted, said = s.dropOldFile(ctx, src.path, arrival, in.DeleteOldFile, v2)
+	res.OldFileDeleted, res.OldFileTrash, said = s.dropOldFile(ctx, src.itemID, src.path, arrival, in.DeleteOldFile, v2)
 	if in.Reencode {
 		res.Reencode = s.encodeAgain(ctx, src.itemID)
 	}
@@ -624,51 +647,64 @@ func forgetTheOldFile(ctx context.Context, tx pgx.Tx, itemID string) error {
 // new file does not lead to (a link to it); the folders it leaves empty go,
 // up to the root. It says what became of the file, also when it was not
 // asked to go.
-func (s *Service) dropOldFile(ctx context.Context, old, cur string, asked, v2 bool) (bool, string) {
+func (s *Service) dropOldFile(ctx context.Context, itemID, old, cur string, asked, v2 bool) (bool, string, string) {
 	root := s.cfg.NFSRoot
 	if v2 {
 		root = library.PathsOf(s.cfg).Arrivals
 	}
 	if old == "" {
-		return false, "the title had no file: its original was retired"
+		return false, "", "the title had no file: its original was retired"
 	}
 	media := underRoot(root, old)
+	// With the v2 layout an original lies in its version's folder from its
+	// first version on: one asked to go goes the way the retire job takes an
+	// original, into the library's trash (trashOld).
+	inVersion := false
+	if v2 && !media {
+		var err error
+		if _, inVersion, err = library.OriginalInVersion(ctx, s.st.Pool(), library.PathsOf(s.cfg), itemID, old); err != nil {
+			return false, "", "the old file is kept: whether it is the title's original in its version's folder could not be read: " + err.Error()
+		}
+	}
 	switch {
-	case !asked && media && v2:
-		return false, "the old file stays, a source of the title until it is retired after its version"
+	case !asked && (media || inVersion) && v2:
+		return false, "", "the old file stays, a source of the title until it is retired after its version"
 	case !asked && media:
-		return false, "the old file stays, under the media root: the next scan takes it in as a title of its own unless it is moved out of it or deleted"
+		return false, "", "the old file stays, under the media root: the next scan takes it in as a title of its own unless it is moved out of it or deleted"
 	case !asked:
-		return false, "the old file stays"
-	case !media:
-		return false, "the old file is kept: it is not under the media root"
+		return false, "", "the old file stays"
+	case !media && !inVersion:
+		return false, "", "the old file is kept: it is not under the media root"
 	case underRoot(s.cfg.PackagesRoot, old):
-		return false, "the old file is kept: it is under the package store"
+		return false, "", "the old file is kept: it is under the package store"
 	}
 	if why, err := s.stillHeld(ctx, old); err != nil {
-		return false, "the old file is kept: whether the catalog holds it still could not be read: " + err.Error()
+		return false, "", "the old file is kept: whether the catalog holds it still could not be read: " + err.Error()
 	} else if why != "" {
-		return false, "the old file is kept: " + why
+		return false, "", "the old file is kept: " + why
 	}
 	if a, err := filepath.EvalSymlinks(cur); err == nil {
 		if b, err := filepath.EvalSymlinks(old); err == nil && a == b {
-			return false, "the old file is kept: the new one leads to it"
+			return false, "", "the old file is kept: the new one leads to it"
 		}
+	}
+	if inVersion {
+		return s.trashOld(ctx, itemID, old)
 	}
 	fi, err := os.Lstat(old)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		return false, "the old file was gone already"
+		return false, "", "the old file was gone already"
 	case err != nil:
-		return false, "the old file is kept: " + err.Error()
+		return false, "", "the old file is kept: " + err.Error()
 	case fi.IsDir():
-		return false, "the old file is kept: it is a folder"
+		return false, "", "the old file is kept: it is a folder"
 	}
 	if err := os.Remove(old); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return false, "the old file was gone already"
+			return false, "", "the old file was gone already"
 		}
-		return false, "the old file could not be deleted: " + err.Error()
+		return false, "", "the old file could not be deleted: " + err.Error()
 	}
 	pruneEmptyDirs(filepath.Dir(old), root)
 	if v2 {
@@ -678,7 +714,37 @@ func (s *Service) dropOldFile(ctx context.Context, old, cur string, asked, v2 bo
 			log.Printf("replace: the source of the deleted file %s could not be noted removed: %v", old, err)
 		}
 	}
-	return true, "the old file is deleted"
+	return true, "", "the old file is deleted"
+}
+
+// trashOld takes the old file, the title's original in its version's folder,
+// into the library's trash the way the retire job takes an original
+// (library.TrashReplaced), by whoever asked the replace: its source deleted,
+// its original-deleted event recorded, the file purged with the trash's day
+// once library.trash.grace is over, and put back from there until then. The
+// caller holds the retire job's lock. It says what became of the file: kept
+// when it could not be claimed, and on its way to the trash, for the retire
+// job to finish, when its event is recorded and the rest failed.
+func (s *Service) trashOld(ctx context.Context, itemID, old string) (bool, string, string) {
+	pool := s.st.Pool()
+	t, err := library.NewRetirer(pool, s.cfg, s.steps).TrashReplaced(ctx, itemID, old, library.ReplacedBy(s.callerOf(ctx)))
+	if err != nil {
+		if t.SourceID != "" {
+			if src, serr := library.SourceByID(ctx, pool, t.SourceID); serr == nil && src != nil && src.State == library.SourceRetiring {
+				return false, "", "the old file goes into the library's trash once the retire job finishes what is begun (its event " +
+					t.EventID + " is recorded): " + err.Error()
+			}
+		}
+		return false, "", "the old file is kept: " + err.Error()
+	}
+	where, trash := "deleted at once (library.trash.grace is 0)", ""
+	if t.Trash != "" {
+		trash = filepath.Join(t.Trash, filepath.Base(old))
+		where = fmt.Sprintf("in the library's trash, %s, until %s at the earliest, from where it can be put back",
+			trash, library.Timestamp(t.PurgedFrom))
+	}
+	return true, trash, fmt.Sprintf("the old file, the title's original in version %s, is %s; its source %s is noted deleted, "+
+		"and the title's folder records its original-deleted event %s", t.VersionID, where, t.SourceID, t.EventID)
 }
 
 // stillHeld says what of the catalog the file at path is still, "" when

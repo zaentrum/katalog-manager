@@ -90,7 +90,8 @@ type Authority struct {
 // byPolicy is the retire job's authority.
 var byPolicy = Authority{By: RetiredBy, Reason: RetireReason, Policy: true}
 
-// retireLock is the advisory lock a pass holds.
+// retireLock names the advisory lock a pass holds, one per catalog (its
+// schema), as every advisory lock of the service is: retireLockKey.
 const retireLock = "library-retire"
 
 // SurroundHeld is why an original whose title's current package has no 5.1
@@ -199,11 +200,11 @@ func (r *Retirer) Pass(ctx context.Context) (Report, error) {
 	}
 	defer conn.Release()
 	var locked bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtext($1))`, retireLock).Scan(&locked); err != nil || !locked {
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(`+retireLockKey+`)`).Scan(&locked); err != nil || !locked {
 		return rep, err
 	}
 	defer func() {
-		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(hashtext($1))`, retireLock)
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(`+retireLockKey+`)`)
 	}()
 	p := PathsOf(r.cfg)
 	now := r.now().UTC()
@@ -329,6 +330,9 @@ func (r *Retirer) dueSources(ctx context.Context, set Settings, now time.Time, n
 // (auth), its item's folder, the version that holds it, and its sidecars; by
 // is who its recorded event says retires it, and why says why it was not
 // retired when that is no failure (called off, or not claimed after all).
+// replaced marks the original a title was given another file in place of
+// (replaced.go): its sidecars stay the title's where they are, and the
+// title's retire step is left alone.
 type retirement struct {
 	src      *Source
 	auth     Authority
@@ -338,6 +342,7 @@ type retirement struct {
 	sidecars []sidecar // its subtitle rows and the files the record lists beside it
 	accepted []string
 	by, why  string
+	replaced bool
 }
 
 // sidecar is a file beside an original that goes with it: a subtitle file
@@ -381,11 +386,20 @@ func (r *Retirer) retireOf(ctx context.Context, p Paths, set Settings, now time.
 	if err != nil {
 		return false, r.fail(ctx, rt, err.Error())
 	}
-	if recorded != "" {
+	switch {
+	case recorded != "":
 		if err := r.fromEvent(ctx, rt, recorded); err != nil {
 			return false, r.fail(ctx, rt, err.Error())
 		}
-	} else {
+	case replacedClaim(s):
+		// A replaced original claimed, its event not recorded yet: no
+		// condition of a retirement holds it back, the title has its new
+		// file (replaced.go).
+		rt.auth = Authority{By: deref(s.DeletedBy), Reason: ReplacedReason}
+		if err := r.recordReplaced(ctx, rt); err != nil {
+			return false, err
+		}
+	default:
 		if s.State == SourceRetiring {
 			if why, err := r.calledOff(ctx, set, rt); err != nil {
 				return false, err
@@ -427,8 +441,9 @@ func (r *Retirer) eventOf(rt *retirement) (recorded, begun string, err error) {
 	return "", dir, nil
 }
 
-// fromEvent reads what a recorded event says: the version, and what the
-// deletion accepted.
+// fromEvent reads what a recorded event says: the version, what the
+// deletion accepted, and whether the original was replaced (its reason
+// ReplacedReason), whose sidecars stay where they are.
 func (r *Retirer) fromEvent(ctx context.Context, rt *retirement, dir string) error {
 	b, err := os.ReadFile(filepath.Join(dir, EventFile))
 	if err != nil {
@@ -438,6 +453,17 @@ func (r *Retirer) fromEvent(ctx context.Context, rt *retirement, dir string) err
 	if err != nil {
 		return fmt.Errorf("%s: %w", filepath.Join(dir, EventFile), err)
 	}
+	acc, _ := ev.Get("accepted")
+	rt.accepted = stringsOf(acc)
+	by, _ := ev.Get("by")
+	rt.by, _ = by.(string)
+	if reason, _ := ev.Get("reason"); reason == ReplacedReason {
+		// Replaced: the title has its new file; nothing of what follows
+		// needs the version, which its cleanup may have removed meanwhile,
+		// or the record of the sidecars, which stay where they are.
+		rt.replaced = true
+		return nil
+	}
 	vid, _ := ev.Get("versionId")
 	id, _ := vid.(string)
 	if rt.ver, err = VersionByID(ctx, r.pool, id); err != nil {
@@ -446,10 +472,6 @@ func (r *Retirer) fromEvent(ctx context.Context, rt *retirement, dir string) err
 	if rt.ver == nil {
 		return fmt.Errorf("the event %s names version %s, which the catalog does not hold", dir, id)
 	}
-	acc, _ := ev.Get("accepted")
-	rt.accepted = stringsOf(acc)
-	by, _ := ev.Get("by")
-	rt.by, _ = by.(string)
 	rt.record, err = readSourceRecord(SourceDir(rt.itemDir, rt.src.ID))
 	if err != nil {
 		return err
@@ -1201,6 +1223,9 @@ func (r *Retirer) deleteFiles(p Paths, set Settings, rt *retirement) error {
 				return fmt.Errorf("the trash %s cannot be made: %v", trash, err)
 			}
 			if err := os.Rename(f, filepath.Join(trash, filepath.Base(f))); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					continue // moved meanwhile, by whoever finishes the same retirement
+				}
 				if errors.Is(err, syscall.EXDEV) {
 					return fmt.Errorf("%s cannot be moved into the trash %s, which is on another filesystem: put the trash "+
 						"(WORK_ROOT) on the share the arrivals are on, or set library.trash.grace to 0 to delete originals at once", f, trash)
@@ -1277,8 +1302,12 @@ func (r *Retirer) deleted(ctx context.Context, now time.Time, rt *retirement) er
 	if len(rt.accepted) > 0 {
 		details = "lost: " + strings.Join(rt.accepted, ", ")
 	}
-	if err := r.steps.UpsertIn(ctx, tx, s.ItemID, processing.StepRetire, processing.StatusDone, nil, &details); err != nil {
-		return err
+	// A replaced original is no retirement of the title's original: its
+	// retire step is the new original's to come.
+	if !rt.replaced {
+		if err := r.steps.UpsertIn(ctx, tx, s.ItemID, processing.StepRetire, processing.StatusDone, nil, &details); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
@@ -1309,14 +1338,17 @@ func (r *Retirer) fail(ctx context.Context, rt *retirement, msg string) error {
 			state = CASE WHEN state = 'retiring' AND NOT $3 THEN 'present' ELSE state END,
 			retireeventid = CASE WHEN state = 'retiring' AND NOT $3 THEN NULL ELSE retireeventid END,
 			retireeventat = CASE WHEN state = 'retiring' AND NOT $3 THEN NULL ELSE retireeventat END,
-			trashpath = CASE WHEN state = 'retiring' AND NOT $3 THEN NULL ELSE trashpath END
+			trashpath = CASE WHEN state = 'retiring' AND NOT $3 THEN NULL ELSE trashpath END,
+			deletedby = CASE WHEN state = 'retiring' AND NOT $3 THEN NULL ELSE deletedby END
 		WHERE id = $1 AND state IN ('present', 'retiring')`, s.ID, clip(msg, 500), recorded != ""); err != nil {
 		log.Printf("library: the failure of the retirement of original %s could not be noted: %v", s.ID, err)
 	} else if recorded == "" && begun != "" {
 		_ = os.RemoveAll(begun)
 	}
-	if err := r.steps.Upsert(bg, s.ItemID, processing.StepRetire, processing.StatusFailed, &msg, nil); err != nil {
-		log.Printf("library: the retire step of item %s could not be failed: %v", s.ItemID, err)
+	if !rt.replaced {
+		if err := r.steps.Upsert(bg, s.ItemID, processing.StepRetire, processing.StatusFailed, &msg, nil); err != nil {
+			log.Printf("library: the retire step of item %s could not be failed: %v", s.ItemID, err)
+		}
 	}
 	r.say("source:"+s.ID, fmt.Sprintf("original %s of item %s is not deleted: %s", s.ID, s.ItemID, msg))
 	return &retireFailed{fmt.Sprintf("original %s of item %s: %s", s.ID, s.ItemID, msg)}

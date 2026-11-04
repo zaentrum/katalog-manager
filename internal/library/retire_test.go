@@ -760,13 +760,13 @@ func TestOnePassAtATimeAndItsRate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtext('library-retire'))`); err != nil {
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(`+retireLockKey+`)`); err != nil {
 		t.Fatal(err)
 	}
 	if rep := f.pass(t); rep != (Report{}) {
 		t.Errorf("a pass while another runs: %+v", rep)
 	}
-	_, _ = conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtext('library-retire'))`)
+	_, _ = conn.Exec(ctx, `SELECT pg_advisory_unlock(`+retireLockKey+`)`)
 	conn.Release()
 	f.set(t, SettingRetireRate, "1")
 	if rep := f.pass(t); rep.Originals != 1 {
