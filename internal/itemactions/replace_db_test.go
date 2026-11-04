@@ -346,6 +346,9 @@ func TestWhatIsNotReplaced(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(f.cfg.NFSRoot, "link.mkv")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink(filepath.Dir(outside), filepath.Join(f.cfg.NFSRoot, "linked")); err != nil {
+		t.Fatal(err)
+	}
 	staged := f.write(t, "packages/_inbox/bunny.mkv", 10)
 	if err := os.MkdirAll(filepath.Join(f.cfg.NFSRoot, "folder.mkv"), 0o755); err != nil {
 		t.Fatal(err)
@@ -380,7 +383,10 @@ func TestWhatIsNotReplaced(t *testing.T) {
 		{nil, graph.ReplaceSourceRequest{ItemID: bunny, Path: f.cfg.NFSRoot}, "SOURCE_REFUSED", "is not under the media root"},
 		{nil, graph.ReplaceSourceRequest{ItemID: bunny, Path: staged}, "SOURCE_REFUSED", "is not under the media root (or is under the package store)"},
 		{nested, graph.ReplaceSourceRequest{ItemID: bunny, Path: staged}, "SOURCE_REFUSED", staged + " is not under the media root (or is under the package store)"},
-		{nil, graph.ReplaceSourceRequest{ItemID: bunny, Path: media("link.mkv")}, "SOURCE_REFUSED", "link.mkv leads out of the media root"},
+		{nil, graph.ReplaceSourceRequest{ItemID: bunny, Path: media("link.mkv")}, "SOURCE_REFUSED",
+			"link.mkv is a link: a title's file is a file of its own"},
+		{nil, graph.ReplaceSourceRequest{ItemID: bunny, Path: media("linked/Big Buck Bunny (2008).mkv")}, "SOURCE_REFUSED",
+			"linked/Big Buck Bunny (2008).mkv leads out of the media root"},
 		{nil, graph.ReplaceSourceRequest{ItemID: bunny, Path: media("Missing (2008).mkv")}, "SOURCE_REFUSED", "there is no file at " + media("Missing (2008).mkv")},
 		{nil, graph.ReplaceSourceRequest{ItemID: bunny, Path: media("folder.mkv")}, "SOURCE_REFUSED", "folder.mkv is no file"},
 		{nil, graph.ReplaceSourceRequest{ItemID: bunny, Path: media("notes.txt")}, "SOURCE_REFUSED",
@@ -449,12 +455,12 @@ func TestTheOldFileGoesOnlyWhenNothingHoldsIt(t *testing.T) {
 				VALUES ('x-held', $1, 'other', 'Other', 'api', $2)`, bunny, old)
 			return f.write(t, "media/Extra "+id+".mkv", 10)
 		}, "the old file is kept: it is extra x-held of item " + bunny},
-		{"the new file a link to it", func(id, old string) string {
-			p := filepath.Join(f.cfg.NFSRoot, "Linked "+id+".mkv")
-			if err := os.Symlink(old, p); err != nil {
+		{"the new file the old by a folder's link", func(id, old string) string {
+			p := filepath.Join(f.cfg.NFSRoot, "Linked "+id)
+			if err := os.Symlink(filepath.Dir(old), p); err != nil {
 				t.Fatal(err)
 			}
-			return p
+			return filepath.Join(p, filepath.Base(old))
 		}, "the old file is kept: the new one leads to it"},
 		{"gone already", func(id, old string) string {
 			if err := os.Remove(old); err != nil {

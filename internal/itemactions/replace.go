@@ -8,9 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/graph"
@@ -48,6 +50,7 @@ const (
 	codeSourceRefused  = "SOURCE_REFUSED"
 	codeSourceConflict = "SOURCE_CONFLICT"
 	codeSourceBusy     = "SOURCE_BUSY"
+	codeSourceCovered  = "SOURCE_COVERED"
 	codeNotFound       = "NOT_FOUND"
 )
 
@@ -72,55 +75,69 @@ type source struct {
 //
 //   - The title is a movie or an episode with a file (its source asset: its
 //     primary asset that is no package), named one way, by its id or by the
-//     path of the file replaced. One there is not is NOT_FOUND.
-//   - The new file is an absolute path of an existing regular file under the
-//     media root and outside the package store, as written and with its links
-//     followed, that a scan takes for a title's file (scanner.NoTitleFile). A
-//     path that is the title's file already changes nothing.
-//   - It is no file of the catalog yet: not another asset row's, of this
-//     title or another, nor a live extra's (SOURCE_CONFLICT, naming it). A
-//     scan finds a file's title by its path, so a file is one title's; one
-//     replace onto a file runs at a time.
+//     path of the file replaced. One there is not is NOT_FOUND. An episode
+//     another episode's file covers (migration 045) has no file of its own:
+//     it is refused (SOURCE_COVERED, naming the holder, whose file is the one
+//     to replace).
+//   - The new file is an absolute path of an existing regular file of its
+//     own — no link — under the media root and outside the package store, as
+//     written and with the links of its folders followed, that a scan takes
+//     for a title's file (scanner.NoTitleFile). A path that is the title's
+//     file already changes nothing.
+//   - It is no file of the catalog yet, as written nor as its folders' links
+//     lead: not another asset row's, of this title or another, nor a live
+//     extra's, nor an original's the library keeps (SOURCE_CONFLICT, naming
+//     it). A scan finds a file's title by its path, so a file is one title's.
+//   - Asked with a key (an addon's id of what it hands over), a replace of
+//     the title asked with that key once already changes nothing: the answer
+//     is what that one did (repeated), so that one asked again, its first
+//     answer lost, never replaces twice.
 //
-// Asked with IfIdle, a title whose transcode or package is running, or waits
-// for its worker, is given no file (SOURCE_BUSY): that run reads the old
-// file, which the replace may delete under it, and the re-encode that
-// follows would be left alone. Its steps stay locked until the replace's
+// Asked with IfIdle, a title one of whose steps that read an original
+// (processing.OriginalSteps) runs, or waits for its worker, is given no file
+// (SOURCE_BUSY): that run reads the old file, and what it reports would be
+// taken for the new one's. Its steps stay locked until the replace's
 // transaction ends, so none starts meanwhile.
 //
-// Anything else refused is SOURCE_REFUSED. In one transaction the title's
-// source asset row moves to the new file, which it describes as a scan does
-// a new one (newSource), and what described the old file goes
-// (forgetTheOldFile). Everything else of the title stays as it is: the item
-// and its external ids, credits, genres, tags, artwork, extras, segments,
-// chapters, package, subtitles and steps, and the languages an admin set for
-// its tracks; the item is modified (modifiedat, modifiedby), as by any change
-// of it. What is kept elsewhere by the item's id (everyone's progress, what
-// they rated) is so kept too.
+// A refusal that a later ask may not meet — the title's original being
+// retired, a version of it placed and its handover not recorded, a file or
+// the catalog's settings that could not be read, a migration not in place —
+// is SOURCE_BUSY; anything else refused is SOURCE_REFUSED, and nothing
+// changes. In one transaction the title's source asset row moves to the new
+// file, which it describes as a scan does a new one (newSource), and what
+// described the old file goes (forgetTheOldFile). Everything else of the
+// title stays as it is: the item and its external ids, credits, genres, tags,
+// artwork, extras, segments, chapters, package, subtitles and steps, and the
+// languages an admin set for its tracks; the item is modified (modifiedat,
+// modifiedby), as by any change of it. What is kept elsewhere by the item's
+// id (everyone's progress, what they rated) is so kept too.
+//
+// The lock ingest and the scanner take on the path of a title's file is held
+// on the new file's path for all of it, its transaction and the moves of its
+// files: a scan or an ingest of it waits, then finds the title's.
 //
 // Then, the title having its new file, the old file is deleted when asked
-// (dropOldFile), and the title is encoded again from the new file when asked,
-// as reencodeItem does: a title whose transcode or package is running is left
-// alone (busy), and without an event bus nothing is encoded. Neither fails the
-// call: the answer says what they did.
+// (dropOldFile, the legacy layout), and the title is encoded again from the
+// new file when asked, as reencodeItem does: a title whose transcode or
+// package is running is left alone (busy), and without an event bus nothing
+// is encoded. Neither fails the call: the answer says what they did.
 //
 // With the setting library.layout=v2 the new file lies under ARRIVALS_ROOT or
-// in .work/replace/, from where it is taken into the arrivals (refused when a
-// file of its name is there already). It is a source of the title of its own
-// (a new sourceId). The old original stays where it lies, whatever is asked:
-// asked to go (deleteOldFile), it is superseded (library.Supersede), and the
-// retire job retires it once a version of the title made without it is
-// complete and verified, through the trash, unless the title holds its
-// originals; not asked, it stays a source of the title, as it is. A source of
-// the old original that is being retired refuses the replace as busy. The
-// title's folder records a note of what became of the old original
+// in .work/replace/, from where it is taken into the arrivals: a link of its
+// name there is made under the lock, which fails on a name there already (no
+// file is ever written over), and the name in .work/replace goes once the
+// transaction is committed; one left by an ask stopped before is taken as it
+// is. It is a source of the title of its own (a new sourceId). The old
+// original stays where it lies, whatever is asked: asked to go
+// (deleteOldFile), it is superseded (library.Supersede), and the retire job
+// retires it once a version of the title made without it is complete and
+// verified, through the trash, unless the title holds its originals; not
+// asked, it stays a source of the title, as it is. A source of the old
+// original that is being retired refuses the replace as busy. The title's
+// folder records a note of what became of the old original
 // (library.NoteReplaced). A title whose original was retired (it has no file)
 // may be given one: it gets its file anew. The re-encode is then a new
 // version of the title, which supersedes the one there is.
-//
-// An episode another episode's file covers (migration 045) has that file:
-// named by its id, its holder is given the new one, the answer the holder's
-// and saying so. The episodes the holder's file covers stay covered.
 func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceRequest) (res graph.ReplaceSourceResult, err error) {
 	defer func() { s.logReplace(ctx, in, res, err) }()
 	path := strings.TrimSpace(in.Path)
@@ -140,23 +157,21 @@ func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	// waiting: no title is given its file without its old file's deletion and
 	// its re-encode.
 	ctx = context.WithoutCancel(ctx)
-	// An episode another episode's file covers has that file: its holder is
-	// given the new one.
-	note := ""
+	// An episode another episode's file covers has no file of its own: its
+	// holder's is the one to replace.
 	if itemID != "" {
 		holder, err := library.HolderOf(ctx, s.st.Pool(), itemID)
 		if err != nil {
-			return res, err
+			return res, graph.RefuseSource(codeSourceBusy, "whether another episode's file covers item %s could not be read: %v", itemID, err)
 		}
 		if holder != "" {
-			note, itemID = library.CoveredNote(itemID, holder), holder
+			r := graph.RefuseSource(codeSourceCovered, "item %s has no file of its own: the file of episode %s covers it, "+
+				"and is the one to replace", itemID, holder)
+			r.ItemID = holder
+			return res, r
 		}
 	}
-	res, err = s.replaceSource(ctx, in, path, itemID, itemPath)
-	if note != "" && err == nil {
-		res.Message = note + res.Message
-	}
-	return res, err
+	return s.replaceSource(ctx, in, path, itemID, itemPath)
 }
 
 // logReplace logs a replace, whatever came of it: who asked it — the token's
@@ -230,37 +245,47 @@ func orDash(s string) string {
 func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceRequest, path, itemID, itemPath string) (
 	graph.ReplaceSourceResult, error) {
 	var res graph.ReplaceSourceResult
-	set, err := library.ReadSettings(ctx, s.st.Pool())
+	pool := s.st.Pool()
+	set, err := library.ReadSettings(ctx, pool)
 	if err != nil {
-		return res, fmt.Errorf("the library's settings could not be read: %w", err)
+		return res, graph.RefuseSource(codeSourceBusy, "the library's settings could not be read: %v", err)
 	}
 	v2 := set.V2()
-	// With the v2 layout an old original asked to go is kept superseded,
-	// which migration 056 lets a source be.
-	if v2 && in.DeleteOldFile {
-		if ready, err := library.SupersedeReady(ctx, s.st.Pool()); err != nil || !ready {
-			return res, graph.RefuseSource(codeSourceBusy, "the catalog cannot keep an old original superseded yet "+
+	key := strings.TrimSpace(in.Key)
+	switch {
+	case key != "" && !v2:
+		return res, graph.RefuseSource(codeSourceRefused, "a replace's key is kept with the library's v2 layout alone: ask without it")
+	case len(key) > 255:
+		return res, graph.RefuseSource(codeSourceRefused, "a replace's key is 255 characters at most")
+	}
+	// With the v2 layout an old original asked to go is kept superseded, and
+	// a key kept, which migration 056 lets a source be and hold.
+	if v2 && (in.DeleteOldFile || key != "") {
+		if ready, err := library.SupersedeReady(ctx, pool); err != nil || !ready {
+			return res, graph.RefuseSource(codeSourceBusy, "the catalog cannot keep an old original superseded or a replace's key yet "+
 				"(migration db/migrations/056_superseded_sources.sql is not in place%s): the title is given no other file now", errNote(err))
 		}
 	}
 	// With the v2 layout a file handed over in .work/replace/ is taken into
 	// the arrivals first: the title's file is the one there.
 	arrival := path
-	if v2 && library.Within(library.PathsOf(s.cfg).ReplaceDir(), path) {
+	handed := v2 && library.Within(library.PathsOf(s.cfg).ReplaceDir(), path)
+	if handed {
 		arrival = filepath.Join(library.PathsOf(s.cfg).Arrivals, filepath.Base(path))
-		if _, err := os.Lstat(arrival); err == nil {
-			return res, graph.RefuseSource(codeSourceConflict, "%s cannot be taken into the arrivals: %s is there already", path, arrival)
-		}
 	}
 
-	tx, err := s.st.Pool().Begin(ctx)
+	// The path's lock, on a connection of its own that the transaction runs
+	// on, held until the files are where they go.
+	conn, unlock, err := s.lockPath(ctx, arrival)
+	if err != nil {
+		return res, err
+	}
+	defer unlock()
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return res, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('com_nalet_katalog_playbackassets:' || $1))`, arrival); err != nil {
-		return res, err
-	}
 	// The title's lock, which the retire job holds while it claims and
 	// retires its originals, first: its rows are locked after it.
 	id, err := itemOf(ctx, tx, itemID, itemPath)
@@ -269,6 +294,15 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	}
 	if err := library.LockItem(ctx, tx, id); err != nil {
 		return res, err
+	}
+	if key != "" {
+		if done, err := repeatedOf(ctx, tx, id, key); err != nil || done != nil {
+			if done != nil {
+				s.finishMove(path, done.Path)
+				return *done, nil
+			}
+			return res, err
+		}
 	}
 	src, err := sourceOf(ctx, tx, itemID, itemPath, v2)
 	if err != nil {
@@ -279,22 +313,34 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	}
 	res.ItemID, res.OldPath, res.Path = src.itemID, src.path, arrival
 	if src.assetID != "" && filepath.Clean(src.path) == arrival {
+		// The title's file already. A file handed over that is it — the
+		// name an ask stopped before left in .work/replace — goes; another
+		// is no file of this title's.
+		if handed {
+			if same, err := sameFile(path, arrival); err == nil && !same {
+				return res, graph.RefuseSource(codeSourceConflict, "%s is the title's file already, and the file handed over, %s, "+
+					"is another", arrival, path)
+			}
+			s.finishMove(path, arrival)
+		}
 		res.Message = arrival + " is the title's file already: nothing changed"
 		return res, nil
 	}
 	if v2 {
 		if why, err := s.handoverLost(ctx, tx, src.itemID); err != nil {
-			return res, err
+			return res, graph.RefuseSource(codeSourceBusy, "whether the title's version is in the library could not be read: %v", err)
 		} else if why != "" {
-			return res, graph.RefuseSource(codeSourceConflict, "%s", why)
+			return res, graph.RefuseSource(codeSourceBusy, "%s", why)
 		}
 	}
-	size, refused := s.sourceFile(path, v2)
+	size, resolved, refused := s.sourceFile(path, v2)
 	if refused != nil {
 		return res, refused
 	}
-	if err := takenAlready(ctx, tx, src, arrival); err != nil {
-		return res, err
+	for _, p := range []string{arrival, resolved} {
+		if err := takenAlready(ctx, tx, src, p, v2); err != nil {
+			return res, err
+		}
 	}
 	if in.IfIdle {
 		if err := s.idle(ctx, tx, src.itemID); err != nil {
@@ -317,6 +363,28 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 				&library.ErrNotPresent{ID: old.ID, State: old.State})
 		}
 	}
+	var fsize int64
+	var qh1 string
+	if v2 {
+		if fsize, qh1, err = library.QH1(path); err != nil {
+			return res, graph.RefuseSource(codeSourceBusy, "%s cannot be read: %v", path, err)
+		}
+	}
+	// The file handed over gets its name in the arrivals now, under the
+	// path's lock; until the transaction is committed, it goes again on any
+	// failure.
+	var mv *move
+	if handed {
+		if mv, err = reserve(path, arrival); err != nil {
+			return res, err
+		}
+	}
+	committed := false
+	defer func() {
+		if mv != nil && !committed {
+			mv.undo()
+		}
+	}()
 	by := auth.Actor(ctx, "katalog-manager")
 	if src.assetID == "" {
 		// A title whose original was retired is given a file anew.
@@ -332,13 +400,14 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	if v2 {
 		// The new file is a source of the title of its own; the old one, if
 		// it is still there, stays one, and is retired after its version.
-		fsize, qh1, err := library.QH1(path)
-		if err != nil {
-			return res, graph.RefuseSource(codeSourceRefused, "%s cannot be read: %v", path, err)
-		}
 		ns, err := library.PathsOf(s.cfg).AddSource(ctx, tx, src.itemID, arrival, fsize, qh1)
 		if err != nil {
 			return res, fmt.Errorf("give item %s the file %s: %w", src.itemID, arrival, err)
+		}
+		if key != "" {
+			if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET replacekey = $2 WHERE id = $1`, ns.ID, key); err != nil {
+				return res, err
+			}
 		}
 		if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET sourceid = $2 WHERE id = $1`, src.assetID, ns.ID); err != nil {
 			return res, err
@@ -362,21 +431,23 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 		src.itemID, by); err != nil {
 		return res, err
 	}
-	if arrival != path {
-		if err := library.MkdirAll(filepath.Dir(arrival)); err != nil {
+	if err := tx.Commit(ctx); err != nil {
+		// Whether it was committed is read again: a commit whose answer was
+		// lost may have been.
+		switch done, rerr := s.hasFile(src.itemID, arrival); {
+		case rerr != nil:
+			committed = true // unknown: both names stay, for the next ask to find out
+			log.Printf("replace: whether item %s has the file %s could not be read after its commit failed (%v): %v; "+
+				"the file handed over keeps both its names", src.itemID, arrival, err, rerr)
+			return res, err
+		case !done:
 			return res, err
 		}
-		if err := os.Rename(path, arrival); err != nil {
-			return res, fmt.Errorf("take %s into the arrivals: %w", path, err)
-		}
+		log.Printf("replace: the commit of item %s's file %s failed (%v), and the catalog has it: it is replaced", src.itemID, arrival, err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		if arrival != path {
-			if rerr := os.Rename(arrival, path); rerr != nil {
-				log.Printf("replace: %s could not be handed back to %s after the replace failed: %v", arrival, path, rerr)
-			}
-		}
-		return res, err
+	committed = true
+	if mv != nil {
+		mv.done()
 	}
 	res.Replaced, res.OldSidecars = true, int32(len(sidecars))
 
@@ -390,6 +461,177 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 		res.Reencode = s.encodeAgain(ctx, src.itemID)
 	}
 	res.Message = replacedMessage(res, said, sidecars)
+	return res, nil
+}
+
+// lockPath takes the lock ingest and the scanner take on the path of a
+// title's file, on a connection of its own, held until the answer's unlock:
+// the replace's transaction runs on that connection, and its files are moved
+// before it is let go. A connection whose lock could not be let go is
+// closed, never handed back holding it.
+func (s *Service) lockPath(ctx context.Context, path string) (*pgxpool.Conn, func(), error) {
+	conn, err := s.st.Pool().Acquire(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	const key = `hashtext('com_nalet_katalog_playbackassets:' || $1)`
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(`+key+`)`, path); err != nil {
+		conn.Release()
+		return nil, nil, err
+	}
+	return conn, func() {
+		bg := context.WithoutCancel(ctx)
+		if _, err := conn.Exec(bg, `SELECT pg_advisory_unlock(`+key+`)`, path); err != nil {
+			_ = conn.Conn().Close(bg)
+		}
+		conn.Release()
+	}, nil
+}
+
+// move is a file handed over in .work/replace/ given its name in the
+// arrivals (reserve): linked there, its name in .work/replace going once the
+// replace is committed; or, on a filesystem that links no file, renamed,
+// renamed back on a failure.
+type move struct {
+	from, to string
+	renamed  bool
+}
+
+// reserve gives the file handed over at from its name in the arrivals, to,
+// under the path's lock: a hard link, which fails on a name there already, so
+// that no file is ever written over. A name there that is the file itself —
+// a link an ask stopped before left — is taken as it is; another is refused
+// (SOURCE_CONFLICT). A filesystem that links no file has it renamed, the name
+// looked at again right before.
+func reserve(from, to string) (*move, error) {
+	if err := library.MkdirAll(filepath.Dir(to)); err != nil {
+		return nil, graph.RefuseSource(codeSourceBusy, "the arrivals cannot take %s: %v", from, err)
+	}
+	err := os.Link(from, to)
+	switch {
+	case err == nil:
+		return &move{from: from, to: to}, nil
+	case errors.Is(err, os.ErrExist):
+		if same, serr := sameFile(from, to); serr == nil && same {
+			return &move{from: from, to: to}, nil
+		}
+		return nil, graph.RefuseSource(codeSourceConflict, "%s cannot be taken into the arrivals: %s is there already", from, to)
+	case errors.Is(err, syscall.EPERM), errors.Is(err, syscall.ENOTSUP), errors.Is(err, syscall.EOPNOTSUPP), errors.Is(err, syscall.EMLINK):
+		if _, err := os.Lstat(to); err == nil {
+			return nil, graph.RefuseSource(codeSourceConflict, "%s cannot be taken into the arrivals: %s is there already", from, to)
+		}
+		if err := os.Rename(from, to); err != nil {
+			return nil, graph.RefuseSource(codeSourceBusy, "%s cannot be taken into the arrivals: %v", from, err)
+		}
+		return &move{from: from, to: to, renamed: true}, nil
+	}
+	return nil, graph.RefuseSource(codeSourceBusy, "%s cannot be taken into the arrivals: %v", from, err)
+}
+
+// undo gives the arrivals back what the move took: its link goes, while it is
+// the file handed over still; a renamed file goes back.
+func (m *move) undo() {
+	if m.renamed {
+		if err := os.Rename(m.to, m.from); err != nil {
+			log.Printf("replace: %s could not be handed back to %s after the replace failed: %v", m.to, m.from, err)
+		}
+		return
+	}
+	if same, err := sameFile(m.from, m.to); err == nil && same {
+		if err := os.Remove(m.to); err != nil {
+			log.Printf("replace: the link %s could not be removed after the replace failed: %v", m.to, err)
+		}
+	}
+}
+
+// done ends the move once the replace is committed: the name in
+// .work/replace goes, while the arrivals' is the same file.
+func (m *move) done() {
+	if !m.renamed {
+		finishMove(m.from, m.to)
+	}
+}
+
+// finishMove removes the name from of a file handed over whose name in the
+// arrivals to is the same file: the move of a replace committed (one stopped
+// before it removed the name is finished so by the next ask).
+func finishMove(from, to string) {
+	if same, err := sameFile(from, to); err == nil && same {
+		if err := os.Remove(from); err != nil {
+			log.Printf("replace: %s could not be removed once %s took it: %v", from, to, err)
+		}
+	}
+}
+
+// finishMove is finishMove of a file handed over in .work/replace/, of the
+// v2 layout alone.
+func (s *Service) finishMove(from, to string) {
+	if from != to && library.Within(library.PathsOf(s.cfg).ReplaceDir(), from) {
+		finishMove(from, to)
+	}
+}
+
+// sameFile reports whether a and b are the same file (one of two links), as
+// os.SameFile tells it; false with an error when either cannot be read.
+func sameFile(a, b string) (bool, error) {
+	fa, err := os.Lstat(a)
+	if err != nil {
+		return false, err
+	}
+	fb, err := os.Lstat(b)
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(fa, fb), nil
+}
+
+// hasFile reads again, after a commit that failed, whether the title has the
+// file at path as its own: whether the commit went through.
+func (s *Service) hasFile(itemID, path string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var has bool
+	err := s.st.Pool().QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets WHERE item_id = $1 AND path = $2
+		AND isprimary = true AND COALESCE(kind, 'primary') = 'primary')`, itemID, path).Scan(&has)
+	return has, err
+}
+
+// repeatedOf is, in tx, what the replace of the title asked with key did
+// once already, as its answer says it (repeated); nil when none of the
+// title's sources was given its file by one asked with key.
+func repeatedOf(ctx context.Context, tx pgx.Tx, itemID, key string) (*graph.ReplaceSourceResult, error) {
+	var sourceID, filename string
+	var at time.Time
+	var arrival *string
+	err := tx.QueryRow(ctx, `SELECT id, filename, arrivalpath, createdat FROM com_nalet_katalog_itemsources
+		WHERE item_id = $1 AND replacekey = $2`, itemID, key).Scan(&sourceID, &filename, &arrival, &at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	res := &graph.ReplaceSourceResult{ItemID: itemID, Replaced: true, Repeated: true}
+	if arrival != nil {
+		res.Path = *arrival
+	}
+	var oldPath *string
+	switch err := tx.QueryRow(ctx, `SELECT arrivalpath FROM com_nalet_katalog_itemsources WHERE item_id = $1 AND supersededby = $2
+		ORDER BY supersededat DESC, id LIMIT 1`, itemID, sourceID).Scan(&oldPath); {
+	case err == nil:
+		res.OldFileSuperseded = true
+		if oldPath != nil {
+			res.OldPath = *oldPath
+		}
+	case !errors.Is(err, pgx.ErrNoRows):
+		return nil, err
+	}
+	where := "where it is now"
+	if arrival != nil {
+		where = *arrival
+	}
+	res.Message = fmt.Sprintf("a replace asked with the key %q gave the title its file %s at %s already (source %s, %s): "+
+		"nothing changed", key, filename, library.Timestamp(at), sourceID, where)
 	return res, nil
 }
 
@@ -524,11 +766,13 @@ func sources(rows pgx.Rows, err error) ([]source, error) {
 }
 
 // sourceFile checks that path, absolute and clean, names a file a title's
-// source may be, and answers its size: an existing regular file inside the
-// media root and outside the package store, as written and with its links
-// followed (a link inside the media root that leads out of it is refused, as
-// for an extra's file), that a scan takes for a title's file.
-func (s *Service) sourceFile(path string, v2 bool) (int64, *graph.SourceRefused) {
+// source may be, and answers its size and the path its folders' links lead
+// to: an existing regular file of its own — no link — inside the media root
+// and outside the package store, as written and with the links of its
+// folders followed (a folder inside the media root that leads out of it is
+// refused, as for an extra's file), that a scan takes for a title's file. A
+// file that could not be read is refused as busy: a later ask may read it.
+func (s *Service) sourceFile(path string, v2 bool) (int64, string, *graph.SourceRefused) {
 	roots, named := []string{s.cfg.NFSRoot}, "the media root"
 	if v2 {
 		p := library.PathsOf(s.cfg)
@@ -553,29 +797,32 @@ func (s *Service) sourceFile(path string, v2 bool) (int64, *graph.SourceRefused)
 		return false
 	}
 	if !inside(path, false) {
-		return 0, graph.RefuseSource(codeSourceRefused, "%s is not under %s (or is under the package store)", path, named)
+		return 0, "", graph.RefuseSource(codeSourceRefused, "%s is not under %s (or is under the package store)", path, named)
+	}
+	fi, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return 0, "", graph.RefuseSource(codeSourceRefused, "there is no file at %s", path)
+	case err != nil:
+		return 0, "", graph.RefuseSource(codeSourceBusy, "%s cannot be read: %v", path, err)
+	case fi.Mode()&os.ModeSymlink != 0:
+		return 0, "", graph.RefuseSource(codeSourceRefused, "%s is a link: a title's file is a file of its own", path)
+	case !fi.Mode().IsRegular():
+		return 0, "", graph.RefuseSource(codeSourceRefused, "%s is no file", path)
 	}
 	target, err := filepath.EvalSymlinks(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return 0, graph.RefuseSource(codeSourceRefused, "there is no file at %s", path)
-	}
-	if err != nil {
-		return 0, graph.RefuseSource(codeSourceRefused, "%s cannot be read: %v", path, err)
-	}
-	if !inside(target, true) {
-		return 0, graph.RefuseSource(codeSourceRefused, "%s leads out of %s", path, named)
-	}
-	fi, err := os.Stat(target)
-	if err != nil {
-		return 0, graph.RefuseSource(codeSourceRefused, "%s cannot be read: %v", path, err)
-	}
-	if !fi.Mode().IsRegular() {
-		return 0, graph.RefuseSource(codeSourceRefused, "%s is no file", path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return 0, "", graph.RefuseSource(codeSourceRefused, "there is no file at %s", path)
+	case err != nil:
+		return 0, "", graph.RefuseSource(codeSourceBusy, "%s cannot be read: %v", path, err)
+	case !inside(target, true):
+		return 0, "", graph.RefuseSource(codeSourceRefused, "%s leads out of %s", path, named)
 	}
 	if why := scanner.NoTitleFile(path); why != "" {
-		return 0, graph.RefuseSource(codeSourceRefused, "%s is no title's file to a scan: %s", path, why)
+		return 0, "", graph.RefuseSource(codeSourceRefused, "%s is no title's file to a scan: %s", path, why)
 	}
-	return fi.Size(), nil
+	return fi.Size(), target, nil
 }
 
 // resolvedRoot is root with its links followed, root itself when they cannot
@@ -588,9 +835,24 @@ func resolvedRoot(root string) string {
 }
 
 // takenAlready refuses, in tx, a file that is a file of the catalog already:
-// another asset row's, of this title or another, or a live extra's.
-func takenAlready(ctx context.Context, tx pgx.Tx, src source, path string) error {
+// another asset row's, of this title or another, a live extra's, or, with the
+// v2 layout, an original's the library keeps there (present, superseded or
+// being retired).
+func takenAlready(ctx context.Context, tx pgx.Tx, src source, path string, v2 bool) error {
 	var owner string
+	if v2 {
+		var state string
+		err := tx.QueryRow(ctx, `SELECT item_id, state FROM com_nalet_katalog_itemsources WHERE arrivalpath = $1
+			AND state IN ('present', 'retiring', 'superseded') ORDER BY item_id LIMIT 1`, path).Scan(&owner, &state)
+		switch {
+		case err == nil:
+			r := graph.RefuseSource(codeSourceConflict, "%s is an original of item %s already (%s)", path, owner, state)
+			r.ItemID = owner
+			return r
+		case !errors.Is(err, pgx.ErrNoRows):
+			return err
+		}
+	}
 	err := tx.QueryRow(ctx, `SELECT item_id FROM com_nalet_katalog_playbackassets WHERE path = $1 AND id <> $2
 		ORDER BY isprimary DESC NULLS LAST, item_id LIMIT 1`, path, src.assetID).Scan(&owner)
 	switch {

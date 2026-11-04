@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -67,11 +68,22 @@ func TestReplaceSourceWithTheV2Layout(t *testing.T) {
 		AND arrivalpath = $1`, old); n != 1 {
 		t.Error("the old original is no source any more")
 	}
-	// A file of the same name handed over again: the arrivals hold one.
+	// A file of the same name handed over again: the title's file is one of
+	// that name; one of another name the arrivals hold a file of is refused,
+	// and that file is not written over.
 	again := f.write(t, ".work/replace/Big Buck Bunny (2008).mov", 6000)
 	if _, err := svc.ReplaceSource(asOperator, graph.ReplaceSourceRequest{ItemID: bunny, Path: again}); err == nil ||
+		!strings.Contains(err.Error(), "is the title's file already, and the file handed over, "+again+", is another") {
+		t.Errorf("the title's file's name: %v", err)
+	}
+	other := f.write(t, ".work/incoming/Other (2008).mov", 7)
+	handedOther := f.write(t, ".work/replace/Other (2008).mov", 6000)
+	if _, err := svc.ReplaceSource(asOperator, graph.ReplaceSourceRequest{ItemID: bunny, Path: handedOther}); err == nil ||
 		!strings.Contains(err.Error(), "is there already") {
 		t.Errorf("a name the arrivals hold: %v", err)
+	}
+	if fi, err := os.Stat(other); err != nil || fi.Size() != 7 {
+		t.Errorf("the file the arrivals hold was written over: %v, %v", fi, err)
 	}
 	media := f.write(t, "media/Big Buck Bunny.mkv", 10)
 	if _, err := svc.ReplaceSource(asOperator, graph.ReplaceSourceRequest{ItemID: bunny, Path: media}); err == nil ||
@@ -140,9 +152,9 @@ func TestReplaceSourceWaitsForALostHandover(t *testing.T) {
 		vid, bunnyID)
 	f.write(t, "movies/b0/"+bunnyID+"/versions/"+vid+"/version.json", 10)
 	handed := f.write(t, ".work/replace/Bunny 4K.mkv", 5000)
-	if _, err := svc.ReplaceSource(asOperator, graph.ReplaceSourceRequest{ItemID: bunnyID, Path: handed}); err == nil ||
-		!strings.Contains(err.Error(), "its handover is not recorded yet") {
-		t.Fatalf("ReplaceSource while a placed version waits for its handover: %v", err)
+	_, err = svc.ReplaceSource(asOperator, graph.ReplaceSourceRequest{ItemID: bunnyID, Path: handed})
+	if r := sourceRefusal(t, err); r.Code != codeSourceBusy || !strings.Contains(r.Message, "its handover is not recorded yet") {
+		t.Fatalf("ReplaceSource while a placed version waits for its handover: %+v", r)
 	}
 	if _, err := os.Stat(handed); err != nil {
 		t.Errorf("the file handed over was taken: %v", err)
@@ -396,6 +408,181 @@ func TestAReplacedTitlesOldOriginalIsRetiredOnceItsNewVersionIsVerified(t *testi
 	}
 	if _, err := os.Stat(iv.arrive); err != nil {
 		t.Errorf("the new file is gone: %v", err)
+	}
+}
+
+// A file handed over is taken under the lock a scan and an ingest take on
+// its name in the arrivals: while another holds it — a scan that records a
+// title of a file of that name —, the replace waits, the title keeping its
+// file and the file staying in .work/replace; once it is let go, the title is
+// given the file.
+func TestAReplaceWaitsForTheLockOnItsFilesPath(t *testing.T) {
+	iv := newInVersion(t)
+	ctx := context.Background()
+	tx, err := iv.f.st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('com_nalet_katalog_playbackassets:' || $1))`, iv.arrive); err != nil {
+		t.Fatal(err)
+	}
+	type answer struct {
+		res graph.ReplaceSourceResult
+		err error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		res, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true})
+		done <- answer{res, err}
+	}()
+	select {
+	case a := <-done:
+		t.Fatalf("the replace did not wait for the lock: %+v, %v", a.res, a.err)
+	case <-time.After(400 * time.Millisecond):
+	}
+	if n := storetest.Count(t, iv.f.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE id = 'a-bunny' AND path = $1`,
+		iv.old); n != 1 {
+		t.Error("the title lost its file while the replace waited")
+	}
+	if _, err := os.Stat(iv.arrive); !os.IsNotExist(err) {
+		t.Errorf("the file is in the arrivals while the replace waits: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case a := <-done:
+		if a.err != nil || !a.res.Replaced {
+			t.Fatalf("the replace once the lock is let go: %+v, %v", a.res, a.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the replace did not go on once the lock was let go")
+	}
+}
+
+// A replace asked with a key is done once: asked again with that key — its
+// first answer lost, the file handed over gone into the arrivals —, it
+// changes nothing and answers what it did (repeated: the title's file, the
+// old original it superseded). Another key is another replace; the legacy
+// layout keeps no key.
+func TestAReplaceAskedAgainWithItsKeyIsNotDoneTwice(t *testing.T) {
+	iv := newInVersion(t)
+	in := graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true, Key: "tg_1"}
+	first, err := iv.svc.ReplaceSource(asAddon, in)
+	if err != nil || !first.Replaced || first.Repeated {
+		t.Fatalf("the replace: %+v %v", first, err)
+	}
+	again, err := iv.svc.ReplaceSource(asAddon, in)
+	if err != nil || !again.Replaced || !again.Repeated || again.Path != iv.arrive || again.OldPath != iv.old ||
+		!again.OldFileSuperseded || again.Reencode != nil || !strings.Contains(again.Message, `a replace asked with the key "tg_1"`) {
+		t.Fatalf("asked again with its key: %+v %v", again, err)
+	}
+	if n := storetest.Count(t, iv.f.st, `SELECT count(*) FROM com_nalet_katalog_itemsources WHERE item_id = $1`, bunny); n != 2 {
+		t.Errorf("%d sources, want the old and the new one", n)
+	}
+	// another key, another file
+	other := iv.f.write(t, ".work/replace/acquire/tg_2/Big.Buck.Bunny.2008.REMUX.mkv", 6000)
+	res, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: other, DeleteOldFile: true, Key: "tg_2"})
+	if err != nil || !res.Replaced || res.Repeated {
+		t.Fatalf("another key: %+v %v", res, err)
+	}
+	legacy := newReplacing(t)
+	_, err = legacy.svc.ReplaceSource(asOperator, graph.ReplaceSourceRequest{ItemID: bunny, Path: legacy.cur, Key: "tg_3"})
+	if r := sourceRefusal(t, err); r.Code != codeSourceRefused || !strings.Contains(r.Message, "v2 layout alone") {
+		t.Errorf("a key with the legacy layout: %+v", r)
+	}
+}
+
+// A replace stopped halfway is finished by the next ask: a link of the file
+// handed over that it left in the arrivals, uncommitted, is taken as it is;
+// one committed whose name in .work/replace was not removed is the title's
+// file already, and that name goes.
+func TestAReplaceStoppedHalfwayIsFinishedByTheNextAsk(t *testing.T) {
+	iv := newInVersion(t)
+	if err := os.MkdirAll(filepath.Dir(iv.arrive), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(iv.handed, iv.arrive); err != nil { // a link an ask stopped before left
+		t.Fatal(err)
+	}
+	res, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true})
+	if err != nil || !res.Replaced || res.Path != iv.arrive {
+		t.Fatalf("the replace over its own link: %+v %v", res, err)
+	}
+	if _, err := os.Stat(iv.handed); !os.IsNotExist(err) {
+		t.Errorf("the name in .work/replace is there: %v", err)
+	}
+	// committed, its name in .work/replace left
+	if err := os.Link(iv.arrive, iv.handed); err != nil {
+		t.Fatal(err)
+	}
+	res, err = iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true})
+	if err != nil || res.Replaced || !strings.Contains(res.Message, "is the title's file already: nothing changed") {
+		t.Fatalf("asked again once committed: %+v %v", res, err)
+	}
+	if _, err := os.Stat(iv.handed); !os.IsNotExist(err) {
+		t.Errorf("the name left in .work/replace is there still: %v", err)
+	}
+	if _, err := os.Stat(iv.arrive); err != nil {
+		t.Errorf("the title's file is gone: %v", err)
+	}
+}
+
+// A replace whose commit fails leaves the files as they were: its link in
+// the arrivals goes, the file handed over stays in .work/replace, the title
+// keeps its file.
+func TestAReplaceWhoseCommitFailsLeavesTheFiles(t *testing.T) {
+	iv := newInVersion(t)
+	storetest.Exec(t, iv.f.st, `CREATE FUNCTION refuse_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN RAISE EXCEPTION 'the commit is refused'; END $$`)
+	storetest.Exec(t, iv.f.st, `CREATE CONSTRAINT TRIGGER refuse_commit AFTER UPDATE ON com_nalet_katalog_items
+		DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION refuse_commit()`)
+	_, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true})
+	if err == nil || !strings.Contains(err.Error(), "the commit is refused") {
+		t.Fatalf("a replace whose commit fails: %v", err)
+	}
+	if _, err := os.Stat(iv.handed); err != nil {
+		t.Errorf("the file handed over left .work/replace: %v", err)
+	}
+	if _, err := os.Stat(iv.arrive); !os.IsNotExist(err) {
+		t.Errorf("the arrivals keep the link: %v", err)
+	}
+	if n := storetest.Count(t, iv.f.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE id = 'a-bunny' AND path = $1`,
+		iv.old); n != 1 {
+		t.Error("the title lost its file")
+	}
+}
+
+// A file handed over in a folder that leads, by a link, to a title's file is
+// that file: refused as taken (SOURCE_CONFLICT), not given to another title.
+// A file that cannot be read is refused as busy, for a later ask.
+func TestWhatAFileHandedOverMayNotBe(t *testing.T) {
+	iv := newInVersion(t)
+	other := iv.f.write(t, ".work/incoming/Another Film (1999)/Another Film (1999).mkv", 300)
+	storetest.AddItem(t, iv.f.st, "a0a0a0a0-0000-4000-8000-0000000000a0", "movie", "Another Film", "")
+	storetest.Exec(t, iv.f.st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, sizebytes, isprimary, kind)
+		VALUES ('a-other', 'a0a0a0a0-0000-4000-8000-0000000000a0', $1, 300, true, 'primary')`, other)
+	linked := filepath.Join(iv.f.cfg.WorkRoot, "replace", "acquire", "tg_9")
+	if err := os.Symlink(filepath.Dir(other), linked); err != nil {
+		t.Fatal(err)
+	}
+	_, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: filepath.Join(linked, filepath.Base(other)),
+		DeleteOldFile: true})
+	if r := sourceRefusal(t, err); r.Code != codeSourceConflict || r.ItemID != "a0a0a0a0-0000-4000-8000-0000000000a0" {
+		t.Errorf("a file another title's by a folder's link: %+v", r)
+	}
+	if n := storetest.Count(t, iv.f.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE id = 'a-bunny' AND path = $1`,
+		iv.old); n != 1 {
+		t.Error("the title lost its file")
+	}
+	if err := os.Chmod(iv.handed, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(iv.handed, 0o644) }()
+	_, err = iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true})
+	if r := sourceRefusal(t, err); r.Code != codeSourceBusy || !strings.Contains(r.Message, "cannot be read") {
+		t.Errorf("a file that cannot be read: %+v", r)
 	}
 }
 

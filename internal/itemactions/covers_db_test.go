@@ -136,9 +136,11 @@ func TestRemovingAHolderOrAnEpisodeItCovers(t *testing.T) {
 	}
 }
 
-// replaceSource of an episode another's file covers gives its holder the
-// new file, the answer the holder's and saying so.
-func TestReplacingTheFileOfACoveredEpisodeReplacesItsHolders(t *testing.T) {
+// replaceSource of an episode another's file covers is refused: it has no
+// file of its own (SOURCE_COVERED, naming the holder), and nothing changes;
+// the holder's file is replaced by naming the holder, the episodes it covers
+// staying covered.
+func TestReplacingTheFileOfACoveredEpisodeIsRefused(t *testing.T) {
 	f := newReplacing(t)
 	ctx := context.Background()
 	storetest.AddItem(t, f.st, series, "series", "A Series", "")
@@ -151,10 +153,17 @@ func TestReplacingTheFileOfACoveredEpisodeReplacesItsHolders(t *testing.T) {
 	if _, err := library.Link(ctx, f.st.Pool(), episode1, episode2); err != nil {
 		t.Fatal(err)
 	}
-	res, err := f.svc.ReplaceSource(ctx, graph.ReplaceSourceRequest{ItemID: episode2, Path: cur, Reencode: true})
-	if err != nil || !res.Replaced || res.ItemID != episode1 || res.OldPath != old ||
-		!strings.HasPrefix(res.Message, library.CoveredNote(episode2, episode1)) {
-		t.Fatalf("replace the covered episode's file: %+v, %v", res, err)
+	_, err := f.svc.ReplaceSource(ctx, graph.ReplaceSourceRequest{ItemID: episode2, Path: cur, Reencode: true})
+	if r := sourceRefusal(t, err); r.Code != codeSourceCovered || r.ItemID != episode1 ||
+		!strings.Contains(r.Message, "the file of episode "+episode1+" covers it") {
+		t.Fatalf("replace the covered episode's file: %+v", r)
+	}
+	if got := assetOf(t, f.st, "a-e1"); !strings.Contains(got, old) || len(f.re.take()) != 0 {
+		t.Fatalf("a refused replace changed the holder: %s", got)
+	}
+	res, err := f.svc.ReplaceSource(ctx, graph.ReplaceSourceRequest{ItemID: episode1, Path: cur, Reencode: true})
+	if err != nil || !res.Replaced || res.ItemID != episode1 || res.OldPath != old {
+		t.Fatalf("replace the holder's file: %+v, %v", res, err)
 	}
 	if got := assetOf(t, f.st, "a-e1"); !strings.Contains(got, cur) {
 		t.Errorf("the holder's asset: %s", got)

@@ -1,11 +1,14 @@
 package rest
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/store"
@@ -133,5 +136,58 @@ func TestIngestRefusesAnOriginalAnotherFileTookThePlaceOf(t *testing.T) {
 	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items`); n != 2 {
 		t.Errorf("%d titles, want the two", n)
+	}
+}
+
+// An ingest of a file a replace gives a title in its transaction waits for
+// it, under the lock both take on the path, and finds the file that title's:
+// no title of its own is made of it.
+func TestAnIngestWaitsForAReplaceOfItsFile(t *testing.T) {
+	st := storetest.Open(t)
+	v2Layout(t, st)
+	dir := t.TempDir()
+	cfg := v2Config(dir)
+	h, iss := server(t, st, cfg)
+	svc := iss.Service(t, "zaentrum-manager")
+	files(t, dir, map[string]int64{".work/incoming/Sintel (2010).mkv": 3000})
+	sintel := cfg.ArrivalsRoot + "/Sintel (2010).mkv"
+	storetest.AddItem(t, st, "5e5e5e5e-0000-4000-8000-000000000005", "movie", "Sintel", "")
+	ctx := context.Background()
+	tx, err := st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('com_nalet_katalog_playbackassets:' || $1))`, sintel); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, sizebytes, isprimary, kind)
+		VALUES ('a-replaced', '5e5e5e5e-0000-4000-8000-000000000005', $1, 3000, true, 'primary')`, sintel); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan string, 1)
+	go func() {
+		w := do(h, http.MethodPost, "/api/ingest", `{"path": "`+sintel+`", "type": "movie", "title": "Sintel"}`, svc)
+		done <- fmt.Sprintf("%d %s", w.Code, w.Body.String())
+	}()
+	select {
+	case got := <-done:
+		t.Fatalf("the ingest did not wait for the replace: %s", got)
+	case <-time.After(400 * time.Millisecond):
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		if !strings.HasPrefix(got, "200 ") || !strings.Contains(got, `"created":false`) ||
+			!strings.Contains(got, "5e5e5e5e-0000-4000-8000-000000000005") {
+			t.Errorf("the ingest once the replace is committed: %s", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the ingest did not go on")
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items`); n != 1 {
+		t.Errorf("%d titles, want the one the replace gave the file", n)
 	}
 }

@@ -1005,6 +1005,10 @@ type ReplaceSourceResult {
   # the title holds its originals (holdOriginal). LibrarySource says where
   # it is.
   oldFileSuperseded: Boolean!
+  # the replace was asked with a key a replace of the title was asked with
+  # already: nothing changed, and the answer is what that one did (its new
+  # file, the old original it superseded); reencode is null
+  repeated: Boolean!
   # the subtitle files beside the old file named after it (Film.srt,
   # Film.en.srt beside Film.mp4), which stay the title's subtitles as they
   # are. Beside a new file of the same name (Film.mkv) they pair with it as
@@ -1276,17 +1280,32 @@ type Mutation {
   # reencode (true when omitted) encodes the title again from the new
   # file, as reencodeItem does: a title whose transcode or package is running
   # is left alone (busy), and that run is the old file's. ifIdle (false when
-  # omitted) gives the title no file while its transcode or package is
-  # running or waits for its worker, as reencodeItem tells one busy: the
+  # omitted) gives the title no file while one of its steps that read an
+  # original (chapter, chromaprint, blackframe, silence, subtitle, transcode,
+  # package, takein) runs or waits for its worker within its timeout: the
   # replace is refused then, nothing changed and the old file kept for that
-  # run, to be asked again once it is done. A refusal is an error whose
-  # extensions.code is NOT_FOUND (a title there is not), SOURCE_CONFLICT (the
-  # file is another title's or an extra's, named in itemId and extraId),
-  # SOURCE_BUSY (asked with ifIdle, the title's encode runs) or
-  # SOURCE_REFUSED. An admin, the platform's service account and an addon's
-  # may ask it; deleteOldFile an admin or an addon, which carries out what an
-  # admin asked it.
-  replaceSource(itemId: ID, itemPath: String, path: String!, deleteOldFile: Boolean, reencode: Boolean, ifIdle: Boolean): ReplaceSourceResult!
+  # run, to be asked again once it is done. key (with the library's v2
+  # layout) tells the replace from another, an addon's id of what it hands
+  # over, at most 255 characters: one asked again with a key a replace of the
+  # title was asked with changes nothing and answers what that one did
+  # (repeated), so that a replace whose answer was lost is never done twice.
+  # path is a file of its own, no link; one handed over from .work/replace is
+  # given its name in the arrivals under the lock a scan and an ingest take on
+  # it, never over a file of that name there, and its name in .work/replace
+  # goes once the replace is committed. A refusal is an error whose
+  # extensions.code is NOT_FOUND (a title there is not), SOURCE_COVERED (an
+  # episode another's file covers, which has no file of its own: the holder
+  # is named in itemId, its file the one to replace), SOURCE_CONFLICT (the
+  # file is another title's, an extra's or an original the library keeps,
+  # named in itemId and extraId), SOURCE_BUSY (what a later ask may not meet:
+  # asked with ifIdle, a step runs; the title's original being retired; its
+  # version placed and its handover not recorded; a file or the settings that
+  # could not be read; a migration not in place) or SOURCE_REFUSED, and
+  # nothing changes. An admin and the platform's service account may ask it,
+  # and an addon whose client library.replace.clients names; deleteOldFile an
+  # admin, or such an addon, which carries out what an admin asked it.
+  replaceSource(itemId: ID, itemPath: String, path: String!, deleteOldFile: Boolean, reencode: Boolean, ifIdle: Boolean,
+    key: String): ReplaceSourceResult!
   packageItem(id: ID!): PackageResult!
   validateItem(id: ID!): ValidateResult!
 

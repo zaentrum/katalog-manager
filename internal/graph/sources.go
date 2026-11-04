@@ -28,6 +28,10 @@ type ReplaceSourceRequest struct {
 	DeleteOldFile bool
 	Reencode      bool
 	IfIdle        bool
+	// Key tells the replace from another (an addon's id of what it hands
+	// over): one asked with a key a replace of the title was asked with
+	// already changes nothing, and answers what that one did.
+	Key string
 }
 
 // ReplaceSourceResult says what a replaceSource call did.
@@ -41,9 +45,13 @@ type ReplaceSourceResult struct {
 	// original asked to go is superseded: kept where it lies until the retire
 	// job retires it.
 	OldFileSuperseded bool
-	OldSidecars       int32           // the subtitle files beside the old file named after it, which the title keeps
-	Reencode          *ReencodeResult // what encoding it again did; nil when not asked, or nothing changed
-	Message           string
+	// Repeated says the replace was asked with a key a replace of the title
+	// was asked with already: nothing changed, and the answer is what that
+	// one did.
+	Repeated    bool
+	OldSidecars int32           // the subtitle files beside the old file named after it, which the title keeps
+	Reencode    *ReencodeResult // what encoding it again did; nil when not asked, or nothing changed
+	Message     string
 }
 
 // SourceRefused refuses a replaceSource, saying why: Code is its GraphQL code
@@ -88,6 +96,7 @@ func (r *Resolver) ReplaceSource(ctx context.Context, args struct {
 	DeleteOldFile *bool
 	Reencode      *bool
 	IfIdle        *bool
+	Key           *string
 }) (*replaceSourceResultResolver, error) {
 	if err := r.allow(ctx, "Mutation.replaceSource"); err != nil {
 		return nil, err
@@ -106,7 +115,7 @@ func (r *Resolver) ReplaceSource(ctx context.Context, args struct {
 	}
 	req := ReplaceSourceRequest{ItemPath: strDeref(args.ItemPath), Path: args.Path,
 		DeleteOldFile: derefBool(args.DeleteOldFile), Reencode: args.Reencode == nil || *args.Reencode,
-		IfIdle: derefBool(args.IfIdle)}
+		IfIdle: derefBool(args.IfIdle), Key: strDeref(args.Key)}
 	if args.ItemID != nil {
 		req.ItemID = string(*args.ItemID)
 	}
@@ -125,6 +134,7 @@ func (r *replaceSourceResultResolver) Path() string            { return r.m.Path
 func (r *replaceSourceResultResolver) Replaced() bool          { return r.m.Replaced }
 func (r *replaceSourceResultResolver) OldFileDeleted() bool    { return r.m.OldFileDeleted }
 func (r *replaceSourceResultResolver) OldFileSuperseded() bool { return r.m.OldFileSuperseded }
+func (r *replaceSourceResultResolver) Repeated() bool          { return r.m.Repeated }
 func (r *replaceSourceResultResolver) OldSidecars() int32      { return r.m.OldSidecars }
 func (r *replaceSourceResultResolver) Message() string         { return r.m.Message }
 func (r *replaceSourceResultResolver) Reencode() *reencodeResultResolver {
