@@ -107,6 +107,34 @@ func (pol Policy) Allows(p *Principal, a Access) bool {
 	return false
 }
 
+// Describe names a caller for a log: the token's subject, the client it was
+// issued to, and what the policy takes it for (an admin, the platform's
+// service account, an addon, a viewer; or the service's auth off).
+func (pol Policy) Describe(p *Principal) string {
+	if p == nil {
+		return "nobody signed in"
+	}
+	role := "a viewer"
+	switch {
+	case p.Unrestricted:
+		role = "auth off"
+	case pol.IsAdmin(p):
+		role = "an admin (" + pol.AdminRole + ")"
+	case pol.IsService(p):
+		role = "the platform's service account"
+	case pol.IsAddon(p):
+		role = "an addon (" + pol.AddonRole + ")"
+	}
+	return dash(p.Subject) + " (client " + dash(p.Client) + ", " + role + ")"
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
 // Requirement says who may call an operation that takes a, for a refusal to
 // name.
 func (pol Policy) Requirement(a Access) string {

@@ -139,6 +139,9 @@ type source struct {
 // may be given one: it gets its file anew. The re-encode is then a new
 // version of the title, which supersedes the one there is.
 func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceRequest) (res graph.ReplaceSourceResult, err error) {
+	log.Printf("replaceSource asked by %s: item %s, new file %s, deleteOldFile %v, reencode %v, ifIdle %v, key %s: begun",
+		s.callerOf(ctx), orDash(strings.TrimSpace(in.ItemID+in.ItemPath)), orDash(strings.TrimSpace(in.Path)), in.DeleteOldFile,
+		in.Reencode, in.IfIdle, orDash(strings.TrimSpace(in.Key)))
 	defer func() { s.logReplace(ctx, in, res, err) }()
 	path := strings.TrimSpace(in.Path)
 	switch {
@@ -243,25 +246,10 @@ func (s *Service) logReplace(ctx context.Context, in graph.ReplaceSourceRequest,
 }
 
 // callerOf names who asks a replace: the token's subject, the client it was
-// issued to, and what the catalog takes it for.
+// issued to, and what the catalog takes it for (auth.Policy.Describe).
 func (s *Service) callerOf(ctx context.Context) string {
 	p, _ := auth.PrincipalFrom(ctx)
-	if p == nil {
-		return "nobody signed in"
-	}
-	pol := s.cfg.Policy()
-	role := "a viewer"
-	switch {
-	case p.Unrestricted:
-		role = "auth off"
-	case pol.IsAdmin(p):
-		role = "an admin (" + pol.AdminRole + ")"
-	case pol.IsService(p):
-		role = "the platform's service account"
-	case pol.IsAddon(p):
-		role = "an addon (" + pol.AddonRole + ")"
-	}
-	return fmt.Sprintf("%s (client %s, %s)", orDash(p.Subject), orDash(p.Client), role)
+	return s.cfg.Policy().Describe(p)
 }
 
 func orDash(s string) string {

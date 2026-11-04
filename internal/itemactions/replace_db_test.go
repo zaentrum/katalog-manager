@@ -664,10 +664,14 @@ func TestEveryReplaceIsLoggedWithWhoAskedIt(t *testing.T) {
 	if _, err := svc.ReplaceSource(addon, graph.ReplaceSourceRequest{ItemID: bunny, Path: f.cur, DeleteOldFile: true, Reencode: true}); err != nil {
 		t.Fatal(err)
 	}
-	if line := logged.String(); !strings.Contains(line, "replaceSource asked by addon-1 (client example-addon, an addon (zaentrum-addon)): item "+
-		bunny+` ("Big Buck Bunny", movie), old file `+f.old+", new file "+f.cur+", deleteOldFile true, reencode true, ifIdle false: "+
-		"replaced: the title's file is "+f.cur+" now, in place of "+f.old+"; the old file is deleted") {
-		t.Errorf("the replace's log line:\n%s", line)
+	begun := "replaceSource asked by addon-1 (client example-addon, an addon (zaentrum-addon)): item " + bunny + ", new file " + f.cur +
+		", deleteOldFile true, reencode true, ifIdle false, key -: begun"
+	ended := "replaceSource asked by addon-1 (client example-addon, an addon (zaentrum-addon)): item " +
+		bunny + ` ("Big Buck Bunny", movie), old file ` + f.old + ", new file " + f.cur + ", deleteOldFile true, reencode true, ifIdle false: " +
+		"replaced: the title's file is " + f.cur + " now, in place of " + f.old + "; the old file is deleted"
+	if line := logged.String(); !strings.Contains(line, begun) || !strings.Contains(line, ended) ||
+		strings.Index(line, begun) > strings.Index(line, ended) {
+		t.Errorf("the replace's log lines:\n%s\nwant one when it begins, one when it ends", line)
 	}
 	for _, tc := range []struct {
 		ctx  context.Context

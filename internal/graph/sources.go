@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"fmt"
+	"log"
 
 	graphql "github.com/graph-gophers/graphql-go"
 
@@ -99,6 +100,7 @@ func (r *Resolver) ReplaceSource(ctx context.Context, args struct {
 	Key           *string
 }) (*replaceSourceResultResolver, error) {
 	if err := r.allow(ctx, "Mutation.replaceSource"); err != nil {
+		r.refusedReplace(ctx, args.ItemID, args.ItemPath, args.Path, err)
 		return nil, err
 	}
 	// The platform's service account may give a title another file, never
@@ -107,6 +109,7 @@ func (r *Resolver) ReplaceSource(ctx context.Context, args struct {
 	// file of a title it grabbed a better one for goes once the title has it.
 	if derefBool(args.DeleteOldFile) {
 		if err := r.access.Check(ctx, auth.Addon, "replaceSource with deleteOldFile"); err != nil {
+			r.refusedReplace(ctx, args.ItemID, args.ItemPath, args.Path, err)
 			return nil, err
 		}
 	}
@@ -124,6 +127,21 @@ func (r *Resolver) ReplaceSource(ctx context.Context, args struct {
 		return nil, err
 	}
 	return &replaceSourceResultResolver{m: res}, nil
+}
+
+// refusedReplace logs a replaceSource refused before it was asked of the
+// catalog's sources (whoever may not ask it), as every replace is logged:
+// who asked it, the title, the new file, and why.
+func (r *Resolver) refusedReplace(ctx context.Context, itemID *graphql.ID, itemPath *string, path string, err error) {
+	p, _ := auth.PrincipalFrom(ctx)
+	item := strDeref(itemPath)
+	if itemID != nil {
+		item = string(*itemID)
+	}
+	if item == "" {
+		item = "-"
+	}
+	log.Printf("replaceSource asked by %s: item %s, new file %s: refused (FORBIDDEN): %v", r.access.Describe(p), item, path, err)
 }
 
 type replaceSourceResultResolver struct{ m ReplaceSourceResult }

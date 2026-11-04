@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -185,6 +187,37 @@ func TestReplaceSourceIsTheServiceAccountsAndAnAddonsToo(t *testing.T) {
 	if len(resp.Errors) != 1 || resp.Errors[0].Message !=
 		"forbidden: replaceSource with deleteOldFile requires the zaentrum-admin or the zaentrum-addon role" {
 		t.Errorf("the service account deleting the old file: %v", resp.Errors)
+	}
+}
+
+// A replaceSource refused before it is asked of the catalog's sources is
+// logged as every replace is: who asked it, the title, the new file, and
+// why.
+func TestARefusedReplaceSourceIsLogged(t *testing.T) {
+	var logged strings.Builder
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	schema := MustSchema(NewResolver(nil, testConfig, Services{Sources: &fakeSources{}}))
+	for _, tc := range []struct {
+		ctx  context.Context
+		doc  string
+		want string
+	}{
+		{as(viewer), `mutation { replaceSource(itemId: "m1", path: "/media/new.mkv") { itemId } }`,
+			"replaceSource asked by viewer-1 (client zaentrum-web, a viewer): item m1, new file /media/new.mkv: refused (FORBIDDEN): " +
+				"forbidden: replaceSource requires the zaentrum-admin or the zaentrum-addon role, or the platform's service account"},
+		{as(service), `mutation { replaceSource(itemPath: "/media/old.mkv", path: "/media/new.mkv", deleteOldFile: true) { itemId } }`,
+			"replaceSource asked by service-1 (client zaentrum-manager, the platform's service account): item /media/old.mkv, " +
+				"new file /media/new.mkv: refused (FORBIDDEN): forbidden: replaceSource with deleteOldFile requires the zaentrum-admin " +
+				"or the zaentrum-addon role"},
+	} {
+		logged.Reset()
+		if resp := schema.Exec(tc.ctx, tc.doc, "", nil); len(resp.Errors) != 1 {
+			t.Fatalf("%s: %v, want it refused", tc.doc, resp.Errors)
+		}
+		if !strings.Contains(logged.String(), tc.want) {
+			t.Errorf("the log says\n%s\nwant\n%s", logged.String(), tc.want)
+		}
 	}
 }
 

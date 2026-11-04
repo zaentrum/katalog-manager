@@ -287,3 +287,28 @@ func TestStreamTokenOnlyOnArtworkReads(t *testing.T) {
 		}
 	}
 }
+
+// A caller is named for a log by its token's subject, the client it was
+// issued to and what the policy takes it for.
+func TestDescribe(t *testing.T) {
+	pol := Policy{AdminRole: "zaentrum-admin", AddonRole: "zaentrum-addon", ServiceClients: []string{"zaentrum-manager"}}
+	roles := func(r ...any) map[string]any { return map[string]any{"realm_access": map[string]any{"roles": r}} }
+	for _, tc := range []struct {
+		p    *Principal
+		want string
+	}{
+		{nil, "nobody signed in"},
+		{&Principal{Unrestricted: true}, "- (client -, auth off)"},
+		{&Principal{Subject: "admin-1", Client: "zaentrum-web", Claims: roles("zaentrum-admin", "zaentrum-addon")},
+			"admin-1 (client zaentrum-web, an admin (zaentrum-admin))"},
+		{&Principal{Subject: "service-1", Client: "zaentrum-manager", Claims: roles("zaentrum-addon")},
+			"service-1 (client zaentrum-manager, the platform's service account)"},
+		{&Principal{Subject: "addon-1", Client: "example-addon", Claims: roles("zaentrum-addon")},
+			"addon-1 (client example-addon, an addon (zaentrum-addon))"},
+		{&Principal{Subject: "viewer-1", Claims: roles("zaentrum-user")}, "viewer-1 (client -, a viewer)"},
+	} {
+		if got := pol.Describe(tc.p); got != tc.want {
+			t.Errorf("Describe(%+v) = %q, want %q", tc.p, got, tc.want)
+		}
+	}
+}
