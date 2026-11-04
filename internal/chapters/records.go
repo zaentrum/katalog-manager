@@ -31,6 +31,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -71,8 +72,17 @@ func (r RecordRead) Says() bool { return r.Why == "" && r.Err == nil && r.Held =
 
 // RecordOf reads what the source record of the item itemID's source sourceID
 // says of its chapters (ReadRecord), held against the catalog's size of that
-// original.
+// original. Its files are read in a goroutine of their own, waited for
+// FileWait at most (read): a storage that does not answer in time is an Err
+// (ErrStorageSlow, ErrStorageBusy), which says nothing of the record.
 func RecordOf(ctx context.Context, q library.Querier, p library.Paths, itemID, sourceID string) RecordRead {
+	return recordOf(ctx, q, p, itemID, sourceID, nil, time.Time{})
+}
+
+// recordOf is RecordOf, its files read as one of the reads rs of a claim
+// (nil: of none), never past until (the zero time: no limit).
+func recordOf(ctx context.Context, q library.Querier, p library.Paths, itemID, sourceID string, rs *reads,
+	until time.Time) RecordRead {
 	if !library.ValidID(sourceID) {
 		return RecordRead{Why: "its source record can't be found: a source is named by a lower-case UUID"}
 	}
@@ -85,7 +95,12 @@ func RecordOf(ctx context.Context, q library.Querier, p library.Paths, itemID, s
 		sourceID, itemID).Scan(&size); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return RecordRead{Err: err}
 	}
-	return ReadRecord(library.SourceDir(p.ItemDir(pl), sourceID), size)
+	dir := library.SourceDir(p.ItemDir(pl), sourceID)
+	rec, err := read(ctx, rs, until, func() RecordRead { return ReadRecord(dir, size) })
+	if err != nil {
+		return RecordRead{Path: filepath.Join(dir, ProbeFile), Err: err}
+	}
+	return rec
 }
 
 // ReadRecord reads the chapters of the source record in dir, the original's

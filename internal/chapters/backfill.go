@@ -26,7 +26,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -317,11 +316,10 @@ const claimLock = `hashtext('chapters-backfill/' || current_schema())`
 const candidates = 8
 
 // recordsPerClaim and recordsFor bound the records a claim reads before it
-// hands out: so many, for so long at most.
-const (
-	recordsPerClaim = 50
-	recordsFor      = 10 * time.Second
-)
+// hands out: so many, for so long at most (claimBudget at most).
+const recordsPerClaim = 50
+
+var recordsFor = 10 * time.Second
 
 // Claim reads, of the titles that miss their chapters, the source records
 // the settings' pace allows (FromRecord), and hands out up to limit titles
@@ -329,7 +327,9 @@ const (
 // allows); or none and why: the backfill is off, outside its window, titles
 // enough are in flight, the hour's rate is reached, or no title waits. A
 // claim whose lease ended first waits its backoff, as no failure of its
-// title.
+// title. It answers within claimBudget whatever the library's storage does:
+// it reads the library's files one at a time, each waited for FileWait at
+// most (files.go), and none once one was not answered in time.
 func (s *Service) Claim(ctx context.Context, worker string, limit int) (Claim, error) {
 	if err := s.ready(ctx); err != nil {
 		return Claim{}, err
@@ -348,13 +348,15 @@ func (s *Service) Claim(ctx context.Context, worker string, limit int) (Claim, e
 	case !set.Window.Contains(now):
 		return idle("outside "+SettingWindow+" ("+set.Window.String()+")", set.Window.Opens(now).Sub(now)), nil
 	}
-	settled, err := s.settleFromRecords(ctx, set, now)
+	// the claim's reads of the library's files, and when it answers by
+	start, rs := time.Now(), &reads{}
+	settled, err := s.settleFromRecords(ctx, set, now, rs, start.Add(min(recordsFor, claimBudget)))
 	if err != nil {
 		return Claim{}, err
 	}
-	out, err := s.handOut(ctx, worker, limit, set, now)
+	out, err := s.handOut(ctx, worker, limit, set, now, rs, start.Add(claimBudget))
 	out.Settled = settled
-	if err != nil || len(out.Items) > 0 || settled == 0 {
+	if err != nil || len(out.Items) > 0 || settled == 0 || rs.stalled != nil {
 		return out, err
 	}
 	// records settled titles and none is handed out: ask again at once
@@ -363,8 +365,11 @@ func (s *Service) Claim(ctx context.Context, worker string, limit int) (Claim, e
 }
 
 // handOut hands out up to limit titles whose records can't say, in the
-// claim's lock.
-func (s *Service) handOut(ctx context.Context, worker string, limit int, set Settings, now time.Time) (Claim, error) {
+// claim's lock; it looks for their originals as one of the claim's reads rs,
+// none past until. A title whose original was looked for and not answered in
+// time waits its backoff, as no failure of it, and no other is looked for.
+func (s *Service) handOut(ctx context.Context, worker string, limit int, set Settings, now time.Time, rs *reads,
+	until time.Time) (Claim, error) {
 	if set.Rate == 0 {
 		return idle(SettingRate+" is 0", 15*time.Minute), nil
 	}
@@ -432,12 +437,26 @@ func (s *Service) handOut(ctx context.Context, worker string, limit int, set Set
 		deadline = closes
 	}
 	out := Claim{Items: []Job{}}
+	// unanswered: why the storage said nothing of an original looked for
+	var unanswered error
+looking:
 	for _, c := range cs {
 		if len(out.Items) == n {
 			break
 		}
-		path, why, err := s.originalOf(ctx, tx, c.id, c.source)
-		if err != nil {
+		path, why, err := s.originalOf(ctx, tx, rs, until, c.id, c.source)
+		switch {
+		case errors.Is(err, ErrStorageSlow):
+			unanswered = err
+			if err := transient(ctx, tx, c.id, "nothing to read now: looking for its original: "+err.Error(),
+				now); err != nil {
+				return Claim{}, err
+			}
+			break looking
+		case unread(err):
+			unanswered = err
+			break looking
+		case err != nil:
 			return Claim{}, err
 		}
 		if path == "" {
@@ -473,6 +492,10 @@ func (s *Service) handOut(ctx context.Context, worker string, limit int, set Set
 	}
 	if len(out.Items) == 0 {
 		switch {
+		case rs.stalled != nil:
+			return idle("no title is handed out now: "+rs.stalled.Error(), time.Minute), nil
+		case unanswered != nil:
+			return idle("no title is handed out now: "+unanswered.Error(), time.Minute), nil
 		case missing == 0:
 			return idle("no title misses its chapters", time.Hour), nil
 		case len(cs) > 0:
@@ -549,10 +572,13 @@ var recordSQL = `
 	LIMIT $2`
 
 // settleFromRecords reads the source records of the titles recordSQL names,
-// as many as the hour's pace of the setting allows (recordsPerClaim, for
-// recordsFor at most), and settles each it can (FromRecord); it answers how
-// many it settled.
-func (s *Service) settleFromRecords(ctx context.Context, set Settings, now time.Time) (int, error) {
+// as many as the hour's pace of the setting allows (recordsPerClaim, until
+// at most), each as one of the claim's reads rs, and settles each it can
+// (FromRecord); it answers how many it settled. A record asked for and not
+// answered in time is read again after a backoff, as no failure of its title
+// (recordLater), and no other is read in this claim.
+func (s *Service) settleFromRecords(ctx context.Context, set Settings, now time.Time, rs *reads,
+	until time.Time) (int, error) {
 	if set.Records == 0 {
 		return 0, nil
 	}
@@ -584,12 +610,23 @@ func (s *Service) settleFromRecords(ctx context.Context, set Settings, now time.
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
-	settled, until := 0, time.Now().Add(recordsFor)
+	settled := 0
 	for _, t := range ts {
-		if time.Now().After(until) {
+		if !time.Now().Before(until) {
 			break
 		}
-		rec := RecordOf(ctx, pool, s.paths, t.id, t.source)
+		rec := recordOf(ctx, pool, s.paths, t.id, t.source, rs, until)
+		if err := ctx.Err(); err != nil {
+			return settled, err
+		}
+		if unread(rec.Err) {
+			if errors.Is(rec.Err, ErrStorageSlow) {
+				if err := recordLater(ctx, pool, t.id, rec.Err, now); err != nil {
+					return settled, err
+				}
+			}
+			break
+		}
 		ok, err := FromRecord(ctx, s.st, t.id, t.source, rec, now)
 		if err != nil {
 			return settled, err
@@ -708,6 +745,25 @@ func FromRecord(ctx context.Context, st *store.Store, itemID, sourceID string, r
 	return true, tx.Commit(ctx)
 }
 
+// recordLater keeps that the source record of the title itemID was asked for
+// and not answered in time (why): nothing was read of it, and the catalog
+// reads it again after a backoff, which counts as no failure of the title.
+func recordLater(ctx context.Context, q library.Querier, itemID string, why error, now time.Time) error {
+	var t int32
+	if err := q.QueryRow(ctx, `SELECT transients FROM `+store.ChapterReadsTable+` WHERE item_id = $1`, itemID).
+		Scan(&t); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	t++
+	_, err := q.Exec(ctx, `INSERT INTO `+store.ChapterReadsTable+`
+			(item_id, state, recordnote, transients, nextattemptat, createdat, modifiedat)
+		VALUES ($1, 'pending', $2, $3, $4, $5, $5)
+		ON CONFLICT (item_id) DO UPDATE SET recordnote = EXCLUDED.recordnote, transients = EXCLUDED.transients,
+			nextattemptat = EXCLUDED.nextattemptat, modifiedat = EXCLUDED.modifiedat`,
+		itemID, clip("its source record could not be read: "+why.Error(), 500), t, now.Add(backoff(t)), now)
+	return err
+}
+
 // expire takes the claims whose lease ended back: their runs never reported
 // back, which waits a backoff and counts as no failure of the title (the
 // worker, or the storage, failed). A claim's token and when it was handed
@@ -770,11 +826,21 @@ func transient(ctx context.Context, tx pgx.Tx, itemID, why string, now time.Time
 	return err
 }
 
+// look is where an original lies, as originalAt finds it, and whether a file
+// is there.
+type look struct {
+	at string
+	ok bool
+}
+
 // originalOf is the file the backfill reads of a title: its original of the
 // source sourceID, its primary asset of that source (else its primary
 // asset), where it lies (there, or in a version's folder where a run left it
-// and its handover was lost); "" and why when it is not on disk.
-func (s *Service) originalOf(ctx context.Context, q pgx.Tx, itemID, sourceID string) (string, string, error) {
+// and its handover was lost); "" and why when it is not on disk. It looks as
+// one of the claim's reads rs, never past until: a storage that does not
+// answer is an error (ErrStorageSlow, ErrStorageBusy, errNoTime).
+func (s *Service) originalOf(ctx context.Context, q pgx.Tx, rs *reads, until time.Time, itemID,
+	sourceID string) (string, string, error) {
 	var path *string
 	err := q.QueryRow(ctx, `SELECT path FROM com_nalet_katalog_playbackassets
 		WHERE item_id = $1 AND isprimary AND COALESCE(kind, 'primary') = 'primary'
@@ -785,18 +851,28 @@ func (s *Service) originalOf(ctx context.Context, q pgx.Tx, itemID, sourceID str
 	if err != nil {
 		return "", "", err
 	}
-	at := s.originalAt(ctx, q, itemID, *path)
-	if fi, err := os.Stat(at); err != nil || !fi.Mode().IsRegular() {
-		return "", "its original is not at " + at, nil
+	// the files, and the catalog's rows on the way, read in a goroutine of
+	// their own, with the pool: never with the claim's transaction, which a
+	// look left behind must not use
+	l, err := read(ctx, rs, until, func() look {
+		at := s.originalAt(ctx, s.st.Pool(), itemID, *path)
+		fi, err := statFile(at)
+		return look{at, err == nil && fi.Mode().IsRegular()}
+	})
+	if err != nil {
+		return "", "", err
 	}
-	return at, "", nil
+	if !l.ok {
+		return "", "its original is not at " + l.at, nil
+	}
+	return l.at, "", nil
 }
 
 // originalAt is where the original at path lies: there, or, where a run left
 // it in a version's folder and its handover was lost, there (as the worker
 // record hands it out).
 func (s *Service) originalAt(ctx context.Context, q library.Querier, id, path string) string {
-	if _, err := os.Lstat(path); err == nil {
+	if _, err := lstatFile(path); err == nil {
 		return path
 	}
 	pl, err := library.PlaceOf(ctx, q, id)

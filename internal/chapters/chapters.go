@@ -743,7 +743,11 @@ func Record(ctx context.Context, st *store.Store, p library.Paths, itemID string
 		case says != nil && !*says:
 			err = settle(nil, ReadFromHeader, true, path, probe, seconds(r.Read.Seconds),
 				"its source record says it holds no chapter", true)
-		case says != nil && *says:
+		case says != nil && *says && rec.Err == nil:
+			// a record that could be read and can't say (no probe, no chapters
+			// list) against a compliance record that says chapters; one the
+			// storage did not give (an error, no answer in time) says nothing,
+			// and counts for nothing: the none stays unconfirmed
 			err = failed("the header read found no chapter, and the source's record says it holds some (" +
 				recordWhy(rec) + ")")
 		default:
