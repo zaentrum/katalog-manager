@@ -128,7 +128,7 @@ account, whose token carries the addon role. Everyone else signed in is a
 |---|---|
 | every GraphQL query and mutation (the catalog with its paths on disk, scan jobs, activity, settings, the deletion log, every change) | admin |
 | GraphQL `triggerScan` | admin, service account |
-| GraphQL `replaceSource` | admin, service account, addon (`deleteOldFile: true` an admin's or an addon's) |
+| GraphQL `replaceSource` | admin, service account, an addon `library.replace.clients` names (`deleteOldFile: true` an admin's or such an addon's) |
 | `GET /api/manage/stream` (the console's live stream) | admin |
 | `GET /api/artwork/...`, `/api/manage/artwork/...` (also a person's portrait) | any signed-in caller, or a stream token; a capped viewer is answered for a title above its cap as for a title there is not |
 | `GET /api/play/...`, `GET /api/subtitles/...` | any signed-in caller; a capped viewer as for the artwork |
@@ -429,6 +429,15 @@ the base schema in the order of their numbers, and each is idempotent:
   under the same lock when any of it is missing; without it a read writes
   the chapters it found and keeps nothing else, and no backfill reads them
   again. A deleted item's rows go with it.
+- `056_superseded_sources.sql` lets an original another file took the place
+  of be `superseded` (`com_nalet_katalog_itemsources.state`), with the source
+  that took its place (`supersededby`, kept while it is retired and after,
+  which tells its retirement from another's) and since when
+  (`supersededat`), and keeps the key a replace was asked with
+  (`replacekey`, one key one source of a title); see
+  [Replacing a title's file](#replacing-a-titles-file). Applied at startup
+  under the same lock when any of it is missing; without it a replace that
+  deletes the old file, or is asked with a key, is refused (`SOURCE_BUSY`).
 
 ## Track languages
 
@@ -522,7 +531,7 @@ would be left without its file.
 mutation {
   replaceSource(itemPath: "/var/lib/katalog/media/BigBuckBunny_320x180.mp4",
                 path: "/var/lib/katalog/media/Big Buck Bunny (2008).mov", deleteOldFile: true) {
-    itemId oldPath path replaced oldFileDeleted oldFileTrash oldSidecars
+    itemId oldPath path replaced oldFileDeleted oldFileSuperseded repeated oldSidecars
     reencode { reencoded busy notSent message }
     message
   }
@@ -533,16 +542,20 @@ mutation {
   file replaced, which a demo's reset keeps where it changes ids. It is a
   movie or an episode with a file: a series has none (its episodes are
   replaced each on its own), and a title with two files is named by the one
-  replaced.
-- **`path`** is the new file: an absolute path of an existing video file
-  under the media root, never under the package store, never a link that
-  leads out of the media root, that a scan takes for a title's file (not
-  hidden, a video by the scanner's extensions `.avi`, `.m4v`, `.mkv`, `.mov`,
-  `.mp4`, `.webm`, and no extra by the scanner's convention as it reads with
-  `extras.scan` on), and no file of the catalog yet: another title's file or
-  an extra's is refused, naming it. One replace onto a file runs at a time.
-  A path that is the title's file already changes nothing (`replaced:
-  false`).
+  replaced. An episode another episode's file covers has no file of its own
+  and is refused (`SOURCE_COVERED`, `extensions.itemId` naming the holder,
+  whose file is the one to replace; see
+  [One file, several episodes](#one-file-several-episodes)).
+- **`path`** is the new file: an absolute path of an existing video file of
+  its own — no link — under the media root, never under the package store,
+  never in a folder whose link leads out of the media root, that a scan takes
+  for a title's file (not hidden, a video by the scanner's extensions
+  `.avi`, `.m4v`, `.mkv`, `.mov`, `.mp4`, `.webm`, and no extra by the
+  scanner's convention as it reads with `extras.scan` on), and no file of
+  the catalog yet, as written nor as its folders' links lead: another
+  title's file, an extra's or, with the v2 layout, an original the library
+  keeps is refused, naming it. A path that is the title's file already
+  changes nothing (`replaced: false`).
 - **What stays**: the title's id and everything that hangs off it, its
   metadata, external ids, artwork, credits, genres, tags, extras, segments,
   chapters and steps; its package and its subtitles, which play until the
@@ -561,77 +574,106 @@ mutation {
   new file of the same name they pair with it as they did; otherwise the next
   scan pairs the files named after the new one, and the packager takes
   subtitle files only from the new file's folder or below it.
-- **`deleteOldFile`** (false when omitted) deletes the old file once the
-  title has the new one: only under the media root and never under the
-  package store, only when no title's file or extra is it any more and the
-  new file does not lead to it; the folders it leaves empty go. An old file
-  kept under the media root is taken in as a title of its own by the next
-  scan: move it out of the media root, or delete it. With the library's v2
-  layout an old file of the arrivals is deleted so (its source `removed`),
-  and the title's original in its version's folder
+- **`deleteOldFile`** (false when omitted), with the legacy layout, deletes
+  the old file once the title has the new one: only under the media root and
+  never under the package store, only when no title's file or extra is it
+  any more and the new file does not lead to it; the folders it leaves empty
+  go. An old file kept under the media root is taken in as a title of its
+  own by the next scan: move it out of the media root, or delete it.
+- **With the library's v2 layout a replace deletes no file.** The old
+  original asked to go is **superseded** (`oldFileSuperseded`, migration
+  056): it stays where it lies — in the arrivals, or in its version's folder
   (`versions/<versionId>/original.<ext>`, where every original lies from its
-  first version on) goes the way the retire job takes an original, whatever
-  holds a retirement back (the title held, originals kept): its source is
-  claimed as `retiring`, its `original-deleted` event is recorded in the
-  title's folder with the reason that the title was given another file in
-  its place, the file is moved into the library's trash,
-  `.work/trash/<day>/<sourceId>/` (unlinked with a `library.trash.grace` of
-  0), and the source is `deleted`, by whoever asked the replace; the answer's
-  `oldFileTrash` says where it lies. The retire job purges the trash's day
-  once `library.trash.grace` (24h) is over after it; until then the file can
-  be put back from there. The subtitle files that
-  came with it stay the title's where they are, and the title's retire step
-  is left alone. A replace stopped between those steps is finished by the
-  retire job the same way. Such a replace holds the retire job's lock from
-  its start to its end, waiting a minute at most for a pass (or an admin's
-  list) that runs, and is refused with `SOURCE_BUSY`, nothing changed, when
-  it is not given up.
+  first version on) — with the version made of it, its source naming the
+  source that took its place, so that a wrong file given in its place can be
+  taken back; a scan and an ingest take it, and a copy of it, for the
+  title's old original, never a title of its own. The retire job retires it
+  once a version of the title made without it is complete and verified (see
+  [The library](#the-library)): moved into the library's trash,
+  `.work/trash/<day>/<sourceId>/`, for `library.trash.grace`, its
+  `original-deleted` event recorded when it has a record, its source
+  `deleted`. Until then nothing deletes it; while the title holds its
+  originals (`holdOriginal`) it stays superseded. Not asked to go, it stays
+  a source of the title, as it is. A title whose original is being retired
+  is refused (`SOURCE_BUSY`), asked to keep the old file or not. The
+  title's folder records a `note` event of what became of the old original,
+  by whoever asked the replace, naming its source when its record is there.
 - **`reencode`** (true when omitted) encodes the title again from the new
   file, as `reencodeItem` does (see
   [Encoding a title again](#encoding-a-title-again)), and `reencode` is its
   answer. A title whose transcode or package is running is left alone
   (`busy`): that run is the old file's, and what it reports (the probe, the
   tracks) describes the old file until the title is encoded again, which an
-  admin asks once it is done; a run whose old file was deleted under it may
-  fail instead, and its retry reads the new file. Without an event bus or
-  migration 033 nothing is encoded again, and `reencode.message` says why.
-- **`ifIdle`** (false when omitted) gives the title no file while its
-  transcode or package is running or waits for its worker, as `reencodeItem`
-  tells one busy: the replace is refused then (`SOURCE_BUSY`), nothing
-  changes and the old file stays for that run, and the caller asks again once
-  it is done. The title's steps stay locked until the replace's transaction
-  ends, so none starts meanwhile. A file the catalog does not take is
-  refused as such first, whatever the title does.
+  admin asks once it is done. Without an event bus or migration 033 nothing
+  is encoded again, and `reencode.message` says why.
+- **`ifIdle`** (false when omitted) gives the title no file while one of its
+  steps that read an original — `chapter`, `chromaprint`, `blackframe`,
+  `silence`, `subtitle`, `transcode`, `package`, `takein` — runs or waits
+  for its worker within its timeout (a package waiting for a transcode that
+  has not finished waits for that one): the replace is refused then
+  (`SOURCE_BUSY`), nothing changes and the old file stays for that run, and
+  the caller asks again once it is done. Those steps stay locked until the
+  replace's transaction ends, so none starts meanwhile. A file the catalog
+  does not take is refused as such first, whatever the title does.
+- **`key`** (v2 layout), at most 255 characters, tells a replace from
+  another, as an addon's id of what it hands over: kept on the new file's
+  source, a replace of the title asked again with it changes nothing and
+  answers what it did (`repeated: true`, with the title's file and the old
+  original it superseded), so that one whose answer was lost is never done
+  twice.
 - **A refusal** is an error whose `extensions.code` is `NOT_FOUND` (a title
-  there is not), `SOURCE_CONFLICT` (the file is another title's or an
-  extra's, named in `itemId` and `extraId`), `SOURCE_BUSY` (asked with
-  `ifIdle`, the title is being encoded) or `SOURCE_REFUSED`, and nothing
-  changes. The old file's deletion and the re-encode never fail the call:
-  the title has its new file whatever they do, and `message` says what they
-  did. Every replace is logged, with whoever asked it.
+  there is not), `SOURCE_COVERED` (an episode another's file covers),
+  `SOURCE_CONFLICT` (the file is another title's, an extra's or an original
+  the library keeps, named in `itemId` and `extraId`), `SOURCE_BUSY` (what a
+  later ask may not meet: asked with `ifIdle`, a step runs; the title's
+  original is being retired; its version is placed and its handover not
+  recorded; a file or the library's settings could not be read; migration
+  056 is not in place), `FORBIDDEN` (an addon the catalog does not name) or
+  `SOURCE_REFUSED`, and nothing changes. The old file's deletion and the
+  re-encode never fail the call: the title has its new file whatever they
+  do, and `message` says what they did.
 
 Replace a file before a scan meets it: a file a scan took in first is
 another title's, and refused. With the library's v2 layout a file handed over
-from `.work/replace` — outside the arrivals the scan walks — is taken into the
-arrivals in the replace's own transaction, so no scan meets it on its own.
-`replaceSource` is an administrator's, the platform's service account's and
-an addon's, the one field besides `triggerScan` a deployment's Job may ask and
-the one an addon may (see [Who may do what](#who-may-do-what)): a seed Job
-gives a title its better file with the service account, then deletes the old
-file itself; an addon that grabbed a better file of a title the library holds
-for an admin who asked it hands it over with its own service account, from
-`.work/replace`, with `deleteOldFile: true` and `ifIdle: true`.
-`deleteOldFile: true` is an administrator's or an addon's: the platform's
-service account, which every worker and Job mints its tokens with, may move a
-title onto a file, never have the catalog delete one. An addon may, as it
-carries out what an admin asked it, long after the admin's own token ran out;
-an original it has go lies in the library's trash for its grace, so a wrong
-replace can be undone until then. Every replace is logged, whatever it comes
-to, with who asked it — the token's subject, the client it was issued to and
-whether it is an admin, the platform's service account or an addon —, the
-title, its old and new file, and the outcome:
+from `.work/replace` — outside the arrivals the scan walks — is taken into
+the arrivals by the replace: under the lock a scan and an ingest take on its
+name there, held on a connection of its own from before the replace's
+transaction until its files are where they go, it is given its name in the
+arrivals by a hard link, which fails on a name there already (no file is
+ever written over), and its name in `.work/replace` goes once the replace is
+committed. A replace that fails before takes its link back; one whose commit
+failed is read back, and finished when it went through. One stopped halfway
+is finished by the next ask: its link left in the arrivals is taken as it
+is, and the name left in `.work/replace` of a file that is the title's
+already goes. A scan that meets the file while the replace runs waits for it,
+and then finds the title's.
+
+`replaceSource` is an administrator's and the platform's service
+account's, and an addon's whose service account's client the setting
+`library.replace.clients` names (the OIDC clients, a token's `azp`, by commas
+or spaces; none by default): any other addon is refused (`FORBIDDEN`),
+whatever its role. It is the one field besides `triggerScan` a deployment's
+Job may ask and the one an addon may (see [Who may do what](#who-may-do-what)):
+a seed Job gives a title its better file with the service account, then
+deletes the old file itself; an addon that grabbed a better file of a title
+the library holds for an admin who asked it hands it over with its own
+service account, from `.work/replace`, with `deleteOldFile: true`,
+`ifIdle: true` and its key. `deleteOldFile: true` is an administrator's or
+such an addon's: the platform's service account, which every worker and Job
+mints its tokens with, may move a title onto a file, never have the catalog
+delete one. An addon may, as it carries out what an admin asked it, long
+after the admin's own token ran out; the old original goes only once the
+title's new version is verified, and lies in the library's trash for its
+grace after, so a wrong replace can be undone. Every replace is logged when
+it begins and when it ends, whatever it comes to, with who asked it — the
+token's subject, the client it was issued to and whether it is an admin, the
+platform's service account or an addon —, the title, its old and new file,
+what was asked, and the outcome; one the resolver refuses before (a caller
+who may not ask it) is logged too:
 
 ```
+replaceSource asked by <subject> (client <client>, an addon (zaentrum-addon)): item <id>, new file <path>,
+  deleteOldFile true, reencode true, ifIdle true, key <key>: begun
 replaceSource asked by <subject> (client <client>, an addon (zaentrum-addon)): item <id> ("<title>", movie),
   old file <path>, new file <path>, deleteOldFile true, reencode true, ifIdle true: replaced: <what it did>
 ```
@@ -2134,10 +2176,12 @@ model).
   and so has no file. A file the scanner took in before it read its name's
   numbers (`S01E01E02` was none to it) gets them.
 - **Acting on a covered episode acts on its holder**: `reencodeItem`, the
-  re-encode queue, `packageItem` (`POST /api/items/{id}/package`), the
-  take-in (`POST /api/items/{id}/takein`) and `replaceSource` by its id each
-  act on the holder, the answer the holder's and saying so; the analyzer's
-  reset of a series leaves a covered episode alone.
+  re-encode queue, `packageItem` (`POST /api/items/{id}/package`) and the
+  take-in (`POST /api/items/{id}/takein`) by its id each act on the holder,
+  the answer the holder's and saying so; `replaceSource` of a covered
+  episode is refused (`SOURCE_COVERED`, naming the holder, whose file is the
+  one to replace); the analyzer's reset of a series leaves a covered episode
+  alone.
 - **The library's records**: the worker record of the holder names the
   episodes its file covers in its `library.source` (`covers`: the holder
   first, then the others in episode order), which the packager writes in its
@@ -2196,7 +2240,9 @@ The library's settings are read on every use, as `extras.scan` is:
 
 - `library.layout`: `legacy` (default) or `v2`. With `v2` the scanner walks
   the arrivals and knows an original it has seen by its size and quick hash
-  (a copy of one is skipped, a moved one followed, a deleted one named);
+  (a copy of one is skipped, a moved one followed, a deleted one named, a
+  superseded one and its copies left alone), and one the library keeps at a
+  path by that path;
   ingest, replaceSource and addExtra take files from the arrivals alone; a
   title is recorded (`item.json`) once it is enriched; the transcode's end
   makes the version its package builds, and packaging-complete takes the v2
@@ -2215,6 +2261,10 @@ The library's settings are read on every use, as `extras.scan` is:
   [Retiring the originals of a list](#retiring-the-originals-of-a-list)).
 - `library.retire.list.maxAge` (`24h`): how long a dry run's word on its
   titles holds for a run of them; above 0.
+- `library.replace.clients` (none): the addons that may give a title another
+  file with `replaceSource`, and have its old original go: the OIDC clients
+  of their service accounts (a token's `azp`), separated by commas or spaces.
+  An addon it does not name is refused (`FORBIDDEN`).
 - `library.verify.new` (`on`): whether the verifier verifies each new
   version in full once (see below); `off` leaves new versions unverified
   until the retire job verifies one.
@@ -2265,7 +2315,7 @@ the same version, folder, mode and name for the original, and reports the
 folder it finds there again with the same payload. Its workers are handed
 the original where it lies (found in that unrecorded version's folder by the
 source's size and quick hash), never the arrival it left; that version is
-never made another file's (`replaceSource` waits, `SOURCE_CONFLICT`), no
+never made another file's (`replaceSource` waits, `SOURCE_BUSY`), no
 title is taken in from where its original is not, and a removal that keeps
 the files puts the original back where the catalog has it.
 
@@ -2316,7 +2366,35 @@ finds its package lacks nothing processing again would make. `{"held": true}` qu
 stereo alone (`surroundAudio` off or empty) makes no 5.1 of any title, so
 then no original is kept for its surround: what it gives up is in what its
 source lost (`surround`, `maxAudioChannels`), as a list's dry run says it. A
-packager that reported no rules yet is taken to make 5.1 companions. The same job deletes an extra's
+packager that reported no rules yet is taken to make 5.1 companions.
+
+The same job retires an original another file took the place of as its
+title's (superseded, by `replaceSource` with `deleteOldFile`) once the
+title's master no longer needs it, whatever `library.originals` says — it is
+the replace's word that has it go —, and as it retires an original
+otherwise: due once a version of the title made without it (its master) has
+been complete for the delay, while the title does not hold its originals and
+no step that reads an original runs; kept, superseded, while the master's
+package lacks its surround (its source saying why); claimed under the
+title's lock, superseded by the source that took its place still; checked
+to be the file recorded (its size and quick hash), where the catalog says,
+under a root the job deletes under or in its version's folder, no title's
+file any more, its record verifying when it has one; the master verified as
+a version is before an original goes; its `original-deleted` event recorded
+— naming the version made of it, what that version's package does not carry
+of it accepted, its reason the master that took its place — when it has a
+record (an original replaced before any version was made of it has none, and
+its row records its deletion); moved into the trash alone, the subtitle files
+beside it staying the title's where they are; its source `deleted`, by the
+retire job, the title's retire step left alone. Called off, or failed,
+before its event — the title held, its pipeline reading an original again,
+its master changed — it is superseded again, never present, its source
+saying why, and looked at again an hour later; one whose event is recorded,
+or with no record whose file left its place, is finished by the next pass.
+Each counts against `library.retire.rate`. The version made of it, superseded,
+is removed after its grace once its folder holds no original.
+
+The same job deletes an extra's
 original once its folder is recorded and verifies, removes a superseded
 version after its grace (`version-removed`, its folder deleted) once its
 folder holds no original (one there is retired first, against the newest
@@ -2508,8 +2586,8 @@ records it (GraphQL `Item.originalBytes`, `packageBytes` and `hasOriginal`):
   none), its file with its size. Null when it has none: a title whose
   original was retired has its package alone. It is what lies on disk: every
   source present counts, an old file `replaceSource` kept beside the new one
-  too, which the retire job and the rules report don't take for the title's
-  original. The rules report's `originalBytes` is the size of the original
+  or superseded by it too, until the retire job retires it, which the retire
+  job and the rules report don't take for the title's original. The rules report's `originalBytes` is the size of the original
   a title was packaged from, retired or not.
 - **`packageBytes`** is the size of its package as its packaged row records
   it, which packaging-complete writes from its version's `package.json`
