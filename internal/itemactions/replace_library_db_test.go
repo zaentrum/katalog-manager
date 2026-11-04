@@ -557,8 +557,9 @@ func TestAReplaceWhoseCommitFailsLeavesTheFiles(t *testing.T) {
 }
 
 // A file handed over in a folder that leads, by a link, to a title's file is
-// that file: refused as taken (SOURCE_CONFLICT), not given to another title.
-// A file that cannot be read is refused as busy, for a later ask.
+// that file: refused as taken (SOURCE_CONFLICT), not given to another title,
+// and so is an original the library keeps at the path. A file that cannot be
+// read, or lies in a folder that cannot, is refused as busy, for a later ask.
 func TestWhatAFileHandedOverMayNotBe(t *testing.T) {
 	iv := newInVersion(t)
 	other := iv.f.write(t, ".work/incoming/Another Film (1999)/Another Film (1999).mkv", 300)
@@ -581,10 +582,34 @@ func TestWhatAFileHandedOverMayNotBe(t *testing.T) {
 	if err := os.Chmod(iv.handed, 0); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = os.Chmod(iv.handed, 0o644) }()
 	_, err = iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true})
 	if r := sourceRefusal(t, err); r.Code != codeSourceBusy || !strings.Contains(r.Message, "cannot be read") {
 		t.Errorf("a file that cannot be read: %+v", r)
+	}
+	if err := os.Chmod(iv.handed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// nor one in a folder that cannot be read
+	folder := filepath.Dir(iv.handed)
+	if err := os.Chmod(folder, 0); err != nil {
+		t.Fatal(err)
+	}
+	_, err = iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true})
+	_ = os.Chmod(folder, 0o755)
+	if r := sourceRefusal(t, err); r.Code != codeSourceBusy || !strings.Contains(r.Message, "cannot be read") {
+		t.Errorf("a file in a folder that cannot be read: %+v", r)
+	}
+	// An original the library keeps at the path — another title's,
+	// superseded, which no asset names now — is no file to give a title.
+	kept := iv.f.write(t, ".work/incoming/Kept Film (1999).mkv", 400)
+	storetest.AddItem(t, iv.f.st, "a1a1a1a1-0000-4000-8000-0000000000a1", "movie", "Kept Film", "")
+	storetest.Exec(t, iv.f.st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state,
+		supersededby, supersededat) VALUES ('s-kept', 'a1a1a1a1-0000-4000-8000-0000000000a1', 'Kept Film (1999).mkv', $1, 400,
+		'superseded', 's-other', now())`, kept)
+	_, err = iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: kept, DeleteOldFile: true})
+	if r := sourceRefusal(t, err); r.Code != codeSourceConflict || r.ItemID != "a1a1a1a1-0000-4000-8000-0000000000a1" ||
+		!strings.Contains(r.Message, "is an original of item a1a1a1a1-0000-4000-8000-0000000000a1 already (superseded)") {
+		t.Errorf("another title's superseded original: %+v", r)
 	}
 }
 
