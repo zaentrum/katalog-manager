@@ -260,3 +260,25 @@ func TestDurationText(t *testing.T) {
 		}
 	}
 }
+
+// A superseded original's master is complete for a week before the original
+// is retired, unless library.superseded.delay says otherwise; 0 is no delay.
+func TestTheSupersededDelayIsRead(t *testing.T) {
+	if d := Defaults(); d.SupersededDelay != 7*24*time.Hour {
+		t.Errorf("the default: %v", d.SupersededDelay)
+	}
+	s := Defaults()
+	s.set(SettingSupersededDelay, "2d")
+	if s.SupersededDelay != 48*time.Hour || len(s.Problems) != 0 {
+		t.Errorf("2d: %v, %v", s.SupersededDelay, s.Problems)
+	}
+	s.set(SettingSupersededDelay, "0")
+	if s.SupersededDelay != 0 {
+		t.Errorf("0: %v", s.SupersededDelay)
+	}
+	s = Defaults()
+	s.set(SettingSupersededDelay, "soon")
+	if s.SupersededDelay != 7*24*time.Hour || len(s.Problems) != 1 {
+		t.Errorf("what cannot be read: %v, %v", s.SupersededDelay, s.Problems)
+	}
+}

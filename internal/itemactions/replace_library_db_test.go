@@ -365,7 +365,8 @@ func TestAReplacedTitlesOldOriginalIsRetiredOnceItsNewVersionIsVerified(t *testi
 	iv := newInVersion(t)
 	ctx := context.Background()
 	st := iv.f.st
-	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('g', 'library.superseded.grace', '0')`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('g', 'library.superseded.grace', '0'),
+		('d', 'library.superseded.delay', '1h')`)
 	res, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true})
 	if err != nil || !res.OldFileSuperseded {
 		t.Fatalf("the replace: %+v %v", res, err)
@@ -388,7 +389,7 @@ func TestAReplacedTitlesOldOriginalIsRetiredOnceItsNewVersionIsVerified(t *testi
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2, supersededat = now()
 		WHERE id = $1`, ivVersion, newVersion)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
-		VALUES ($1, $2, ARRAY[$3::varchar], 'complete', '4d0b0b0b-0000-4000-8000-00000000000d', $4, now() - interval '1 hour')`,
+		VALUES ($1, $2, ARRAY[$3::varchar], 'complete', '4d0b0b0b-0000-4000-8000-00000000000d', $4, now() - interval '61 minutes')`,
 		newVersion, bunny, newSource, vdir)
 	rep, err := retirer.Pass(ctx)
 	if err != nil || rep.Superseded != 1 || rep.Versions != 1 {

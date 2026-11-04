@@ -32,6 +32,7 @@ const (
 func (f *retireFixture) supersede(t *testing.T, complete bool, pkg map[string]any) string {
 	t.Helper()
 	f.set(t, SettingOriginals, OriginalsKeep)
+	f.set(t, SettingSupersededDelay, "10m") // the master below is complete an hour ago
 	cur := filepath.Join(f.p.Arrivals, "Example Film 4K.mkv")
 	librarytest.Write(t, cur, []byte(strings.Repeat("a better file ", 30000)))
 	size, qh1, err := QH1(cur)
@@ -197,6 +198,16 @@ func (f *retireFixture) passKeeping(t *testing.T) Report {
 	return rep
 }
 
+// settings are the fixture's library settings as the catalog holds them.
+func (f *retireFixture) settings(t *testing.T) Settings {
+	t.Helper()
+	set, err := ReadSettings(context.Background(), f.st.Pool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return set
+}
+
 // countOf counts with sql on the fixture's catalog.
 func countOf(t *testing.T, f *retireFixture, sql string, args ...any) int {
 	t.Helper()
@@ -253,6 +264,12 @@ func TestASupersededOriginalWaitsForItsConditions(t *testing.T) {
 		{name: "the master complete just now", pkg: withFiveOne, before: func(t *testing.T, f *retireFixture) {
 			f.execSQL(t, `UPDATE com_nalet_katalog_itemversions SET completedat = now() WHERE id = $1`, rtNewVersion)
 		}},
+		{name: "the master complete for less than library.superseded.delay", pkg: withFiveOne,
+			before: func(t *testing.T, f *retireFixture) {
+				f.set(t, SettingSupersededDelay, "7d")
+				f.execSQL(t, `UPDATE com_nalet_katalog_itemversions SET completedat = now() - interval '6 days 23 hours'
+					WHERE id = $1`, rtNewVersion)
+			}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newRetireFixtureOf(t, sevenOne, withFiveOne)
@@ -277,10 +294,10 @@ func TestASupersededOriginalWaitsForItsConditions(t *testing.T) {
 			// One looked at in vain waits an hour before it is again.
 			if c.says != "" {
 				f.r.lockWait = 0
-				if ids, err := f.r.supersededDue(ctx, Defaults(), time.Now(), 10); err != nil || len(ids) != 0 {
+				if ids, err := f.r.supersededDue(ctx, f.settings(t), time.Now(), 10); err != nil || len(ids) != 0 {
 					t.Errorf("due again at once: %v, %v", ids, err)
 				}
-				if ids, err := f.r.supersededDue(ctx, Defaults(), time.Now().Add(61*time.Minute), 10); err != nil || len(ids) != 1 {
+				if ids, err := f.r.supersededDue(ctx, f.settings(t), time.Now().Add(61*time.Minute), 10); err != nil || len(ids) != 1 {
 					t.Errorf("due an hour later: %v, %v", ids, err)
 				}
 			}
@@ -502,7 +519,7 @@ func TestWhatIsDueAndClaimedOfASupersededOriginal(t *testing.T) {
 				t.Fatalf("the master: %v", err)
 			}
 			c.change(t, f)
-			if ids, err := f.r.supersededDue(ctx, Defaults(), time.Now(), 10); err != nil || len(ids) != 0 {
+			if ids, err := f.r.supersededDue(ctx, f.settings(t), time.Now(), 10); err != nil || len(ids) != 0 {
 				t.Errorf("due: %v, %v; want none", ids, err)
 			}
 			rt := &retirement{src: f.source(t, rtSource), superseded: rtNewSource, itemDir: f.itemDir, ver: master}
@@ -514,7 +531,7 @@ func TestWhatIsDueAndClaimedOfASupersededOriginal(t *testing.T) {
 	// all of it holding, it is due and claimed
 	f := newRetireFixture(t)
 	f.supersede(t, true, withFiveOne)
-	if ids, err := f.r.supersededDue(ctx, Defaults(), time.Now(), 10); err != nil || len(ids) != 1 || ids[0] != rtSource {
+	if ids, err := f.r.supersededDue(ctx, f.settings(t), time.Now(), 10); err != nil || len(ids) != 1 || ids[0] != rtSource {
 		t.Fatalf("due: %v, %v", ids, err)
 	}
 	master, _ := Current(ctx, f.st.Pool(), rtFilm)

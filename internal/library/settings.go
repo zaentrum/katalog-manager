@@ -64,6 +64,12 @@ const (
 	// holds for a run of them (24h): a run of an older dry run is refused,
 	// and a title its dry run checked longer ago is not retired.
 	SettingRetireListMaxAge = "library.retire.list.maxAge"
+	// SettingSupersededDelay is how long the master of an original another
+	// file took the place of (superseded) is complete at least before the
+	// retire job retires that original (7d), so that a wrong file given in
+	// its place can still be taken back: counted from the master's
+	// completion, then the trash's grace as for any retired original.
+	SettingSupersededDelay = "library.superseded.delay"
 	// SettingReplaceClients names the addons that may give a title another
 	// file (replaceSource), and have its old original go: the OIDC clients
 	// of their service accounts (a token's azp), separated by commas or
@@ -114,6 +120,9 @@ type Settings struct {
 	// ReplaceClients are the clients of the addons that may replace a
 	// title's file (library.replace.clients); none by default.
 	ReplaceClients []string
+	// SupersededDelay is how long a superseded original's master is
+	// complete at least before the original is retired.
+	SupersededDelay time.Duration
 	// Problems says of each setting that could not be read what it held and
 	// what is used instead.
 	Problems []string
@@ -125,7 +134,7 @@ func Defaults() Settings {
 		RetireRate: defaultRetireNum, Verify: VerifyFull, VerifyMaxAge: 30 * 24 * time.Hour, VerifyNew: true,
 		SupersededGrace: 24 * time.Hour, TrashGrace: 24 * time.Hour,
 		ReencodeRate: defaultReencode, ReencodeInflight: defaultReencode, RetireList: RetireListDryRun,
-		RetireListMaxAge: 24 * time.Hour}
+		RetireListMaxAge: 24 * time.Hour, SupersededDelay: 7 * 24 * time.Hour}
 }
 
 // V2 reports whether the environment runs the v2 layout.
@@ -229,7 +238,7 @@ func (s *Settings) set(key, value string) {
 		if _, err := ParseWindow(v); err != nil {
 			bad("a window, HH:MM-HH:MM as 23:00-07:00; no title of the re-encode queue is sent until it is one")
 		}
-	case SettingRetireDelay, SettingVerifyMaxAge, SettingSupersededGrace, SettingTrashGrace:
+	case SettingRetireDelay, SettingVerifyMaxAge, SettingSupersededGrace, SettingTrashGrace, SettingSupersededDelay:
 		d, err := ParseDuration(v)
 		if err != nil {
 			bad("a duration, as 10m, 24h or 30d; it is its default")
@@ -244,6 +253,8 @@ func (s *Settings) set(key, value string) {
 			s.SupersededGrace = d
 		case SettingTrashGrace:
 			s.TrashGrace = d
+		case SettingSupersededDelay:
+			s.SupersededDelay = d
 		}
 	case SettingRetireListMaxAge:
 		if d, err := ParseDuration(v); err == nil && d > 0 {

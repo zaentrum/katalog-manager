@@ -28,7 +28,8 @@ import (
 //     its master — the title's complete version made of the file that took
 //     its place, the latest one when the title was given another file more
 //     than once (supersededby, followed) — is not made of it and has been
-//     complete for library.retire.delay. While the latest file has no
+//     complete for library.superseded.delay (7d: a wrong file given in its
+//     place can still be taken back). While the latest file has no
 //     complete version, nothing it took the place of is retired. One whose
 //     retirement failed is looked at again an hour later. Each counts against
 //     library.retire.rate.
@@ -120,7 +121,8 @@ func (r *Retirer) supersededOriginals(ctx context.Context, p Paths, set Settings
 // supersededDue are the superseded originals whose retirement is due, those
 // superseded first first, one that failed or was held an hour later: of a
 // title that does not hold its originals, its steps that read an original
-// over, whose master is not made of it and complete for library.retire.delay.
+// over, whose master is not made of it and complete for
+// library.superseded.delay.
 // None on a catalog without migration 056.
 func (r *Retirer) supersededDue(ctx context.Context, set Settings, now time.Time, n int) ([]string, error) {
 	rows, err := r.pool.Query(ctx, `WITH RECURSIVE chain(start, id, depth) AS (
@@ -141,7 +143,7 @@ func (r *Retirer) supersededDue(ctx context.Context, set Settings, now time.Time
 		  AND (s.error IS NULL OR s.modifiedat + make_interval(secs => $5::float8) <= $2::timestamptz)
 		  AND `+originalStepsOver("s.item_id", "$3")+`
 		ORDER BY s.error IS NOT NULL, s.supersededat, s.id
-		LIMIT $4`, set.RetireDelay.Seconds(), now, processing.OriginalSteps, n, supersededRetry.Seconds())
+		LIMIT $4`, set.SupersededDelay.Seconds(), now, processing.OriginalSteps, n, supersededRetry.Seconds())
 	if isUndefinedColumn(err) {
 		return nil, nil
 	}
