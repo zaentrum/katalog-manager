@@ -27,29 +27,40 @@ type ChapterReads interface {
 
 // chapterReadJSON is a title's last read on the wire.
 type chapterReadJSON struct {
-	State         string     `json:"state"`
-	SourceID      *string    `json:"sourceId"`
-	Path          *string    `json:"path"`
-	FileSize      *int64     `json:"fileSize"`
-	Found         *int32     `json:"found"`
-	Written       *int32     `json:"written"`
-	Probe         *string    `json:"probe"`
-	Seconds       *float64   `json:"seconds"`
-	Reason        *string    `json:"reason"`
-	ReadAt        *time.Time `json:"readAt"`
-	Attempts      int32      `json:"attempts"`
-	Failures      int32      `json:"failures"`
-	NextAttemptAt *time.Time `json:"nextAttemptAt"`
-	ClaimedAt     *time.Time `json:"claimedAt"`
+	State          string     `json:"state"`
+	ReadFrom       *string    `json:"readFrom"`
+	Confirmed      bool       `json:"confirmed"`
+	SourceID       *string    `json:"sourceId"`
+	Path           *string    `json:"path"`
+	FileSize       *int64     `json:"fileSize"`
+	Found          *int32     `json:"found"`
+	Written        *int32     `json:"written"`
+	Probe          *string    `json:"probe"`
+	Seconds        *float64   `json:"seconds"`
+	Reason         *string    `json:"reason"`
+	ReadAt         *time.Time `json:"readAt"`
+	RecordSourceID *string    `json:"recordSourceId"`
+	RecordAt       *time.Time `json:"recordAt"`
+	RecordNote     *string    `json:"recordNote"`
+	Attempts       int32      `json:"attempts"`
+	Failures       int32      `json:"failures"`
+	Transients     int32      `json:"transients"`
+	NextAttemptAt  *time.Time `json:"nextAttemptAt"`
+	ClaimedAt      *time.Time `json:"claimedAt"`
+	AcceptedAt     *time.Time `json:"acceptedAt"`
+	AcceptedBy     *string    `json:"acceptedBy"`
 }
 
 func chapterReadOut(r *chapters.Read) *chapterReadJSON {
 	if r == nil {
 		return nil
 	}
-	return &chapterReadJSON{State: r.State, SourceID: r.SourceID, Path: r.Path, FileSize: r.FileSize, Found: r.Found,
-		Written: r.Written, Probe: r.Probe, Seconds: r.Seconds, Reason: r.Reason, ReadAt: utc(r.ReadAt),
-		Attempts: r.Attempts, Failures: r.Failures, NextAttemptAt: utc(r.NextAttemptAt), ClaimedAt: utc(r.ClaimedAt)}
+	return &chapterReadJSON{State: r.State, ReadFrom: r.ReadFrom, Confirmed: r.Confirmed, SourceID: r.SourceID,
+		Path: r.Path, FileSize: r.FileSize, Found: r.Found, Written: r.Written, Probe: r.Probe, Seconds: r.Seconds,
+		Reason: r.Reason, ReadAt: utc(r.ReadAt), RecordSourceID: r.RecordSourceID, RecordAt: utc(r.RecordAt),
+		RecordNote: r.RecordNote, Attempts: r.Attempts, Failures: r.Failures, Transients: r.Transients,
+		NextAttemptAt: utc(r.NextAttemptAt), ClaimedAt: utc(r.ClaimedAt), AcceptedAt: utc(r.AcceptedAt),
+		AcceptedBy: r.AcceptedBy}
 }
 
 // putChapters serves PUT /api/chapters/items/{itemId}, for the workers'
@@ -57,17 +68,20 @@ func chapterReadOut(r *chapters.Read) *chapterReadJSON {
 // original, in place of its own ({"chapters": [{"startMs", "endMs", "title",
 // "ordinal"}]}: 0 <= start < end; a blank title is none, one longer than 120
 // characters is cut; an ordinal left out is the chapter's place in the
-// list). With "read", what the read was ({"path", "fileSize", "found",
-// "error", "note", "probe", "seconds"}), and the token of the backfill's
-// claim it read for ("token"), the catalog keeps the read with the chapters,
-// in the same transaction (chapters.Record): a read that found none
-// ("chapters": []) settles the title as one that wrote chapters does; one
-// that failed ("read": {"error"}, no "chapters") leaves the title's chapters
-// as they are and counts a failure. {"released": true, "token"} gives a
+// list). With "read", what the read of the original's header was ({"path",
+// "sourceId", "fileSize", "found", "error", "transient", "note", "probe",
+// "seconds"}), and the token of the backfill's claim it read for ("token"),
+// the catalog keeps the read with the chapters, in the same transaction
+// (chapters.Record): a read that found none ("chapters": []) never deletes
+// chapters, and settles the title only as far as the original's source record
+// agrees; one that failed ("read": {"error"}, no "chapters") leaves the
+// title's chapters as they are, and counts a failure of the title only when
+// it ran on the file ("transient" false). {"released": true, "token"} gives a
 // claim back unread. 400 for chapters or a read that can't be taken, 404 for
 // no such item; a read is answered with the title's read as it is now. A
-// catalog without migration 055 writes the chapters and keeps no read (503
-// for a read without chapters).
+// catalog without migration 055 writes chapters a read found, keeps no read,
+// and answers 503 for a read without chapters (a failed one), whose title's
+// chapters stay as they are.
 func (h *Handlers) putChapters(w http.ResponseWriter, r *http.Request) {
 	itemID := chi.URLParam(r, "itemId")
 	ctx := reqCtx(r)
@@ -115,12 +129,17 @@ func (h *Handlers) putChapters(w http.ResponseWriter, r *http.Request) {
 		h.replaceChapters(w, r, itemID, rows)
 		return
 	}
-	if h.d.Chapters == nil {
-		if present {
+	// Where no read is kept, only chapters a read found are written: a read
+	// that found none, or failed, changes nothing.
+	fallback := func(why string) {
+		if present && len(rows) > 0 && !meta.Released && (meta.Read == nil || strings.TrimSpace(meta.Read.Error) == "") {
 			h.replaceChapters(w, r, itemID, rows)
 			return
 		}
-		writeError(w, http.StatusServiceUnavailable, "the chapters' reads are not configured")
+		writeError(w, http.StatusServiceUnavailable, why+"; a read that found no chapter, or failed, changes nothing")
+	}
+	if h.d.Chapters == nil {
+		fallback("the chapters' reads are not configured")
 		return
 	}
 	rep := chapters.Report{Token: meta.Token, Released: meta.Released}
@@ -131,8 +150,8 @@ func (h *Handlers) putChapters(w http.ResponseWriter, r *http.Request) {
 		rep.Chapters = rows
 	}
 	read, err := h.d.Chapters.Record(ctx, itemID, rep)
-	if errors.Is(err, chapters.ErrNotReady) && present {
-		h.replaceChapters(w, r, itemID, rows)
+	if errors.Is(err, chapters.ErrNotReady) {
+		fallback(err.Error())
 		return
 	}
 	if chaptersError(w, err) {

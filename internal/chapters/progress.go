@@ -16,15 +16,19 @@ type Progress struct {
 	// (com_nalet_katalog_chaptersmissing), MissingPackaged those of them
 	// whose version is complete.
 	Missing, MissingPackaged int
-	// Read, None, Unreadable and Failed are the titles whose last read wrote
-	// chapters, found none with a length, could not read the file for good,
-	// and failed (each waits its backoff); InFlight those handed out now.
-	Read, None, Unreadable, Failed, InFlight int
-	// HandedOutLastHour is how many the backfill handed out in the last hour.
-	HandedOutLastHour int
-	LastReadAt        *time.Time
-	// Settings are the backfill's settings, and Idle why it hands out
-	// nothing now ("" when it may).
+	// Read are the titles whose last read wrote chapters, FromRecord those of
+	// them read from their source records; None those whose original holds no
+	// chapter with a length, Unconfirmed those of them no record agrees with
+	// yet; Unreadable those whose header could not be read again and again,
+	// Accepted those of them an admin settled; Failed those whose last read
+	// failed (each waits its backoff); InFlight those handed out now.
+	Read, FromRecord, None, Unconfirmed, Unreadable, Accepted, Failed, InFlight int
+	// HandedOutLastHour and RecordsReadLastHour are the titles the backfill
+	// handed out, and the source records the catalog read, in the last hour.
+	HandedOutLastHour, RecordsReadLastHour int
+	LastReadAt                             *time.Time
+	// Settings are the backfill's settings, and Idle why it reads nothing
+	// now ("" when it may).
 	Settings Settings
 	Idle     string
 }
@@ -43,11 +47,18 @@ func (s *Service) Progress(ctx context.Context) (Progress, error) {
 		FROM `+store.ChaptersMissingView+` m`).Scan(&p.Missing, &p.MissingPackaged); err != nil {
 		return p, err
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state = 'read'), count(*) FILTER (WHERE state = 'none'),
-			count(*) FILTER (WHERE state = 'unreadable'), count(*) FILTER (WHERE state = 'failed'),
-			count(*) FILTER (WHERE claimedat IS NOT NULL), count(*) FILTER (WHERE lastclaimedat > $1), max(readat)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state = 'read'),
+			count(*) FILTER (WHERE state = 'read' AND readfrom = 'record'), count(*) FILTER (WHERE state = 'none'),
+			count(*) FILTER (WHERE state = 'none' AND NOT confirmed), count(*) FILTER (WHERE state = 'unreadable'),
+			count(*) FILTER (WHERE state = 'unreadable' AND acceptedat IS NOT NULL), count(*) FILTER (WHERE state = 'failed'),
+			count(*) FILTER (WHERE claimedat IS NOT NULL), count(*) FILTER (WHERE recordat > $1), max(readat)
 		FROM `+store.ChapterReadsTable, now.Add(-time.Hour)).
-		Scan(&p.Read, &p.None, &p.Unreadable, &p.Failed, &p.InFlight, &p.HandedOutLastHour, &p.LastReadAt); err != nil {
+		Scan(&p.Read, &p.FromRecord, &p.None, &p.Unconfirmed, &p.Unreadable, &p.Accepted, &p.Failed, &p.InFlight,
+			&p.RecordsReadLastHour, &p.LastReadAt); err != nil {
+		return p, err
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM `+store.ChapterClaimsTable+` WHERE claimedat > $1`,
+		now.Add(-time.Hour)).Scan(&p.HandedOutLastHour); err != nil {
 		return p, err
 	}
 	var err error
@@ -61,12 +72,6 @@ func (s *Service) Progress(ctx context.Context) (Progress, error) {
 		p.Idle = SettingWindow + " is no window"
 	case !set.Window.Contains(now):
 		p.Idle = "outside " + SettingWindow + " (" + set.Window.String() + ")"
-	case set.Rate == 0:
-		p.Idle = SettingRate + " is 0"
-	case p.InFlight >= set.Inflight:
-		p.Idle = "titles enough are being read (" + SettingInflight + ")"
-	case p.HandedOutLastHour >= set.Rate:
-		p.Idle = "the hour's titles were handed out (" + SettingRate + ")"
 	case p.Missing == 0:
 		p.Idle = "no title misses its chapters"
 	}

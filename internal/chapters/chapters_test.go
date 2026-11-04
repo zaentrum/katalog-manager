@@ -104,7 +104,8 @@ func TestAFailureWaitsItsBackoff(t *testing.T) {
 // default and said so, and a window that can't be read hands out nothing.
 func TestTheBackfillsSettings(t *testing.T) {
 	s := DefaultSettings()
-	if s.On || s.Window.String() != "22:00-17:00 UTC" || s.Inflight != 1 || s.Rate != 120 || s.Lease != 30*time.Minute {
+	if s.On || s.Window.String() != "22:00-17:00 UTC" || s.Inflight != 1 || s.Rate != 120 || s.Records != 3600 ||
+		s.Lease != 30*time.Minute {
 		t.Fatalf("defaults: %+v", s)
 	}
 	for _, at := range []struct {
@@ -118,17 +119,19 @@ func TestTheBackfillsSettings(t *testing.T) {
 	s.set(SettingBackfill, " ON ")
 	s.set(SettingInflight, "3")
 	s.set(SettingRate, "0")
+	s.set(SettingRecords, "0")
 	s.set(SettingLease, "2h")
-	if !s.On || s.Inflight != 3 || s.Rate != 0 || s.Lease != 2*time.Hour || len(s.Problems) != 0 {
+	if !s.On || s.Inflight != 3 || s.Rate != 0 || s.Records != 0 || s.Lease != 2*time.Hour || len(s.Problems) != 0 {
 		t.Errorf("set: %+v", s)
 	}
 	s = DefaultSettings()
 	s.set(SettingBackfill, "yes")
 	s.set(SettingInflight, "0")
 	s.set(SettingRate, "-1")
+	s.set(SettingRecords, "many")
 	s.set(SettingLease, "10s")
 	s.set(SettingWindow, "evenings")
-	if s.On || s.Inflight != 1 || s.Rate != 120 || s.Lease != 30*time.Minute || len(s.Problems) != 5 {
+	if s.On || s.Inflight != 1 || s.Rate != 120 || s.Records != 3600 || s.Lease != 30*time.Minute || len(s.Problems) != 6 {
 		t.Errorf("unreadable: %+v", s)
 	}
 	if !s.Window.Never || s.Window.Contains(time.Date(2026, 11, 4, 3, 0, 0, 0, time.UTC)) ||

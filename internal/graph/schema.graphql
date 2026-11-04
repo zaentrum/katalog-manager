@@ -1860,45 +1860,68 @@ extend type Query {
 }
 
 # Chapters (migration 055). A title's chapters live in the catalog, not in
-# its package: the analyzer reads them from its original's header, and the
-# catalog keeps each read with what it found. A title misses its chapters
-# while its original's record says it has chapters, the catalog has none of
-# the title and no read of that original settled it (none: the header holds
-# no chapter with a length; unreadable: its reads failed again and again);
-# a deletion wave keeps such an original, and the backfill
+# its package: they are read from its original, by the analyzer of its
+# header or by the catalog of its source record (the library's probe of the
+# file), and the catalog keeps each title's last read with what it found. A
+# title misses its chapters until a read of its current original settles it
+# (chapters written, a none its record agrees with, an unreadable an admin
+# accepted); a deletion wave keeps such an original, and the backfill
 # (chapters.backfill, README "Chapters") reads these titles again.
 #
 # How far the chapters are: the titles that miss theirs (missingPackaged:
 # those whose version is complete, the deletion waves' next), the titles
-# whose last read wrote chapters (read), found none with a length (none),
-# could not read the file for good (unreadable), or failed (each waits its
-# backoff), those handed out now and in the last hour, when the last read was
-# reported; and the backfill's settings, and idle, why it hands out nothing
-# now (null when it may).
+# whose last read wrote chapters (read; fromRecord: read from their source
+# records), found none with a length (none; unconfirmed: no record agrees
+# yet, which settles nothing), whose header could not be read again and
+# again (unreadable; accepted: an admin settled them), or whose read failed
+# (each waits its backoff), those handed out now, those handed out and the
+# records read in the last hour, when the last read was reported; and the
+# backfill's settings, and idle, why it reads nothing now (null when it may).
 type ChapterReadProgress {
   missing: Int!
   missingPackaged: Int!
   read: Int!
+  fromRecord: Int!
   none: Int!
+  unconfirmed: Int!
   unreadable: Int!
+  accepted: Int!
   failed: Int!
   inFlight: Int!
   handedOutLastHour: Int!
+  recordsReadLastHour: Int!
   lastReadAt: Time
   # the settings as read: chapters.backfill (backfill),
   # chapters.backfill.window (UTC), .inflight (maxInFlight), .rate
-  # (maxPerHour) and .lease; problems, of a setting that could not be read
+  # (maxPerHour), .records (maxRecordsPerHour) and .lease; problems, of a
+  # setting that could not be read
   backfill: Boolean!
   window: String!
   maxInFlight: Int!
   maxPerHour: Int!
+  maxRecordsPerHour: Int!
   lease: String!
   idle: String
   problems: [String!]!
+}
+
+# What acceptChapterReads did: the titles it settled, and of each it refused
+# why ("<id>: ...").
+type ChapterReadsAccepted {
+  accepted: [ID!]!
+  refused: [String!]!
 }
 
 extend type Query {
   # How far the chapters are, and their backfill; an error on a catalog older
   # than migration 055.
   chapterReads: ChapterReadProgress!
+}
+
+extend type Mutation {
+  # Settles, for an admin, the titles of items whose original's header could
+  # not be read again and again (their last read unreadable, of their current
+  # original): their originals may go without their chapters. A title whose
+  # read is anything else is refused, saying why.
+  acceptChapterReads(items: [ID!]!): ChapterReadsAccepted!
 }

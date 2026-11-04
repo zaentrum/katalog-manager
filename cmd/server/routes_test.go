@@ -499,7 +499,9 @@ var operations = []struct{ doc, calls string }{
 	{`{ retireRun { id state dryRun finishedAt wouldRetire bytes items(first: 50, result: WOULD_RETIRE) { position itemId
 		sourceId versionId result reason at } } }`, `the retire run; the titles of retire run r1: 50 after 0, "would-retire"`},
 	{`{ pictureAreas { titles letterboxed toMeasure backfill window idle } }`, ""},
-	{`{ chapterReads { missing missingPackaged read none unreadable failed backfill window idle } }`, ""},
+	{`{ chapterReads { missing missingPackaged read fromRecord none unconfirmed unreadable accepted failed backfill window
+		maxRecordsPerHour idle } }`, ""},
+	{`mutation { acceptChapterReads(items: ["m1"]) { accepted refused } }`, ""},
 	{`mutation { replaceSource(itemId: "m1", path: "/media/a-film-1080p.mkv", deleteOldFile: true) { itemId oldPath path
 		replaced oldFileDeleted oldSidecars reencode { reencoded busy notSent message } message } }`,
 		"replace the file of m1 with /media/a-film-1080p.mkv, delete true, reencode true"},

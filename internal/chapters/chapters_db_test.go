@@ -3,6 +3,7 @@ package chapters
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/config"
+	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
@@ -17,49 +19,120 @@ import (
 // night is inside the backfill's default window (22:00-17:00 UTC).
 var night = time.Date(2026, 11, 4, 3, 0, 0, 0, time.UTC)
 
-// lib is a catalog's titles with their originals on disk, under one root.
+// uid is a title's or an original's id, a lower-case UUID as the library
+// names folders by: kind a hex digit, a for a movie, b an original, c a
+// retired title, d a version, e an original of no title, f a series.
+func uid(kind byte, n int) string {
+	return fmt.Sprintf("%c%07d-0000-4000-8000-%012d", kind, n, n)
+}
+
+// lib is a catalog's titles with their originals and source records on disk,
+// under one library root.
 type lib struct {
-	t    *testing.T
-	st   *store.Store
-	root string
+	t     *testing.T
+	st    *store.Store
+	root  string
+	paths library.Paths
 }
 
 func newLib(t *testing.T) lib {
-	return lib{t, storetest.Open(t), t.TempDir()}
+	root := t.TempDir()
+	return lib{t, storetest.Open(t), root, library.PathsOf(config.Config{LibraryRoot: root})}
 }
 
-// title makes the movie or episode id with its original, the source
-// sourceID, as its primary asset on disk (none when gone is set), and the
-// compliance check's record of it that says whether the source has chapters;
-// it returns the original's path.
-func (l lib) title(id, typ, sourceID string, hasChapters, gone bool) string {
+func (l lib) cfg() config.Config {
+	return config.Config{LibraryRoot: l.root, PackagesRoot: filepath.Join(l.root, "packages")}
+}
+
+// opts says how a title is made: whether the compliance check's record of its
+// original says it has chapters (chapters, unless records says otherwise:
+// "none" no compliance row, "null" records unread, "odd" no boolean, "other"
+// of another original), whether its original is gone from disk.
+type opts struct {
+	chapters bool
+	records  string
+	gone     bool
+}
+
+// title makes the movie id with its original source as its primary asset,
+// on disk unless gone, and the compliance check's record of it; it returns
+// the original's path.
+func (l lib) title(id, source string, o opts) string {
 	l.t.Helper()
-	storetest.AddItem(l.t, l.st, id, typ, "Title "+id, "")
-	path := filepath.Join(l.root, "media", id, "original.mkv")
-	if !gone {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			l.t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte("a film"), 0o644); err != nil {
-			l.t.Fatal(err)
-		}
+	storetest.AddItem(l.t, l.st, id, "movie", "Title "+id[:8], "")
+	path := filepath.Join(l.root, "incoming", id, "original.mkv")
+	if !o.gone {
+		l.file(path, "a film")
 	}
 	storetest.Exec(l.t, l.st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state)
-		VALUES ($1, $2, 'original.mkv', 6, 'present')`, sourceID, id)
+		VALUES ($1, $2, 'original.mkv', 6, 'present')`, source, id)
 	storetest.Exec(l.t, l.st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, sourceid)
-		VALUES (gen_random_uuid()::varchar, $1, $2, true, 'primary', $3)`, id, path, sourceID)
-	kind := typ
-	storetest.Exec(l.t, l.st, `INSERT INTO com_nalet_katalog_compliance (item_id, kind, ruleshash, records)
-		VALUES ($1, $2, 'h', jsonb_build_object('srcEssence', jsonb_build_object('chapters', $3::boolean)))`,
-		id, kind, hasChapters)
+		VALUES (gen_random_uuid()::varchar, $1, $2, true, 'primary', $3)`, id, path, source)
+	key, rec := "records/2 s:"+source+"@1.5 ", fmt.Sprintf(`{"srcEssence": {"chapters": %t}}`, o.chapters)
+	switch o.records {
+	case "none":
+		return path
+	case "null":
+		rec = ""
+	case "odd":
+		rec = `{"srcEssence": {"chapters": "yes"}}`
+	case "other":
+		key = "records/2 s:" + uid('e', 9) + "@1.5 "
+	}
+	storetest.Exec(l.t, l.st, `INSERT INTO com_nalet_katalog_compliance (item_id, kind, ruleshash, recordkey, records)
+		VALUES ($1, 'movie', 'h', $2, NULLIF($3, '')::jsonb)`, id, key, rec)
+	return path
+}
+
+func (l lib) file(path, content string) {
+	l.t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		l.t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		l.t.Fatal(err)
+	}
+}
+
+// record writes the source record's probe of the movie id's original source,
+// with the chapter marks given ([start, end, title] each, in seconds; an end
+// below 0 is none) and the file's duration.
+func (l lib) record(id, source string, duration float64, marks ...[3]any) string {
+	l.t.Helper()
+	var chs []string
+	for _, m := range marks {
+		end := ""
+		if e, _ := m[1].(float64); e >= 0 {
+			end = fmt.Sprintf(`, "end_time": "%f"`, e)
+		}
+		chs = append(chs, fmt.Sprintf(`{"start_time": "%f"%s, "tags": {"title": %q}}`, m[0], end, m[2]))
+	}
+	path := filepath.Join(library.SourceDir(l.paths.MovieDir(id), source), ProbeFile)
+	l.file(path, fmt.Sprintf(`{"streams": [{"codec_type": "video"}], "chapters": [%s], "format": {"duration": "%f"}}`,
+		strings.Join(chs, ", "), duration))
 	return path
 }
 
 // packaged gives the item a complete version made of its source.
-func (l lib) packaged(id, sourceID string) {
+func (l lib) packaged(id, source string) {
 	l.t.Helper()
 	storetest.Exec(l.t, l.st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, state, dir, sourceids)
-		VALUES ($1, $2, 'complete', $3, ARRAY[$4]::varchar[])`, "v-"+id, id, filepath.Join(l.root, "versions", id), sourceID)
+		VALUES ('d' || substring($1::varchar from 2), $1, 'complete', $2, ARRAY[$3]::varchar[])`, id,
+		filepath.Join(l.root, "versions", id), source)
+}
+
+// rows writes chapter rows of the item as a read before the reads were kept
+// did.
+func (l lib) rows(id string, chs ...Chapter) {
+	l.t.Helper()
+	for _, c := range chs {
+		storetest.Exec(l.t, l.st, `INSERT INTO com_nalet_katalog_itemchapters (id, item_id, startms, endms, title, ordinal)
+			VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, $5)`, id, c.StartMs, c.EndMs, c.Title, c.Ordinal)
+	}
+}
+
+func (l lib) count(id string) int {
+	return storetest.Count(l.t, l.st, `SELECT count(*) FROM com_nalet_katalog_itemchapters WHERE item_id = $1`, id)
 }
 
 func setting(t *testing.T, st *store.Store, key, value string) {
@@ -75,139 +148,490 @@ func three() []Chapter {
 		{StartMs: 1_200_000, EndMs: 1_300_000, Title: nil, Ordinal: 3}}
 }
 
-func found(path string, chs []Chapter, marks int32) Report {
+// threeMarks are the record's marks of three(), in seconds.
+func threeMarks() [][3]any {
+	return [][3]any{{0.0, 60.0, "Opening"}, {60.0, 1200.0, "Act 1"}, {1200.0, 1300.0, ""}}
+}
+
+func header(path string, chs []Chapter, marks int32) Report {
 	return Report{Read: ReadReport{Path: path, Found: &marks, Probe: "ffprobe version 4.4.2", Seconds: f64(0.4)},
 		Chapters: chs}
 }
 
-func failed(path, why string) Report {
-	return Report{Read: ReadReport{Path: path, Error: why}}
+func failed(path, why string, transient bool) Report {
+	return Report{Read: ReadReport{Path: path, Error: why, Transient: transient}}
 }
 
 func f64(v float64) *float64 { return &v }
 
-func needs(t *testing.T, st *store.Store, id, source string) bool {
+func needs(t *testing.T, st *store.Store, id string) bool {
 	t.Helper()
-	n, err := NeedsOriginal(context.Background(), st.Pool(), id, source)
+	n, err := NeedsOriginal(context.Background(), st.Pool(), id, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	return n
 }
 
-// A read that found the chapters of a title's original writes them and keeps
-// what it read: the original (by its primary asset's path), its size, the
-// marks the header held and those written. The title misses no chapters
-// then. A read of the same original that finds none writes none, and keeps
-// the title settled; a new original is read again.
-func TestAReadWritesTheChaptersAndSettlesTheTitle(t *testing.T) {
+func (l lib) record_(id string, r Report, now time.Time) *Read {
+	l.t.Helper()
+	got, err := Record(context.Background(), l.st, l.paths, id, r, now)
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	return got
+}
+
+func service(l lib, now *time.Time) *Service {
+	return New(l.st, l.cfg()).WithClock(func() time.Time { return *now })
+}
+
+// A read of the header that found chapters writes them and settles the title;
+// one of its original that finds none later leaves them (an empty read never
+// replaces chapters read before of the same original).
+func TestAReadWritesTheChaptersAndAnEmptyOneLeavesThem(t *testing.T) {
 	l := newLib(t)
-	ctx := context.Background()
-	orig := l.title("m1", "movie", "s1", true, false)
-	if !needs(t, l.st, "m1", "s1") || !needs(t, l.st, "m1", "") {
+	m1, s1 := uid('a', 1), uid('b', 1)
+	orig := l.title(m1, s1, opts{chapters: true})
+	if !needs(t, l.st, m1) {
 		t.Fatal("a title whose original has chapters and none in the catalog: it needs its original")
 	}
-	r, err := Record(ctx, l.st, "m1", found(orig, three(), 4), night)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.State != StateRead || deref(r.SourceID) != "s1" || *r.Found != 4 || *r.Written != 3 || *r.FileSize != 6 ||
-		deref(r.Probe) != "ffprobe version 4.4.2" || !r.ReadAt.Equal(night) || r.Failures != 0 {
+	r := l.record_(m1, header(orig, three(), 4), night)
+	if r.State != StateRead || deref(r.ReadFrom) != ReadFromHeader || deref(r.SourceID) != s1 || *r.Found != 4 ||
+		*r.Written != 3 || *r.FileSize != 6 || !r.NextAttemptAt.Equal(night.Add(SettledWait)) || l.count(m1) != 3 {
 		t.Fatalf("the read: %+v", r)
 	}
-	chs, err := Of(ctx, l.st.Pool(), "m1")
-	if err != nil || len(chs) != 3 || deref(chs[1].Title) != "Act 1" || chs[2].Title != nil || chs[2].EndMs != 1_300_000 {
-		t.Fatalf("the chapters written: %+v, %v", chs, err)
-	}
-	if needs(t, l.st, "m1", "s1") {
+	if needs(t, l.st, m1) {
 		t.Error("needs its original once its chapters are in the catalog")
 	}
-
-	// read again, and the header holds two marks of no length
-	if r, err = Record(ctx, l.st, "m1", found(orig, []Chapter{}, 2), night.Add(time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	if r.State != StateNone || *r.Found != 2 || *r.Written != 0 ||
-		storetest.Count(t, l.st, `SELECT count(*) FROM com_nalet_katalog_itemchapters WHERE item_id = 'm1'`) != 0 {
-		t.Fatalf("a read that found none: %+v", r)
-	}
-	if needs(t, l.st, "m1", "s1") {
-		t.Error("a title whose original's header holds no chapter needs it all the same")
-	}
-	// a new original, its record says chapters too: the read was of another
-	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_itemsources SET state = 'deleted' WHERE id = 's1'`)
-	storetest.Exec(t, l.st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state)
-		VALUES ('s2', 'm1', 'original.mkv', 9, 'present')`)
-	if !needs(t, l.st, "m1", "s2") || needs(t, l.st, "m1", "s1") {
-		t.Error("a new original is to be read: the read was of the old one")
+	// the header read finds none now (a read error the reader did not see)
+	r = l.record_(m1, header(orig, []Chapter{}, 0), night.Add(time.Hour))
+	if r.State != StateRead || l.count(m1) != 3 || !strings.Contains(deref(r.Reason), "stay") {
+		t.Fatalf("an empty read after chapters were read of the original: %+v, %d chapters", r, l.count(m1))
 	}
 }
 
-// A read that failed leaves the title's chapters as they are and counts a
-// failure, which waits its backoff; the fifth in a row settles the title as
-// unreadable, and a read that finds chapters ends the count. A failure of a
-// title whose chapters are in the catalog is none of it.
-func TestAFailedReadCountsUntilTheTitleIsUnreadable(t *testing.T) {
+// A read of the header that found none is held against the original's record:
+// where the record holds chapters they are written; where its marks have no
+// length the none is confirmed; where the record can't be read the compliance
+// check's word decides (no chapters: confirmed; chapters: a failure, nothing
+// deleted); where nothing can say, the none settles nothing.
+func TestAnEmptyReadIsHeldAgainstTheRecord(t *testing.T) {
+	l := newLib(t)
+	at := night
+
+	// its record holds three chapters: they are written, read from it
+	m1, s1 := uid('a', 1), uid('b', 1)
+	orig := l.title(m1, s1, opts{chapters: true})
+	l.record(m1, s1, 1300, threeMarks()...)
+	r := l.record_(m1, header(orig, []Chapter{}, 0), at)
+	if r.State != StateRead || deref(r.ReadFrom) != ReadFromRecord || *r.Written != 3 || l.count(m1) != 3 ||
+		!strings.Contains(deref(r.Reason), "its source record holds 3") || needs(t, l.st, m1) {
+		t.Fatalf("an empty read whose record holds chapters: %+v, %d chapters", r, l.count(m1))
+	}
+
+	// its record's marks have no length: the none is confirmed, and the
+	// chapters an earlier read wrote are not deleted
+	m2, s2 := uid('a', 2), uid('b', 2)
+	orig2 := l.title(m2, s2, opts{chapters: true})
+	l.record(m2, s2, 2900, [3]any{3600.0, 3600.0, "Chapter 01"}, [3]any{3605.0, 3605.0, "Intro"})
+	l.rows(m2, Chapter{StartMs: 0, EndMs: 9000, Title: str("Old"), Ordinal: 1})
+	r = l.record_(m2, header(orig2, []Chapter{}, 2), at)
+	if r.State != StateNone || !r.Confirmed || deref(r.RecordSourceID) != s2 || needs(t, l.st, m2) || l.count(m2) != 1 {
+		t.Fatalf("an empty read its record agrees with: %+v, %d chapters", r, l.count(m2))
+	}
+
+	// no record, and the compliance check's says chapters: a failure, the
+	// chapters an earlier read wrote stay
+	m3, s3 := uid('a', 3), uid('b', 3)
+	orig3 := l.title(m3, s3, opts{chapters: true})
+	l.rows(m3, three()...)
+	r = l.record_(m3, header(orig3, []Chapter{}, 0), at)
+	if r.State != StateFailed || r.Failures != 1 || l.count(m3) != 3 || !needs(t, l.st, m3) ||
+		!strings.Contains(deref(r.Reason), "says it holds some") {
+		t.Fatalf("an empty read the record contradicts: %+v, %d chapters", r, l.count(m3))
+	}
+
+	// no record, and the compliance check's says no chapters: confirmed
+	m4, s4 := uid('a', 4), uid('b', 4)
+	orig4 := l.title(m4, s4, opts{chapters: false})
+	if r = l.record_(m4, header(orig4, []Chapter{}, 0), at); r.State != StateNone || !r.Confirmed {
+		t.Fatalf("an empty read the compliance record agrees with: %+v", r)
+	}
+
+	// nothing can say: settles nothing, and its record is read again
+	m5, s5 := uid('a', 5), uid('b', 5)
+	orig5 := l.title(m5, s5, opts{records: "none"})
+	r = l.record_(m5, header(orig5, []Chapter{}, 0), at)
+	if r.State != StateNone || r.Confirmed || r.RecordSourceID != nil || !needs(t, l.st, m5) ||
+		!r.NextAttemptAt.Equal(at.Add(MaxBackoff)) {
+		t.Fatalf("an empty read nothing confirms: %+v", r)
+	}
+}
+
+// A failure of the storage or the worker (no file, no answer in time, a lease
+// that ended, an original not on disk) counts for nothing but a backoff; a
+// read that ran on the file and could not read its chapters counts, once a
+// backoff, and the fifth makes the title unreadable, which settles nothing:
+// it is handed out no more, and an admin's acceptance settles it.
+func TestOnlyAFileThatCantBeReadCountsAndUnreadableSettlesNothing(t *testing.T) {
 	l := newLib(t)
 	ctx := context.Background()
-	orig := l.title("m1", "movie", "s1", true, false)
+	m1, s1 := uid('a', 1), uid('b', 1)
+	orig := l.title(m1, s1, opts{chapters: true})
 	at := night
+	for i := 1; i <= 10; i++ {
+		r := l.record_(m1, failed(orig, "ffprobe did not answer within 120 s", true), at)
+		if r.State != StateFailed || r.Failures != 0 || r.Transients != int32(i) {
+			t.Fatalf("transient %d: %+v", i, r)
+		}
+		at = *r.NextAttemptAt
+	}
 	waits := []time.Duration{time.Hour, 2 * time.Hour, 4 * time.Hour, 8 * time.Hour}
 	for i, wait := range waits {
-		r, err := Record(ctx, l.st, "m1", failed(orig, "ffprobe did not answer within 120 s"), at)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if r.State != StateFailed || r.Failures != int32(i+1) || !r.NextAttemptAt.Equal(at.Add(wait)) ||
-			deref(r.Reason) != "ffprobe did not answer within 120 s" || deref(r.SourceID) != "s1" {
+		r := l.record_(m1, failed(orig, "ffprobe exited 1: Invalid data found when processing input", false), at)
+		if r.State != StateFailed || r.Failures != int32(i+1) || r.Transients != 0 || !r.NextAttemptAt.Equal(at.Add(wait)) {
 			t.Fatalf("failure %d: %+v", i+1, r)
 		}
-		// the step's retries of the pass, a minute and three later: what
-		// failed is said, the failure counted once
-		for _, retry := range []time.Duration{time.Minute, 3 * time.Minute} {
-			r, err := Record(ctx, l.st, "m1", failed(orig, "the storage is slow"), at.Add(retry))
-			if err != nil || r.Failures != int32(i+1) || !r.NextAttemptAt.Equal(at.Add(wait)) ||
-				deref(r.Reason) != "the storage is slow" || !r.ReadAt.Equal(at.Add(retry)) {
-				t.Fatalf("a retry within failure %d's backoff: %+v, %v", i+1, r, err)
-			}
-		}
-		if !needs(t, l.st, "m1", "s1") {
-			t.Fatalf("failure %d settled the title", i+1)
+		// the step's retries of the pass within the backoff: counted once
+		if r = l.record_(m1, failed(orig, "again", false), at.Add(time.Minute)); r.Failures != int32(i+1) {
+			t.Fatalf("a retry within failure %d's backoff counted: %+v", i+1, r)
 		}
 		at = at.Add(wait)
 	}
-	r, err := Record(ctx, l.st, "m1", failed(orig, "exit 1: Invalid data found when processing input"), at)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.State != StateUnreadable || r.Failures != MaxFailures || r.NextAttemptAt != nil ||
-		deref(r.Reason) != "5 reads in a row failed, the last: exit 1: Invalid data found when processing input" {
+	r := l.record_(m1, failed(orig, "exit 1: moov atom not found", false), at)
+	if r.State != StateUnreadable || r.Failures != MaxFailures ||
+		deref(r.Reason) != "5 reads in a row failed, the last: exit 1: moov atom not found" {
 		t.Fatalf("the fifth failure: %+v", r)
 	}
-	if needs(t, l.st, "m1", "s1") {
-		t.Error("an unreadable original is needed for good")
+	if !needs(t, l.st, m1) {
+		t.Fatal("an unreadable title settled itself")
 	}
-	// it can be read after all: chapters, and the count ends
-	if r, err = Record(ctx, l.st, "m1", found(orig, three(), 3), at.Add(time.Hour)); err != nil {
+	accepted, refused, err := Accept(ctx, l.st, []string{m1, uid('a', 9)}, "an-admin", at)
+	if err != nil || len(accepted) != 1 || accepted[0] != m1 || len(refused) != 1 ||
+		!strings.Contains(refused[0], "no such title") {
+		t.Fatalf("accept: %v %v %v", accepted, refused, err)
+	}
+	if needs(t, l.st, m1) {
+		t.Error("an accepted unreadable title still needs its original")
+	}
+	// a failed title is no unreadable one
+	m2, s2 := uid('a', 2), uid('b', 2)
+	orig2 := l.title(m2, s2, opts{chapters: true})
+	l.record_(m2, failed(orig2, "exit 1", false), at)
+	if accepted, refused, _ := Accept(ctx, l.st, []string{m2}, "an-admin", at); len(accepted) != 0 ||
+		!strings.Contains(refused[0], "is failed, not unreadable") {
+		t.Errorf("accepting a failed title: %v %v", accepted, refused)
+	}
+}
+
+// A report of a claim whose title a newer read settled meanwhile changes
+// nothing but its claim: a late report never replaces a newer read, empty or
+// not.
+func TestALateReportNeverReplacesANewerRead(t *testing.T) {
+	l := newLib(t)
+	ctx := context.Background()
+	now := night
+	s := service(l, &now)
+	setting(t, l.st, SettingBackfill, "on")
+	m1, s1 := uid('a', 1), uid('b', 1)
+	orig := l.title(m1, s1, opts{chapters: true})
+	c, err := s.Claim(ctx, "analyzer-0", 1) // its record has no probe: handed out
+	if err != nil || len(c.Items) != 1 || c.Settled != 0 {
+		t.Fatalf("claim: %+v, %v", c, err)
+	}
+	job := c.Items[0]
+	now = now.Add(time.Minute)
+	l.record_(m1, header(orig, three(), 3), now) // the analyzer's pass, meanwhile
+	now = now.Add(time.Minute)
+	// the claim's own report, late: one chapter, older than the pass's read;
+	// then reports naming that claim again, which ended
+	for i, late := range [][]Chapter{{{StartMs: 0, EndMs: 5000, Ordinal: 1}}, {{StartMs: 0, EndMs: 5000, Ordinal: 1}}, {}} {
+		r, err := s.Record(ctx, m1, Report{Read: ReadReport{Path: job.Path, SourceID: job.SourceID, Found: i32(1)},
+			Chapters: late, Token: job.Token})
+		if err != nil || r.State != StateRead || l.count(m1) != 3 || r.ClaimedAt != nil || *r.Written != 3 {
+			t.Fatalf("late report %d of %d chapters: %+v, %v, %d chapters", i+1, len(late), r, err, l.count(m1))
+		}
+	}
+}
+
+// The view fails closed: a title whose compliance record of its current
+// original is missing, unread, no boolean or of another original misses its
+// chapters until a read settles it; one whose record of that original says no
+// chapters needs nothing.
+func TestTheViewFailsClosed(t *testing.T) {
+	l := newLib(t)
+	for i, tc := range []struct {
+		o       opts
+		missing bool
+	}{
+		{opts{chapters: true}, true},
+		{opts{records: "none"}, true},
+		{opts{records: "null"}, true},
+		{opts{records: "odd"}, true},
+		{opts{records: "other"}, true},
+		{opts{chapters: false}, false},
+		{opts{chapters: false, records: "other"}, true},
+	} {
+		id := uid('a', i+1)
+		l.title(id, uid('b', i+1), tc.o)
+		if got := needs(t, l.st, id); got != tc.missing {
+			t.Errorf("%+v: missing %v, want %v", tc.o, got, tc.missing)
+		}
+	}
+}
+
+// Chapters count as in the catalog only when a read of the title's current
+// original wrote them: a title whose original was replaced misses them again,
+// and of a title with two originals present the current one is the primary
+// asset's, read once.
+func TestChaptersAreOfTheCurrentOriginal(t *testing.T) {
+	l := newLib(t)
+	ctx := context.Background()
+	m1, s1, s2 := uid('a', 1), uid('b', 1), uid('b', 2)
+	orig := l.title(m1, s1, opts{chapters: true})
+	l.record_(m1, header(orig, three(), 3), night)
+	if needs(t, l.st, m1) {
+		t.Fatal("read of its original")
+	}
+	// replaced: a new original, the primary asset's now; the old one present
+	storetest.Exec(t, l.st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state, createdat)
+		VALUES ($1, $2, 'original.mkv', 9, 'present', now() - interval '1 day')`, s2, m1)
+	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_playbackassets SET sourceid = $1 WHERE item_id = $2`, s2, m1)
+	if !needs(t, l.st, m1) {
+		t.Fatal("the chapters of the replaced original count for the new one")
+	}
+	if n := storetest.Count(t, l.st, `SELECT count(*) FROM com_nalet_katalog_chaptersmissing WHERE item_id = $1`, m1); n != 1 {
+		t.Fatalf("a title with two originals present is missing %d times", n)
+	}
+	if ok, _ := NeedsOriginal(ctx, l.st.Pool(), m1, s2); !ok {
+		t.Error("the current original is the primary asset's")
+	}
+	// a read the claim names the new original of settles it, whatever its
+	// path says (one where a run left the original)
+	r := l.record_(m1, Report{Read: ReadReport{Path: "/elsewhere/original.mkv", SourceID: s2, Found: i32(3)},
+		Chapters: three()}, night.Add(time.Hour))
+	if deref(r.SourceID) != s2 || needs(t, l.st, m1) {
+		t.Errorf("a read of the new original: %+v", r)
+	}
+	// one that names no original of the title is of its file's
+	if r = l.record_(m1, Report{Read: ReadReport{Path: orig, SourceID: uid('e', 3), Found: i32(3)}, Chapters: three()},
+		night.Add(2*time.Hour)); deref(r.SourceID) != s2 {
+		t.Errorf("a read naming another title's original: %+v", r)
+	}
+}
+
+// Each claim first settles the titles whose source record says their chapters
+// (from it, no media read): chapters written (those in the catalog kept as
+// they are when they are the record's), or a confirmed none; a title whose
+// record can't say is handed out to the analyzer. A retired title without
+// chapters has them restored from its record; one whose compliance record
+// says none is not read.
+func TestTheBackfillSettlesFromTheRecordsFirst(t *testing.T) {
+	l := newLib(t)
+	ctx := context.Background()
+	now := night
+	s := service(l, &now)
+	setting(t, l.st, SettingBackfill, "on")
+
+	m1, s1 := uid('a', 1), uid('b', 1) // its record holds chapters
+	l.title(m1, s1, opts{chapters: true})
+	l.packaged(m1, s1)
+	l.record(m1, s1, 1300, threeMarks()...)
+	m2, s2 := uid('a', 2), uid('b', 2) // its record's marks have no length
+	l.title(m2, s2, opts{chapters: true})
+	l.record(m2, s2, 1418, [3]any{0.0, 0.0, "Part A"})
+	m3, s3 := uid('a', 3), uid('b', 3) // chapters of an earlier read, the record's
+	l.title(m3, s3, opts{chapters: true})
+	l.record(m3, s3, 1300, threeMarks()...)
+	l.rows(m3, three()...)
+	m4, s4 := uid('a', 4), uid('b', 4) // chapters of an earlier read, not the record's
+	l.title(m4, s4, opts{chapters: true})
+	l.record(m4, s4, 1300, threeMarks()...)
+	l.rows(m4, Chapter{StartMs: 0, EndMs: 9000, Title: str("Old"), Ordinal: 1})
+	m5, s5 := uid('a', 5), uid('b', 5) // no probe in its record: the analyzer's
+	l.title(m5, s5, opts{chapters: true})
+	r1, sr1 := uid('c', 1), uid('b', 6) // retired, its record holds chapters
+	l.title(r1, sr1, opts{chapters: true})
+	l.record(r1, sr1, 1300, threeMarks()...)
+	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_itemsources SET state = 'deleted', deletedat = now() WHERE id = $1`, sr1)
+	r2, sr2 := uid('c', 2), uid('b', 7) // retired, its compliance record says none
+	l.title(r2, sr2, opts{chapters: false})
+	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_itemsources SET state = 'deleted', deletedat = now() WHERE id = $1`, sr2)
+	ids := func(id string) string {
+		var s string
+		if err := l.st.Pool().QueryRow(ctx, `SELECT string_agg(id, ',' ORDER BY id) FROM com_nalet_katalog_itemchapters
+			WHERE item_id = $1`, id).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	m3rows := ids(m3)
+
+	c, err := s.Claim(ctx, "analyzer-0", 1)
+	if err != nil || c.Settled != 5 || len(c.Items) != 1 || c.Items[0].ID != m5 || c.Items[0].SourceID != s5 {
+		t.Fatalf("the first claim: %+v, %v", c, err)
+	}
+	for _, tc := range []struct {
+		id, state, from string
+		confirmed       bool
+		count           int
+	}{
+		{m1, StateRead, ReadFromRecord, false, 3},
+		{m2, StateNone, ReadFromRecord, true, 0},
+		{m3, StateRead, ReadFromRecord, false, 3},
+		{m4, StateRead, ReadFromRecord, false, 3},
+		{r1, StateRead, ReadFromRecord, false, 3},
+	} {
+		r, err := ReadOf(ctx, l.st.Pool(), tc.id)
+		if err != nil || r == nil || r.State != tc.state || deref(r.ReadFrom) != tc.from || r.Confirmed != tc.confirmed ||
+			l.count(tc.id) != tc.count {
+			t.Errorf("%s: %+v, %v, %d chapters", tc.id[:8], r, err, l.count(tc.id))
+		}
+	}
+	if r, _ := ReadOf(ctx, l.st.Pool(), m3); !strings.Contains(deref(r.Reason), "are those of its source record") ||
+		ids(m3) != m3rows {
+		t.Errorf("m3's chapters were written again: %+v", r)
+	}
+	if r, _ := ReadOf(ctx, l.st.Pool(), m4); !strings.Contains(deref(r.Reason), "in place of 1 chapters") {
+		t.Errorf("m4: %+v", r)
+	}
+	if r, _ := ReadOf(ctx, l.st.Pool(), r2); r != nil {
+		t.Errorf("a retired title whose record says no chapters was read: %+v", r)
+	}
+	if r, _ := ReadOf(ctx, l.st.Pool(), m5); !strings.Contains(deref(r.RecordNote), "has no probe") {
+		t.Errorf("m5's record: %+v", r)
+	}
+	for _, id := range []string{m1, m2, m3, m4} {
+		if needs(t, l.st, id) {
+			t.Errorf("%s still misses its chapters", id[:8])
+		}
+	}
+	p, err := s.Progress(ctx)
+	if err != nil || p.Missing != 1 || p.FromRecord != 4 || p.None != 1 || p.InFlight != 1 || p.HandedOutLastHour != 1 ||
+		p.RecordsReadLastHour != 6 {
+		t.Errorf("progress: %+v, %v", p, err)
+	}
+}
+
+// The backfill reads nothing while it is off, nor outside its window (not a
+// record either); an original not on disk waits a backoff as no failure of
+// its title, and the next goes; a claim whose lease ended waits a backoff as
+// no failure, and its run's report, late, ends nothing; a claim made near the
+// window's end must be read by it.
+func TestTheBackfillsPace(t *testing.T) {
+	l := newLib(t)
+	ctx := context.Background()
+	now := night
+	s := service(l, &now)
+	gone, sg := uid('a', 1), uid('b', 1)
+	l.title(gone, sg, opts{chapters: true, gone: true})
+	m2, s2 := uid('a', 2), uid('b', 2)
+	l.title(m2, s2, opts{chapters: true})
+
+	if c, err := s.Claim(ctx, "analyzer-0", 1); err != nil || c.Idle != "chapters.backfill is off" || c.RetryAfterSeconds != 900 {
+		t.Fatalf("off: %+v, %v", c, err)
+	}
+	setting(t, l.st, SettingBackfill, "on")
+	now = time.Date(2026, 11, 4, 18, 0, 0, 0, time.UTC)
+	if c, err := s.Claim(ctx, "analyzer-0", 1); err != nil || c.Idle != "outside chapters.backfill.window (22:00-17:00 UTC)" ||
+		c.RetryAfterSeconds != 4*3600 || c.Settled != 0 {
+		t.Fatalf("in the quiet hours: %+v, %v", c, err)
+	}
+	if n := storetest.Count(t, l.st, `SELECT count(*) FROM com_nalet_katalog_chapterreads WHERE recordat IS NOT NULL`); n != 0 {
+		t.Fatalf("%d records read in the quiet hours", n)
+	}
+	now = night
+	c, err := s.Claim(ctx, "analyzer-0", 1)
+	if err != nil || len(c.Items) != 1 || c.Items[0].ID != m2 || c.Items[0].SourceID != s2 {
+		t.Fatalf("m2: %+v, %v", c, err)
+	}
+	rg, _ := ReadOf(ctx, l.st.Pool(), gone)
+	if rg == nil || rg.State != StateFailed || rg.Failures != 0 || rg.Transients != 1 ||
+		!strings.HasPrefix(deref(rg.Reason), "nothing to read: its original is not at ") {
+		t.Fatalf("an original not on disk: %+v", rg)
+	}
+	lost := c.Items[0]
+	// its lease ends: a backoff, no failure
+	now = night.Add(DefaultLease + time.Second)
+	if c, err = s.Claim(ctx, "analyzer-0", 1); err != nil || len(c.Items) != 0 {
+		t.Fatalf("after the lease: %+v, %v", c, err)
+	}
+	r, _ := ReadOf(ctx, l.st.Pool(), m2)
+	if r.State != StateFailed || r.Failures != 0 || r.Transients != 1 || deref(r.LapsedToken) != lost.Token ||
+		!r.NextAttemptAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("m2 after its lease: %+v", r)
+	}
+	if r, err = s.Record(ctx, m2, Report{Read: ReadReport{Path: lost.Path, Error: "killed", Transient: true},
+		Token: lost.Token}); err != nil || r.Failures != 0 || r.Transients != 1 || r.LapsedToken != nil ||
+		deref(r.Reason) != "killed" {
+		t.Errorf("a late failure of a lapsed claim: %+v, %v", r, err)
+	}
+	// at 16:50 a claim's deadline is the window's end
+	now = time.Date(2026, 11, 4, 16, 50, 0, 0, time.UTC)
+	if c, err = s.Claim(ctx, "analyzer-0", 1); err != nil || len(c.Items) != 1 ||
+		!c.Deadline.Equal(time.Date(2026, 11, 4, 17, 0, 0, 0, time.UTC)) {
+		t.Fatalf("near the window's end: %+v, %v", c, err)
+	}
+	setting(t, l.st, SettingWindow, "after dinner")
+	if c, err = s.Claim(ctx, "analyzer-0", 1); err != nil || c.Idle != "chapters.backfill.window is no window" {
+		t.Errorf("no window: %+v, %v", c, err)
+	}
+}
+
+// The hour's rate counts claims, not titles: a title handed out and given
+// back twice within the hour reaches a rate of two.
+func TestTheRateCountsClaims(t *testing.T) {
+	l := newLib(t)
+	ctx := context.Background()
+	now := night
+	s := service(l, &now)
+	setting(t, l.st, SettingBackfill, "on")
+	setting(t, l.st, SettingRate, "2")
+	m1, s1 := uid('a', 1), uid('b', 1)
+	l.title(m1, s1, opts{chapters: true})
+	for i := 0; i < 2; i++ {
+		c, err := s.Claim(ctx, "analyzer-0", 1)
+		if err != nil || len(c.Items) != 1 {
+			t.Fatalf("claim %d: %+v, %v", i+1, c, err)
+		}
+		if _, err := s.Record(ctx, m1, Report{Released: true, Token: c.Items[0].Token}); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(ReleaseWait)
+	}
+	if c, err := s.Claim(ctx, "analyzer-0", 1); err != nil || len(c.Items) != 0 ||
+		c.Idle != "2 titles were handed out in the last hour (chapters.backfill.rate 2)" {
+		t.Fatalf("the hour's rate: %+v, %v", c, err)
+	}
+}
+
+// Without records read (chapters.backfill.records 0) every title goes to the
+// analyzer; an unreadable title is handed out no more.
+func TestWithoutRecordsAndAnUnreadableTitle(t *testing.T) {
+	l := newLib(t)
+	ctx := context.Background()
+	now := night
+	s := service(l, &now)
+	setting(t, l.st, SettingBackfill, "on")
+	setting(t, l.st, SettingRecords, "0")
+	m1, s1 := uid('a', 1), uid('b', 1)
+	orig := l.title(m1, s1, opts{chapters: true})
+	l.record(m1, s1, 1300, threeMarks()...)
+	c, err := s.Claim(ctx, "analyzer-0", 1)
+	if err != nil || len(c.Items) != 1 || c.Settled != 0 {
+		t.Fatalf("records off: %+v, %v", c, err)
+	}
+	if _, err := s.Record(ctx, m1, Report{Released: true, Token: c.Items[0].Token}); err != nil {
 		t.Fatal(err)
 	}
-	if r.State != StateRead || r.Failures != 0 || r.NextAttemptAt != nil || r.Reason != nil {
-		t.Fatalf("read after the failures: %+v", r)
+	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_chapterreads SET state = 'unreadable', failures = 5, sourceid = $2,
+		nextattemptat = NULL WHERE item_id = $1`, m1, s1)
+	now = now.Add(time.Hour)
+	if c, err = s.Claim(ctx, "analyzer-0", 1); err != nil || len(c.Items) != 0 || !strings.Contains(c.Idle, "unreadable") {
+		t.Errorf("an unreadable title: %+v, %v", c, err)
 	}
-	// a failure now leaves what was read
-	if r, err = Record(ctx, l.st, "m1", failed(orig, "the storage is gone"), at.Add(2*time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	if r.State != StateRead || r.Failures != 0 ||
-		storetest.Count(t, l.st, `SELECT count(*) FROM com_nalet_katalog_itemchapters WHERE item_id = 'm1'`) != 3 {
-		t.Errorf("a failure after a read: %+v", r)
-	}
-	// a title whose record says no chapters keeps its failures all the same
-	orig2 := l.title("m2", "movie", "s2", false, false)
-	if r, err = Record(ctx, l.st, "m2", failed(orig2, "no such file"), night); err != nil || r.State != StateFailed ||
-		r.Failures != 1 {
-		t.Errorf("a failure of a title without chapters: %+v, %v", r, err)
-	}
+	_ = orig
 }
 
 // A report that can't be taken says why; one of no such title, or of a
@@ -215,16 +639,18 @@ func TestAFailedReadCountsUntilTheTitleIsUnreadable(t *testing.T) {
 func TestAReportThatCantBeTaken(t *testing.T) {
 	l := newLib(t)
 	ctx := context.Background()
-	orig := l.title("m1", "movie", "s1", true, false)
-	storetest.AddItem(t, l.st, "sh1", "series", "A Show", "")
+	m1, s1 := uid('a', 1), uid('b', 1)
+	orig := l.title(m1, s1, opts{chapters: true})
+	storetest.AddItem(t, l.st, uid('f', 1), "series", "A Show", "")
 	var bad *BadReport
-	if _, err := Record(ctx, l.st, "sh1", found("/a.mkv", three(), 3), night); !errors.As(err, &bad) {
+	if _, err := Record(ctx, l.st, l.paths, uid('f', 1), header("/a.mkv", three(), 3), night); !errors.As(err, &bad) {
 		t.Errorf("a series: %v", err)
 	}
-	if _, err := Record(ctx, l.st, "nope", found(orig, three(), 3), night); !errors.Is(err, ErrNoTitle) {
+	if _, err := Record(ctx, l.st, l.paths, uid('a', 9), header(orig, three(), 3), night); !errors.Is(err, ErrNoTitle) {
 		t.Errorf("no such title: %v", err)
 	}
-	if _, err := Record(ctx, l.st, "m1", Report{Read: ReadReport{Path: orig, Error: "x"}, Chapters: three()}, night); !errors.As(err, &bad) {
+	if _, err := Record(ctx, l.st, l.paths, m1, Report{Read: ReadReport{Path: orig, Error: "x"}, Chapters: three()},
+		night); !errors.As(err, &bad) {
 		t.Errorf("a failed read with chapters: %v", err)
 	}
 	if n := storetest.Count(t, l.st, `SELECT count(*) FROM com_nalet_katalog_chapterreads`); n != 0 {
@@ -232,254 +658,37 @@ func TestAReportThatCantBeTaken(t *testing.T) {
 	}
 }
 
-func service(l lib, now *time.Time) *Service {
-	return New(l.st, config.Config{LibraryRoot: l.root, PackagesRoot: filepath.Join(l.root, "packages")}).
-		WithClock(func() time.Time { return *now })
-}
-
-// The backfill hands out nothing while it is off, nor outside its window,
-// saying why and when to ask again; then the titles that miss their chapters,
-// the packaged ones first and movies before episodes, never one whose
-// chapters are in the catalog, whose record says none, whose original is
-// gone, or whose original's read settled it. A title whose original is not on
-// disk counts a failure, and the next goes.
-func TestTheBackfillHandsOutTheTitlesThatMissTheirChapters(t *testing.T) {
-	l := newLib(t)
-	ctx := context.Background()
-	now := night
-	s := service(l, &now)
-
-	l.title("e1", "episode", "se1", true, false) // misses them
-	l.title("m1", "movie", "sm1", true, false)   // misses them, packaged: first
-	l.packaged("m1", "sm1")
-	l.title("m2", "movie", "sm2", true, false)  // misses them
-	l.title("m3", "movie", "sm3", false, false) // its record says no chapters
-	l.title("m4", "movie", "sm4", true, false)  // its chapters are in the catalog
-	if _, err := Record(ctx, l.st, "m4", found(filepath.Join(l.root, "media", "m4", "original.mkv"), three(), 3), now); err != nil {
-		t.Fatal(err)
-	}
-	orig5 := l.title("m5", "movie", "sm5", true, false) // read: none
-	if _, err := Record(ctx, l.st, "m5", found(orig5, []Chapter{}, 0), now); err != nil {
-		t.Fatal(err)
-	}
-	l.title("m6", "movie", "sm6", true, true) // its original is not on disk
-	l.title("m7", "movie", "sm7", true, false)
-	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_itemsources SET state = 'deleted' WHERE id = 'sm7'`) // retired
-
-	c, err := s.Claim(ctx, "analyzer-0", 5)
-	if err != nil || len(c.Items) != 0 || c.Idle != "chapters.backfill is off" || c.RetryAfterSeconds != 900 {
-		t.Fatalf("off: %+v, %v", c, err)
-	}
-	setting(t, l.st, SettingBackfill, "on")
-	now = time.Date(2026, 11, 4, 18, 0, 0, 0, time.UTC)
-	if c, err = s.Claim(ctx, "analyzer-0", 5); err != nil || len(c.Items) != 0 ||
-		c.Idle != "outside chapters.backfill.window (22:00-17:00 UTC)" || c.RetryAfterSeconds != 4*3600 {
-		t.Fatalf("in the quiet hours: %+v, %v", c, err)
-	}
-	now = night
-	setting(t, l.st, SettingInflight, "5")
-	if c, err = s.Claim(ctx, "analyzer-0", 5); err != nil {
-		t.Fatal(err)
-	}
-	var got []string
-	for _, j := range c.Items {
-		got = append(got, j.ID+"/"+j.SourceID+"/"+j.Type)
-		if j.Token == "" || !strings.HasSuffix(j.Path, "/"+j.ID+"/original.mkv") {
-			t.Errorf("job %+v", j)
-		}
-	}
-	if strings.Join(got, " ") != "m1/sm1/movie m2/sm2/movie e1/se1/episode" {
-		t.Errorf("handed out %v", got)
-	}
-	if c.Deadline == nil || !c.Deadline.Equal(now.Add(DefaultLease)) {
-		t.Errorf("deadline %v, want the lease's end", c.Deadline)
-	}
-	m6, err := ReadOf(ctx, l.st.Pool(), "m6")
-	if err != nil || m6 == nil || m6.State != StateFailed || m6.Failures != 1 ||
-		!strings.HasPrefix(deref(m6.Reason), "nothing to read: its original is not at ") ||
-		!m6.NextAttemptAt.Equal(now.Add(time.Hour)) || deref(m6.SourceID) != "sm6" {
-		t.Errorf("the title whose original is not on disk: %+v, %v", m6, err)
-	}
-	// all three are being read: none more until they report
-	if c2, err := s.Claim(ctx, "analyzer-0", 5); err != nil || len(c2.Items) != 0 ||
-		c2.Idle != "no title misses its chapters" {
-		t.Errorf("while they are read: %+v, %v", c2, err)
-	}
-	// m1 reports with its claim's token: its claim ends
-	m1 := c.Items[0]
-	r, err := s.Record(ctx, "m1", Report{Read: ReadReport{Path: m1.Path, Found: i32(3)}, Chapters: three(), Token: m1.Token})
-	if err != nil || r.State != StateRead || r.ClaimedAt != nil || r.Attempts != 1 {
-		t.Errorf("m1's report: %+v, %v", r, err)
-	}
-	// a report of another claim's token leaves m2's claim
-	m2 := c.Items[1]
-	if r, err = s.Record(ctx, "m2", Report{Released: true, Token: "not-its-token"}); err != nil || r.ClaimedAt == nil {
-		t.Errorf("a release of another claim: %+v, %v", r, err)
-	}
-	// m2 is given back: it waits a quarter of an hour
-	if r, err = s.Record(ctx, "m2", Report{Released: true, Token: m2.Token}); err != nil || r.ClaimedAt != nil ||
-		!r.NextAttemptAt.Equal(now.Add(ReleaseWait)) || r.State != StatePending || r.Failures != 0 {
-		t.Errorf("m2 given back: %+v, %v", r, err)
-	}
-}
-
-// A claim whose lease ended counts as a failure of its title: it waits its
-// backoff, and its run's failure reported late is not counted again, nor
-// does it end the claim made since. The hour's rate, and the titles in
-// flight, hold the next back; a claim made near the window's end must be
-// read by it.
-func TestTheBackfillsLeaseRateAndWindow(t *testing.T) {
+// A deleted title's read and claims go with it; without migration 055 the
+// backfill and the reads say so, and NeedsOriginal keeps the original.
+func TestADeletedTitleAndNoMigration(t *testing.T) {
 	l := newLib(t)
 	ctx := context.Background()
 	now := night
 	s := service(l, &now)
 	setting(t, l.st, SettingBackfill, "on")
-	l.title("m1", "movie", "s1", true, false)
-	l.title("m2", "movie", "s2", true, false)
-	l.title("m3", "movie", "s3", true, false)
-
-	c, err := s.Claim(ctx, "analyzer-0", 5)
-	if err != nil || len(c.Items) != 1 || c.Items[0].ID != "m1" {
-		t.Fatalf("one at a time: %+v, %v", c, err)
+	m1, s1 := uid('a', 1), uid('b', 1)
+	l.title(m1, s1, opts{chapters: true})
+	if c, err := s.Claim(ctx, "analyzer-0", 1); err != nil || len(c.Items) != 1 {
+		t.Fatalf("claim: %+v, %v", c, err)
 	}
-	lost := c.Items[0]
-	now = now.Add(time.Minute)
-	if c, err = s.Claim(ctx, "analyzer-0", 5); err != nil || len(c.Items) != 0 ||
-		c.Idle != "1 titles are being read (chapters.backfill.inflight 1)" || c.RetryAfterSeconds != 60 {
-		t.Fatalf("one in flight: %+v, %v", c, err)
-	}
-	// its run never reports: its lease ends, a failure of m1, and m2 goes
-	now = night.Add(DefaultLease + time.Second)
-	if c, err = s.Claim(ctx, "analyzer-0", 1); err != nil || len(c.Items) != 1 || c.Items[0].ID != "m2" {
-		t.Fatalf("after the lease: %+v, %v", c, err)
-	}
-	r, err := ReadOf(ctx, l.st.Pool(), "m1")
-	if err != nil || r.State != StateFailed || r.Failures != 1 || r.ClaimedAt != nil ||
-		deref(r.LapsedToken) != lost.Token || !r.NextAttemptAt.Equal(now.Add(time.Hour)) ||
-		deref(r.Reason) != "its run did not report back within 30m" {
-		t.Fatalf("m1 after its lease: %+v, %v", r, err)
-	}
-	// the lost run reports its failure late: counted already
-	if r, err = s.Record(ctx, "m1", Report{Read: ReadReport{Path: lost.Path, Error: "killed"}, Token: lost.Token}); err != nil ||
-		r.Failures != 1 || deref(r.Reason) != "killed" || r.LapsedToken != nil {
-		t.Errorf("a late failure of a lapsed claim: %+v, %v", r, err)
-	}
-	// m2 reports; the rate holds m3 back
-	setting(t, l.st, SettingRate, "2")
-	m2 := c.Items[0]
-	if _, err := s.Record(ctx, "m2", found(m2.Path, three(), 3)); err != nil {
-		t.Fatal(err) // without its token: the analyzer's pass; the claim stays
-	}
-	if r, _ := ReadOf(ctx, l.st.Pool(), "m2"); r.ClaimedAt == nil {
-		t.Error("a pass's report ended the backfill's claim")
-	}
-	if _, err := s.Record(ctx, "m2", Report{Read: ReadReport{Path: m2.Path, Found: i32(3)}, Chapters: three(), Token: m2.Token}); err != nil {
+	if _, err := l.st.DeleteItems(ctx, []string{m1}, store.Deletion{By: "a test"}); err != nil {
 		t.Fatal(err)
 	}
-	if c, err = s.Claim(ctx, "analyzer-0", 1); err != nil || len(c.Items) != 0 ||
-		c.Idle != "2 titles were handed out in the last hour (chapters.backfill.rate 2)" ||
-		c.RetryAfterSeconds != int((time.Hour-DefaultLease-time.Second).Seconds()) {
-		t.Fatalf("the hour's rate: %+v, %v", c, err)
-	}
-	// later m1's backoff has passed, and it goes again before m3; at 16:50
-	// its deadline is the window's end
-	setting(t, l.st, SettingRate, "120")
-	now = time.Date(2026, 11, 4, 16, 50, 0, 0, time.UTC)
-	if c, err = s.Claim(ctx, "analyzer-0", 1); err != nil || len(c.Items) != 1 || c.Items[0].ID != "m1" ||
-		!c.Deadline.Equal(time.Date(2026, 11, 4, 17, 0, 0, 0, time.UTC)) {
-		t.Fatalf("near the window's end: %+v, %v", c, err)
-	}
-	// a window that is none hands out nothing, and says so
-	setting(t, l.st, SettingWindow, "after dinner")
-	if c, err = s.Claim(ctx, "analyzer-0", 1); err != nil || c.Idle != "chapters.backfill.window is no window" {
-		t.Errorf("no window: %+v, %v", c, err)
-	}
-}
-
-// A title whose reads keep failing in the backfill is settled as unreadable
-// after the fifth, and handed out no more; how far the chapters are says so,
-// and a deleted title's read goes with it.
-func TestTheBackfillEndsWithEveryTitleSettled(t *testing.T) {
-	l := newLib(t)
-	ctx := context.Background()
-	now := night
-	s := service(l, &now)
-	setting(t, l.st, SettingBackfill, "on")
-	l.title("m1", "movie", "s1", true, false)
-	l.packaged("m1", "s1")
-	l.title("e1", "episode", "s2", true, false)
-
-	p, err := s.Progress(ctx)
-	if err != nil || p.Missing != 2 || p.MissingPackaged != 1 || p.Idle != "" || !p.Settings.On {
-		t.Fatalf("progress before: %+v, %v", p, err)
-	}
-	for i := 1; i <= MaxFailures; i++ {
-		c, err := s.Claim(ctx, "analyzer-0", 1)
-		if err != nil || len(c.Items) != 1 || c.Items[0].ID != "m1" {
-			t.Fatalf("claim %d: %+v, %v", i, c, err)
-		}
-		j := c.Items[0]
-		r, err := s.Record(ctx, "m1", Report{Read: ReadReport{Path: j.Path, Error: "exit 1: moov atom not found"}, Token: j.Token})
-		if err != nil || r.Failures != int32(i) {
-			t.Fatalf("failure %d: %+v, %v", i, r, err)
-		}
-		if r.NextAttemptAt != nil {
-			now = *r.NextAttemptAt
-			if h := now.Hour(); h >= 17 && h < 22 { // the quiet hours: the window opens at 22:00
-				now = time.Date(now.Year(), now.Month(), now.Day(), 22, 0, 0, 0, time.UTC)
-			}
+	for _, table := range []string{store.ChapterReadsTable, store.ChapterClaimsTable} {
+		if n := storetest.Count(t, l.st, `SELECT count(*) FROM `+table+` WHERE item_id = $1`, m1); n != 0 {
+			t.Errorf("a deleted title left %d rows in %s", n, table)
 		}
 	}
-	if r, _ := ReadOf(ctx, l.st.Pool(), "m1"); r.State != StateUnreadable || r.Attempts != MaxFailures {
-		t.Fatalf("m1 after its failures: %+v", r)
-	}
-	// e1 is next, and reads none: every title is settled
-	c, err := s.Claim(ctx, "analyzer-0", 1)
-	if err != nil || len(c.Items) != 1 || c.Items[0].ID != "e1" {
-		t.Fatalf("e1: %+v, %v", c, err)
-	}
-	if _, err := s.Record(ctx, "e1", Report{Read: ReadReport{Path: c.Items[0].Path, Found: i32(0)}, Chapters: []Chapter{},
-		Token: c.Items[0].Token}); err != nil {
-		t.Fatal(err)
-	}
-	if c, err = s.Claim(ctx, "analyzer-0", 1); err != nil || len(c.Items) != 0 || c.Idle != "no title misses its chapters" ||
-		c.RetryAfterSeconds != 3600 {
-		t.Errorf("all settled: %+v, %v", c, err)
-	}
-	p, err = s.Progress(ctx)
-	if err != nil || p.Missing != 0 || p.None != 1 || p.Unreadable != 1 || p.Read != 0 || p.Failed != 0 ||
-		p.InFlight != 0 || p.Idle != "no title misses its chapters" || p.LastReadAt == nil {
-		t.Errorf("progress after: %+v, %v", p, err)
-	}
-	title, err := s.Of(ctx, "e1")
-	if err != nil || title.Missing || title.Read == nil || title.Read.State != StateNone || len(title.Chapters) != 0 {
-		t.Errorf("e1: %+v, %v", title, err)
-	}
-	if _, err := s.Of(ctx, "nope"); !errors.Is(err, ErrNoTitle) {
-		t.Errorf("no such title: %v", err)
-	}
-	if _, err := l.st.DeleteItems(ctx, []string{"m1"}, store.Deletion{By: "a test"}); err != nil {
-		t.Fatal(err)
-	}
-	if n := storetest.Count(t, l.st, `SELECT count(*) FROM com_nalet_katalog_chapterreads WHERE item_id = 'm1'`); n != 0 {
-		t.Errorf("a deleted title left %d reads", n)
-	}
-}
 
-// Without migration 055 the backfill and the reads say so; NeedsOriginal
-// keeps the original.
-func TestWithoutTheMigration(t *testing.T) {
-	st := storetest.OpenBase(t)
-	ctx := context.Background()
-	now := night
-	s := New(st, config.Config{}).WithClock(func() time.Time { return now })
-	if _, err := s.Claim(ctx, "analyzer-0", 1); !errors.Is(err, ErrNotReady) {
+	base := storetest.OpenBase(t)
+	sb := New(base, config.Config{}).WithClock(func() time.Time { return now })
+	if _, err := sb.Claim(ctx, "analyzer-0", 1); !errors.Is(err, ErrNotReady) {
 		t.Errorf("a claim: %v", err)
 	}
-	if _, err := s.Record(ctx, "m1", found("/m.mkv", three(), 3)); !errors.Is(err, ErrNotReady) {
+	if _, err := sb.Record(ctx, m1, header("/m.mkv", three(), 3)); !errors.Is(err, ErrNotReady) {
 		t.Errorf("a report: %v", err)
 	}
-	if n, err := NeedsOriginal(ctx, st.Pool(), "m1", "s1"); !n || !errors.Is(err, ErrNotReady) {
+	if n, err := NeedsOriginal(ctx, base.Pool(), m1, s1); !n || !errors.Is(err, ErrNotReady) {
 		t.Errorf("NeedsOriginal: %v, %v", n, err)
 	}
 }

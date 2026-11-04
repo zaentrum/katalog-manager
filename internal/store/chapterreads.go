@@ -6,17 +6,18 @@ import (
 	"github.com/zaentrum/katalog-manager/db/migrations"
 )
 
-// The table and the view db/migrations/055_chapter_reads.sql creates: the
-// last read of each title's chapters from its original, and the titles whose
-// original is still needed for their chapters.
+// The tables and the view db/migrations/055_chapter_reads.sql creates: the
+// last read of each title's chapters, the backfill's claims, and the titles
+// whose original is still needed for their chapters.
 const (
 	ChapterReadsTable   = "com_nalet_katalog_chapterreads"
+	ChapterClaimsTable  = "com_nalet_katalog_chapterclaims"
 	ChaptersMissingView = "com_nalet_katalog_chaptersmissing"
 )
 
-// chapterReadRelations are the table, the view and the indexes 055 creates.
-var chapterReadRelations = []string{ChapterReadsTable, ChaptersMissingView, "idx_chapterreads_claimed",
-	"idx_chapterreads_lastclaimed"}
+// chapterReadRelations are the tables, the view and the indexes 055 creates.
+var chapterReadRelations = []string{ChapterReadsTable, ChapterClaimsTable, ChaptersMissingView,
+	"idx_chapterreads_claimed", "idx_chapterreads_recordat", "idx_chapterclaims_claimedat"}
 
 // ChapterReadsReady reports whether migration 055 is in place.
 func (s *Store) ChapterReadsReady(ctx context.Context) (bool, error) {

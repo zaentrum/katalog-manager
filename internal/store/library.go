@@ -179,7 +179,7 @@ func (s *Store) LayoutWaits(ctx context.Context) (titles, extras int, err error)
 // 043, 051, 054, 055).
 func deleteLibraryOf(ctx context.Context, tx pgx.Tx, ids []string) error {
 	for _, t := range []string{SourcesTable, VersionsTable, ReencodeQueueTable, ComplianceTable, PictureAreasTable,
-		ChapterReadsTable} {
+		ChapterReadsTable, ChapterClaimsTable} {
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT to_regclass($1::text) IS NOT NULL`, t).Scan(&exists); err != nil {
 			return err
