@@ -58,7 +58,7 @@ import (
 // library.superseded.grace (cleanup.go), moves a legacy package folder a
 // version replaced to .work/legacy/, and deletes the trash's and the legacy
 // folder's days once their grace is over. A pass runs at most once a minute,
-// in one instance at a time (an advisory lock), and retires at most
+// in one instance at a time (advisory locks), and retires at most
 // library.retire.rate originals. It does nothing while library.layout is
 // legacy.
 
@@ -90,9 +90,65 @@ type Authority struct {
 // byPolicy is the retire job's authority.
 var byPolicy = Authority{By: RetiredBy, Reason: RetireReason, Policy: true}
 
-// retireLock names the advisory lock a pass holds, one per catalog (its
-// schema), as every advisory lock of the service is: retireLockKey.
+// retireLock names the advisory locks a pass holds, and an admin's list while
+// it retires an original (retireLocks).
 const retireLock = "library-retire"
+
+// The retire job's advisory locks, which a pass and an admin's list hold
+// while they retire originals: the catalog's own, scoped by its schema as
+// every advisory lock of the service is (retireLockKey), and, first, the one
+// a release before it holds alone, unscoped (retireLockLegacy). An instance
+// of each runs beside the other while a release rolls out: holding both, no
+// pass and no list of either release runs meanwhile. They are taken in this
+// order and let go of in the other, everywhere.
+const (
+	retireLockLegacy = `hashtext('` + retireLock + `')`
+	retireLockKey    = `hashtext('` + retireLock + `/' || current_schema())`
+)
+
+var retireLocks = []string{retireLockLegacy, retireLockKey}
+
+// tryRetireLocks takes the retire job's locks on conn, both or neither: false
+// when another holds one of them.
+func tryRetireLocks(ctx context.Context, conn *pgxpool.Conn) (bool, error) {
+	for i, key := range retireLocks {
+		var locked bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(`+key+`)`).Scan(&locked); err != nil || !locked {
+			unlockRetire(ctx, conn, i)
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// lockPoll is how often a pass tries the retire job's locks again while it
+// waits for them (Retirer.lockWait).
+const lockPoll = 50 * time.Millisecond
+
+// waitRetireLocks takes the retire job's locks on conn as tryRetireLocks
+// does, trying again for up to wait while another holds one of them: the
+// unscoped one is every catalog's of a database, and a pass of another
+// catalog holds it for a moment.
+func waitRetireLocks(ctx context.Context, conn *pgxpool.Conn, wait time.Duration) (bool, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		locked, err := tryRetireLocks(ctx, conn)
+		if err != nil || locked || !time.Now().Before(deadline) {
+			return locked, err
+		}
+		if !sleepCtx(ctx, lockPoll) {
+			return false, nil
+		}
+	}
+}
+
+// unlockRetire lets go of the first n of the retire job's locks on conn, the
+// last first.
+func unlockRetire(ctx context.Context, conn *pgxpool.Conn, n int) {
+	for i := n - 1; i >= 0; i-- {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(`+retireLocks[i]+`)`)
+	}
+}
 
 // SurroundHeld is why an original whose title's current package has no 5.1
 // of the surround it had is kept (owner decision 2026-10-07): the package
@@ -131,6 +187,9 @@ type Retirer struct {
 	now   func() time.Time
 	every time.Duration
 	last  time.Time
+	// lockWait is how long a pass waits for the retire job's locks while
+	// another holds one of them before it does nothing.
+	lockWait time.Duration
 	// legacyAt and legacyID are how far the sweep of the legacy package
 	// folders got in this process: the versions completed up to then.
 	legacyAt time.Time
@@ -141,7 +200,8 @@ type Retirer struct {
 // NewRetirer is the retire job of the catalog's pool, at the paths cfg
 // configures, reporting the retire step through steps.
 func NewRetirer(pool *pgxpool.Pool, cfg config.Config, steps *processing.Steps) *Retirer {
-	return &Retirer{pool: pool, cfg: cfg, steps: steps, now: time.Now, every: time.Minute, said: map[string]string{}}
+	return &Retirer{pool: pool, cfg: cfg, steps: steps, now: time.Now, every: time.Minute, lockWait: 10 * time.Second,
+		said: map[string]string{}}
 }
 
 // Report is what a pass did.
@@ -183,8 +243,10 @@ func (r *Retirer) Sweep(ctx context.Context) (string, error) {
 	return rep.String(), err
 }
 
-// Pass runs the job once, with library.layout=v2, in one instance at a time:
-// another instance's pass running, it does nothing.
+// Pass runs the job once, with library.layout=v2, in one instance at a time,
+// holding the retire job's locks (retireLocks): another instance's pass (or
+// an admin's list) running, it waits for them a moment (lockWait), then does
+// nothing.
 func (r *Retirer) Pass(ctx context.Context) (Report, error) {
 	var rep Report
 	set, err := ReadSettings(ctx, r.pool)
@@ -199,13 +261,10 @@ func (r *Retirer) Pass(ctx context.Context) (Report, error) {
 		return rep, err
 	}
 	defer conn.Release()
-	var locked bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(`+retireLockKey+`)`).Scan(&locked); err != nil || !locked {
+	if locked, err := waitRetireLocks(ctx, conn, r.lockWait); err != nil || !locked {
 		return rep, err
 	}
-	defer func() {
-		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(`+retireLockKey+`)`)
-	}()
+	defer unlockRetire(ctx, conn, len(retireLocks))
 	p := PathsOf(r.cfg)
 	now := r.now().UTC()
 	var errs []error
@@ -411,6 +470,9 @@ func (r *Retirer) retireOf(ctx context.Context, p Paths, set Settings, now time.
 			return false, err // errHeld: kept for its surround
 		}
 	}
+	if err := r.claimedStill(ctx, rt); err != nil {
+		return false, err
+	}
 	if err := r.deleteFiles(p, set, rt); err != nil {
 		return false, r.fail(ctx, rt, err.Error())
 	}
@@ -419,6 +481,31 @@ func (r *Retirer) retireOf(ctx context.Context, p Paths, set Settings, now time.
 	}
 	r.say("source:"+s.ID, "")
 	return true, nil
+}
+
+// claimedStill checks, right before a retirement records its event and
+// before it moves its files, that its source is retiring still by the claim
+// rt holds (its event's id): one called off meanwhile, or claimed again, is
+// no longer this retirement's to go on with, and nothing of it is recorded or
+// moved. Its row and its step are left as whoever changed it left them.
+func (r *Retirer) claimedStill(ctx context.Context, rt *retirement) error {
+	s := rt.src
+	var state string
+	var event *string
+	err := r.pool.QueryRow(ctx, `SELECT state, retireeventid FROM com_nalet_katalog_itemsources WHERE id = $1`, s.ID).
+		Scan(&state, &event)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		state = "gone"
+	case err != nil:
+		return err
+	case state == SourceRetiring && event != nil && s.RetireEventID != nil && *event == *s.RetireEventID:
+		return nil
+	}
+	rt.why = fmt.Sprintf("its source is %s now, no longer retiring by the claim this retirement holds (event %s): "+
+		"its retirement is not this one's to go on with; nothing is recorded or moved", state, deref(s.RetireEventID))
+	r.say("source:"+s.ID, fmt.Sprintf("original %s of item %s is not deleted: %s", s.ID, s.ItemID, rt.why))
+	return &retireFailed{fmt.Sprintf("original %s of item %s: %s", s.ID, s.ItemID, rt.why)}
 }
 
 // eventOf finds the event of a retiring source, in the folder its id and
@@ -609,6 +696,9 @@ func (r *Retirer) prepare(ctx context.Context, p Paths, set Settings, now time.T
 	}
 	if rt.accepted, err = GateOf(rt.itemDir, rt.ver.ID, s.ID); err != nil {
 		return r.fail(ctx, rt, fmt.Sprintf("the deletion gate cannot be read: %v; the original is kept", err))
+	}
+	if err := r.claimedStill(ctx, rt); err != nil {
+		return err
 	}
 	reason := rt.auth.Reason
 	if _, err := WriteEvent(rt.itemDir, Event{ID: *s.RetireEventID, At: *s.RetireEventAt, By: rt.auth.By,
@@ -1280,7 +1370,11 @@ func (r *Retirer) deleted(ctx context.Context, now time.Time, rt *retirement) er
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return nil // noted already
+		// Not retiring any more: whoever changed it meanwhile has it, and
+		// this retirement is not done.
+		state := "gone"
+		_ = tx.QueryRow(ctx, `SELECT state FROM com_nalet_katalog_itemsources WHERE id = $1`, s.ID).Scan(&state)
+		return fmt.Errorf("its source is %s now, no longer retiring", state)
 	}
 	if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET isprimary = false, kind = 'original', path = $3, sourceid = $1
 		WHERE item_id = $2 AND COALESCE(kind, 'primary') = 'primary'

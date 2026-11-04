@@ -265,24 +265,3 @@ func TestWhatIsNotTrashedAsReplaced(t *testing.T) {
 	}
 	again()
 }
-
-// The retire job's lock is a catalog's own, as every advisory lock of the
-// service is: held for one catalog (its schema), it holds back that
-// catalog's passes and replaces, not another's on the same database.
-func TestTheRetireLockIsTheCatalogsOwn(t *testing.T) {
-	ctx := context.Background()
-	one, other := storetest.Open(t), storetest.Open(t)
-	release, err := HoldRetire(ctx, one.Pool(), time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer release()
-	if _, err := HoldRetire(ctx, one.Pool(), 300*time.Millisecond); !errors.Is(err, ErrRetireBusy) {
-		t.Errorf("the same catalog's lock held: %v, want busy", err)
-	}
-	theirs, err := HoldRetire(ctx, other.Pool(), 300*time.Millisecond)
-	if err != nil {
-		t.Fatalf("another catalog's lock: %v", err)
-	}
-	theirs()
-}

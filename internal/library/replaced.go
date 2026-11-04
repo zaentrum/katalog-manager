@@ -62,14 +62,14 @@ func HoldRetire(ctx context.Context, pool *pgxpool.Pool, wait time.Duration) (fu
 	}
 	deadline := time.Now().Add(wait)
 	for {
-		var locked bool
-		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(`+retireLockKey+`)`).Scan(&locked); err != nil {
+		locked, err := tryRetireLocks(ctx, conn)
+		if err != nil {
 			conn.Release()
 			return nil, err
 		}
 		if locked {
 			return func() {
-				_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(`+retireLockKey+`)`)
+				unlockRetire(ctx, conn, len(retireLocks))
 				conn.Release()
 			}, nil
 		}

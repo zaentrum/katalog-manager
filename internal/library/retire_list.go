@@ -801,21 +801,20 @@ func (l *RetireList) finish(ctx context.Context, run, state, why string) error {
 	return err
 }
 
-// retireLockKey is the retire job's advisory lock (retireLock), which a list
-// holds while it checks and retires an original: the job runs no pass
-// meanwhile.
-const retireLockKey = `hashtext('` + retireLock + `/' || current_schema())`
-
-// lockRetire waits for the retire job's lock on conn and answers how to let
-// it go; nil when ctx ended first.
+// lockRetire waits for the retire job's locks on conn (retireLocks), which a
+// list holds while it checks and retires an original, so that the job runs no
+// pass meanwhile, and answers how to let them go; nil when ctx ended first.
 func (l *RetireList) lockRetire(ctx context.Context, conn *pgxpool.Conn) (func(), error) {
 	for {
-		var locked bool
-		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(`+retireLockKey+`)`).Scan(&locked); err != nil {
+		locked, err := tryRetireLocks(ctx, conn)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, nil
+			}
 			return nil, err
 		}
 		if locked {
-			return func() { _, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(`+retireLockKey+`)`) }, nil
+			return func() { unlockRetire(ctx, conn, len(retireLocks)) }, nil
 		}
 		if !l.sleep(ctx, l.lockWait) {
 			return nil, nil
