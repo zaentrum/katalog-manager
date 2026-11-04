@@ -1858,3 +1858,47 @@ extend type Query {
   # older than migration 054.
   pictureAreas: PictureAreaProgress!
 }
+
+# Chapters (migration 055). A title's chapters live in the catalog, not in
+# its package: the analyzer reads them from its original's header, and the
+# catalog keeps each read with what it found. A title misses its chapters
+# while its original's record says it has chapters, the catalog has none of
+# the title and no read of that original settled it (none: the header holds
+# no chapter with a length; unreadable: its reads failed again and again);
+# a deletion wave keeps such an original, and the backfill
+# (chapters.backfill, README "Chapters") reads these titles again.
+#
+# How far the chapters are: the titles that miss theirs (missingPackaged:
+# those whose version is complete, the deletion waves' next), the titles
+# whose last read wrote chapters (read), found none with a length (none),
+# could not read the file for good (unreadable), or failed (each waits its
+# backoff), those handed out now and in the last hour, when the last read was
+# reported; and the backfill's settings, and idle, why it hands out nothing
+# now (null when it may).
+type ChapterReadProgress {
+  missing: Int!
+  missingPackaged: Int!
+  read: Int!
+  none: Int!
+  unreadable: Int!
+  failed: Int!
+  inFlight: Int!
+  handedOutLastHour: Int!
+  lastReadAt: Time
+  # the settings as read: chapters.backfill (backfill),
+  # chapters.backfill.window (UTC), .inflight (maxInFlight), .rate
+  # (maxPerHour) and .lease; problems, of a setting that could not be read
+  backfill: Boolean!
+  window: String!
+  maxInFlight: Int!
+  maxPerHour: Int!
+  lease: String!
+  idle: String
+  problems: [String!]!
+}
+
+extend type Query {
+  # How far the chapters are, and their backfill; an error on a catalog older
+  # than migration 055.
+  chapterReads: ChapterReadProgress!
+}

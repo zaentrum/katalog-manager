@@ -47,6 +47,7 @@ var fieldAccess = map[string]auth.Access{
 	"Query.libraryCompliance":     auth.Admin,
 	"Query.retireRun":             auth.Admin,
 	"Query.pictureAreas":          auth.Admin,
+	"Query.chapterReads":          auth.Admin,
 
 	"Mutation.triggerScan":              auth.Worker, // the scan Job's
 	"Mutation.enrichOne":                auth.Admin,
