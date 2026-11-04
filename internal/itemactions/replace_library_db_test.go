@@ -17,6 +17,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/library/librarytest"
 	"github.com/zaentrum/katalog-manager/internal/processing"
+	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
 
@@ -526,6 +527,93 @@ func TestAReplacesKeyIsItsTitlesAlone(t *testing.T) {
 	if n := storetest.Count(t, iv.f.st, `SELECT count(*) FROM com_nalet_katalog_itemsources WHERE replacekey = 'tg_1'`); n != 2 {
 		t.Errorf("%d sources keep the key, want one of each title", n)
 	}
+}
+
+// A replace waits for the lock on its file's name for a while, then is
+// refused as busy (SOURCE_BUSY), nothing changed; a caller that stops waiting
+// ends the wait, nothing changed; and the lock is let go before the title is
+// encoded again, which a scan or an ingest of the name does not wait for.
+func TestAReplacesWaitForTheNameIsBoundedAndEndsBeforeTheReencode(t *testing.T) {
+	iv := newInVersion(t)
+	ctx := context.Background()
+	key := `hashtext('com_nalet_katalog_playbackassets:' || $1)`
+	holder, err := iv.f.st.Pool().Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Release()
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_lock(`+key+`)`, iv.arrive); err != nil {
+		t.Fatal(err)
+	}
+	iv.svc.pathLockWait = 300 * time.Millisecond
+	in := graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true, Reencode: true}
+	began := time.Now()
+	_, err = iv.svc.ReplaceSource(asAddon, in)
+	if r := sourceRefusal(t, err); r.Code != codeSourceBusy || !strings.Contains(r.Message, "is held longer than 300ms") ||
+		time.Since(began) > 10*time.Second {
+		t.Errorf("a name held: %+v after %s", r, time.Since(began))
+	}
+	stopped, cancel := context.WithTimeout(asAddon, 200*time.Millisecond)
+	defer cancel()
+	iv.svc.pathLockWait = time.Hour
+	began = time.Now()
+	if _, err := iv.svc.ReplaceSource(stopped, in); !errors.Is(err, context.DeadlineExceeded) || time.Since(began) > 10*time.Second {
+		t.Errorf("a caller that stops waiting: %v after %s", err, time.Since(began))
+	}
+	if n := storetest.Count(t, iv.f.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE id = 'a-bunny' AND path = $1`,
+		iv.old); n != 1 {
+		t.Error("a replace that did not get the name changed the title's file")
+	}
+	if _, err := os.Stat(iv.handed); err != nil {
+		t.Errorf("the file handed over left .work/replace: %v", err)
+	}
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_unlock(`+key+`)`, iv.arrive); err != nil {
+		t.Fatal(err)
+	}
+	// the name is free again: no connection of the refused replaces holds it
+	var free bool
+	if err := holder.QueryRow(ctx, `SELECT pg_try_advisory_lock(`+key+`)`, iv.arrive).Scan(&free); err != nil || !free {
+		t.Fatalf("the name after the refused replaces: free %v, %v", free, err)
+	}
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_unlock(`+key+`)`, iv.arrive); err != nil {
+		t.Fatal(err)
+	}
+
+	probe := &lockProbe{pool: iv.f.st, path: iv.arrive}
+	iv.svc.reencoder = probe
+	res, err := iv.svc.ReplaceSource(asAddon, in)
+	if err != nil || !res.Replaced || res.Reencode == nil {
+		t.Fatalf("the replace once the name is free: %+v, %v", res, err)
+	}
+	if probe.asked != 1 || !probe.free {
+		t.Errorf("the re-encode: asked %d times, the name free then %v; want it let go before", probe.asked, probe.free)
+	}
+}
+
+// lockProbe is a re-encoder that reads, when it is asked, whether the lock on
+// the name path is free.
+type lockProbe struct {
+	pool  *store.Store
+	path  string
+	asked int
+	free  bool
+}
+
+func (p *lockProbe) ReencodeItem(ctx context.Context, id string) (graph.ReencodeResult, error) {
+	p.asked++
+	conn, err := p.pool.Pool().Acquire(ctx)
+	if err != nil {
+		return graph.ReencodeResult{}, err
+	}
+	defer conn.Release()
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtext('com_nalet_katalog_playbackassets:' || $1))`, p.path).
+		Scan(&p.free); err != nil {
+		return graph.ReencodeResult{}, err
+	}
+	if p.free {
+		_, _ = conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtext('com_nalet_katalog_playbackassets:' || $1))`, p.path)
+	}
+	return graph.ReencodeResult{ItemID: id, Titles: 1, Reencoded: 1, Message: "encoding it again"}, nil
 }
 
 // A replace stopped halfway is finished by the next ask: a link of the file

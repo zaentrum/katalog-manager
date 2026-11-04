@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/zaentrum/katalog-manager/internal/config"
@@ -59,6 +60,9 @@ type Service struct {
 	// reencoder encodes a title again once ReplaceSource gave it another
 	// file (WithReencoder).
 	reencoder Reencoder
+	// pathLockWait is how long ReplaceSource waits for the lock on the name
+	// its file takes (pathLockWait when 0).
+	pathLockWait time.Duration
 }
 
 // bus is the event bus the service tells the pipeline through

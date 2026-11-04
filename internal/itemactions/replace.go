@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -161,7 +162,9 @@ func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	}
 	// Once begun, a replace runs to its end, also when the caller stops
 	// waiting: no title is given its file without its old file's deletion and
-	// its re-encode.
+	// its re-encode. Its wait for the lock on its file's name, before
+	// anything changes, ends with the caller's (asked).
+	asked := ctx
 	ctx = context.WithoutCancel(ctx)
 	set, err := library.ReadSettings(ctx, s.st.Pool())
 	if err != nil {
@@ -185,7 +188,7 @@ func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceReque
 			return res, r
 		}
 	}
-	return s.replaceSource(ctx, in, set, path, itemID, itemPath)
+	return s.replaceSource(ctx, asked, in, set, path, itemID, itemPath)
 }
 
 // addonMay refuses a replace asked by an addon's service account whose
@@ -263,8 +266,9 @@ func orDash(s string) string {
 }
 
 // replaceSource is ReplaceSource of the title named by itemID or itemPath,
-// which no other's file covers, and the new file at path, absolute and clean.
-func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceRequest, set library.Settings, path, itemID,
+// which no other's file covers, and the new file at path, absolute and clean;
+// asked is the caller's context, which the wait for the path's lock ends with.
+func (s *Service) replaceSource(ctx, asked context.Context, in graph.ReplaceSourceRequest, set library.Settings, path, itemID,
 	itemPath string) (graph.ReplaceSourceResult, error) {
 	var res graph.ReplaceSourceResult
 	pool := s.st.Pool()
@@ -293,8 +297,8 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	}
 
 	// The path's lock, on a connection of its own that the transaction runs
-	// on, held until the files are where they go.
-	conn, unlock, err := s.lockPath(ctx, arrival)
+	// on, held until the files are where they go, not through the re-encode.
+	conn, unlock, err := s.lockPath(asked, arrival)
 	if err != nil {
 		return res, err
 	}
@@ -489,6 +493,9 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	} else {
 		res.OldFileDeleted, said = s.dropOldFile(ctx, src.path, arrival, in.DeleteOldFile)
 	}
+	// The files are where they go: the name is let go before the re-encode,
+	// which a scan or an ingest of it does not wait for.
+	unlock()
 	if in.Reencode {
 		res.Reencode = s.encodeAgain(ctx, src.itemID)
 	}
@@ -496,27 +503,54 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	return res, nil
 }
 
+// pathLockWait is how long a replace waits for the lock on its file's name,
+// which an ingest or a scan of that name holds while it makes it a title's
+// file, before it is refused as busy (SOURCE_BUSY), nothing changed.
+const pathLockWait = 30 * time.Second
+
 // lockPath takes the lock ingest and the scanner take on the path of a
-// title's file, on a connection of its own, held until the answer's unlock:
-// the replace's transaction runs on that connection, and its files are moved
-// before it is let go. A connection whose lock could not be let go is
-// closed, never handed back holding it.
+// title's file, on a connection of its own, held until the answer's unlock
+// (once, however often it is called): the replace's transaction runs on that
+// connection, and its files are moved before it is let go. Its wait ends
+// with ctx, the caller's, or after s.pathLockWait (SOURCE_BUSY), nothing
+// changed; a connection whose wait was cut short, or whose lock could not be
+// let go, is closed, never handed back holding it.
 func (s *Service) lockPath(ctx context.Context, path string) (*pgxpool.Conn, func(), error) {
-	conn, err := s.st.Pool().Acquire(ctx)
+	wait := s.pathLockWait
+	if wait <= 0 {
+		wait = pathLockWait
+	}
+	busy := func() error {
+		return graph.RefuseSource(codeSourceBusy, "the name %s is held longer than %s, by an ingest or a scan of it: the title "+
+			"is given no other file now; ask again", path, wait)
+	}
+	lctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	conn, err := s.st.Pool().Acquire(lctx)
 	if err != nil {
+		if ctx.Err() == nil && errors.Is(lctx.Err(), context.DeadlineExceeded) {
+			return nil, nil, busy()
+		}
 		return nil, nil, err
 	}
 	const key = `hashtext('com_nalet_katalog_playbackassets:' || $1)`
-	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(`+key+`)`, path); err != nil {
+	if _, err := conn.Exec(lctx, `SELECT pg_advisory_lock(`+key+`)`, path); err != nil {
+		_ = conn.Conn().Close(context.WithoutCancel(ctx))
 		conn.Release()
+		if ctx.Err() == nil && errors.Is(lctx.Err(), context.DeadlineExceeded) {
+			return nil, nil, busy()
+		}
 		return nil, nil, err
 	}
+	var once sync.Once
 	return conn, func() {
-		bg := context.WithoutCancel(ctx)
-		if _, err := conn.Exec(bg, `SELECT pg_advisory_unlock(`+key+`)`, path); err != nil {
-			_ = conn.Conn().Close(bg)
-		}
-		conn.Release()
+		once.Do(func() {
+			bg := context.WithoutCancel(ctx)
+			if _, err := conn.Exec(bg, `SELECT pg_advisory_unlock(`+key+`)`, path); err != nil {
+				_ = conn.Conn().Close(bg)
+			}
+			conn.Release()
+		})
 	}, nil
 }
 
