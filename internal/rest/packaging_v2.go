@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/zaentrum/katalog-manager/internal/chapters"
 	"github.com/zaentrum/katalog-manager/internal/events"
 	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/model"
@@ -236,7 +237,54 @@ func (h *Handlers) packagingCompleteV2(w http.ResponseWriter, r *http.Request, i
 	// The title's package completed (or its original was taken in): the
 	// library's compliance check looks at it again.
 	h.touch(ctx, itemID)
+	h.chaptersOfItsOriginal(ctx, itemID, in.SourceID)
 	writeJSON(w, http.StatusOK, answer)
+}
+
+// chaptersOfItsOriginal has the catalog take the chapters of the title's
+// version of the original sourceID from that original's record, written in
+// the run that made it, while the catalog's chapters are of another original
+// (a title given another file, chapters.OfSource): the title's chapters are
+// its new file's from then on, as chapters.FromRecord settles a title, those
+// it replaces kept to undo. A record that cannot say leaves the title to the
+// chapters backfill, as one a read settled already is left as it is.
+func (h *Handlers) chaptersOfItsOriginal(ctx context.Context, itemID, sourceID string) {
+	pool := h.d.Store.Pool()
+	if ready, err := h.d.Store.ChapterReadsReady(ctx); err != nil || !ready {
+		return
+	}
+	ours, err := chapters.OfSource(ctx, pool, itemID, sourceID)
+	if err != nil {
+		log.Printf("packagingComplete: %s: whether the catalog's chapters are of original %s could not be read: %v", itemID, sourceID, err)
+		return
+	}
+	if ours {
+		return
+	}
+	rec := chapters.RecordOf(ctx, pool, h.paths(), itemID, sourceID)
+	settled, err := chapters.FromRecord(ctx, h.d.Store, itemID, sourceID, rec, time.Now().UTC())
+	switch {
+	case err != nil:
+		log.Printf("packagingComplete: %s: the chapters of original %s could not be taken from its record: %v", itemID, sourceID, err)
+	case settled:
+		log.Printf("packagingComplete: %s: the catalog's chapters are those of original %s's record now", itemID, sourceID)
+	default:
+		log.Printf("packagingComplete: %s: the record of original %s settles no chapters (%s): the chapters backfill reads them",
+			itemID, sourceID, orWhy(rec))
+	}
+}
+
+// orWhy says why a source record settles nothing.
+func orWhy(rec chapters.RecordRead) string {
+	switch {
+	case rec.Err != nil:
+		return rec.Err.Error()
+	case rec.Held != "":
+		return rec.Held
+	case rec.Why != "":
+		return rec.Why
+	}
+	return "a read of it settled the title already, or it waits for an admin"
 }
 
 // takeVersion validates and records the version of the payload in (see

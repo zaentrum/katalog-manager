@@ -1,6 +1,8 @@
 package rest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -201,6 +203,57 @@ func sameIgnoringIDs(got, want string) bool {
 		}
 	}
 	return true
+}
+
+// A version made of another original than the one the catalog's chapters
+// were read of - a title given another file - has the catalog take the
+// chapters of its source's record, written in the run that made it, once it
+// is taken: the old original's are replaced, kept to undo, and the title's
+// chapters are its new file's. One whose chapters are of its own original is
+// left as it is.
+func TestAVersionOfAnotherOriginalHasTheCatalogTakeItsChapters(t *testing.T) {
+	f := newV2Film(t)
+	const older = "0b6c0000-0000-4000-8000-000000000009"
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state, supersededby,
+		supersededat) VALUES ($1, $2, 'A Film (2024) SD.mkv', 900, 'superseded', $3, now())`, older, filmItem, filmSource)
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemchapters (id, item_id, startms, endms, title, ordinal) VALUES
+		('o1', $1, 0, 1000, 'Old One', 1), ('o2', $1, 1000, 2000, 'Old Two', 2)`, filmItem)
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_chapterreads (item_id, state, readfrom, sourceid, rowssourceid, found, written)
+		VALUES ($1, 'read', 'header', $2, $2, 2, 2)`, filmItem, older)
+	probe := `{"streams": [{"codec_type": "video"}], "chapters": [` +
+		`{"start_time": "0.000000", "end_time": "300.000000", "tags": {"title": "Part One"}}, ` +
+		`{"start_time": "300.000000", "end_time": "600.000000", "tags": {"title": "Part Two"}}], "format": {"duration": "600.000000"}}`
+	sum := sha256.Sum256([]byte(probe))
+	librarytest.WriteSource(t, library.SourceDir(f.itemDir, filmSource), map[string]any{"sourceId": filmSource,
+		"file": map[string]any{"sizeBytes": 1000}, "probe": map[string]any{"sha256": "sha256:" + hex.EncodeToString(sum[:])},
+		"streams": []map[string]any{{"index": 0, "type": "video"}, {"index": 1, "type": "audio"}, {"index": 2, "type": "audio"},
+			{"index": 3, "type": "subtitle"}, {"index": 4, "type": "subtitle"}}}, map[string]string{"ffprobe.json": probe})
+	lib, _ := recordOf(t, f.h, f.svc, "/api/analyze/items/"+filmItem)["library"].(map[string]any)
+	if b, _ := lib["build"].(map[string]any); b == nil || len(b["chapters"].([]any)) != 0 || b["chaptersFrom"] != nil {
+		t.Errorf("the build of the new original carries the old one's chapters: %v", b)
+	}
+	complete := f.version(t, filmVersion, filmPackage)
+	if code, answer := f.complete(t, f.payload(filmVersion, filmPackage, complete)); code != http.StatusOK {
+		t.Fatalf("packaging-complete: %d %v", code, answer)
+	}
+	var got string
+	if err := f.st.Pool().QueryRow(t.Context(), `SELECT string_agg(title, '|' ORDER BY ordinal) FROM com_nalet_katalog_itemchapters
+		WHERE item_id = $1`, filmItem).Scan(&got); err != nil || got != "Part One|Part Two" {
+		t.Errorf("the title's chapters: %q, %v; want its new file's", got, err)
+	}
+	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_chapterreads WHERE item_id = $1 AND rowssourceid = $2
+		AND replaced->>'sourceId' = $3 AND jsonb_array_length(replaced->'chapters') = 2`, filmItem, filmSource, older); n != 1 {
+		t.Error("the chapters are not of the new original, the old one's kept to undo")
+	}
+	// taken again, or a version of its own original: as it is
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_itemchapters SET title = 'Edited' WHERE item_id = $1 AND ordinal = 1`, filmItem)
+	if code, _ := f.complete(t, f.payload(filmVersion, filmPackage, complete)); code != http.StatusOK {
+		t.Fatalf("taken again: %d", code)
+	}
+	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_itemchapters WHERE item_id = $1 AND title = 'Edited'`,
+		filmItem); n != 1 {
+		t.Error("the chapters of the version's own original were taken again")
+	}
 }
 
 // A version completes over the one that plays: the old one gets its
