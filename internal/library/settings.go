@@ -107,10 +107,6 @@ const (
 // owner's rules for retiring an original, the losses that are accepted.
 var DefaultSupersededAccept = []string{"maxAudioChannels", "surround", "losslessAudio", "objectAudio", "stereo3d"}
 
-// lossName is a name of the deletion gate: an essence property, or a
-// property and one of its languages after a colon.
-var lossName = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9]*(:[A-Za-z0-9-]+)?$`)
-
 // Settings are the library's settings as they are read.
 type Settings struct {
 	Layout       string
@@ -283,18 +279,20 @@ func (s *Settings) set(key, value string) {
 			bad("a duration above 0, as 24h or 2d; it is 24h")
 		}
 	case SettingSupersededAccept:
+		if lower == "none" {
+			s.SupersededAccept = []string{}
+			return
+		}
 		var names []string
 		for _, n := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) {
-			if !lossName.MatchString(n) {
-				bad("the deletion gate's names, by commas, or none; it is " + strings.Join(DefaultSupersededAccept, ","))
+			if !IsGateName(n) {
+				bad(fmt.Sprintf("the deletion gate's names, by commas, or none (%s is none of them; a language list's is "+
+					"named with a language, as subtitleLanguages:de); it is %s", n, orNone(s.SupersededAccept)))
 				return
 			}
 			if !slices.Contains(names, n) {
 				names = append(names, n)
 			}
-		}
-		if lower == "none" {
-			names = []string{}
 		}
 		s.SupersededAccept = names
 	case SettingReplaceClients:

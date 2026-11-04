@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
+	"strings"
 )
 
 // What an original carries that a package can fail to carry, in the terms of
@@ -20,6 +23,19 @@ var (
 		"commentaryTracks", "commentarySubtitles", "audioDescriptionTracks"}
 	lossLanguages = []string{"audioLanguages", "subtitleLanguages", "sdhSubtitleLanguages", "forcedSubtitleLanguages"}
 )
+
+// gateLanguage is a language of a language list as the gate names it.
+var gateLanguage = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+
+// IsGateName reports whether n is a name the deletion gate gives: a flag or a
+// count it compares, or a language list's name and one of its languages after
+// a colon ("subtitleLanguages:de").
+func IsGateName(n string) bool {
+	if list, lang, ok := strings.Cut(n, ":"); ok {
+		return slices.Contains(lossLanguages, list) && gateLanguage.MatchString(lang)
+	}
+	return slices.Contains(lossFlags, n) || slices.Contains(lossCounts, n)
+}
 
 // DeletionGate is what deleting a version's originals costs: the essence of
 // its sources minus the essence of its package, each property the package is

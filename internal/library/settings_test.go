@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -280,5 +281,42 @@ func TestTheSupersededDelayIsRead(t *testing.T) {
 	s.set(SettingSupersededDelay, "soon")
 	if s.SupersededDelay != 7*24*time.Hour || len(s.Problems) != 1 {
 		t.Errorf("what cannot be read: %v, %v", s.SupersededDelay, s.Problems)
+	}
+}
+
+// What the retire job gives up of a superseded original on its own is the
+// owner's rules unless library.superseded.accept says otherwise: the
+// deletion gate's names, by commas or spaces, each once; none nothing; one
+// that is no name of the gate keeps what was.
+func TestTheSupersededAcceptIsRead(t *testing.T) {
+	want := []string{"maxAudioChannels", "surround", "losslessAudio", "objectAudio", "stereo3d"}
+	if d := Defaults(); !slices.Equal(d.SupersededAccept, want) {
+		t.Errorf("the default: %v, want %v", d.SupersededAccept, want)
+	}
+	for v, want := range map[string][]string{
+		"surround, dolbyVision":             {"surround", "dolbyVision"},
+		"surround surround,objectAudio":     {"surround", "objectAudio"},
+		"audioLanguages:de, subtitleTracks": {"audioLanguages:de", "subtitleTracks"},
+		"none":                              {},
+		"None":                              {},
+		"  ":                                want,
+	} {
+		s := Defaults()
+		s.set(SettingSupersededAccept, v)
+		if !slices.Equal(s.SupersededAccept, want) || len(s.Problems) != 0 {
+			t.Errorf("%q: %v, %v; want %v", v, s.SupersededAccept, s.Problems, want)
+		}
+	}
+	for _, v := range []string{"surround, all of it", "surround,audioLanguages", "surroud", "audioLanguages:", "surround:de"} {
+		s := Defaults()
+		s.set(SettingSupersededAccept, v)
+		if !slices.Equal(s.SupersededAccept, want) || len(s.Problems) != 1 {
+			t.Errorf("%q, which cannot be read: %v, %v", v, s.SupersededAccept, s.Problems)
+		}
+	}
+	s := Defaults()
+	s.set(SettingSupersededAccept, "surround")
+	if d := Defaults(); !slices.Equal(d.SupersededAccept, want) {
+		t.Errorf("a setting changed the default: %v", d.SupersededAccept)
 	}
 }
