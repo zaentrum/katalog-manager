@@ -240,6 +240,15 @@ func TestAnEmptyReadIsHeldAgainstTheRecord(t *testing.T) {
 	if r.State != StateNone || !r.Confirmed || deref(r.RecordSourceID) != s2 || needs(t, l.st, m2) || l.count(m2) != 1 {
 		t.Fatalf("an empty read its record agrees with: %+v, %d chapters", r, l.count(m2))
 	}
+	// read again while its record can't be read (the compliance check's word
+	// is that it has chapter marks): the confirmed none stands
+	if err := os.Remove(filepath.Join(library.SourceDir(l.paths.MovieDir(m2), s2), ProbeFile)); err != nil {
+		t.Fatal(err)
+	}
+	if r = l.record_(m2, header(orig2, []Chapter{}, 2), at.Add(time.Hour)); r.State != StateNone || !r.Confirmed ||
+		r.Failures != 0 || needs(t, l.st, m2) {
+		t.Fatalf("an empty read of a confirmed none whose record can't be read: %+v", r)
+	}
 
 	// no record, and the compliance check's says chapters: a failure, the
 	// chapters an earlier read wrote stay

@@ -371,7 +371,8 @@ const claimSQL = `claimedat = CASE WHEN $2 THEN NULL ELSE claimedat END,
 // A read that found chapters writes them, in place of the title's, unless a
 // read reported since its claim was handed out stands (a late report never
 // replaces a newer one). A read that found none never deletes chapters: one
-// of an original whose chapters were read before leaves them; otherwise it is
+// of an original whose chapters were read before leaves them, one of an
+// original whose none was confirmed leaves that none; otherwise it is
 // held against the original's source record (the library's probe, p): where
 // the record holds chapters they are written, read from it; where it holds
 // none with a length, or the compliance check's record of that source says
@@ -570,6 +571,10 @@ func Record(ctx context.Context, st *store.Store, p library.Paths, itemID string
 		case kept.State == StateRead && kept.of(sourceID) && chapters:
 			// the chapters read before of this original stay
 			err = only("a read of the header found no chapter; the chapters read before of this original stay")
+		case kept.State == StateNone && kept.Confirmed && kept.of(sourceID):
+			// a none of this original its record confirmed stands, whether its
+			// record can be read now or not
+			err = only("")
 		case rec != nil && rec.Says() && len(rec.Chapters) > 0:
 			// its record holds the chapters the header read did not find
 			if err = Replace(ctx, tx, itemID, rec.Chapters); err != nil {
