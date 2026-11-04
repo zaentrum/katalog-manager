@@ -1192,6 +1192,9 @@ func TestTheChaptersOfAnOriginal(t *testing.T) {
 		}
 	}
 	of("of no original known, the title's only one", s1, true)
+	storetest.Exec(t, l.st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state)
+		VALUES ($1, $2, 'other.mkv', 6, 'removed')`, uid('b', 9), id)
+	of("of no original known, beside one removed, no original of the title after all", s1, true)
 	storetest.Exec(t, l.st, `INSERT INTO com_nalet_katalog_chapterreads (item_id, state, sourceid, rowssourceid) VALUES ($1, 'read', $2, $2)`,
 		id, s1)
 	of("read of it", s1, true)

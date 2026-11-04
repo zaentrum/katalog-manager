@@ -385,7 +385,8 @@ func same(have, got []Chapter) bool {
 // OfSource reports whether the chapters the catalog holds of the title itemID
 // are of its original sourceID: read of it (the reads' rowssourceid), or of
 // no original known (chapters written before reads were kept, or by a writer
-// that keeps none) while the title has had no other original. A version made
+// that keeps none) while the title has had no other original (one removed,
+// no original of the title after all, is none). A version made
 // of that original carries them; one of another original, a title given
 // another file, carries the chapters its file holds instead. A catalog
 // without migration 055 tells the second alone.
@@ -405,7 +406,7 @@ func OfSource(ctx context.Context, q library.Querier, itemID, sourceID string) (
 		}
 	}
 	var other bool
-	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_itemsources WHERE item_id = $1 AND id <> $2)`,
-		itemID, sourceID).Scan(&other)
+	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_itemsources WHERE item_id = $1 AND id <> $2
+		AND state <> 'removed')`, itemID, sourceID).Scan(&other)
 	return !other, err
 }
