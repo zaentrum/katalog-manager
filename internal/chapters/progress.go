@@ -22,9 +22,9 @@ type Progress struct {
 	// yet; Unreadable those whose header could not be read again and again,
 	// Accepted those of them an admin settled; Failed those whose last read
 	// failed (each waits its backoff); Held those held for an admin (what a
-	// read found and the chapters in the catalog disagree); Replaced those
-	// whose chapters a read replaced, kept to undo; InFlight those handed out
-	// now.
+	// read found and the chapters in the catalog disagree, or a record's
+	// marks lie past the file's end); Replaced those whose chapters a read
+	// replaced, kept to undo; InFlight those handed out now.
 	Read, FromRecord, None, Unconfirmed, Unreadable, Accepted, Failed, Held, Replaced, InFlight int
 	// HandedOutLastHour and RecordsReadLastHour are the titles the backfill
 	// handed out, and the source records the catalog read, in the last hour.

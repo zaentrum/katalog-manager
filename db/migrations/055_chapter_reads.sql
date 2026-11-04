@@ -21,8 +21,8 @@
 --                 read again from nextattemptat), unreadable (its header read
 --                 failed so many times that it is no use reading it again; it
 --                 settles nothing until an admin accepts it), held (what it
---                 read and the chapters in the catalog disagree: an admin
---                 decides),
+--                 read and the chapters in the catalog disagree, or its
+--                 record's marks lie past the file's end: an admin decides),
 --                 or pending (handed out, nothing reported yet)
 --   readfrom      header (the analyzer's read of the original), record (the
 --                 catalog's read of its source record) or catalog (the

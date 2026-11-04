@@ -9,9 +9,13 @@ package chapters
 // probe and the catalog give it). The catalog reads its chapters as the
 // analyzer reads a header: the marks in their order, each from its start to
 // its end (ffprobe probed the streams, so a mark the file gives no end has the
-// one ffprobe worked out), a mark without a length left out. The record
-// settles a title without a read of the media, and is the other reader a read
-// of the header that finds no chapter is held against.
+// one ffprobe worked out), a mark without a length left out. Marks that all
+// lie past the file's end, as a broadcast's from 01:00:00 do, are read an hour
+// earlier when every one of them fits the file so, in order; otherwise the
+// record holds the title for an admin, and is never taken for one without
+// chapters. The record settles a title without a read of the media, and is
+// the other reader a read of the header that finds no chapter is held
+// against.
 
 import (
 	"bytes"
@@ -40,23 +44,30 @@ const ProbeFile = "ffprobe.json"
 // record it reads, said so.
 const maxProbe = 16 << 20
 
+// hour is how far a broadcast's marks lie past their places (from
+// 01:00:00).
+const hour = int64(3600_000)
+
 // RecordRead is what a source record says of its original's chapters: the
 // chapter marks its probe holds (Found) and those with a length (Chapters),
-// what it left out (Note); or that it can't say, and why
+// what it left out or how it read them (Note); or that it can't say, and why
 // (Why): there is no probe, it holds no chapters list, it is no probe, it is
 // not the probe its source.json names or not of the original the catalog
-// holds, or it could not be read (Err, an error of the storage).
+// holds, or it could not be read (Err, an error of the storage); or that an
+// admin decides (Held): its marks lie past the file's end and do not fit it
+// an hour earlier.
 type RecordRead struct {
 	Path     string
 	Found    int32
 	Chapters []Chapter
 	Note     string
+	Held     string
 	Why      string
 	Err      error
 }
 
 // Says reports whether the record says what its original's chapters are.
-func (r RecordRead) Says() bool { return r.Why == "" && r.Err == nil }
+func (r RecordRead) Says() bool { return r.Why == "" && r.Err == nil && r.Held == "" }
 
 // RecordOf reads what the source record of the item itemID's source sourceID
 // says of its chapters (ReadRecord), held against the catalog's size of that
@@ -215,10 +226,61 @@ func interpret(b []byte) RecordRead {
 	}
 	r.Found = int32(len(marks))
 	r.Chapters = chaptersOf(marks, end)
+	if len(r.Chapters) == 0 && len(marks) > 0 {
+		switch {
+		case end == nil:
+			r.Held = fmt.Sprintf("its %d chapter marks have no length, and its probe gives no length of the file: "+
+				"an admin decides", len(marks))
+			return r
+		case pastEnd(marks, *end):
+			if chs, ok := shifted(marks, *end); ok {
+				r.Chapters = chs
+				r.Note = fmt.Sprintf("its %d chapter marks lay an hour past their places: read 3600 s earlier", len(marks))
+				return r
+			}
+			r.Held = fmt.Sprintf("its %d chapter marks lie past the file's end, and do not fit it an hour earlier: "+
+				"an admin decides", len(marks))
+			return r
+		}
+	}
 	if left := len(marks) - len(r.Chapters); left > 0 {
 		r.Note = fmt.Sprintf("%d of %d chapter marks have no length, left out", left, len(marks))
 	}
 	return r
+}
+
+// pastEnd reports whether a mark starts at or after the file's end.
+func pastEnd(marks []mark, end int64) bool {
+	for _, m := range marks {
+		if m.start != nil && *m.start >= end {
+			return true
+		}
+	}
+	return false
+}
+
+// shifted are the chapters of marks an hour earlier, each ending where the
+// next starts, the last at the file's end: when, and only when, every mark so
+// lies inside the file and they stay in order.
+func shifted(marks []mark, end int64) ([]Chapter, bool) {
+	out := make([]mark, len(marks))
+	prev := int64(-1)
+	for i, m := range marks {
+		if m.start == nil {
+			return nil, false
+		}
+		s := *m.start - hour
+		if s < 0 || s >= end || s <= prev {
+			return nil, false
+		}
+		prev = s
+		out[i] = mark{start: &s, title: m.title}
+	}
+	chs := chaptersOf(out, &end)
+	if len(chs) != len(marks) {
+		return nil, false
+	}
+	return chs, true
 }
 
 // mark is a chapter mark as a probe gives it: its start and end in ms (nil

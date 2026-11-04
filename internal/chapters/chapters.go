@@ -485,8 +485,10 @@ const claimSQL = `claimedat = CASE WHEN $2 THEN NULL ELSE claimedat END,
 // holds chapters they are taken so, read from it; where it holds none with a
 // length, or the compliance check's record of that original says it holds
 // none at all, the none is confirmed (a replaced original's chapters going
-// with it, those of no original known holding the title); where the record
-// can't be read but the compliance check's says chapters, the read counts as a failure; where nothing can say,
+// with it, those of no original known holding the title); where the
+// record's marks lie past the file's end and do not fit it an hour earlier,
+// the title is held; where the record can't be read but the compliance
+// check's says chapters, the read counts as a failure; where nothing can say,
 // the none is kept unconfirmed, settling nothing, and its record is read
 // again.
 //
@@ -536,7 +538,7 @@ func Record(ctx context.Context, st *store.Store, p library.Paths, itemID string
 	if outcome == StateNone && sourceID != nil {
 		x := RecordOf(ctx, pool, p, itemID, *sourceID)
 		rec = &x
-		if !x.Says() {
+		if !x.Says() && x.Held == "" {
 			if says, err = recordSays(ctx, pool, itemID, *sourceID); err != nil {
 				return nil, err
 			}
@@ -637,7 +639,7 @@ func Record(ctx context.Context, st *store.Store, p library.Paths, itemID string
 		return err
 	}
 	// hold holds the title for an admin: what was read disagrees with the
-	// chapters in the catalog
+	// chapters in the catalog, or the record's marks lie past the file's end
 	hold := func(why string, recorded bool) error {
 		var recordSource *string
 		if recorded {
@@ -725,6 +727,8 @@ func Record(ctx context.Context, st *store.Store, p library.Paths, itemID string
 			// a none of this original its record confirmed stands, whether its
 			// record can be read now or not
 			err = only("")
+		case rec != nil && rec.Held != "":
+			err = hold(rec.Held, true)
 		case rec != nil && rec.Says() && len(rec.Chapters) > 0:
 			// its record holds the chapters the header read did not find
 			err = settle(rec.Chapters, ReadFromRecord, false, rec.Path, "source record", nil,

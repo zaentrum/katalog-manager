@@ -160,6 +160,16 @@ func (l lib) count(id string) int {
 	return storetest.Count(l.t, l.st, `SELECT count(*) FROM com_nalet_katalog_itemchapters WHERE item_id = $1`, id)
 }
 
+// chapters are the title's chapters in the catalog.
+func (l lib) chapters(id string) []Chapter {
+	l.t.Helper()
+	chs, err := Of(context.Background(), l.st.Pool(), id)
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	return chs
+}
+
 // read is the title's last read.
 func (l lib) read(id string) *Read {
 	l.t.Helper()
@@ -1088,5 +1098,79 @@ func TestAReplacedOriginalsChaptersGoWithIt(t *testing.T) {
 	if r := l.read(t1.id); l.count(t1.id) != 3 || len(r.Replaced) != 0 || deref(r.RowsSourceID) != t1.cur ||
 		needs(t, l.st, t1.id) {
 		t.Errorf("the replaced original's chapters reverted: %+v, %d chapters", r, l.count(t1.id))
+	}
+}
+
+// Marks that all lie past the file's end, as a broadcast's from 01:00:00 do,
+// are read an hour earlier where every one of them fits the file so, in
+// order; otherwise the title is held for an admin, its none never confirmed,
+// whether its record is read first or a header read that found none is held
+// against it. A single mark of no length at the start is no chapter: a
+// confirmed none. An admin's Accept of the record's takes none.
+func TestMarksPastTheFilesEnd(t *testing.T) {
+	l := newLib(t)
+	ctx := context.Background()
+	now := night
+	s := service(l, &now)
+	setting(t, l.st, SettingBackfill, "on")
+	setting(t, l.st, SettingInflight, "8")
+
+	m1, s1 := uid('a', 1), uid('b', 1) // six marks from 01:00:00 in a file of 50 minutes
+	l.title(m1, s1, opts{chapters: true})
+	var six [][3]any
+	for i := 0; i < 6; i++ {
+		at := 3600.0 + float64(i)*300
+		six = append(six, [3]any{at, at, fmt.Sprintf("Chapter %02d", i+1)})
+	}
+	l.record(m1, s1, 3000, six...)
+	m2, s2 := uid('a', 2), uid('b', 2) // one "Credits" past the end that fits an hour earlier
+	l.title(m2, s2, opts{chapters: true})
+	l.record(m2, s2, 2000, [3]any{3650.0, 3650.0, "Credits"})
+	m3, s3 := uid('a', 3), uid('b', 3) // one "Credits" past the end that does not
+	l.title(m3, s3, opts{chapters: true})
+	l.record(m3, s3, 1000, [3]any{5000.0, 5000.0, "Credits"})
+	m4, s4 := uid('a', 4), uid('b', 4) // one mark of no length at the start
+	l.title(m4, s4, opts{chapters: true})
+	l.record(m4, s4, 1418, [3]any{0.0, 0.0, "Part A"})
+	r1, sr1 := uid('c', 1), uid('b', 6) // retired; its record's marks do not fit: there is nothing to hold
+	l.title(r1, sr1, opts{chapters: true})
+	l.record(r1, sr1, 1000, [3]any{5000.0, 5000.0, "Credits"})
+	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_itemsources SET state = 'deleted', deletedat = now() WHERE id = $1`, sr1)
+	if c, err := s.Claim(ctx, "analyzer-0", 8); err != nil || c.Settled != 3 || len(c.Items) != 0 {
+		t.Fatalf("the claim: %+v, %v", c, err)
+	}
+	if r := l.read(r1); r.State == StateHeld || deref(r.RecordSourceID) != sr1 ||
+		!strings.Contains(deref(r.RecordNote), "do not fit it an hour earlier") {
+		t.Errorf("a retired title whose record's marks do not fit: %+v", r)
+	}
+	m5, s5 := uid('a', 5), uid('b', 5) // a header read finds none; its record's marks don't fit
+	orig5 := l.title(m5, s5, opts{chapters: true})
+	l.record(m5, s5, 1000, [3]any{5000.0, 5000.0, "Credits"})
+	l.record_(m5, header(orig5, []Chapter{}, 1), now)
+
+	chs := l.chapters(m1)
+	if r := l.read(m1); r.State != StateRead || len(chs) != 6 || chs[0].StartMs != 0 || chs[0].EndMs != 300_000 ||
+		chs[5].StartMs != 1_500_000 || chs[5].EndMs != 3_000_000 || deref(chs[5].Title) != "Chapter 06" ||
+		deref(r.Reason) != "its 6 chapter marks lay an hour past their places: read 3600 s earlier" || needs(t, l.st, m1) {
+		t.Errorf("six marks an hour past their places: %+v, %+v", r, chs)
+	}
+	if chs := l.chapters(m2); len(chs) != 1 || chs[0].StartMs != 50_000 || chs[0].EndMs != 2_000_000 || needs(t, l.st, m2) {
+		t.Errorf("a mark that fits an hour earlier: %+v", chs)
+	}
+	for _, id := range []string{m3, m5} {
+		if r := l.read(id); r.State != StateHeld || r.Confirmed || l.count(id) != 0 || !needs(t, l.st, id) ||
+			deref(r.Reason) != "its 1 chapter marks lie past the file's end, and do not fit it an hour earlier: an admin decides" {
+			t.Errorf("%s, marks that do not fit: %+v", id[:8], r)
+		}
+	}
+	if r := l.read(m4); r.State != StateNone || !r.Confirmed || needs(t, l.st, m4) {
+		t.Errorf("one mark of no length at the start: %+v", r)
+	}
+	if accepted, refused, err := Accept(ctx, l.st, l.paths, []string{m3}, TakeRecord, "an-admin", now); err != nil ||
+		len(accepted) != 1 || len(refused) != 0 {
+		t.Fatalf("the record's of m3: %v %v %v", accepted, refused, err)
+	}
+	if r := l.read(m3); r.State != StateNone || !r.Confirmed || needs(t, l.st, m3) {
+		t.Errorf("m3, the record's taken: %+v", r)
 	}
 }

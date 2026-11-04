@@ -3,6 +3,7 @@ package chapters
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -212,6 +213,45 @@ func TestARecordIsVerifiedAgainstItsSourceJSON(t *testing.T) {
 	} {
 		if got := verify(probe, []byte(tc.src), tc.size); (tc.why == "") != (got == "") || !strings.Contains(got, tc.why) {
 			t.Errorf("%s: %q, want %q", tc.name, got, tc.why)
+		}
+	}
+}
+
+// Of a probe's marks that all lie past the file's end, those that every one
+// fit it an hour earlier, in order, are read so; others hold the title, as
+// marks of no length do where the probe gives no length of the file; marks of
+// no length inside the file are no chapters.
+func TestMarksPastTheEndAreReadAnHourEarlierOrHeld(t *testing.T) {
+	probe := func(duration string, starts ...float64) []byte {
+		var chs []string
+		for _, st := range starts {
+			chs = append(chs, fmt.Sprintf(`{"start_time": "%f", "end_time": "%f"}`, st, st))
+		}
+		return []byte(`{"chapters": [` + strings.Join(chs, ", ") + `], "format": {"duration": ` + duration + `}}`)
+	}
+	for _, tc := range []struct {
+		name   string
+		probe  []byte
+		starts []int64
+		held   bool
+	}{
+		{"all an hour late", probe(`"3000"`, 3600, 3900, 4200), []int64{0, 300_000, 600_000}, false},
+		{"one an hour late", probe(`"2000"`, 3650), []int64{50_000}, false},
+		{"one past the end, too far", probe(`"1000"`, 5000), nil, true},
+		{"an hour earlier, before the start", probe(`"1000"`, 1200), nil, true},
+		{"an hour earlier, one before the start", probe(`"3000"`, 0, 3700), nil, true},
+		{"out of order an hour earlier", probe(`"3000"`, 3900, 3600), nil, true},
+		{"no length of the file", probe(`"N/A"`, 3600), nil, true},
+		{"one of no length at the start", probe(`"1418"`, 0), nil, false},
+		{"none", probe(`"1418"`), nil, false},
+	} {
+		r := interpret(tc.probe)
+		var starts []int64
+		for _, c := range r.Chapters {
+			starts = append(starts, c.StartMs)
+		}
+		if (r.Held != "") != tc.held || r.Why != "" || fmt.Sprint(starts) != fmt.Sprint(tc.starts) || r.Says() == tc.held {
+			t.Errorf("%s: %+v, chapters from %v", tc.name, r, starts)
 		}
 	}
 }

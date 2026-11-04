@@ -1875,8 +1875,8 @@ extend type Query {
 # yet, which settles nothing), whose header could not be read again and
 # again (unreadable; accepted: an admin settled them), or whose read failed
 # (each waits its backoff), those held for an admin (held: what a read found
-# and the chapters in the catalog disagree), those whose chapters a read
-# replaced, kept to undo
+# and the chapters in the catalog disagree, or the record's marks lie past
+# the file's end), those whose chapters a read replaced, kept to undo
 # (replaced), those handed out now, those handed out and the records read in
 # the last hour, when the last read was reported; and the backfill's
 # settings, and idle, why it reads nothing now (null when it may).
@@ -1920,7 +1920,8 @@ type ChapterReadsAccepted {
 # What an admin's acceptance of a held title takes for its chapters: those in
 # the catalog (CATALOG: they are its chapters, now of its current original,
 # or it has none), or its source record's (RECORD: they replace the
-# catalog's, which are kept to undo).
+# catalog's, which are kept to undo; none, where the record's marks have no
+# place in the file).
 enum ChapterTake {
   CATALOG
   RECORD

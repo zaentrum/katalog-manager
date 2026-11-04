@@ -607,9 +607,11 @@ func (s *Service) settleFromRecords(ctx context.Context, set Settings, now time.
 // no original known when they are as many or more (those it replaces kept to
 // undo); those in the catalog kept as they are when they are the record's;
 // a confirmed none, those of another original going with it. Fewer, or none,
-// than those of no original known hold the title for an admin: a record never
-// deletes chapters of no original known. A title claimed now, held of that
-// original, or that a read of that original settled since, is left as it is. Where the record can't say, why
+// than those of no original known hold the title for an admin, as marks that
+// lie past the file's end and do not fit it an hour earlier do (of an
+// original still on disk): a record never deletes chapters of no original
+// known. A title claimed now, held of that original, or that a read of that
+// original settled since, is left as it is. Where the record can't say, why
 // is kept, and the backfill hands the title to the analyzer. It answers
 // whether the record settled the title.
 func FromRecord(ctx context.Context, st *store.Store, itemID, sourceID string, rec RecordRead, now time.Time) (bool, error) {
@@ -634,9 +636,17 @@ func FromRecord(ctx context.Context, st *store.Store, itemID, sourceID string, r
 	if kept.ClaimedAt != nil || kept.heldOf(&sourceID) || kept.settles(&sourceID, len(have) > 0) {
 		return false, tx.Commit(ctx)
 	}
+	// an original no longer on disk (a retired one's record restores its
+	// chapters) is held for no admin: there is nothing left to keep
+	var present bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_itemsources
+		WHERE id = $1 AND item_id = $2 AND state = 'present')`, sourceID, itemID).Scan(&present); err != nil {
+		return false, err
+	}
 	// noted keeps that the record was read and why it settled nothing; held
 	// holds the title for an admin besides
 	noted := func(why string, held bool) (bool, error) {
+		held = held && present
 		if _, err := tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET recordsourceid = $2, recordat = $3,
 			recordnote = $4, state = CASE WHEN $5 THEN 'held' ELSE state END,
 			sourceid = CASE WHEN $5 THEN $2 ELSE sourceid END, reason = CASE WHEN $5 THEN $4 ELSE reason END,
@@ -647,6 +657,8 @@ func FromRecord(ctx context.Context, st *store.Store, itemID, sourceID string, r
 		return false, tx.Commit(ctx)
 	}
 	switch {
+	case rec.Held != "":
+		return noted(rec.Held, true)
 	case !rec.Says():
 		why := rec.Why
 		if rec.Err != nil {
@@ -804,7 +816,7 @@ func (s *Service) originalAt(ctx context.Context, q library.Querier, id, path st
 // What an admin's acceptance of a held title takes for its chapters.
 const (
 	TakeCatalog = "catalog" // the chapters in the catalog, now of its current original
-	TakeRecord  = "record"  // its source record's
+	TakeRecord  = "record"  // its source record's (none, where its marks have no place in the file)
 )
 
 // currentSourceSQL is the current original of the title $1: its primary
@@ -825,8 +837,8 @@ const currentSourceSQL = `SELECT s.id FROM com_nalet_katalog_itemsources s
 // may go without its chapters; with take TakeCatalog only), and one held
 // (take TakeCatalog: the chapters in the catalog are the title's, now of its
 // current original, or none; TakeRecord: its source record's replace them,
-// those kept to undo). It answers the titles accepted, and of each it refused
-// why.
+// those kept to undo, or none, where its marks have no place in the file). It
+// answers the titles accepted, and of each it refused why.
 func Accept(ctx context.Context, st *store.Store, p library.Paths, items []string, take, by string,
 	now time.Time) ([]string, []string, error) {
 	accepted, refused := []string{}, []string{}
@@ -905,6 +917,8 @@ func accept(ctx context.Context, st *store.Store, p library.Paths, id, take, by 
 		switch {
 		case rec.Says():
 			got = rec.Chapters
+		case rec.Held != "":
+			got = nil // its marks have no place in the file
 		default:
 			why := rec.Why
 			if rec.Err != nil {
