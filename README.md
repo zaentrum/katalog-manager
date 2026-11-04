@@ -1445,9 +1445,11 @@ title in one of these states:
   compliance check's record of that original says it holds no chapter at
   all, the none is `confirmed`, and the chapters of another original (one
   the title had before its file was replaced) go with it, kept to undo;
-  where the record can't be read and the compliance check's says the
-  original has chapters, the read counts as a failure; where nothing can
-  say, the none stays unconfirmed, takes no chapter away and settles
+  where the record can't say (no probe written, no chapters list in it)
+  and the compliance check's says the original has chapters, the read
+  counts as a failure; where nothing can say, or the storage did not give
+  the record (an error of the storage, no answer within 5 s), the none
+  stays unconfirmed, counts no failure, takes no chapter away and settles
   nothing, and the record is read again a day later. A none never deletes
   chapters of no original known: it holds the title. ffprobe cannot tell a
   file cut short before its chapters from one without them: only the record
@@ -1544,6 +1546,20 @@ original was retired with no chapters in the catalog has them restored
 from its last original's record, after those (unless the compliance
 check's record of it says it holds none; a record whose marks do not fit
 the file holds no retired original, there being none to keep).
+A claim answers within 20 s whatever the storage does. Each file it reads
+(a record's `ffprobe.json` and `source.json`, the look for an original
+before it is handed out) is read in a goroutine of its own and waited for
+5 s at most; a read is started only when its wait ends within the claim's
+time (the records' ten seconds, the claim's 20). One not answered in time
+is left to finish on its own, and the claim reads no other file: its title
+waits its backoff (an hour, doubled each time, as for any failure of the
+storage) and counts no failure, and the claim answers with what it has
+(`"idle"`: the storage did not answer in time; asked again in a minute).
+At most two reads not answered are left behind in the process at once:
+while both are, a claim reads no file at all and answers at once, its
+titles as they were. A report's record (above) and an admin's
+`take: RECORD` read their record so too.
+
 The settings are read on every claim, so an instance starts it, slows it
 or moves its hours without a restart:
 
