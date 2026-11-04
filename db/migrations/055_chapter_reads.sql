@@ -20,15 +20,24 @@
 --                 it held), failed (the last read failed, reason says why;
 --                 read again from nextattemptat), unreadable (its header read
 --                 failed so many times that it is no use reading it again; it
---                 settles nothing until an admin accepts it), or pending
---                 (handed out, nothing reported yet)
---   readfrom      header (the analyzer's read of the original) or record
---                 (the catalog's read of its source record)
+--                 settles nothing until an admin accepts it), held (what it
+--                 read and the chapters in the catalog disagree: an admin
+--                 decides),
+--                 or pending (handed out, nothing reported yet)
+--   readfrom      header (the analyzer's read of the original), record (the
+--                 catalog's read of its source record) or catalog (the
+--                 chapters in the catalog, an admin's decision)
 --   confirmed     a none that its source record agrees with (no chapter with
 --                 a length in its probe, or none at all): only a confirmed
 --                 none settles a title
 --   sourceid      the original read (migration 040's source); a read settles
 --                 only the title's original of that source
+--   rowssourceid  the original the chapters in the catalog were read of; none
+--                 for chapters of no known original (written before the reads
+--                 were kept, or by a writer that keeps no read)
+--   replaced      the chapters a read replaced last, as they were, with when
+--                 and by which reader ({"at", "by", "sourceId", "chapters"}):
+--                 a replacement can be reversed
 --   path, filesize the file read and its size in bytes
 --   found, written the chapter marks found, and the chapters written of them
 --   probe         what read it (the analyzer's ffprobe and its version, or the
@@ -56,8 +65,7 @@
 --                 of the storage), which count for nothing but the backoff
 --   nextattemptat when it may be handed out again
 --   acceptedat, acceptedby
---                 an admin's decision that an unreadable title is settled:
---                 its original goes without its chapters
+--                 an admin's decision of an unreadable or a held title
 --
 -- com_nalet_katalog_chapterclaims holds a row for every title the backfill
 -- handed out, for its hourly rate; rows older than two days go.
@@ -65,22 +73,25 @@
 -- com_nalet_katalog_chaptersmissing holds the titles whose original is still
 -- needed for their chapters: each movie and episode with an original present
 -- on disk, of its current original (its primary asset's source while that
--- is present, else its newest present one), unless that original's record
--- says it holds no chapter at all (the compliance check's srcEssence, of a
--- record of that source: a missing record, one that is no boolean or one of
--- another source settles nothing), or a read of that original settled it:
--- one that wrote chapters that are in the catalog, a confirmed none, an
--- unreadable an admin accepted. A deletion wave keeps the original of a
--- title in it; the backfill reads them. The view needs 040 and 051. A
--- deleted item's rows go with it. Lowercase identifiers, like every
+-- is present, else its newest present one), unless, while a read does not
+-- hold that original for an admin, that original's record says it holds no
+-- chapter at all and the catalog holds none of it (the compliance check's
+-- srcEssence, of a record of that source: a missing record, one that is no
+-- boolean or one of another source settles nothing), or chapters read of
+-- that original are in the catalog, or a read of it is a confirmed none and
+-- the catalog holds no chapter, or an unreadable an admin accepted. A deletion wave keeps the
+-- original of a title in it; the backfill reads them. The view needs 040 and
+-- 051. A deleted item's rows go with it. Lowercase identifiers, like every
 -- com_nalet_katalog_* table.
 CREATE TABLE IF NOT EXISTS com_nalet_katalog_chapterreads (
   item_id VARCHAR(36) PRIMARY KEY,
   state VARCHAR(10) NOT NULL DEFAULT 'pending'
-    CHECK (state IN ('pending', 'read', 'none', 'failed', 'unreadable')),
-  readfrom VARCHAR(6) CHECK (readfrom IS NULL OR readfrom IN ('header', 'record')),
+    CHECK (state IN ('pending', 'read', 'none', 'failed', 'unreadable', 'held')),
+  readfrom VARCHAR(7) CHECK (readfrom IS NULL OR readfrom IN ('header', 'record', 'catalog')),
   confirmed BOOLEAN NOT NULL DEFAULT false,
   sourceid VARCHAR(36),
+  rowssourceid VARCHAR(36),
+  replaced JSONB CHECK (replaced IS NULL OR jsonb_typeof(replaced) = 'object'),
   path VARCHAR(2048),
   filesize BIGINT,
   found INTEGER CHECK (found IS NULL OR found >= 0),
@@ -133,11 +144,14 @@ LEFT JOIN com_nalet_katalog_chapterreads r ON r.item_id = i.id
 WHERE i.type IN ('movie', 'episode')
   AND NOT COALESCE(substring(c.recordkey FROM 's:([0-9a-f-]{36})@') = cur.id
                    AND jsonb_typeof(c.records->'srcEssence'->'chapters') = 'boolean'
-                   AND NOT (c.records->'srcEssence'->>'chapters')::boolean, false)
-  AND NOT COALESCE(r.sourceid = cur.id AND (
-        (r.state = 'read' AND EXISTS (SELECT 1 FROM com_nalet_katalog_itemchapters h WHERE h.item_id = i.id))
-     OR (r.state = 'none' AND r.confirmed)
-     OR (r.state = 'unreadable' AND r.acceptedat IS NOT NULL)), false);
+                   AND NOT (c.records->'srcEssence'->>'chapters')::boolean
+                   AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemchapters h WHERE h.item_id = i.id)
+                   AND (r.state IS DISTINCT FROM 'held' OR r.sourceid IS DISTINCT FROM cur.id), false)
+  AND NOT COALESCE((r.state IS DISTINCT FROM 'held' OR r.sourceid IS DISTINCT FROM cur.id) AND (
+        (r.rowssourceid = cur.id AND EXISTS (SELECT 1 FROM com_nalet_katalog_itemchapters h WHERE h.item_id = i.id))
+     OR (r.sourceid = cur.id AND r.state = 'none' AND r.confirmed
+         AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemchapters h WHERE h.item_id = i.id))
+     OR (r.sourceid = cur.id AND r.state = 'unreadable' AND r.acceptedat IS NOT NULL)), false);
 DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='cloud_katalog_ro') THEN
   GRANT SELECT ON com_nalet_katalog_chapterreads, com_nalet_katalog_chapterclaims, com_nalet_katalog_chaptersmissing
     TO cloud_katalog_ro; END IF; END $$;

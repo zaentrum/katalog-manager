@@ -39,6 +39,8 @@ type chapterAnswer struct {
 	}
 	Read *struct {
 		State, ReadFrom, SourceID, Probe, Reason string
+		RowsSourceID                             *string
+		Replaced                                 json.RawMessage
 		Confirmed                                bool
 		Found, Written, Failures, Transients     int
 	}
@@ -186,6 +188,45 @@ func TestTheAnalyzerReportsAReadOfAnOriginalsChapters(t *testing.T) {
 		!strings.Contains(w.Body.String(), `"idle":"chapters.backfill is off"`) ||
 		!strings.Contains(w.Body.String(), `"retryAfterSeconds":900`) {
 		t.Errorf("a claim while it is off: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// Chapters written by a hand that keeps no read of the original — a PUT
+// without a read, a DELETE — are of no original known: a title a read
+// settled misses its chapters again, until a read of its original agrees; the
+// read's chapters then replace them, kept to undo, and the read says which
+// original the chapters in the catalog were read of.
+func TestChaptersWrittenWithoutAReadAreOfNoOriginal(t *testing.T) {
+	st := storetest.Open(t)
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.LibraryRoot = dir
+	h, iss := server(t, st, cfg)
+	service := iss.Service(t, "zaentrum-manager")
+	media := chapterFilmOf(t, st, cfg)
+	read := `{"chapters": [{"startMs": 0, "endMs": 5000}, {"startMs": 5000, "endMs": 9000}],
+		"read": {"path": "` + media + `", "found": 2}}`
+	for i, tc := range []struct {
+		method, body string
+		missing      bool
+		rows         string
+	}{
+		{http.MethodPut, read, false, chapterSource},
+		{http.MethodPut, `{"chapters": [{"startMs": 0, "endMs": 7000, "title": "Edited"}]}`, true, ""},
+		{http.MethodPut, read, false, chapterSource},
+		{http.MethodDelete, "", true, ""},
+	} {
+		if w := do(h, tc.method, "/api/chapters/items/"+chapterFilm, tc.body, service); w.Code != http.StatusOK {
+			t.Fatalf("%d: %s: %d %s", i+1, tc.method, w.Code, w.Body.String())
+		}
+		a := getChapters(t, h, service)
+		if a.Missing != tc.missing || a.Read == nil || (a.Read.RowsSourceID == nil) != (tc.rows == "") ||
+			(tc.rows != "" && *a.Read.RowsSourceID != tc.rows) {
+			t.Errorf("%d: after the %s: %+v", i+1, tc.method, a)
+		}
+		if i == 2 && !strings.Contains(string(a.Read.Replaced), `"Edited"`) {
+			t.Errorf("the edited chapter was not kept to undo: %s", a.Read.Replaced)
+		}
 	}
 }
 

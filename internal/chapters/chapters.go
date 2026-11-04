@@ -20,7 +20,9 @@ package chapters
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -39,12 +41,14 @@ const (
 	StateNone       = "none"       // the original holds no chapter with a length (Confirmed: its record agrees)
 	StateFailed     = "failed"     // the last read failed (Reason); read again from NextAttemptAt
 	StateUnreadable = "unreadable" // MaxFailures header reads failed on the file: settled only once an admin accepts it
+	StateHeld       = "held"       // what was read and the chapters in the catalog disagree: an admin decides
 )
 
 // Where a read read the chapters from.
 const (
-	ReadFromHeader = "header" // the analyzer's read of the original's header
-	ReadFromRecord = "record" // the catalog's read of the original's source record
+	ReadFromHeader  = "header"  // the analyzer's read of the original's header
+	ReadFromRecord  = "record"  // the catalog's read of the original's source record
+	ReadFromCatalog = "catalog" // the chapters in the catalog, an admin's decision
 )
 
 // MaxFailures is how many header reads in a row that ran on the original
@@ -167,9 +171,13 @@ type Read struct {
 	// none's record agrees with it.
 	ReadFrom  *string
 	Confirmed bool
-	// SourceID is the original read, Path the file and FileSize its size.
+	// SourceID is the original read, Path the file and FileSize its size;
+	// RowsSourceID the original the chapters in the catalog were read of
+	// (nil: of none known); Replaced the chapters a read replaced last.
 	SourceID, Path *string
 	FileSize       *int64
+	RowsSourceID   *string
+	Replaced       json.RawMessage
 	// Found are the chapter marks found, Written the chapters written of them.
 	Found, Written *int32
 	Probe, Reason  *string
@@ -201,24 +209,120 @@ func (r *Read) of(sourceID *string) bool {
 }
 
 // settles reports whether the read settles the title's original sourceID,
-// whose title has chapters in the catalog or not: chapters written, a
-// confirmed none, an unreadable an admin accepted, of that original.
+// whose title has chapters in the catalog or not, as the view does: while it
+// is not held of that original, chapters read of that original in the
+// catalog, a confirmed none of it with none in the catalog, an unreadable of
+// it an admin accepted.
 func (r *Read) settles(sourceID *string, chapters bool) bool {
+	if r == nil || sourceID == nil || r.heldOf(sourceID) {
+		return false
+	}
+	if chapters && r.RowsSourceID != nil && *r.RowsSourceID == *sourceID {
+		return true
+	}
 	if !r.of(sourceID) {
 		return false
 	}
 	switch r.State {
-	case StateRead:
-		return chapters
 	case StateNone:
-		return r.Confirmed
+		return r.Confirmed && !chapters
 	case StateUnreadable:
 		return r.AcceptedAt != nil
 	}
 	return false
 }
 
-const readColumns = `r.item_id, r.state, r.readfrom, r.confirmed, r.sourceid, r.path, r.filesize, r.found, r.written,
+// heldOf reports whether the read holds the title's original sourceID for an
+// admin: a read of another original holds none of this one.
+func (r *Read) heldOf(sourceID *string) bool {
+	return r != nil && r.State == StateHeld && r.of(sourceID)
+}
+
+// The ways a read of an original takes the chapters in the catalog.
+const (
+	takeWrite = iota // its chapters in place of the catalog's, those kept to undo
+	takeKeep         // the catalog's are its chapters: kept, now of that original
+	takeNone         // it holds none: the catalog's, of another original, go (kept to undo)
+	takeStay         // it found none, and the catalog's, read before of that original, stay
+	takeHold         // it and the catalog's, of no original known, disagree: an admin decides
+)
+
+// take is how a read of the original sourceID that found got (empty: none)
+// takes the chapters in the catalog, have, read of rowsSource (nil: of none
+// known), and why it holds the title when it does. A read's chapters replace
+// those of another original, and those of no original known when they are as
+// many or more; fewer, or none, than those of no original known (they were
+// written before the reads were kept) hold the title for an admin, as fewer
+// than those read before of the same original do; a none takes those of
+// another original away; chapters that are the read's are kept as they are.
+func take(have, got []Chapter, rowsSource, sourceID *string) (int, string) {
+	other := rowsSource != nil && (sourceID == nil || *rowsSource != *sourceID)
+	earlier := "an earlier read"
+	if rowsSource != nil && !other {
+		earlier = "an earlier read of this original"
+	}
+	switch {
+	case len(got) > 0 && len(have) > 0 && same(have, got):
+		return takeKeep, ""
+	case len(got) > 0 && (len(have) == 0 || other || len(got) >= len(have)):
+		return takeWrite, ""
+	case len(got) > 0:
+		return takeHold, fmt.Sprintf("it holds %d chapters, the catalog %d of %s: an admin decides", len(got),
+			len(have), earlier)
+	case len(have) == 0 || other:
+		return takeNone, ""
+	case rowsSource != nil:
+		return takeStay, ""
+	}
+	return takeHold, fmt.Sprintf("it holds no chapter with a length, the catalog %d of %s: an admin decides",
+		len(have), earlier)
+}
+
+// put makes got the chapters of the item itemID in tx, in place of have,
+// which are kept to undo (the read row's replaced: when, by which reader, of
+// which original they were read, rowsSource, and they) when they are
+// chapters that are not got; chapters in the catalog that are got are kept
+// as they are. The chapters in the catalog are then of the original sourceID
+// (of none, when got is none).
+func put(ctx context.Context, tx pgx.Tx, itemID string, have, got []Chapter, rowsSource, sourceID *string, by string,
+	now time.Time) error {
+	switch {
+	case len(got) > 0 && same(have, got):
+	default:
+		if len(have) > 0 {
+			undo, err := json.Marshal(map[string]any{"at": now.UTC(), "by": by, "sourceId": rowsSource, "chapters": have})
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET replaced = $2 WHERE item_id = $1`,
+				itemID, undo); err != nil {
+				return err
+			}
+		}
+		if err := Replace(ctx, tx, itemID, got); err != nil {
+			return err
+		}
+	}
+	var rows *string
+	if len(got) > 0 {
+		rows = sourceID
+	}
+	_, err := tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET rowssourceid = $2 WHERE item_id = $1`, itemID, rows)
+	return err
+}
+
+// replacedNote is note, saying that the n chapters the catalog held were
+// replaced and kept to undo.
+func replacedNote(note string, n int) string {
+	s := fmt.Sprintf("the %d chapters it had before replaced, kept to undo", n)
+	if note == "" {
+		return s
+	}
+	return note + "; " + s
+}
+
+const readColumns = `r.item_id, r.state, r.readfrom, r.confirmed, r.sourceid, r.rowssourceid, r.replaced, r.path,
+	r.filesize, r.found, r.written,
 	r.probe, r.reason, r.seconds, r.readat, r.recordsourceid, r.recordat, r.recordnote, r.claimedat, r.claimedby,
 	r.claimtoken, r.lastclaimedat, r.lapsedtoken, r.lapsedclaimedat, r.attempts, r.failures, r.transients,
 	r.nextattemptat, r.acceptedat, r.acceptedby, r.modifiedat`
@@ -226,7 +330,8 @@ const readColumns = `r.item_id, r.state, r.readfrom, r.confirmed, r.sourceid, r.
 func scanRead(row pgx.Row) (*Read, error) {
 	r := &Read{}
 	var secs *float32
-	err := row.Scan(&r.ItemID, &r.State, &r.ReadFrom, &r.Confirmed, &r.SourceID, &r.Path, &r.FileSize, &r.Found,
+	err := row.Scan(&r.ItemID, &r.State, &r.ReadFrom, &r.Confirmed, &r.SourceID, &r.RowsSourceID, &r.Replaced, &r.Path,
+		&r.FileSize, &r.Found,
 		&r.Written, &r.Probe, &r.Reason, &secs, &r.ReadAt, &r.RecordSourceID, &r.RecordAt, &r.RecordNote,
 		&r.ClaimedAt, &r.ClaimedBy, &r.ClaimToken, &r.LastClaimedAt, &r.LapsedToken, &r.LapsedClaimed,
 		&r.Attempts, &r.Failures, &r.Transients, &r.NextAttemptAt, &r.AcceptedAt, &r.AcceptedBy, &r.ModifiedAt)
@@ -368,18 +473,22 @@ const claimSQL = `claimedat = CASE WHEN $2 THEN NULL ELSE claimedat END,
 // item's versions, the first original that version was made of; else the
 // source of the item's primary asset of that path).
 //
-// A read that found chapters writes them, in place of the title's, unless a
-// read reported since its claim was handed out stands (a late report never
-// replaces a newer one). A read that found none never deletes chapters: one
-// of an original whose chapters were read before leaves them, one of an
-// original whose none was confirmed leaves that none; otherwise it is
-// held against the original's source record (the library's probe, p): where
-// the record holds chapters they are written, read from it; where it holds
-// none with a length, or the compliance check's record of that source says
-// it holds none at all, the none is confirmed and settles the title; where
-// the record says chapters (the compliance check's word, its probe unread)
-// the read counts as a failure; where nothing can say, the none is kept
-// unconfirmed, settling nothing, and its record is read again.
+// A read that found chapters takes the chapters in the catalog as take says:
+// they replace those of another original, and those of no original known
+// when they are as many or more (the replaced ones kept to undo); fewer than
+// those hold the title for an admin; chapters that are the read's are kept
+// as they are, now of that original. A late report never replaces a newer
+// read. A read that found none never deletes chapters but a replaced
+// original's: one of an original whose chapters were read before, or whose
+// none was confirmed, leaves them as they are; otherwise it is held against
+// the original's source record (the library's probe, p): where the record
+// holds chapters they are taken so, read from it; where it holds none with a
+// length, or the compliance check's record of that original says it holds
+// none at all, the none is confirmed (a replaced original's chapters going
+// with it, those of no original known holding the title); where the record
+// can't be read but the compliance check's says chapters, the read counts as a failure; where nothing can say,
+// the none is kept unconfirmed, settling nothing, and its record is read
+// again.
 //
 // A read that failed leaves the chapters as they are. One the storage or the
 // worker failed (read.transient) counts for nothing but its backoff. One
@@ -421,7 +530,7 @@ func Record(ctx context.Context, st *store.Store, p library.Paths, itemID string
 		}
 	}
 	// A read that found none is held against the original's record, read
-	// before the transaction (a small file of the library).
+	// before the transaction (small files of the library).
 	var rec *RecordRead
 	var says *bool
 	if outcome == StateNone && sourceID != nil {
@@ -448,11 +557,11 @@ func Record(ctx context.Context, st *store.Store, p library.Paths, itemID string
 	if err != nil {
 		return nil, err
 	}
-	var chapters bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_itemchapters WHERE item_id = $1)`,
-		itemID).Scan(&chapters); err != nil {
+	have, err := Of(ctx, tx, itemID)
+	if err != nil {
 		return nil, err
 	}
+	chapters := len(have) > 0
 	token := strings.TrimSpace(r.Token)
 	// owns: the report is of the claim the title is under; lapsed: of the
 	// claim whose lease ended last. claimed: when its claim was handed out.
@@ -470,8 +579,12 @@ func Record(ctx context.Context, st *store.Store, p library.Paths, itemID string
 	stale := token != "" && !owns && !lapsed
 	// newer: a read was reported since this one's claim was handed out
 	newer := claimed != nil && kept.ReadAt != nil && kept.ReadAt.After(*claimed) &&
-		(kept.State == StateRead || kept.State == StateNone)
+		(kept.State == StateRead || kept.State == StateNone || kept.State == StateHeld)
 	path, probe := clip(r.Read.Path, 2048), clip(strings.TrimSpace(r.Read.Probe), 200)
+	found := int32(0)
+	if r.Read.Found != nil {
+		found = *r.Read.Found
+	}
 
 	// only: the claim ends, and the reason says why (when why is set)
 	only := func(why string) error {
@@ -500,28 +613,75 @@ func Record(ctx context.Context, st *store.Store, p library.Paths, itemID string
 			probe, seconds(r.Read.Seconds), reason, now, f, next)
 		return err
 	}
-	// none keeps a read that found no chapter with a length, confirmed or
-	// not, the title's chapters as they are
-	none := func(confirmed bool, reason, recordNote string, recorded *string) error {
-		found := int32(0)
-		if r.Read.Found != nil {
-			found = *r.Read.Found
-		}
+	// kept keeps what a read found on the read row: state, reader, confirmed,
+	// the file it read and what it found; recorded, when the record was read
+	keep := func(state, from string, confirmed bool, readPath, readProbe string, written int32, secs *float32,
+		reason string, recorded bool) error {
 		next := now.Add(SettledWait)
-		if !confirmed {
+		if state == StateNone && !confirmed {
 			next = now.Add(MaxBackoff)
 		}
-		var recordAt *time.Time
-		if recorded != nil {
-			recordAt = &now
+		var recordSource *string
+		if recorded {
+			recordSource = sourceID
 		}
-		_, err := tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET `+claimSQL+`, state = 'none', readfrom = 'header',
-			confirmed = $4, sourceid = $5, path = $6, filesize = $7, found = $8, written = 0, probe = NULLIF($9, ''),
-			seconds = $10, reason = NULLIF($11, ''), readat = $12, failures = 0, transients = 0, nextattemptat = $13,
-			recordsourceid = $14, recordat = COALESCE($15, recordat), recordnote = NULLIF($16, ''), modifiedat = $12
-			WHERE item_id = $1`, itemID, owns, lapsed, confirmed, sourceID, path, size, found, probe,
-			seconds(r.Read.Seconds), clip(reason, 500), now, next, recorded, recordAt, clip(recordNote, 500))
+		_, err := tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET `+claimSQL+`, state = $4, readfrom = $5,
+			confirmed = $6, sourceid = $7, path = $8, filesize = $9, found = $10, written = $11, probe = NULLIF($12, ''),
+			seconds = $13, reason = NULLIF($14, ''), readat = $15, failures = 0, transients = 0, nextattemptat = $16,
+			recordsourceid = CASE WHEN $17::varchar IS NOT NULL THEN $17::varchar
+			                      WHEN $4::varchar = 'none' AND NOT $6 THEN NULL ELSE recordsourceid END,
+			recordat = CASE WHEN $17::varchar IS NOT NULL THEN $15 ELSE recordat END,
+			recordnote = CASE WHEN $17::varchar IS NOT NULL THEN NULL ELSE recordnote END, modifiedat = $15
+			WHERE item_id = $1`, itemID, owns, lapsed, state, from, confirmed, sourceID, clip(readPath, 2048), size,
+			max(found, written), written, clip(readProbe, 200), secs, clip(reason, 500), now, next, recordSource)
 		return err
+	}
+	// hold holds the title for an admin: what was read disagrees with the
+	// chapters in the catalog
+	hold := func(why string, recorded bool) error {
+		var recordSource *string
+		if recorded {
+			recordSource = sourceID
+		}
+		_, err := tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET `+claimSQL+`, state = 'held', sourceid = $4,
+			path = $5, found = $6, written = NULL, reason = $7, readat = $8, failures = 0, transients = 0,
+			nextattemptat = NULL, recordsourceid = COALESCE($9, recordsourceid),
+			recordat = CASE WHEN $9::varchar IS NOT NULL THEN $8 ELSE recordat END, modifiedat = $8
+			WHERE item_id = $1`, itemID, owns, lapsed, sourceID, path, found, clip(why, 500), now, recordSource)
+		return err
+	}
+	// settle takes what a read of the original found, got from the reader
+	// from (its none confirmed or not), as take says
+	settle := func(got []Chapter, from string, confirmed bool, readPath, readProbe string, secs *float32,
+		note string, recorded bool) error {
+		how, why := take(have, got, kept.RowsSourceID, sourceID)
+		switch {
+		case len(got) == 0 && !confirmed && chapters:
+			// a none nothing confirms takes no chapters away, and holds nothing:
+			// it settles nothing, and its record is read again
+		case how == takeHold:
+			return hold(why, recorded)
+		case how == takeStay:
+			return only("a read found no chapter; the chapters read before of this original stay")
+		case how == takeKeep:
+			if _, err := tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET rowssourceid = $2 WHERE item_id = $1`,
+				itemID, sourceID); err != nil {
+				return err
+			}
+			note = "the chapters in the catalog are those it read"
+		default:
+			if err := put(ctx, tx, itemID, have, got, kept.RowsSourceID, sourceID, from, now); err != nil {
+				return err
+			}
+			if len(have) > 0 {
+				note = replacedNote(note, len(have))
+			}
+		}
+		state := StateRead
+		if len(got) == 0 {
+			state = StateNone
+		}
+		return keep(state, from, confirmed, readPath, readProbe, int32(len(got)), secs, note, recorded)
 	}
 
 	switch {
@@ -538,7 +698,8 @@ func Record(ctx context.Context, st *store.Store, p library.Paths, itemID string
 		case lapsed:
 			// its lease ended, its backoff counted then: this only says why
 			err = only(why)
-		case newer || kept.settles(sourceID, chapters):
+		case newer || kept.settles(sourceID, chapters) || kept.heldOf(sourceID):
+			// a read settled it, or holds it for an admin: that stands
 			err = only("")
 		case r.Read.Transient:
 			t := kept.Transients + 1
@@ -553,59 +714,38 @@ func Record(ctx context.Context, st *store.Store, p library.Paths, itemID string
 		// a read reported since this one was handed out stands
 		err = only("")
 	case outcome == StateRead:
-		if err = Replace(ctx, tx, itemID, r.Chapters); err != nil {
-			return nil, err
-		}
-		written := int32(len(r.Chapters))
-		found := written
-		if r.Read.Found != nil && *r.Read.Found > written {
-			found = *r.Read.Found
-		}
-		_, err = tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET `+claimSQL+`, state = 'read', readfrom = 'header',
-			confirmed = false, sourceid = $4, path = $5, filesize = $6, found = $7, written = $8, probe = NULLIF($9, ''),
-			seconds = $10, reason = NULLIF($11, ''), readat = $12, failures = 0, transients = 0, nextattemptat = $13,
-			modifiedat = $12 WHERE item_id = $1`, itemID, owns, lapsed, sourceID, path, size, found, written, probe,
-			seconds(r.Read.Seconds), clip(strings.TrimSpace(r.Read.Note), 500), now, now.Add(SettledWait))
-	default: // a read that found none
+		err = settle(r.Chapters, ReadFromHeader, false, path, probe, seconds(r.Read.Seconds),
+			strings.TrimSpace(r.Read.Note), false)
+	default: // a read of the header that found none
 		switch {
-		case kept.State == StateRead && kept.of(sourceID) && chapters:
+		case chapters && kept.RowsSourceID != nil && sourceID != nil && *kept.RowsSourceID == *sourceID:
 			// the chapters read before of this original stay
-			err = only("a read of the header found no chapter; the chapters read before of this original stay")
-		case kept.State == StateNone && kept.Confirmed && kept.of(sourceID):
+			err = only("a read found no chapter; the chapters read before of this original stay")
+		case kept.State == StateNone && kept.Confirmed && kept.of(sourceID) && !chapters:
 			// a none of this original its record confirmed stands, whether its
 			// record can be read now or not
 			err = only("")
 		case rec != nil && rec.Says() && len(rec.Chapters) > 0:
 			// its record holds the chapters the header read did not find
-			if err = Replace(ctx, tx, itemID, rec.Chapters); err != nil {
-				return nil, err
-			}
-			found := int32(0)
-			if r.Read.Found != nil {
-				found = *r.Read.Found
-			}
-			_, err = tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET `+claimSQL+`, state = 'read', readfrom = 'record',
-				confirmed = false, sourceid = $4, path = $5, filesize = $6, found = $7, written = $8, probe = 'source record',
-				seconds = NULL, reason = $9, readat = $10, failures = 0, transients = 0, nextattemptat = $11,
-				recordsourceid = $4, recordat = $10, recordnote = NULL, modifiedat = $10 WHERE item_id = $1`,
-				itemID, owns, lapsed, sourceID, clip(rec.Path, 2048), size, rec.Found, int32(len(rec.Chapters)),
-				clip("the header read found no chapter ("+strconv.Itoa(int(found))+" marks); its source record holds "+
-					strconv.Itoa(len(rec.Chapters))+": read from it", 500), now, now.Add(SettledWait))
+			err = settle(rec.Chapters, ReadFromRecord, false, rec.Path, "source record", nil,
+				"the header read found no chapter ("+strconv.Itoa(int(found))+" marks); its source record holds "+
+					strconv.Itoa(len(rec.Chapters))+": read from it", true)
 		case rec != nil && rec.Says():
-			// its record agrees: no chapter with a length
 			reason := strings.TrimSpace(r.Read.Note)
 			if reason == "" {
 				reason = rec.Note
 			}
-			err = none(true, reason, "", sourceID)
+			err = settle(nil, ReadFromHeader, true, path, probe, seconds(r.Read.Seconds), reason, true)
 		case says != nil && !*says:
-			err = none(true, "its source record says it holds no chapter", recordWhy(rec), sourceID)
+			err = settle(nil, ReadFromHeader, true, path, probe, seconds(r.Read.Seconds),
+				"its source record says it holds no chapter", true)
 		case says != nil && *says:
 			err = failed("the header read found no chapter, and the source's record says it holds some (" +
 				recordWhy(rec) + ")")
 		default:
 			// nothing can say: settles nothing, and its record is read again
-			err = none(false, "nothing confirms that the original holds no chapter: "+recordWhy(rec), recordWhy(rec), nil)
+			err = settle(nil, ReadFromHeader, false, path, probe, seconds(r.Read.Seconds),
+				"nothing confirms that the original holds no chapter: "+recordWhy(rec), false)
 		}
 	}
 	if err != nil {

@@ -23,6 +23,7 @@ package chapters
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -253,12 +254,21 @@ func (s *Service) Record(ctx context.Context, itemID string, r Report) (*Read, e
 	return Record(ctx, s.st, s.paths, itemID, r, s.now())
 }
 
-// Accept settles the unreadable titles of items for an admin (Accept).
-func (s *Service) Accept(ctx context.Context, items []string, by string) ([]string, []string, error) {
+// Accept settles, for an admin, the unreadable and held titles of items
+// (Accept).
+func (s *Service) Accept(ctx context.Context, items []string, take, by string) ([]string, []string, error) {
 	if err := s.ready(ctx); err != nil {
 		return nil, nil, err
 	}
-	return Accept(ctx, s.st, items, by, s.now())
+	return Accept(ctx, s.st, s.paths, items, take, by, s.now())
+}
+
+// Revert puts back, for an admin, the chapters a read replaced (Revert).
+func (s *Service) Revert(ctx context.Context, items []string, by string) ([]string, []string, error) {
+	if err := s.ready(ctx); err != nil {
+		return nil, nil, err
+	}
+	return Revert(ctx, s.st, items, by, s.now())
 }
 
 // Title is a title's chapters, its last read and whether it misses its
@@ -469,7 +479,7 @@ func (s *Service) handOut(ctx context.Context, worker string, limit int, set Set
 			return idle("the titles looked at had no original to read", time.Minute), nil
 		}
 		return idle(fmt.Sprintf("%d titles miss their chapters, none to hand out now (their records not read yet, "+
-			"claimed, waiting their backoff, or unreadable)", missing), 15*time.Minute), nil
+			"claimed, waiting their backoff, unreadable, or held for an admin)", missing), 15*time.Minute), nil
 	}
 	out.Deadline = &deadline
 	return out, nil
@@ -481,13 +491,13 @@ func idle(why string, after time.Duration) Claim {
 
 // missingSQL are the titles that miss their chapters, a movie or an episode
 // no other's file covers, none of a disc image, each with its current
-// original and its length, the read the catalog keeps of it (aliased r) and
-// whether its version is complete.
+// original and its length, the read the catalog keeps of it (aliased r; the
+// original it read, readsource) and whether its version is complete.
 var missingSQL = `
 	SELECT m.item_id, i.type, m.sourceid, i.durationms,
 	       EXISTS (SELECT 1 FROM com_nalet_katalog_itemversions v
 	               WHERE v.item_id = m.item_id AND v.state = 'complete') AS packaged,
-	       r.recordsourceid, r.state AS readstate, r.claimedat, r.nextattemptat
+	       r.recordsourceid, r.state AS readstate, r.sourceid AS readsource, r.claimedat, r.nextattemptat
 	FROM ` + store.ChaptersMissingView + ` m
 	JOIN com_nalet_katalog_items i ON i.id = m.item_id
 	LEFT JOIN ` + store.ChapterReadsTable + ` r ON r.item_id = m.item_id
@@ -496,27 +506,29 @@ var missingSQL = `
 // handOutSQL are the titles to hand out, $2 of them at most, in their order:
 // of those that miss their chapters, those whose current original's record
 // the catalog read and could not settle them with (any, when $3: the
-// catalog reads no records), not unreadable, not claimed now and not waiting
-// out a backoff ($1 is now); the titles whose version is complete first,
-// movies before episodes.
+// catalog reads no records), neither unreadable nor held of that original,
+// not claimed now and not waiting out a backoff ($1 is now); the titles whose
+// version is complete first, movies before episodes.
 var handOutSQL = `
 	SELECT t.item_id, t.type, t.sourceid, t.durationms FROM (` + missingSQL + `) t
 	WHERE ($3 OR t.recordsourceid = t.sourceid) AND t.readstate IS DISTINCT FROM 'unreadable'
+	  AND (t.readstate IS DISTINCT FROM 'held' OR t.readsource IS DISTINCT FROM t.sourceid)
 	  AND t.claimedat IS NULL AND (t.nextattemptat IS NULL OR t.nextattemptat <= $1)
 	ORDER BY t.packaged DESC, t.type = 'movie' DESC, t.item_id
 	LIMIT $2`
 
 // recordSQL are the titles whose source record the catalog reads next, $2 of
 // them at most: those that miss their chapters whose current original's
-// record it has not read (not claimed now, not waiting out a backoff; $1 is
-// now), the packaged first, movies before episodes; then the titles whose
-// original was retired with no chapter in the catalog, of their last
-// original, unless the compliance check's record of it says it holds none,
-// and unless that original's record was read already.
+// record it has not read (not claimed now, not held of that original, not
+// waiting out a backoff; $1 is now), the packaged first, movies before
+// episodes; then the titles whose original was retired with no chapter in the
+// catalog, of their last original, unless the compliance check's record of it
+// says it holds none, and unless that original's record was read already.
 var recordSQL = `
 	SELECT item_id, sourceid FROM (
 		SELECT t.item_id, t.sourceid, 0 AS rank, t.packaged, t.type FROM (` + missingSQL + `) t
 		WHERE t.recordsourceid IS DISTINCT FROM t.sourceid AND t.claimedat IS NULL
+		  AND (t.readstate IS DISTINCT FROM 'held' OR t.readsource IS DISTINCT FROM t.sourceid)
 		  AND (t.nextattemptat IS NULL OR t.nextattemptat <= $1)
 		UNION ALL
 		SELECT i.id, last.id, 1, true, i.type
@@ -590,13 +602,16 @@ func (s *Service) settleFromRecords(ctx context.Context, set Settings, now time.
 }
 
 // FromRecord settles the title itemID of its original sourceID from that
-// original's source record, rec, where the record says: the record's
-// chapters written (those in the catalog kept as they are when they are the
-// record's), or a confirmed none (the chapters in the catalog of an earlier
-// read kept: a record never deletes chapters). A title claimed now, or that a
-// read of that original settled since, is left as it is. Where the record
-// can't say, why is kept, and the backfill hands the title to the analyzer.
-// It answers whether the record settled the title.
+// original's source record, rec, where the record says, as take says: the
+// record's chapters in place of those of another original, and of those of
+// no original known when they are as many or more (those it replaces kept to
+// undo); those in the catalog kept as they are when they are the record's;
+// a confirmed none, those of another original going with it. Fewer, or none,
+// than those of no original known hold the title for an admin: a record never
+// deletes chapters of no original known. A title claimed now, held of that
+// original, or that a read of that original settled since, is left as it is. Where the record can't say, why
+// is kept, and the backfill hands the title to the analyzer. It answers
+// whether the record settled the title.
 func FromRecord(ctx context.Context, st *store.Store, itemID, sourceID string, rec RecordRead, now time.Time) (bool, error) {
 	tx, err := st.Pool().Begin(ctx)
 	if err != nil {
@@ -616,52 +631,65 @@ func FromRecord(ctx context.Context, st *store.Store, itemID, sourceID string, r
 	if err != nil {
 		return false, err
 	}
-	if kept.ClaimedAt != nil || kept.settles(&sourceID, len(have) > 0) {
+	if kept.ClaimedAt != nil || kept.heldOf(&sourceID) || kept.settles(&sourceID, len(have) > 0) {
 		return false, tx.Commit(ctx)
 	}
-	if !rec.Says() {
+	// noted keeps that the record was read and why it settled nothing; held
+	// holds the title for an admin besides
+	noted := func(why string, held bool) (bool, error) {
+		if _, err := tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET recordsourceid = $2, recordat = $3,
+			recordnote = $4, state = CASE WHEN $5 THEN 'held' ELSE state END,
+			sourceid = CASE WHEN $5 THEN $2 ELSE sourceid END, reason = CASE WHEN $5 THEN $4 ELSE reason END,
+			nextattemptat = CASE WHEN $5 THEN NULL ELSE nextattemptat END, modifiedat = $3
+			WHERE item_id = $1`, itemID, sourceID, now, clip(why, 500), held); err != nil {
+			return false, err
+		}
+		return false, tx.Commit(ctx)
+	}
+	switch {
+	case !rec.Says():
 		why := rec.Why
 		if rec.Err != nil {
 			why = "its source record could not be read: " + rec.Err.Error()
 		}
-		_, err = tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET recordsourceid = $2, recordat = $3,
-			recordnote = $4, modifiedat = $3 WHERE item_id = $1`, itemID, sourceID, now, clip(why, 500))
-		if err != nil {
-			return false, err
-		}
-		return false, tx.Commit(ctx)
+		return noted(why, false)
 	}
-	written := len(have)
-	reason := ""
-	switch {
-	case len(rec.Chapters) > 0 && same(have, rec.Chapters):
-		reason = "the chapters in the catalog are those of its source record"
-	case len(rec.Chapters) > 0:
-		if err := Replace(ctx, tx, itemID, rec.Chapters); err != nil {
+	how, why := take(have, rec.Chapters, kept.RowsSourceID, &sourceID)
+	reason := rec.Note
+	switch how {
+	case takeHold:
+		return noted("its source record: "+why, true)
+	case takeStay:
+		return noted("its source record holds no chapter; the chapters read before of this original stay", false)
+	case takeKeep:
+		if _, err := tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET rowssourceid = $2 WHERE item_id = $1`,
+			itemID, sourceID); err != nil {
 			return false, err
 		}
-		written, reason = len(rec.Chapters), "read from its source record"
-		if len(have) > 0 {
-			reason += fmt.Sprintf(", in place of %d chapters an earlier read found", len(have))
-		}
+		reason = "the chapters in the catalog are those of its source record"
 	default:
-		reason = rec.Note
-		if reason == "" {
+		if err := put(ctx, tx, itemID, have, rec.Chapters, kept.RowsSourceID, &sourceID, ReadFromRecord, now); err != nil {
+			return false, err
+		}
+		switch {
+		case len(rec.Chapters) > 0 && reason == "":
+			reason = "read from its source record"
+		case len(rec.Chapters) == 0 && reason == "":
 			reason = "its source record holds no chapter mark"
 		}
 		if len(have) > 0 {
-			reason += fmt.Sprintf("; the %d chapters in the catalog, of an earlier read, are kept", len(have))
+			reason = replacedNote(reason, len(have))
 		}
 	}
 	state, confirmed := StateRead, false
 	if len(rec.Chapters) == 0 {
-		state, confirmed, written = StateNone, true, 0
+		state, confirmed = StateNone, true
 	}
 	_, err = tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET state = $2, readfrom = 'record', confirmed = $3,
 		sourceid = $4, path = $5, filesize = NULL, found = $6, written = $7, probe = 'source record', seconds = NULL,
-		reason = $8, readat = $9, recordsourceid = $4, recordat = $9, recordnote = NULL, failures = 0, transients = 0,
-		nextattemptat = $10, modifiedat = $9 WHERE item_id = $1`, itemID, state, confirmed, sourceID,
-		clip(rec.Path, 2048), rec.Found, int32(written), clip(reason, 500), now, now.Add(SettledWait))
+		reason = NULLIF($8, ''), readat = $9, recordsourceid = $4, recordat = $9, recordnote = NULL, failures = 0,
+		transients = 0, nextattemptat = $10, modifiedat = $9 WHERE item_id = $1`, itemID, state, confirmed, sourceID,
+		clip(rec.Path, 2048), rec.Found, int32(len(rec.Chapters)), clip(reason, 500), now, now.Add(SettledWait))
 	if err != nil {
 		return false, err
 	}
@@ -773,41 +801,201 @@ func (s *Service) originalAt(ctx context.Context, q library.Querier, id, path st
 	return path
 }
 
-// Accept settles, for the admin by, the titles of items whose header could
-// not be read: each whose last read is unreadable, of its current original,
-// is accepted, and its original may go without its chapters. It answers the
-// titles accepted, and of each it refused why.
-func Accept(ctx context.Context, st *store.Store, items []string, by string, now time.Time) ([]string, []string, error) {
+// What an admin's acceptance of a held title takes for its chapters.
+const (
+	TakeCatalog = "catalog" // the chapters in the catalog, now of its current original
+	TakeRecord  = "record"  // its source record's
+)
+
+// currentSourceSQL is the current original of the title $1: its primary
+// asset's source while that is present, else its newest present one (as the
+// view reads it).
+const currentSourceSQL = `SELECT s.id FROM com_nalet_katalog_itemsources s
+	WHERE s.item_id = $1 AND s.state = 'present'
+	ORDER BY s.id IS NOT DISTINCT FROM (
+	           SELECT a.sourceid FROM com_nalet_katalog_playbackassets a
+	           WHERE a.item_id = $1 AND a.isprimary AND COALESCE(a.kind, 'primary') = 'primary'
+	             AND a.sourceid IS NOT NULL
+	           ORDER BY a.id LIMIT 1) DESC,
+	         s.createdat DESC, s.id
+	LIMIT 1`
+
+// Accept settles, for the admin by, the titles of items an admin decides:
+// one whose last read, of its current original, is unreadable (its original
+// may go without its chapters; with take TakeCatalog only), and one held
+// (take TakeCatalog: the chapters in the catalog are the title's, now of its
+// current original, or none; TakeRecord: its source record's replace them,
+// those kept to undo). It answers the titles accepted, and of each it refused
+// why.
+func Accept(ctx context.Context, st *store.Store, p library.Paths, items []string, take, by string,
+	now time.Time) ([]string, []string, error) {
 	accepted, refused := []string{}, []string{}
+	if take != TakeCatalog && take != TakeRecord {
+		return accepted, refused, &BadReport{"take is " + TakeCatalog + " or " + TakeRecord}
+	}
 	for _, id := range items {
-		var state, source *string
-		var current *string
-		err := st.Pool().QueryRow(ctx, `SELECT r.state, r.sourceid, m.sourceid
-			FROM com_nalet_katalog_items i
-			LEFT JOIN `+store.ChapterReadsTable+` r ON r.item_id = i.id
-			LEFT JOIN `+store.ChaptersMissingView+` m ON m.item_id = i.id
-			WHERE i.id = $1`, id).Scan(&state, &source, &current)
-		switch {
-		case errors.Is(err, pgx.ErrNoRows):
-			refused = append(refused, id+": no such title")
-			continue
-		case err != nil:
+		why, err := accept(ctx, st, p, id, take, by, now)
+		if err != nil {
 			return accepted, refused, err
-		case state == nil:
-			refused = append(refused, id+": its chapters were never read")
-			continue
-		case *state != StateUnreadable:
-			refused = append(refused, id+": its last read is "+*state+", not unreadable")
-			continue
-		case current == nil || source == nil || *current != *source:
-			refused = append(refused, id+": its unreadable read is not of its current original")
-			continue
 		}
-		if _, err := st.Pool().Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET acceptedat = $2, acceptedby = $3,
-			modifiedat = $2 WHERE item_id = $1 AND state = 'unreadable'`, id, now, clip(by, 255)); err != nil {
-			return accepted, refused, err
+		if why != "" {
+			refused = append(refused, id+": "+why)
+			continue
 		}
 		accepted = append(accepted, id)
 	}
 	return accepted, refused, nil
+}
+
+// accept is Accept of one title; why it refused it, "" when it took it.
+func accept(ctx context.Context, st *store.Store, p library.Paths, id, take, by string, now time.Time) (string, error) {
+	pool := st.Pool()
+	var exists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_items WHERE id = $1)`, id).
+		Scan(&exists); err != nil {
+		return "", err
+	}
+	if !exists {
+		return "no such title", nil
+	}
+	var current string
+	if err := pool.QueryRow(ctx, currentSourceSQL, id).Scan(&current); errors.Is(err, pgx.ErrNoRows) {
+		return "it has no original on disk", nil
+	} else if err != nil {
+		return "", err
+	}
+	var rec RecordRead
+	if take == TakeRecord {
+		rec = RecordOf(ctx, pool, p, id, current)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	r, err := scanRead(tx.QueryRow(ctx, `SELECT `+readColumns+` FROM `+store.ChapterReadsTable+` r
+		WHERE r.item_id = $1 FOR UPDATE OF r`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "its chapters were never read", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case r.State != StateUnreadable && r.State != StateHeld:
+		return "its last read is " + r.State + ", neither unreadable nor held", nil
+	case r.SourceID == nil || *r.SourceID != current:
+		return "its read is not of its current original", nil
+	case r.State == StateUnreadable && take == TakeRecord:
+		return "its source record can't say: an unreadable title is accepted as the catalog holds it", nil
+	case r.State == StateUnreadable:
+		_, err = tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET acceptedat = $2, acceptedby = $3, modifiedat = $2
+			WHERE item_id = $1`, id, now, clip(by, 255))
+		if err != nil {
+			return "", err
+		}
+		return "", tx.Commit(ctx)
+	}
+	have, err := Of(ctx, tx, id)
+	if err != nil {
+		return "", err
+	}
+	got, from := have, ReadFromCatalog
+	if take == TakeRecord {
+		switch {
+		case rec.Says():
+			got = rec.Chapters
+		default:
+			why := rec.Why
+			if rec.Err != nil {
+				why = "it could not be read: " + rec.Err.Error()
+			}
+			return "its source record can't say: " + why, nil
+		}
+		from = ReadFromRecord
+	}
+	if err := put(ctx, tx, id, have, got, r.RowsSourceID, &current, "admin", now); err != nil {
+		return "", err
+	}
+	state, confirmed := StateRead, false
+	if len(got) == 0 {
+		state, confirmed = StateNone, true
+	}
+	_, err = tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET state = $2, readfrom = $3, confirmed = $4,
+		written = $5, reason = $6, acceptedat = $7, acceptedby = $8, nextattemptat = NULL, modifiedat = $7
+		WHERE item_id = $1`, id, state, from, confirmed, int32(len(got)),
+		clip("an admin took the "+take+"'s chapters", 500), now, clip(by, 255))
+	if err != nil {
+		return "", err
+	}
+	return "", tx.Commit(ctx)
+}
+
+// Revert puts back, for the admin by, the chapters a read replaced last of
+// each title of items, now of its current original, and keeps those it
+// replaces to undo in turn (a second Revert takes the read's back). It
+// answers the titles reverted, and of each it refused why.
+func Revert(ctx context.Context, st *store.Store, items []string, by string, now time.Time) ([]string, []string, error) {
+	reverted, refused := []string{}, []string{}
+	for _, id := range items {
+		why, err := revert(ctx, st, id, by, now)
+		if err != nil {
+			return reverted, refused, err
+		}
+		if why != "" {
+			refused = append(refused, id+": "+why)
+			continue
+		}
+		reverted = append(reverted, id)
+	}
+	return reverted, refused, nil
+}
+
+func revert(ctx context.Context, st *store.Store, id, by string, now time.Time) (string, error) {
+	pool := st.Pool()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	r, err := scanRead(tx.QueryRow(ctx, `SELECT `+readColumns+` FROM `+store.ChapterReadsTable+` r
+		WHERE r.item_id = $1 FOR UPDATE OF r`, id))
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && len(r.Replaced) == 0) {
+		return "no read replaced its chapters", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var undo struct {
+		Chapters []Chapter `json:"chapters"`
+	}
+	if err := json.Unmarshal(r.Replaced, &undo); err != nil || len(undo.Chapters) == 0 {
+		return "the chapters it replaced can't be read back", nil
+	}
+	var current *string
+	if err := tx.QueryRow(ctx, currentSourceSQL, id).Scan(&current); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", err
+	}
+	have, err := Of(ctx, tx, id)
+	if err != nil {
+		return "", err
+	}
+	if len(have) == 0 {
+		// nothing in the catalog to keep to undo in turn: the undo is used
+		if _, err := tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET replaced = NULL WHERE item_id = $1`,
+			id); err != nil {
+			return "", err
+		}
+	}
+	if err := put(ctx, tx, id, have, undo.Chapters, r.RowsSourceID, current, "admin", now); err != nil {
+		return "", err
+	}
+	_, err = tx.Exec(ctx, `UPDATE `+store.ChapterReadsTable+` SET state = 'read', readfrom = 'catalog', confirmed = false,
+		sourceid = $2, written = $3, reason = 'an admin took back the chapters a read replaced', acceptedat = $4,
+		acceptedby = $5, nextattemptat = NULL, modifiedat = $4 WHERE item_id = $1`, id, current,
+		int32(len(undo.Chapters)), now, clip(by, 255))
+	if err != nil {
+		return "", err
+	}
+	return "", tx.Commit(ctx)
 }

@@ -11,8 +11,9 @@ import (
 )
 
 // How far the titles' chapters are (migration 055, chapters.Progress): the
-// titles that miss theirs, what the reads found, and the backfill; and an
-// admin's acceptance of the titles whose header could not be read.
+// titles that miss theirs, what the reads found, and the backfill; an
+// admin's acceptance of the titles whose header could not be read or that a
+// read holds, and the reversal of a replacement.
 
 // ChapterReads is how far the chapters are, and their backfill.
 func (r *Resolver) ChapterReads(ctx context.Context) (*chapterProgressResolver, error) {
@@ -37,6 +38,8 @@ func (r *chapterProgressResolver) Unconfirmed() int32         { return int32(r.m
 func (r *chapterProgressResolver) Unreadable() int32          { return int32(r.m.Unreadable) }
 func (r *chapterProgressResolver) Accepted() int32            { return int32(r.m.Accepted) }
 func (r *chapterProgressResolver) Failed() int32              { return int32(r.m.Failed) }
+func (r *chapterProgressResolver) Held() int32                { return int32(r.m.Held) }
+func (r *chapterProgressResolver) Replaced() int32            { return int32(r.m.Replaced) }
 func (r *chapterProgressResolver) InFlight() int32            { return int32(r.m.InFlight) }
 func (r *chapterProgressResolver) HandedOutLastHour() int32   { return int32(r.m.HandedOutLastHour) }
 func (r *chapterProgressResolver) RecordsReadLastHour() int32 { return int32(r.m.RecordsReadLastHour) }
@@ -62,21 +65,48 @@ func (r *chapterProgressResolver) Problems() []string {
 	return r.m.Settings.Problems
 }
 
-// AcceptChapterReads settles, for an admin, the unreadable titles of items.
-func (r *Resolver) AcceptChapterReads(ctx context.Context, args struct{ Items []graphql.ID }) (*chapterAcceptResolver,
-	error) {
+// AcceptChapterReads settles, for an admin, the unreadable and the held
+// titles of items, a held one as take says.
+func (r *Resolver) AcceptChapterReads(ctx context.Context, args struct {
+	Items []graphql.ID
+	Take  string
+}) (*chapterAcceptResolver, error) {
 	if err := r.allow(ctx, "Mutation.acceptChapterReads"); err != nil {
 		return nil, err
 	}
-	ids := make([]string, len(args.Items))
-	for i, id := range args.Items {
-		ids[i] = string(id)
+	take := chapters.TakeCatalog
+	if args.Take == "RECORD" {
+		take = chapters.TakeRecord
 	}
-	accepted, refused, err := chapters.New(r.store, r.cfg).Accept(ctx, ids, auth.Actor(ctx, "katalog-manager"))
+	accepted, refused, err := chapters.New(r.store, r.cfg).Accept(ctx, ids(args.Items), take,
+		auth.Actor(ctx, "katalog-manager"))
 	if err != nil {
 		return nil, err
 	}
 	return &chapterAcceptResolver{accepted: accepted, refused: refused}, nil
+}
+
+// RevertChapterReplacement puts back, for an admin, the chapters a read
+// replaced of the titles of items.
+func (r *Resolver) RevertChapterReplacement(ctx context.Context, args struct{ Items []graphql.ID }) (
+	*chapterAcceptResolver, error) {
+	if err := r.allow(ctx, "Mutation.revertChapterReplacement"); err != nil {
+		return nil, err
+	}
+	reverted, refused, err := chapters.New(r.store, r.cfg).Revert(ctx, ids(args.Items),
+		auth.Actor(ctx, "katalog-manager"))
+	if err != nil {
+		return nil, err
+	}
+	return &chapterAcceptResolver{accepted: reverted, refused: refused}, nil
+}
+
+func ids(items []graphql.ID) []string {
+	out := make([]string, len(items))
+	for i, id := range items {
+		out[i] = string(id)
+	}
+	return out
 }
 
 type chapterAcceptResolver struct{ accepted, refused []string }

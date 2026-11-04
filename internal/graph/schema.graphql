@@ -1874,9 +1874,12 @@ extend type Query {
 # records), found none with a length (none; unconfirmed: no record agrees
 # yet, which settles nothing), whose header could not be read again and
 # again (unreadable; accepted: an admin settled them), or whose read failed
-# (each waits its backoff), those handed out now, those handed out and the
-# records read in the last hour, when the last read was reported; and the
-# backfill's settings, and idle, why it reads nothing now (null when it may).
+# (each waits its backoff), those held for an admin (held: what a read found
+# and the chapters in the catalog disagree), those whose chapters a read
+# replaced, kept to undo
+# (replaced), those handed out now, those handed out and the records read in
+# the last hour, when the last read was reported; and the backfill's
+# settings, and idle, why it reads nothing now (null when it may).
 type ChapterReadProgress {
   missing: Int!
   missingPackaged: Int!
@@ -1887,6 +1890,8 @@ type ChapterReadProgress {
   unreadable: Int!
   accepted: Int!
   failed: Int!
+  held: Int!
+  replaced: Int!
   inFlight: Int!
   handedOutLastHour: Int!
   recordsReadLastHour: Int!
@@ -1905,11 +1910,20 @@ type ChapterReadProgress {
   problems: [String!]!
 }
 
-# What acceptChapterReads did: the titles it settled, and of each it refused
-# why ("<id>: ...").
+# What acceptChapterReads or revertChapterReplacement did: the titles it
+# settled, and of each it refused why ("<id>: ...").
 type ChapterReadsAccepted {
   accepted: [ID!]!
   refused: [String!]!
+}
+
+# What an admin's acceptance of a held title takes for its chapters: those in
+# the catalog (CATALOG: they are its chapters, now of its current original,
+# or it has none), or its source record's (RECORD: they replace the
+# catalog's, which are kept to undo).
+enum ChapterTake {
+  CATALOG
+  RECORD
 }
 
 extend type Query {
@@ -1921,7 +1935,13 @@ extend type Query {
 extend type Mutation {
   # Settles, for an admin, the titles of items whose original's header could
   # not be read again and again (their last read unreadable, of their current
-  # original): their originals may go without their chapters. A title whose
-  # read is anything else is refused, saying why.
-  acceptChapterReads(items: [ID!]!): ChapterReadsAccepted!
+  # original: their originals may go without their chapters; take CATALOG
+  # only), and those held for an admin, as take says. A title whose read is
+  # anything else is refused, saying why.
+  acceptChapterReads(items: [ID!]!, take: ChapterTake = CATALOG): ChapterReadsAccepted!
+  # Puts back, for an admin, the chapters a read replaced last of each title
+  # of items (chapterReads' replaced), as the title's, of its current
+  # original; those it replaces are kept to undo in turn. A title no read
+  # replaced the chapters of is refused, saying why.
+  revertChapterReplacement(items: [ID!]!): ChapterReadsAccepted!
 }

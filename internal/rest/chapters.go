@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/zaentrum/katalog-manager/internal/chapters"
+	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
 // ChapterReads are the titles' chapters, what reading them from the
@@ -27,28 +28,30 @@ type ChapterReads interface {
 
 // chapterReadJSON is a title's last read on the wire.
 type chapterReadJSON struct {
-	State          string     `json:"state"`
-	ReadFrom       *string    `json:"readFrom"`
-	Confirmed      bool       `json:"confirmed"`
-	SourceID       *string    `json:"sourceId"`
-	Path           *string    `json:"path"`
-	FileSize       *int64     `json:"fileSize"`
-	Found          *int32     `json:"found"`
-	Written        *int32     `json:"written"`
-	Probe          *string    `json:"probe"`
-	Seconds        *float64   `json:"seconds"`
-	Reason         *string    `json:"reason"`
-	ReadAt         *time.Time `json:"readAt"`
-	RecordSourceID *string    `json:"recordSourceId"`
-	RecordAt       *time.Time `json:"recordAt"`
-	RecordNote     *string    `json:"recordNote"`
-	Attempts       int32      `json:"attempts"`
-	Failures       int32      `json:"failures"`
-	Transients     int32      `json:"transients"`
-	NextAttemptAt  *time.Time `json:"nextAttemptAt"`
-	ClaimedAt      *time.Time `json:"claimedAt"`
-	AcceptedAt     *time.Time `json:"acceptedAt"`
-	AcceptedBy     *string    `json:"acceptedBy"`
+	State          string          `json:"state"`
+	ReadFrom       *string         `json:"readFrom"`
+	Confirmed      bool            `json:"confirmed"`
+	SourceID       *string         `json:"sourceId"`
+	RowsSourceID   *string         `json:"rowsSourceId"`
+	Replaced       json.RawMessage `json:"replaced"`
+	Path           *string         `json:"path"`
+	FileSize       *int64          `json:"fileSize"`
+	Found          *int32          `json:"found"`
+	Written        *int32          `json:"written"`
+	Probe          *string         `json:"probe"`
+	Seconds        *float64        `json:"seconds"`
+	Reason         *string         `json:"reason"`
+	ReadAt         *time.Time      `json:"readAt"`
+	RecordSourceID *string         `json:"recordSourceId"`
+	RecordAt       *time.Time      `json:"recordAt"`
+	RecordNote     *string         `json:"recordNote"`
+	Attempts       int32           `json:"attempts"`
+	Failures       int32           `json:"failures"`
+	Transients     int32           `json:"transients"`
+	NextAttemptAt  *time.Time      `json:"nextAttemptAt"`
+	ClaimedAt      *time.Time      `json:"claimedAt"`
+	AcceptedAt     *time.Time      `json:"acceptedAt"`
+	AcceptedBy     *string         `json:"acceptedBy"`
 }
 
 func chapterReadOut(r *chapters.Read) *chapterReadJSON {
@@ -56,7 +59,7 @@ func chapterReadOut(r *chapters.Read) *chapterReadJSON {
 		return nil
 	}
 	return &chapterReadJSON{State: r.State, ReadFrom: r.ReadFrom, Confirmed: r.Confirmed, SourceID: r.SourceID,
-		Path: r.Path, FileSize: r.FileSize, Found: r.Found, Written: r.Written, Probe: r.Probe, Seconds: r.Seconds,
+		RowsSourceID: r.RowsSourceID, Replaced: r.Replaced, Path: r.Path, FileSize: r.FileSize, Found: r.Found, Written: r.Written, Probe: r.Probe, Seconds: r.Seconds,
 		Reason: r.Reason, ReadAt: utc(r.ReadAt), RecordSourceID: r.RecordSourceID, RecordAt: utc(r.RecordAt),
 		RecordNote: r.RecordNote, Attempts: r.Attempts, Failures: r.Failures, Transients: r.Transients,
 		NextAttemptAt: utc(r.NextAttemptAt), ClaimedAt: utc(r.ClaimedAt), AcceptedAt: utc(r.AcceptedAt),
@@ -195,6 +198,8 @@ func chapterRows(body map[string]any) ([]chapters.Chapter, bool, string) {
 
 // replaceChapters writes rows as the chapters of the item itemID, in place
 // of its own, and answers how many it wrote: what a PUT without a read does.
+// They are of no original known (store.ChaptersOfNoRead): the title misses
+// them until a read of its original agrees.
 func (h *Handlers) replaceChapters(w http.ResponseWriter, r *http.Request, itemID string, rows []chapters.Chapter) {
 	ctx := reqCtx(r)
 	tx, err := h.d.Store.Pool().Begin(ctx)
@@ -204,6 +209,10 @@ func (h *Handlers) replaceChapters(w http.ResponseWriter, r *http.Request, itemI
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	if err := chapters.Replace(ctx, tx, itemID, rows); err != nil {
+		http.Error(w, "chapters write failed", http.StatusInternalServerError)
+		return
+	}
+	if err := store.ChaptersOfNoRead(ctx, tx, itemID); err != nil {
 		http.Error(w, "chapters write failed", http.StatusInternalServerError)
 		return
 	}
@@ -285,11 +294,24 @@ func chaptersError(w http.ResponseWriter, err error) bool {
 	return true
 }
 
-// deleteChapters ports ChaptersController#deleteForItem.
+// deleteChapters ports ChaptersController#deleteForItem; the title's read
+// keeps no original of its chapters then (store.ChaptersOfNoRead).
 func (h *Handlers) deleteChapters(w http.ResponseWriter, r *http.Request) {
 	itemID := chi.URLParam(r, "itemId")
-	tag, err := h.d.Store.Pool().Exec(reqCtx(r),
-		`DELETE FROM com_nalet_katalog_itemchapters WHERE item_id = $1`, itemID)
+	ctx := reqCtx(r)
+	tx, err := h.d.Store.Pool().Begin(ctx)
+	if err != nil {
+		http.Error(w, "chapters tx failed", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	tag, err := tx.Exec(ctx, `DELETE FROM com_nalet_katalog_itemchapters WHERE item_id = $1`, itemID)
+	if err == nil {
+		err = store.ChaptersOfNoRead(ctx, tx, itemID)
+	}
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
 	if err != nil {
 		http.Error(w, "chapters delete failed", http.StatusInternalServerError)
 		return

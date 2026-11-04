@@ -147,6 +147,45 @@ func TestTheBackfillsSettings(t *testing.T) {
 	}
 }
 
+// A read takes the chapters in the catalog so: its chapters replace those of
+// another original, and those of no original known when they are as many or
+// more; chapters that are its own are kept; fewer, or none, than those of no
+// original known, and fewer than an earlier read of the same original wrote,
+// hold the title; a none takes those of another original away, and leaves an
+// earlier read's of the same original.
+func TestHowAReadTakesTheChaptersInTheCatalog(t *testing.T) {
+	s1, s2 := str("s1"), str("s2")
+	three := []Chapter{{StartMs: 0, EndMs: 10, Ordinal: 1}, {StartMs: 10, EndMs: 20, Ordinal: 2},
+		{StartMs: 20, EndMs: 30, Ordinal: 3}}
+	four := append(append([]Chapter{}, three...), Chapter{StartMs: 30, EndMs: 40, Ordinal: 4})
+	other := []Chapter{{StartMs: 5, EndMs: 10, Ordinal: 1}, {StartMs: 10, EndMs: 20, Ordinal: 2},
+		{StartMs: 20, EndMs: 30, Ordinal: 3}}
+	for _, tc := range []struct {
+		name      string
+		have, got []Chapter
+		rows      *string
+		want      int
+	}{
+		{"none in the catalog", nil, three, nil, takeWrite},
+		{"its own, of no original known", three, three, nil, takeKeep},
+		{"its own, of another original", three, three, s2, takeKeep},
+		{"as many, of no original known", three, other, nil, takeWrite},
+		{"more, of no original known", three, four, nil, takeWrite},
+		{"fewer, of no original known", four, three, nil, takeHold},
+		{"fewer, of another original", four, three, s2, takeWrite},
+		{"fewer, of an earlier read of the same", four, three, s1, takeHold},
+		{"more, of an earlier read of the same", three, four, s1, takeWrite},
+		{"none, none in the catalog", nil, nil, nil, takeNone},
+		{"none, of no original known", three, nil, nil, takeHold},
+		{"none, of another original", three, nil, s2, takeNone},
+		{"none, of an earlier read of the same", three, nil, s1, takeStay},
+	} {
+		if got, why := take(tc.have, tc.got, tc.rows, s1); got != tc.want || (got == takeHold) != (why != "") {
+			t.Errorf("%s: %d %q, want %d", tc.name, got, why, tc.want)
+		}
+	}
+}
+
 // A source record is taken only when its source.json names its probe (the
 // sha256 of its bytes) and an original of the size the catalog holds, and
 // the probe says that size where it says one.

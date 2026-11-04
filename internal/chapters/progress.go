@@ -21,8 +21,11 @@ type Progress struct {
 	// chapter with a length, Unconfirmed those of them no record agrees with
 	// yet; Unreadable those whose header could not be read again and again,
 	// Accepted those of them an admin settled; Failed those whose last read
-	// failed (each waits its backoff); InFlight those handed out now.
-	Read, FromRecord, None, Unconfirmed, Unreadable, Accepted, Failed, InFlight int
+	// failed (each waits its backoff); Held those held for an admin (what a
+	// read found and the chapters in the catalog disagree); Replaced those
+	// whose chapters a read replaced, kept to undo; InFlight those handed out
+	// now.
+	Read, FromRecord, None, Unconfirmed, Unreadable, Accepted, Failed, Held, Replaced, InFlight int
 	// HandedOutLastHour and RecordsReadLastHour are the titles the backfill
 	// handed out, and the source records the catalog read, in the last hour.
 	HandedOutLastHour, RecordsReadLastHour int
@@ -51,10 +54,11 @@ func (s *Service) Progress(ctx context.Context) (Progress, error) {
 			count(*) FILTER (WHERE state = 'read' AND readfrom = 'record'), count(*) FILTER (WHERE state = 'none'),
 			count(*) FILTER (WHERE state = 'none' AND NOT confirmed), count(*) FILTER (WHERE state = 'unreadable'),
 			count(*) FILTER (WHERE state = 'unreadable' AND acceptedat IS NOT NULL), count(*) FILTER (WHERE state = 'failed'),
+			count(*) FILTER (WHERE state = 'held'), count(*) FILTER (WHERE replaced IS NOT NULL),
 			count(*) FILTER (WHERE claimedat IS NOT NULL), count(*) FILTER (WHERE recordat > $1), max(readat)
 		FROM `+store.ChapterReadsTable, now.Add(-time.Hour)).
-		Scan(&p.Read, &p.FromRecord, &p.None, &p.Unconfirmed, &p.Unreadable, &p.Accepted, &p.Failed, &p.InFlight,
-			&p.RecordsReadLastHour, &p.LastReadAt); err != nil {
+		Scan(&p.Read, &p.FromRecord, &p.None, &p.Unconfirmed, &p.Unreadable, &p.Accepted, &p.Failed, &p.Held,
+			&p.Replaced, &p.InFlight, &p.RecordsReadLastHour, &p.LastReadAt); err != nil {
 		return p, err
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM `+store.ChapterClaimsTable+` WHERE claimedat > $1`,

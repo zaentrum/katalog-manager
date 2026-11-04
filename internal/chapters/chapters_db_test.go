@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -169,6 +170,33 @@ func (l lib) read(id string) *Read {
 	return r
 }
 
+// replace makes source, a new original of 6 bytes, the movie id's current
+// one (its primary asset's); its first one, old, retired.
+func (l lib) replace(id, old, source string) {
+	l.t.Helper()
+	storetest.Exec(l.t, l.st, `UPDATE com_nalet_katalog_itemsources SET state = 'deleted', deletedat = now() WHERE id = $1`,
+		old)
+	storetest.Exec(l.t, l.st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state)
+		VALUES ($1, $2, 'original.mkv', 6, 'present')`, source, id)
+	storetest.Exec(l.t, l.st, `UPDATE com_nalet_katalog_playbackassets SET sourceid = $1 WHERE item_id = $2`, source, id)
+}
+
+// undo is the chapters a read replaced, as the read row keeps them.
+type undo struct {
+	By       string    `json:"by"`
+	SourceID *string   `json:"sourceId"`
+	Chapters []Chapter `json:"chapters"`
+}
+
+func undoOf(t *testing.T, r *Read) undo {
+	t.Helper()
+	var u undo
+	if err := json.Unmarshal(r.Replaced, &u); err != nil {
+		t.Fatalf("the replaced chapters of %s: %s, %v", r.ItemID[:8], r.Replaced, err)
+	}
+	return u
+}
+
 func setting(t *testing.T, st *store.Store, key, value string) {
 	t.Helper()
 	storetest.Exec(t, st, `DELETE FROM com_nalet_katalog_settings WHERE key = $1`, key)
@@ -264,22 +292,20 @@ func TestAnEmptyReadIsHeldAgainstTheRecord(t *testing.T) {
 		t.Fatalf("an empty read whose record holds chapters: %+v, %d chapters", r, l.count(m1))
 	}
 
-	// its record's marks have no length: the none is confirmed, and the
-	// chapters an earlier read wrote are not deleted
+	// its record's one mark has no length: the none is confirmed
 	m2, s2 := uid('a', 2), uid('b', 2)
 	orig2 := l.title(m2, s2, opts{chapters: true})
-	l.record(m2, s2, 2900, [3]any{3600.0, 3600.0, "Chapter 01"}, [3]any{3605.0, 3605.0, "Intro"})
-	l.rows(m2, Chapter{StartMs: 0, EndMs: 9000, Title: str("Old"), Ordinal: 1})
-	r = l.record_(m2, header(orig2, []Chapter{}, 2), at)
-	if r.State != StateNone || !r.Confirmed || deref(r.RecordSourceID) != s2 || needs(t, l.st, m2) || l.count(m2) != 1 {
+	l.record(m2, s2, 1418, [3]any{0.0, 0.0, "Part A"})
+	r = l.record_(m2, header(orig2, []Chapter{}, 1), at)
+	if r.State != StateNone || !r.Confirmed || deref(r.RecordSourceID) != s2 || needs(t, l.st, m2) || l.count(m2) != 0 {
 		t.Fatalf("an empty read its record agrees with: %+v, %d chapters", r, l.count(m2))
 	}
 	// read again while its record can't be read (the compliance check's word
 	// is that it has chapter marks): the confirmed none stands
-	if err := os.Remove(filepath.Join(library.SourceDir(l.paths.MovieDir(m2), s2), ProbeFile)); err != nil {
+	if err := os.Remove(filepath.Join(l.recordDir(m2, s2), ProbeFile)); err != nil {
 		t.Fatal(err)
 	}
-	if r = l.record_(m2, header(orig2, []Chapter{}, 2), at.Add(time.Hour)); r.State != StateNone || !r.Confirmed ||
+	if r = l.record_(m2, header(orig2, []Chapter{}, 1), at.Add(time.Hour)); r.State != StateNone || !r.Confirmed ||
 		r.Failures != 0 || needs(t, l.st, m2) {
 		t.Fatalf("an empty read of a confirmed none whose record can't be read: %+v", r)
 	}
@@ -350,7 +376,7 @@ func TestOnlyAFileThatCantBeReadCountsAndUnreadableSettlesNothing(t *testing.T) 
 	if !needs(t, l.st, m1) {
 		t.Fatal("an unreadable title settled itself")
 	}
-	accepted, refused, err := Accept(ctx, l.st, []string{m1, uid('a', 9)}, "an-admin", at)
+	accepted, refused, err := Accept(ctx, l.st, l.paths, []string{m1, uid('a', 9)}, TakeCatalog, "an-admin", at)
 	if err != nil || len(accepted) != 1 || accepted[0] != m1 || len(refused) != 1 ||
 		!strings.Contains(refused[0], "no such title") {
 		t.Fatalf("accept: %v %v %v", accepted, refused, err)
@@ -362,9 +388,14 @@ func TestOnlyAFileThatCantBeReadCountsAndUnreadableSettlesNothing(t *testing.T) 
 	m2, s2 := uid('a', 2), uid('b', 2)
 	orig2 := l.title(m2, s2, opts{chapters: true})
 	l.record_(m2, failed(orig2, "exit 1", false), at)
-	if accepted, refused, _ := Accept(ctx, l.st, []string{m2}, "an-admin", at); len(accepted) != 0 ||
-		!strings.Contains(refused[0], "is failed, not unreadable") {
+	if accepted, refused, _ := Accept(ctx, l.st, l.paths, []string{m2}, TakeCatalog, "an-admin", at); len(accepted) != 0 ||
+		!strings.Contains(refused[0], "is failed, neither unreadable nor held") {
 		t.Errorf("accepting a failed title: %v %v", accepted, refused)
+	}
+	// an unreadable title is taken as the catalog holds it, not from its record
+	if accepted, refused, _ := Accept(ctx, l.st, l.paths, []string{m1}, TakeRecord, "an-admin", at); len(accepted) != 0 ||
+		!strings.Contains(refused[0], "an unreadable title is accepted as the catalog holds it") {
+		t.Errorf("accepting an unreadable title from its record: %v %v", accepted, refused)
 	}
 }
 
@@ -488,7 +519,7 @@ func TestTheBackfillSettlesFromTheRecordsFirst(t *testing.T) {
 	l.title(m3, s3, opts{chapters: true})
 	l.record(m3, s3, 1300, threeMarks()...)
 	l.rows(m3, three()...)
-	m4, s4 := uid('a', 4), uid('b', 4) // chapters of an earlier read, not the record's
+	m4, s4 := uid('a', 4), uid('b', 4) // fewer chapters of an earlier read than the record's
 	l.title(m4, s4, opts{chapters: true})
 	l.record(m4, s4, 1300, threeMarks()...)
 	l.rows(m4, Chapter{StartMs: 0, EndMs: 9000, Title: str("Old"), Ordinal: 1})
@@ -536,7 +567,8 @@ func TestTheBackfillSettlesFromTheRecordsFirst(t *testing.T) {
 		ids(m3) != m3rows {
 		t.Errorf("m3's chapters were written again: %+v", r)
 	}
-	if r, _ := ReadOf(ctx, l.st.Pool(), m4); !strings.Contains(deref(r.Reason), "in place of 1 chapters") {
+	if r := l.read(m4); !strings.Contains(deref(r.Reason), "the 1 chapters it had before replaced, kept to undo") ||
+		len(undoOf(t, r).Chapters) != 1 || deref(r.RowsSourceID) != s4 {
 		t.Errorf("m4: %+v", r)
 	}
 	if r, _ := ReadOf(ctx, l.st.Pool(), r2); r != nil {
@@ -552,7 +584,7 @@ func TestTheBackfillSettlesFromTheRecordsFirst(t *testing.T) {
 	}
 	p, err := s.Progress(ctx)
 	if err != nil || p.Missing != 1 || p.FromRecord != 4 || p.None != 1 || p.InFlight != 1 || p.HandedOutLastHour != 1 ||
-		p.RecordsReadLastHour != 6 {
+		p.RecordsReadLastHour != 6 || p.Replaced != 1 || p.Held != 0 {
 		t.Errorf("progress: %+v, %v", p, err)
 	}
 }
@@ -796,5 +828,265 @@ func TestARecordIsTakenOnlyOfItsOriginal(t *testing.T) {
 	// that, and the compliance check's says chapters
 	if r := l.record_(m2, header(orig2, []Chapter{}, 0), now); r.State != StateFailed || r.Confirmed || !needs(t, l.st, m2) {
 		t.Errorf("an empty read held against a record of another file: %+v", r)
+	}
+}
+
+// The chapters a read replaces are kept to undo: the record's three in place
+// of one written before the reads were kept, the header's four in place of
+// the record's three; an admin's Revert puts the replaced ones back as the
+// title's, of its original, and keeps the read's to undo in turn.
+func TestAReplacementIsKeptToUndo(t *testing.T) {
+	l := newLib(t)
+	ctx := context.Background()
+	now := night
+	s := service(l, &now)
+	setting(t, l.st, SettingBackfill, "on")
+	m1, s1 := uid('a', 1), uid('b', 1)
+	orig := l.title(m1, s1, opts{chapters: true})
+	l.record(m1, s1, 1300, threeMarks()...)
+	l.rows(m1, Chapter{StartMs: 0, EndMs: 9000, Title: str("Old"), Ordinal: 1})
+	if c, err := s.Claim(ctx, "analyzer-0", 1); err != nil || c.Settled != 1 {
+		t.Fatalf("the claim: %+v, %v", c, err)
+	}
+	r := l.read(m1)
+	if u := undoOf(t, r); u.By != ReadFromRecord || u.SourceID != nil || len(u.Chapters) != 1 ||
+		deref(u.Chapters[0].Title) != "Old" || deref(r.RowsSourceID) != s1 || l.count(m1) != 3 || needs(t, l.st, m1) {
+		t.Fatalf("the record's three in place of one: %+v, %+v", r, u)
+	}
+	four := append(three(), Chapter{StartMs: 1_300_000, EndMs: 1_400_000, Title: str("Credits"), Ordinal: 4})
+	r = l.record_(m1, header(orig, four, 4), now.Add(time.Hour))
+	if u := undoOf(t, r); u.By != ReadFromHeader || deref(u.SourceID) != s1 || len(u.Chapters) != 3 || l.count(m1) != 4 ||
+		!strings.Contains(deref(r.Reason), "the 3 chapters it had before replaced, kept to undo") {
+		t.Fatalf("the header's four in place of the record's three: %+v, %+v", r, u)
+	}
+
+	reverted, refused, err := Revert(ctx, l.st, []string{m1, uid('a', 9)}, "an-admin", now.Add(2*time.Hour))
+	if err != nil || len(reverted) != 1 || reverted[0] != m1 || len(refused) != 1 ||
+		!strings.Contains(refused[0], "no read replaced its chapters") {
+		t.Fatalf("revert: %v %v %v", reverted, refused, err)
+	}
+	r = l.read(m1)
+	if u := undoOf(t, r); r.State != StateRead || deref(r.ReadFrom) != ReadFromCatalog || deref(r.AcceptedBy) != "an-admin" ||
+		deref(r.RowsSourceID) != s1 || l.count(m1) != 3 || len(u.Chapters) != 4 || u.By != "admin" || needs(t, l.st, m1) {
+		t.Fatalf("reverted: %+v, %+v, %d chapters", r, u, l.count(m1))
+	}
+	if reverted, _, err = Revert(ctx, l.st, []string{m1}, "an-admin", now.Add(3*time.Hour)); err != nil ||
+		len(reverted) != 1 || l.count(m1) != 4 {
+		t.Errorf("reverted again: %v, %v, %d chapters", reverted, err, l.count(m1))
+	}
+}
+
+// Fewer chapters than the catalog holds of no original known, or than an
+// earlier read of the same original wrote, hold the title for an admin, its
+// chapters as they are: it still needs its original, and is neither handed
+// out nor read from its record again. An admin's Accept takes the catalog's
+// (now of its current original) or the record's (those in the catalog kept to
+// undo); a record that can't say can't be taken.
+func TestFewerChaptersHoldTheTitle(t *testing.T) {
+	l := newLib(t)
+	ctx := context.Background()
+	now := night
+	s := service(l, &now)
+	setting(t, l.st, SettingBackfill, "on")
+	setting(t, l.st, SettingInflight, "8")
+	one := [3]any{0.0, 60.0, "Opening"}
+
+	m1, s1 := uid('a', 1), uid('b', 1) // three of no original known; its record one
+	l.title(m1, s1, opts{chapters: true})
+	l.record(m1, s1, 1300, one)
+	l.rows(m1, three()...)
+	m2, s2 := uid('a', 2), uid('b', 2) // the same
+	l.title(m2, s2, opts{chapters: true})
+	l.record(m2, s2, 1300, one)
+	l.rows(m2, three()...)
+	m3, s3 := uid('a', 3), uid('b', 3) // three of no original known; its header two
+	orig3 := l.title(m3, s3, opts{chapters: true})
+	l.rows(m3, three()...)
+	m4, s4 := uid('a', 4), uid('b', 4) // three of a read of its original; then one
+	orig4 := l.title(m4, s4, opts{chapters: true})
+
+	c, err := s.Claim(ctx, "analyzer-0", 8)
+	if err != nil || c.Settled != 0 || len(c.Items) != 2 {
+		t.Fatalf("the claim: %+v, %v", c, err)
+	}
+	l.record_(m3, header(orig3, three()[:2], 2), now)
+	l.record_(m4, header(orig4, three(), 3), now)
+	l.record_(m4, header(orig4, three()[:1], 1), now.Add(time.Minute))
+	for id, why := range map[string]string{
+		m1: "its source record: it holds 1 chapters, the catalog 3 of an earlier read: an admin decides",
+		m2: "its source record: it holds 1 chapters, the catalog 3 of an earlier read: an admin decides",
+		m3: "it holds 2 chapters, the catalog 3 of an earlier read: an admin decides",
+		m4: "it holds 1 chapters, the catalog 3 of an earlier read of this original: an admin decides",
+	} {
+		if r := l.read(id); r.State != StateHeld || deref(r.Reason) != why || l.count(id) != 3 || len(r.Replaced) != 0 ||
+			!needs(t, l.st, id) {
+			t.Errorf("%s: %+v, %d chapters", id[:8], r, l.count(id))
+		}
+	}
+	// a header read of a held title that fails leaves it held, and counts nothing
+	if r := l.record_(m3, failed(orig3, "ffprobe exited 1: Invalid data found when processing input", false),
+		now.Add(time.Minute)); r.State != StateHeld || r.Failures != 0 || l.count(m3) != 3 {
+		t.Errorf("a failed read of a held title: %+v", r)
+	}
+	// m5, held by the analyzer's pass before its record was read: its record,
+	// of the catalog's three, is not read either
+	m5, s5 := uid('a', 5), uid('b', 5)
+	orig5 := l.title(m5, s5, opts{chapters: true})
+	l.rows(m5, three()...)
+	if r := l.record_(m5, header(orig5, three()[:2], 2), now); r.State != StateHeld || r.RecordSourceID != nil {
+		t.Fatalf("m5: %+v", r)
+	}
+	l.record(m5, s5, 1300, threeMarks()...)
+	now = now.Add(2 * SettledWait)
+	if c, err = s.Claim(ctx, "analyzer-0", 8); err != nil || len(c.Items) != 0 || c.Settled != 0 ||
+		!strings.Contains(c.Idle, "held for an admin") || l.read(m5).State != StateHeld {
+		t.Fatalf("held titles were handed out or read again: %+v, %v", c, err)
+	}
+	if p, err := s.Progress(ctx); err != nil || p.Held != 5 || p.Missing != 5 {
+		t.Errorf("progress: %+v, %v", p, err)
+	}
+
+	accepted, refused, err := Accept(ctx, l.st, l.paths, []string{m1, m3}, TakeCatalog, "an-admin", now)
+	if err != nil || len(accepted) != 2 || len(refused) != 0 {
+		t.Fatalf("the catalog's: %v %v %v", accepted, refused, err)
+	}
+	accepted, refused, err = Accept(ctx, l.st, l.paths, []string{m2, m4}, TakeRecord, "an-admin", now)
+	if err != nil || len(accepted) != 1 || accepted[0] != m2 || len(refused) != 1 ||
+		refused[0] != m4+": its source record can't say: its source record has no probe (ffprobe.json)" {
+		t.Fatalf("the record's: %v %v %v", accepted, refused, err)
+	}
+	if r := l.read(m1); r.State != StateRead || deref(r.ReadFrom) != ReadFromCatalog || deref(r.RowsSourceID) != s1 ||
+		deref(r.AcceptedBy) != "an-admin" || l.count(m1) != 3 || len(r.Replaced) != 0 || needs(t, l.st, m1) {
+		t.Errorf("m1, the catalog's taken: %+v", r)
+	}
+	if r := l.read(m2); r.State != StateRead || deref(r.ReadFrom) != ReadFromRecord || l.count(m2) != 1 ||
+		len(undoOf(t, r).Chapters) != 3 || needs(t, l.st, m2) {
+		t.Errorf("m2, the record's taken: %+v", r)
+	}
+	if needs(t, l.st, m3) || !needs(t, l.st, m4) || l.read(m4).State != StateHeld {
+		t.Errorf("m3 taken, m4 held still: %v %v", needs(t, l.st, m3), needs(t, l.st, m4))
+	}
+}
+
+// A record never deletes chapters of no original known (written before the
+// reads were kept): where it holds no chapter with a length, or no mark at
+// all, the title is held for an admin and its chapters stay, whether the
+// record is read first or a header read that found none is held against it;
+// so too where the compliance check's record says the original holds none.
+func TestARecordNeverDeletesChapters(t *testing.T) {
+	l := newLib(t)
+	ctx := context.Background()
+	now := night
+	s := service(l, &now)
+	setting(t, l.st, SettingBackfill, "on")
+	setting(t, l.st, SettingInflight, "8")
+
+	m1, s1 := uid('a', 1), uid('b', 1) // its record's one mark has no length
+	l.title(m1, s1, opts{chapters: true})
+	l.record(m1, s1, 1418, [3]any{0.0, 0.0, "Part A"})
+	l.rows(m1, three()...)
+	m2, s2 := uid('a', 2), uid('b', 2) // its record holds no mark
+	l.title(m2, s2, opts{chapters: true})
+	l.record(m2, s2, 1418)
+	l.rows(m2, three()...)
+	if c, err := s.Claim(ctx, "analyzer-0", 8); err != nil || c.Settled != 0 || len(c.Items) != 0 {
+		t.Fatalf("the claim: %+v, %v", c, err)
+	}
+	m3, s3 := uid('a', 3), uid('b', 3) // a header read finds none; its record's one mark has no length
+	orig3 := l.title(m3, s3, opts{chapters: true})
+	l.record(m3, s3, 1418, [3]any{0.0, 0.0, "Part A"})
+	l.rows(m3, three()...)
+	l.record_(m3, header(orig3, []Chapter{}, 1), now)
+	m4, s4 := uid('a', 4), uid('b', 4) // a header read finds none; no record, the compliance check's says none
+	orig4 := l.title(m4, s4, opts{chapters: false})
+	l.rows(m4, three()...)
+	l.record_(m4, header(orig4, []Chapter{}, 0), now)
+	for _, id := range []string{m1, m2, m3, m4} {
+		if r := l.read(id); r.State != StateHeld || r.Confirmed || l.count(id) != 3 || len(r.Replaced) != 0 ||
+			!strings.Contains(deref(r.Reason), "it holds no chapter with a length, the catalog 3 of an earlier read: "+
+				"an admin decides") || !needs(t, l.st, id) {
+			t.Errorf("%s: %+v, %d chapters", id[:8], r, l.count(id))
+		}
+	}
+}
+
+// The chapters read of an original that was replaced go with it: the new
+// original's record replaces them (kept to undo), a none of it its record or
+// the compliance check's confirms takes them away (kept to undo); until a
+// read of the new original says, they stand for it in nothing.
+func TestAReplacedOriginalsChaptersGoWithIt(t *testing.T) {
+	l := newLib(t)
+	ctx := context.Background()
+	now := night
+	s := service(l, &now)
+	setting(t, l.st, SettingBackfill, "on")
+	setting(t, l.st, SettingInflight, "8")
+	type title struct{ id, old, cur, orig string }
+	replaced := func(n int) title {
+		tt := title{uid('a', n), uid('b', n), uid('b', 10+n), ""}
+		tt.orig = l.title(tt.id, tt.old, opts{chapters: true})
+		l.record_(tt.id, header(tt.orig, three(), 3), now)
+		l.replace(tt.id, tt.old, tt.cur)
+		if !needs(t, l.st, tt.id) {
+			t.Fatalf("%s: the chapters of its replaced original count for the new one", tt.id[:8])
+		}
+		return tt
+	}
+	t1 := replaced(1) // the new original's record holds no chapter with a length
+	l.record(t1.id, t1.cur, 1418, [3]any{0.0, 0.0, "Part A"})
+	t2 := replaced(2) // the new original's record holds two other chapters
+	l.record(t2.id, t2.cur, 1300, [3]any{0.0, 30.0, "Cold Open"}, [3]any{30.0, 1300.0, "Episode"})
+	t3 := replaced(3) // no record; the compliance check's of the new original says none
+	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_compliance SET recordkey = $2,
+		records = '{"srcEssence": {"chapters": false}}' WHERE item_id = $1`, t3.id, "records/2 s:"+t3.cur+"@1.5 ")
+	t4 := replaced(4) // no record; nothing says
+	storetest.Exec(t, l.st, `DELETE FROM com_nalet_katalog_compliance WHERE item_id = $1`, t4.id)
+
+	now = now.Add(SettledWait)
+	c, err := s.Claim(ctx, "analyzer-0", 8)
+	if err != nil || c.Settled != 2 || len(c.Items) != 2 {
+		t.Fatalf("the claim: %+v, %v", c, err)
+	}
+	for _, job := range c.Items {
+		if _, err := s.Record(ctx, job.ID, Report{Read: ReadReport{Path: job.Path, SourceID: job.SourceID, Found: i32(0)},
+			Chapters: []Chapter{}, Token: job.Token}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		t       title
+		state   string
+		count   int
+		missing bool
+	}{
+		{t1, StateNone, 0, false},
+		{t2, StateRead, 2, false},
+		{t3, StateNone, 0, false},
+		{t4, StateNone, 3, true},
+	} {
+		r := l.read(tc.t.id)
+		if r.State != tc.state || deref(r.SourceID) != tc.t.cur || l.count(tc.t.id) != tc.count ||
+			needs(t, l.st, tc.t.id) != tc.missing {
+			t.Errorf("%s: %+v, %d chapters", tc.t.id[:8], r, l.count(tc.t.id))
+			continue
+		}
+		if tc.missing {
+			if r.Confirmed || len(r.Replaced) != 0 || deref(r.RowsSourceID) != tc.t.old {
+				t.Errorf("%s: a none nothing confirms took chapters away: %+v", tc.t.id[:8], r)
+			}
+			continue
+		}
+		if u := undoOf(t, r); deref(u.SourceID) != tc.t.old || len(u.Chapters) != 3 {
+			t.Errorf("%s: the replaced original's chapters kept to undo: %+v", tc.t.id[:8], u)
+		}
+	}
+	// the chapters a confirmed none took away come back, as the title's, of
+	// its original; nothing is left to undo
+	if reverted, _, err := Revert(ctx, l.st, []string{t1.id}, "an-admin", now); err != nil || len(reverted) != 1 {
+		t.Fatalf("revert: %v, %v", reverted, err)
+	}
+	if r := l.read(t1.id); l.count(t1.id) != 3 || len(r.Replaced) != 0 || deref(r.RowsSourceID) != t1.cur ||
+		needs(t, l.st, t1.id) {
+		t.Errorf("the replaced original's chapters reverted: %+v, %d chapters", r, l.count(t1.id))
 	}
 }

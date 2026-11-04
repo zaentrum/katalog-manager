@@ -33,6 +33,22 @@ func chapterReadsReady(ctx context.Context, q querier) (bool, error) {
 	return ok, err
 }
 
+// ChaptersOfNoRead says, in q (the transaction that wrote them, or the
+// pool), that the chapters of the item itemID were written by a hand that
+// keeps no read of its original (a PUT of chapters without a read, their
+// DELETE, the chapters database): they are of no original known, and the
+// title misses them until a read of its current original agrees with them
+// (migration 055). A catalog without migration 055 keeps nothing of it.
+func ChaptersOfNoRead(ctx context.Context, q querier, itemID string) error {
+	ok, err := chapterReadsReady(ctx, q)
+	if err != nil || !ok {
+		return err
+	}
+	_, err = q.Exec(ctx, `UPDATE `+ChapterReadsTable+` SET rowssourceid = NULL, modifiedat = now()
+		WHERE item_id = $1 AND rowssourceid IS NOT NULL`, itemID)
+	return err
+}
+
 // EnsureChapterReads applies db/migrations/055_chapter_reads.sql when any of
 // its objects is missing, under the migrations' lock (applyLocked). Its view
 // reads the originals (040) and the compliance check's records (051), so it

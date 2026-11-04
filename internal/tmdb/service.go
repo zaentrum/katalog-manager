@@ -23,6 +23,7 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/model"
 	"github.com/zaentrum/katalog-manager/internal/processing"
+	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
 // Status values returned by EnrichOne (lowercase, matching Result.toMap()).
@@ -1051,6 +1052,9 @@ func (s *Service) applyChaptersDb(ctx context.Context, itemID, title string, yea
 
 	s.pool.Exec(ctx, `DELETE FROM com_nalet_katalog_mediasegments WHERE item_id = $1 AND source = 'chaptersdb'`, itemID)
 	s.pool.Exec(ctx, `DELETE FROM com_nalet_katalog_itemchapters WHERE item_id = $1`, itemID)
+	// the chapters database's are of no original: the title misses its
+	// original's until a read of it agrees (migration 055)
+	_ = store.ChaptersOfNoRead(ctx, s.pool, itemID)
 
 	for i := range entries {
 		startMs := entries[i].StartMs

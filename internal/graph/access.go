@@ -51,6 +51,7 @@ var fieldAccess = map[string]auth.Access{
 
 	"Mutation.triggerScan":              auth.Worker, // the scan Job's
 	"Mutation.acceptChapterReads":       auth.Admin,
+	"Mutation.revertChapterReplacement": auth.Admin,
 	"Mutation.enrichOne":                auth.Admin,
 	"Mutation.identify":                 auth.Admin,
 	"Mutation.enrichPending":            auth.Admin,
