@@ -529,17 +529,29 @@ type move struct {
 	renamed  bool
 }
 
+// linkFile and renameFile give a file handed over its name in the arrivals:
+// os.Link and os.Rename, which a test has fail as a filesystem that links no
+// file does, or meet another's file.
+var (
+	linkFile   = os.Link
+	renameFile = os.Rename
+)
+
 // reserve gives the file handed over at from its name in the arrivals, to,
 // under the path's lock: a hard link, which fails on a name there already, so
 // that no file is ever written over. A name there that is the file itself —
 // a link an ask stopped before left — is taken as it is; another is refused
-// (SOURCE_CONFLICT). A filesystem that links no file has it renamed, the name
-// looked at again right before.
+// (SOURCE_CONFLICT). A filesystem that links no file has it renamed onto a
+// name taken first (renameExclusive): no look at the name, then a rename,
+// between which another's file could take it.
 func reserve(from, to string) (*move, error) {
 	if err := library.MkdirAll(filepath.Dir(to)); err != nil {
 		return nil, graph.RefuseSource(codeSourceBusy, "the arrivals cannot take %s: %v", from, err)
 	}
-	err := os.Link(from, to)
+	conflict := func() error {
+		return graph.RefuseSource(codeSourceConflict, "%s cannot be taken into the arrivals: %s is there already", from, to)
+	}
+	err := linkFile(from, to)
 	switch {
 	case err == nil:
 		return &move{from: from, to: to}, nil
@@ -547,17 +559,38 @@ func reserve(from, to string) (*move, error) {
 		if same, serr := sameFile(from, to); serr == nil && same {
 			return &move{from: from, to: to}, nil
 		}
-		return nil, graph.RefuseSource(codeSourceConflict, "%s cannot be taken into the arrivals: %s is there already", from, to)
+		return nil, conflict()
 	case errors.Is(err, syscall.EPERM), errors.Is(err, syscall.ENOTSUP), errors.Is(err, syscall.EOPNOTSUPP), errors.Is(err, syscall.EMLINK):
-		if _, err := os.Lstat(to); err == nil {
-			return nil, graph.RefuseSource(codeSourceConflict, "%s cannot be taken into the arrivals: %s is there already", from, to)
-		}
-		if err := os.Rename(from, to); err != nil {
+		switch err := renameExclusive(from, to); {
+		case errors.Is(err, os.ErrExist):
+			return nil, conflict()
+		case err != nil:
 			return nil, graph.RefuseSource(codeSourceBusy, "%s cannot be taken into the arrivals: %v", from, err)
 		}
 		return &move{from: from, to: to, renamed: true}, nil
 	}
 	return nil, graph.RefuseSource(codeSourceBusy, "%s cannot be taken into the arrivals: %v", from, err)
+}
+
+// renameExclusive renames the file at from to the name to, which no one has:
+// to is made first, exclusively (O_EXCL: os.ErrExist when a file is there),
+// and from is renamed over that empty file of its own, so that a file another
+// puts there meanwhile finds the name taken and is never written over. When
+// the rename fails, the empty file goes, while it is the one made.
+func renameExclusive(from, to string) error {
+	f, err := os.OpenFile(to, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	made, serr := f.Stat()
+	_ = f.Close()
+	if err := renameFile(from, to); err != nil {
+		if now, lerr := os.Lstat(to); serr == nil && lerr == nil && os.SameFile(made, now) {
+			_ = os.Remove(to)
+		}
+		return err
+	}
+	return nil
 }
 
 // undo gives the arrivals back what the move took: its link goes, while it is
