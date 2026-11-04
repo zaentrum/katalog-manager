@@ -271,10 +271,11 @@ func (s *Scanner) walk(ctx context.Context, beat func()) (scanResult, error) {
 // on the path, which it reads again first: a replace that takes this file
 // into the arrivals and gives a title it in its transaction, or an ingest of
 // it, holding the lock now, is waited for, and the path is that title's file
-// then. The file is read again too, under the lock: one gone meanwhile (a
-// replace that failed handed it back), and with the library's v2 layout (v2)
-// one the library has as an original now or of another size than the scan
-// met (size), is no title the scan made: the next scan sees what is there.
+// then. The file is read again too, under the lock, as the scan reads it (a
+// link to a file is that file): one gone meanwhile (a replace that failed
+// handed it back), or a folder now, and with the library's v2 layout (v2) one
+// the library has as an original now or of another size than the scan met
+// (size), is no title the scan made: the next scan sees what is there.
 // It answers the item made, "" when the path is a title's file or no file
 // the scan met.
 func (s *Scanner) newItem(ctx context.Context, path, typ, title string, year *int32, parentID *string,
@@ -295,15 +296,15 @@ func (s *Scanner) newItem(ctx context.Context, path, typ, title string, year *in
 	case !errors.Is(err, pgx.ErrNoRows):
 		return "", err
 	}
-	fi, err := os.Lstat(path)
+	fi, err := os.Stat(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		log.Printf("scanner: %s is gone once the scan had its lock: no title is made of it", path)
 		return "", nil
 	case err != nil:
 		return "", err
-	case !fi.Mode().IsRegular():
-		log.Printf("scanner: %s is no file of its own once the scan had its lock: no title is made of it", path)
+	case fi.IsDir():
+		log.Printf("scanner: %s is a folder once the scan had its lock: no title is made of it", path)
 		return "", nil
 	case v2 && fi.Size() != size:
 		log.Printf("scanner: %s is of %d bytes once the scan had its lock, %d when it met it: no title is made of it now, "+

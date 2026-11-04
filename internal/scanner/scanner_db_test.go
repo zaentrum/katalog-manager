@@ -72,3 +72,26 @@ func TestSubtitleFilesBesideAFilmAreNeverTheDefault(t *testing.T) {
 		t.Error("the file an earlier scan recorded did not keep its row")
 	}
 }
+
+// A scan takes a file it meets through a link for a title as it did before it
+// read the file again under its lock: the file the link leads to is read.
+func TestAScanTakesAFileThroughALink(t *testing.T) {
+	st := storetest.Open(t)
+	root, elsewhere := t.TempDir(), t.TempDir()
+	target := filepath.Join(elsewhere, "Example (2024).mkv")
+	if err := os.WriteFile(target, []byte("a film"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "Example (2024).mkv")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	s := New(st, config.Config{NFSRoot: root}, processing.New(st.Pool()), nil)
+	res, err := s.walk(context.Background(), func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.itemsInserted != 1 || storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE path = $1`, link) != 1 {
+		t.Errorf("a file through a link: %d title(s) made, want one of the link's path", res.itemsInserted)
+	}
+}
