@@ -497,6 +497,37 @@ func TestAReplaceAskedAgainWithItsKeyIsNotDoneTwice(t *testing.T) {
 	}
 }
 
+// A replace's key is its title's alone: another title asked with the same
+// key is given its file, as one never asked with it is, and the first title's
+// replace is not answered for it.
+func TestAReplacesKeyIsItsTitlesAlone(t *testing.T) {
+	iv := newInVersion(t)
+	const other = "c0c0c0c0-0000-4000-8000-00000000000c"
+	if res, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true,
+		Key: "tg_1"}); err != nil || !res.Replaced || res.Repeated {
+		t.Fatalf("the first title's replace: %+v %v", res, err)
+	}
+	old := iv.f.write(t, ".work/incoming/Elephants Dream (2006).mkv", 100)
+	storetest.AddItem(t, iv.f.st, other, "movie", "Elephants Dream", "")
+	storetest.Exec(t, iv.f.st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state)
+		VALUES ('s-other', $1, 'Elephants Dream (2006).mkv', $2, 100, 'present')`, other, old)
+	storetest.Exec(t, iv.f.st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, sizebytes, isprimary, kind, sourceid)
+		VALUES ('a-other', $1, $2, 100, true, 'primary', 's-other')`, other, old)
+	handed := iv.f.write(t, ".work/replace/acquire/tg_1/Elephants.Dream.2006.2160p.mkv", 7000)
+	res, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: other, Path: handed, DeleteOldFile: true, Key: "tg_1"})
+	arrive := filepath.Join(iv.f.cfg.ArrivalsRoot, "Elephants.Dream.2006.2160p.mkv")
+	if err != nil || !res.Replaced || res.Repeated || res.ItemID != other || res.Path != arrive {
+		t.Fatalf("another title asked with the same key: %+v %v", res, err)
+	}
+	if n := storetest.Count(t, iv.f.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE id = 'a-other' AND path = $1`,
+		arrive); n != 1 {
+		t.Error("the other title was not given its file")
+	}
+	if n := storetest.Count(t, iv.f.st, `SELECT count(*) FROM com_nalet_katalog_itemsources WHERE replacekey = 'tg_1'`); n != 2 {
+		t.Errorf("%d sources keep the key, want one of each title", n)
+	}
+}
+
 // A replace stopped halfway is finished by the next ask: a link of the file
 // handed over that it left in the arrivals, uncommitted, is taken as it is;
 // one committed whose name in .work/replace was not removed is the title's

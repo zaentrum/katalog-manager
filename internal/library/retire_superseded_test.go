@@ -3,6 +3,7 @@ package library
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -844,4 +845,71 @@ func (f *retireFixture) complete2(t *testing.T, pkg map[string]any) {
 		WHERE item_id = $1 AND state = 'complete'`, rtFilm, id)
 	f.execSQL(t, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
 		VALUES ($1, $2, ARRAY[$3::varchar], 'complete', $4, $5, now() - interval '1 hour')`, id, rtFilm, rtNewSource, pid, dir)
+}
+
+// Superseded versions whose folders hold a superseded original are no
+// versions the cleanup takes a turn of, however many there are: one whose
+// folder holds none is removed past them in the same pass, never left
+// behind them for a later one.
+func TestVersionsHoldingASupersededOriginalTakeNoOthersTurn(t *testing.T) {
+	f := newRetireFixture(t)
+	f.supersede(t, true, withFiveOne)
+	f.set(t, SettingSupersededGrace, "0")
+	f.set(t, SettingRetireRate, "1")
+	// the superseded originals stay where they lie
+	f.execSQL(t, `UPDATE com_nalet_katalog_items SET retirehold = true WHERE id = $1`, rtFilm)
+	var holding []string
+	for i := range 4 {
+		vid, sid := fmt.Sprintf("9d%06d-0000-4000-8000-00000000000%d", i, i), fmt.Sprintf("9e%06d-0000-4000-8000-00000000000%d", i, i)
+		dir := VersionDir(f.itemDir, vid)
+		librarytest.WriteVersion(t, dir, librarytest.Version{VersionID: vid, PackageID: NewID(), SourceIDs: []string{sid},
+			CreatedAt: "2026-10-01T10:00:00Z"})
+		orig := filepath.Join(dir, "original.mkv")
+		librarytest.Write(t, orig, []byte(fmt.Sprintf("an older original %d", i)))
+		f.execSQL(t, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state, supersededby,
+			supersededat) VALUES ($1, $2, 'original.mkv', $3, 20, 'superseded', $4, now() - interval '3 days')`, sid, rtFilm, orig, rtNewSource)
+		f.execSQL(t, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat,
+			supersededby, supersededat) VALUES ($1, $2, ARRAY[$3::varchar], 'superseded', $4, $5, now() - interval '4 days', $6,
+			now() - interval '3 days' + make_interval(secs => $7::float8))`, vid, rtFilm, sid, NewID(), dir, rtNewVersion, i)
+		holding = append(holding, dir)
+	}
+	rep := f.pass(t)
+	if rep.Versions != 1 || rep.Failed != 0 {
+		t.Errorf("the pass: %+v; want the old version whose folder holds no original removed", rep)
+	}
+	if n := countOf(t, f, `SELECT count(*) FROM com_nalet_katalog_itemversions WHERE id = $1 AND state = 'removed'`, rtVersion); n != 1 {
+		t.Error("the old version whose folder holds no original is not removed")
+	}
+	for _, dir := range holding {
+		if !exists(filepath.Join(dir, "original.mkv")) || !exists(filepath.Join(dir, VersionFile)) {
+			t.Errorf("%s, which holds a superseded original, was removed", dir)
+		}
+	}
+}
+
+// A superseded original's retirement whose master changed while it was
+// checked - the new file encoded again, its newer version the master now -
+// is called off: it is looked at again against the new master, never
+// retired on the word of the one before.
+func TestASupersededRetirementIsCalledOffWhenItsMasterChanged(t *testing.T) {
+	f := newRetireFixture(t)
+	f.supersede(t, true, withFiveOne)
+	ctx := context.Background()
+	before, err := Current(ctx, f.st.Pool(), rtFilm)
+	if err != nil || before == nil || before.ID != rtNewVersion {
+		t.Fatalf("the master: %+v, %v", before, err)
+	}
+	rt := &retirement{src: f.source(t, rtSource), superseded: rtNewSource, itemDir: f.itemDir, ver: before}
+	if why, err := f.r.supersededCalledOff(ctx, rt); err != nil || why != "" {
+		t.Fatalf("with its master as it was: %q, %v", why, err)
+	}
+	f.complete2(t, withFiveOne)
+	now, err := Current(ctx, f.st.Pool(), rtFilm)
+	if err != nil || now == nil || now.ID == before.ID {
+		t.Fatalf("the new master: %+v, %v", now, err)
+	}
+	why, err := f.r.supersededCalledOff(ctx, rt)
+	if err != nil || !strings.Contains(why, "the title's master changed meanwhile, to version "+now.ID) {
+		t.Errorf("with its master changed: %q, %v", why, err)
+	}
 }
