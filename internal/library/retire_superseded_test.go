@@ -11,6 +11,7 @@ import (
 
 	"github.com/zaentrum/katalog-manager/internal/library/librarytest"
 	"github.com/zaentrum/katalog-manager/internal/processing"
+	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
 
 // The fixture's movie given another file: its new source and the version
@@ -452,5 +453,104 @@ func TestASupersededOriginalInItsVersionsFolderIsRetired(t *testing.T) {
 	}
 	if n := countOf(t, f, `SELECT count(*) FROM com_nalet_katalog_itemversions WHERE id = $1 AND state = 'removed'`, rtVersion); n != 1 {
 		t.Error("the old version is not removed")
+	}
+}
+
+// What makes a superseded original due, and what its claim holds it to,
+// each on its own: a superseded source, of a title that does not hold its
+// originals, none of whose steps that read an original runs, whose master —
+// the title's own complete version — is not made of it and complete for the
+// delay. A version of another title is no master of it.
+func TestWhatIsDueAndClaimedOfASupersededOriginal(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name   string
+		change func(t *testing.T, f *retireFixture)
+	}{
+		{"present, not superseded", func(t *testing.T, f *retireFixture) {
+			f.execSQL(t, `UPDATE com_nalet_katalog_itemsources SET state = 'present' WHERE id = $1`, rtSource)
+		}},
+		{"held", func(t *testing.T, f *retireFixture) {
+			f.execSQL(t, `UPDATE com_nalet_katalog_items SET retirehold = true WHERE id = $1`, rtFilm)
+		}},
+		{"a step reads an original", func(t *testing.T, f *retireFixture) {
+			if err := processing.New(f.st.Pool()).Upsert(ctx, rtFilm, "chapter", processing.StatusPending, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"its master made of it", func(t *testing.T, f *retireFixture) {
+			f.execSQL(t, `UPDATE com_nalet_katalog_itemversions SET sourceids = sourceids || $2::varchar WHERE id = $1`,
+				rtNewVersion, rtSource)
+		}},
+		{"its master another title's", func(t *testing.T, f *retireFixture) {
+			storetest.AddItem(t, f.st, "7c7c7c7c-1111-4222-8333-444444444444", "movie", "Another Film", "")
+			f.execSQL(t, `UPDATE com_nalet_katalog_itemversions SET item_id = '7c7c7c7c-1111-4222-8333-444444444444' WHERE id = $1`,
+				rtNewVersion)
+			f.execSQL(t, `UPDATE com_nalet_katalog_itemversions SET state = 'complete' WHERE id = $1`, rtVersion)
+			f.execSQL(t, `UPDATE com_nalet_katalog_itemversions SET sourceids = '{}' WHERE id = $1`, rtVersion)
+			f.execSQL(t, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded' WHERE id = $1`, rtVersion)
+		}},
+		{"its master not complete", func(t *testing.T, f *retireFixture) {
+			f.execSQL(t, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded' WHERE id = $1`, rtNewVersion)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newRetireFixture(t)
+			f.supersede(t, true, withFiveOne)
+			master, err := Current(ctx, f.st.Pool(), rtFilm)
+			if err != nil || master == nil {
+				t.Fatalf("the master: %v", err)
+			}
+			c.change(t, f)
+			if ids, err := f.r.supersededDue(ctx, Defaults(), time.Now(), 10); err != nil || len(ids) != 0 {
+				t.Errorf("due: %v, %v; want none", ids, err)
+			}
+			rt := &retirement{src: f.source(t, rtSource), superseded: rtNewSource, itemDir: f.itemDir, ver: master}
+			if claimed, err := f.r.claimSuperseded(ctx, f.p, time.Now(), rt); err != nil || claimed {
+				t.Errorf("claimed: %v, %v; want it not", claimed, err)
+			}
+		})
+	}
+	// all of it holding, it is due and claimed
+	f := newRetireFixture(t)
+	f.supersede(t, true, withFiveOne)
+	if ids, err := f.r.supersededDue(ctx, Defaults(), time.Now(), 10); err != nil || len(ids) != 1 || ids[0] != rtSource {
+		t.Fatalf("due: %v, %v", ids, err)
+	}
+	master, _ := Current(ctx, f.st.Pool(), rtFilm)
+	rt := &retirement{src: f.source(t, rtSource), superseded: rtNewSource, itemDir: f.itemDir, ver: master}
+	if claimed, err := f.r.claimSuperseded(ctx, f.p, time.Now(), rt); err != nil || !claimed || rt.src.State != SourceRetiring {
+		t.Fatalf("claimed: %v, %v", claimed, err)
+	}
+	if by, _ := SupersededBy(ctx, f.st.Pool(), rtSource); by != rtNewSource {
+		t.Errorf("claimed, it is superseded by %q still; want %s", by, rtNewSource)
+	}
+}
+
+// A superseded original that lies outside every root the retire job deletes
+// under (the arrivals, the extras' arrivals, the media root) and outside its
+// version's folder, or under the package store, is kept, its row saying why.
+func TestASupersededOriginalOutsideTheRootsIsKept(t *testing.T) {
+	for _, where := range []string{"elsewhere", "packages"} {
+		f := newRetireFixture(t)
+		f.supersede(t, true, withFiveOne)
+		moved := filepath.Join(f.cfg.LibraryRoot, where, "Example Film.mkv")
+		if where == "packages" {
+			moved = filepath.Join(f.cfg.PackagesRoot, "Example Film.mkv")
+		}
+		if err := os.MkdirAll(filepath.Dir(moved), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(f.original, moved); err != nil {
+			t.Fatal(err)
+		}
+		f.execSQL(t, `UPDATE com_nalet_katalog_itemsources SET arrivalpath = $2 WHERE id = $1`, rtSource, moved)
+		if rep := f.passKeeping(t); rep.Superseded != 0 {
+			t.Errorf("%s: the pass: %+v", where, rep)
+		}
+		s := f.source(t, rtSource)
+		if s.State != SourceSuperseded || !exists(moved) || !strings.Contains(deref(s.Error), "nothing is deleted") {
+			t.Errorf("%s: the old source: %s, its file there %v, %q", where, s.State, exists(moved), deref(s.Error))
+		}
 	}
 }
