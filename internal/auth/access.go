@@ -24,6 +24,12 @@ const (
 	// Ingest is a worker, or an addon's service account (a token with the
 	// addon role): POST /api/ingest, the seam an addon hands files through.
 	Ingest
+	// Addon is an admin, or an addon's service account — not the platform's:
+	// what an addon carries out for an admin who asked it before, such as
+	// deleting a title's old file once it gave the title a new one
+	// (replaceSource with deleteOldFile). The platform's service account,
+	// which every worker and Job mints its tokens with, stays without it.
+	Addon
 )
 
 // DefaultRolesClaim is where Keycloak puts a token's realm roles.
@@ -95,6 +101,8 @@ func (pol Policy) Allows(p *Principal, a Access) bool {
 		return pol.IsAdmin(p) || pol.IsService(p)
 	case Ingest:
 		return pol.IsAdmin(p) || pol.IsService(p) || pol.IsAddon(p)
+	case Addon:
+		return pol.IsAdmin(p) || pol.IsAddon(p)
 	}
 	return false
 }
@@ -111,6 +119,8 @@ func (pol Policy) Requirement(a Access) string {
 		return "the " + pol.AdminRole + " role or the platform's service account"
 	case Ingest:
 		return "the " + pol.AdminRole + " or the " + pol.AddonRole + " role, or the platform's service account"
+	case Addon:
+		return "the " + pol.AdminRole + " or the " + pol.AddonRole + " role"
 	}
 	return "a rule that admits the caller"
 }

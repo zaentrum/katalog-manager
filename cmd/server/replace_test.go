@@ -58,8 +58,8 @@ func jsonString(s string) string {
 // A film given its original through the service as main wires it, with the
 // real retries, the bearer tokens of a realm and a bus that takes every
 // event, as the demo's seed Job asks it: by the path of its small copy, the
-// small copy deleted. A viewer and an addon are refused, and so is the service
-// account, which may not delete the file, before anything changes. For an admin the film keeps its id, its trailer
+// small copy deleted. A viewer is refused, and so is the service account,
+// which may not delete the file, before anything changes. For an admin the film keeps its id, its trailer
 // and the language an admin set for a track; the transcoder's trigger goes,
 // not as a retry; the record the workers read names the new file and the
 // language; and a scan then finds the new file the film's, and takes nothing
@@ -82,7 +82,7 @@ func TestReplaceSourceThroughTheService(t *testing.T) {
 		('st-f2-t', now(), now(), 'f2', 'transcode', 'in_progress', 1, 0)`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemextras (id, item_id, kind, title, registeredby, sourcepath)
 		VALUES ('x-bbb', 'bbb', 'trailer', 'Trailer', 'api', $1)`, filepath.Join(in.cfg.ExtrasRoot, "big-buck-bunny", "trailer.mov"))
-	viewer, addon, service, admin := in.iss.Viewer(t), in.iss.Addon(t), in.iss.Service(t, "zaentrum-manager"), in.iss.Admin(t)
+	viewer, service, admin := in.iss.Viewer(t), in.iss.Service(t, "zaentrum-manager"), in.iss.Admin(t)
 	gql := func(doc string) string {
 		t.Helper()
 		_, a := in.gql(t, "/api/manage/query", admin, doc)
@@ -97,10 +97,9 @@ func TestReplaceSourceThroughTheService(t *testing.T) {
 		oldFileDeleted oldSidecars reencode { reencoded busy notSent } message } }`, jsonString(old), jsonString(cur))
 	before := fingerprint(t, st)
 	for token, refusal := range map[string]string{
-		viewer: "forbidden: replaceSource requires the zaentrum-admin role or the platform's service account",
-		addon:  "forbidden: replaceSource requires the zaentrum-admin role or the platform's service account",
+		viewer: "forbidden: replaceSource requires the zaentrum-admin or the zaentrum-addon role, or the platform's service account",
 		// The service account may give a title another file, not delete one.
-		service: "forbidden: replaceSource with deleteOldFile requires the zaentrum-admin role",
+		service: "forbidden: replaceSource with deleteOldFile requires the zaentrum-admin or the zaentrum-addon role",
 	} {
 		_, a := in.gql(t, "/api/manage/query", token, doc)
 		if len(a.Errors) != 1 || a.Errors[0].Extensions["code"] != "FORBIDDEN" || a.Errors[0].Message != refusal {
@@ -221,5 +220,114 @@ func TestTheServiceAccountGivesATitleAnotherFileAndDeletesNone(t *testing.T) {
 	}
 	if sent := b.take(); sent != events.TopicAnalyzed+" sintel transcode reencode reencode movie" {
 		t.Errorf("the replace sent %q, want the transcoder's trigger", sent)
+	}
+}
+
+// An addon that grabbed a better file of a title the library holds, for an
+// admin who asked it, hands it over as acquire does with the library's v2
+// layout: from .work/replace, with its own service account, the old file
+// deleted, the title encoded again, asked only while the title is idle.
+// While the title's transcode runs it is refused with SOURCE_BUSY and nothing
+// changes: the title keeps its old file, the new one waits in .work/replace,
+// nothing is sent. Once the transcode is done the title takes the new file
+// into the arrivals, the old file goes and is a source no more, and the
+// title's encode is sent; a scan then takes nothing in.
+func TestAnAddonReplacesAHeldTitlesFileWhileItIsIdle(t *testing.T) {
+	b := &markingBus{}
+	in := newInstanceWired(t, replacing(b))
+	st := in.st
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('set-layout', 'library.layout', 'v2')`)
+	roots := in.cfg.Roots(true)
+	write := func(p string, n int) string {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, make([]byte, n), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	old := write(filepath.Join(roots.Arrivals, "A Film (1999).mkv"), 100)
+	handed := write(filepath.Join(roots.Work, "replace", "acquire", "tg_1", "A.Film.1999.1080p.BluRay-G.mkv"), 500)
+	taken := filepath.Join(roots.Arrivals, "A.Film.1999.1080p.BluRay-G.mkv")
+	storetest.AddItem(t, st, "film", "movie", "A Film", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state)
+		VALUES ('s-old', 'film', 'A Film (1999).mkv', $1, 100, 'present')`, old)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, sizebytes, sourceid)
+		VALUES ('a-film', 'film', $1, true, 'primary', 100, 's-old')`, old)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemprocessingsteps (id, createdat, modifiedat, item_id, step, status, attempts, failures) VALUES
+		('st-film-t', now(), now(), 'film', 'transcode', 'in_progress', 1, 0), ('st-film-p', now(), now(), 'film', 'package', 'pending', 0, 0)`)
+	doc := fmt.Sprintf(`mutation { replaceSource(itemId: "film", path: %s, deleteOldFile: true, reencode: true, ifIdle: true) {
+		itemId oldPath path replaced oldFileDeleted reencode { reencoded busy } message } }`, jsonString(handed))
+	addon := in.iss.Addon(t)
+
+	before := fingerprint(t, st)
+	_, a := in.gql(t, "/api/manage/query", addon, doc)
+	if len(a.Errors) != 1 || a.Errors[0].Extensions["code"] != "SOURCE_BUSY" ||
+		!strings.HasPrefix(a.Errors[0].Message, "the title is given no other file while it is encoded (ifIdle): transcode is running") {
+		t.Fatalf("a replace while the title's transcode runs: %s %v", a.Data, a.Errors)
+	}
+	if after := fingerprint(t, st); after != before || storetest.Count(t, st,
+		`SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE id = 'a-film' AND path = $1 AND sourceid = 's-old'`, old) != 1 {
+		t.Errorf("a busy title's replace changed the catalog:\nbefore %s\nafter  %s", before, after)
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Errorf("a busy title's old file went: %v", err)
+	}
+	if _, err := os.Stat(handed); err != nil {
+		t.Errorf("the file handed over left .work/replace: %v", err)
+	}
+	if _, err := os.Stat(taken); !os.IsNotExist(err) {
+		t.Errorf("the file handed over is in the arrivals: %v", err)
+	}
+	if sent := b.take(); sent != "" {
+		t.Errorf("a busy title's replace sent %s", sent)
+	}
+
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemprocessingsteps SET status = 'done' WHERE item_id = 'film'`)
+	_, a = in.gql(t, "/api/manage/query", addon, doc)
+	if len(a.Errors) > 0 {
+		t.Fatalf("the replace once the title is idle: %v", a.Errors)
+	}
+	want := `{"replaceSource":{"itemId":"film","oldPath":` + jsonString(old) + `,"path":` + jsonString(taken) +
+		`,"replaced":true,"oldFileDeleted":true,"reencode":{"reencoded":1,"busy":0},"message":`
+	if !strings.HasPrefix(string(a.Data), want) {
+		t.Errorf("the replace once the title is idle:\n %s\nwant\n %s…", a.Data, want)
+	}
+	if sent := b.take(); sent != events.TopicAnalyzed+" film transcode reencode reencode movie" {
+		t.Errorf("the replace sent %q, want the transcoder's trigger", sent)
+	}
+	for _, p := range []string{old, handed} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s is still there: %v", p, err)
+		}
+	}
+	if _, err := os.Stat(taken); err != nil {
+		t.Errorf("the new file is not in the arrivals: %v", err)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemsources WHERE id = 's-old' AND state = 'removed'
+		AND arrivalpath IS NULL`); n != 1 {
+		t.Error("the deleted old file is still a source")
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_playbackassets p JOIN com_nalet_katalog_itemsources s
+		ON s.id = p.sourceid WHERE p.id = 'a-film' AND p.path = $1 AND s.state = 'present'`, taken); n != 1 {
+		t.Error("the title's asset is not the new file, a source of its own")
+	}
+
+	job, err := scanner.New(st, in.cfg, processing.New(st.Pool()), nil).Trigger(context.Background(), "nfs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); storetest.Count(t, st,
+		`SELECT count(*) FROM com_nalet_katalog_scanjobs WHERE id = $1 AND status = 'running'`, job) == 1; {
+		if time.Now().After(deadline) {
+			t.Fatal("the scan did not end")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_scanjobs WHERE id = $1 AND status = 'done'
+		AND itemsinserted = 0`, job); n != 1 || storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE id <> 'm1'`) != 1 {
+		t.Error("the scan took a title in after the replace")
 	}
 }

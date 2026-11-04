@@ -28,30 +28,31 @@ func roles(rs ...string) map[string]any {
 }
 
 // Who may do what: a viewer reads, an admin does everything, the service
-// account does the workers' work, an addon only ingests; nobody without a
-// principal, and a stream token only reads.
+// account does the workers' work, an addon ingests and carries out what an
+// admin asked it (Addon), which the service account may not; nobody without
+// a principal, and a stream token only reads.
 func TestPolicyAllows(t *testing.T) {
 	for _, tc := range []struct {
-		name                          string
-		p                             *Principal
-		viewer, admin, worker, ingest bool
+		name                                 string
+		p                                    *Principal
+		viewer, admin, worker, ingest, addon bool
 	}{
-		{"no caller", nil, false, false, false, false},
-		{"a viewer", &Principal{Subject: "v", Client: "zaentrum-web", Claims: roles("zaentrum-user", "offline_access")}, true, false, false, false},
-		{"a viewer with no roles claim", &Principal{Subject: "v", Client: "zaentrum-web"}, true, false, false, false},
-		{"an admin", &Principal{Subject: "a", Client: "zaentrum-web", Claims: roles("zaentrum-user", "zaentrum-admin")}, true, true, true, true},
-		{"an admin through the CLI", &Principal{Subject: "a", Client: "zae", Claims: roles("zaentrum-admin")}, true, true, true, true},
-		{"the service account", &Principal{Subject: "s", Client: "zaentrum-manager", Claims: roles("offline_access")}, true, false, true, true},
-		{"another confidential client", &Principal{Subject: "s", Client: "zaentrum-other", Claims: roles("offline_access")}, true, false, false, false},
-		{"an addon", &Principal{Subject: "x", Client: "example-addon", Claims: roles("zaentrum-addon")}, true, false, false, true},
-		{"a stream token", &Principal{Subject: "v", Stream: true}, true, false, false, false},
-		{"a stream token naming the service's client", &Principal{Subject: "v", Stream: true, Client: "zaentrum-manager"}, true, false, false, false},
-		{"auth off", &Principal{Subject: "anonymous", Unrestricted: true}, true, true, true, true},
+		{"no caller", nil, false, false, false, false, false},
+		{"a viewer", &Principal{Subject: "v", Client: "zaentrum-web", Claims: roles("zaentrum-user", "offline_access")}, true, false, false, false, false},
+		{"a viewer with no roles claim", &Principal{Subject: "v", Client: "zaentrum-web"}, true, false, false, false, false},
+		{"an admin", &Principal{Subject: "a", Client: "zaentrum-web", Claims: roles("zaentrum-user", "zaentrum-admin")}, true, true, true, true, true},
+		{"an admin through the CLI", &Principal{Subject: "a", Client: "zae", Claims: roles("zaentrum-admin")}, true, true, true, true, true},
+		{"the service account", &Principal{Subject: "s", Client: "zaentrum-manager", Claims: roles("offline_access")}, true, false, true, true, false},
+		{"another confidential client", &Principal{Subject: "s", Client: "zaentrum-other", Claims: roles("offline_access")}, true, false, false, false, false},
+		{"an addon", &Principal{Subject: "x", Client: "example-addon", Claims: roles("zaentrum-addon")}, true, false, false, true, true},
+		{"a stream token", &Principal{Subject: "v", Stream: true}, true, false, false, false, false},
+		{"a stream token naming the service's client", &Principal{Subject: "v", Stream: true, Client: "zaentrum-manager"}, true, false, false, false, false},
+		{"auth off", &Principal{Subject: "anonymous", Unrestricted: true}, true, true, true, true, true},
 		{"the admin role as a client role", &Principal{Subject: "c", Client: "zaentrum-web",
-			Claims: map[string]any{"resource_access": map[string]any{"zaentrum-web": map[string]any{"roles": []any{"zaentrum-admin"}}}}}, true, false, false, false},
-		{"the admin role in another claim", &Principal{Subject: "c", Client: "zaentrum-web", Claims: map[string]any{"roles": []any{"zaentrum-admin"}}}, true, false, false, false},
+			Claims: map[string]any{"resource_access": map[string]any{"zaentrum-web": map[string]any{"roles": []any{"zaentrum-admin"}}}}}, true, false, false, false, false},
+		{"the admin role in another claim", &Principal{Subject: "c", Client: "zaentrum-web", Claims: map[string]any{"roles": []any{"zaentrum-admin"}}}, true, false, false, false, false},
 	} {
-		for a, want := range map[Access]bool{Viewer: tc.viewer, Admin: tc.admin, Worker: tc.worker, Ingest: tc.ingest} {
+		for a, want := range map[Access]bool{Viewer: tc.viewer, Admin: tc.admin, Worker: tc.worker, Ingest: tc.ingest, Addon: tc.addon} {
 			if got := testPolicy.Allows(tc.p, a); got != want {
 				t.Errorf("%s, %s: allowed %v, want %v", tc.name, testPolicy.Requirement(a), got, want)
 			}
@@ -107,6 +108,7 @@ func TestRequirementNamesWhoMay(t *testing.T) {
 		Admin:  "the zaentrum-admin role",
 		Worker: "the zaentrum-admin role or the platform's service account",
 		Ingest: "the zaentrum-admin or the zaentrum-addon role, or the platform's service account",
+		Addon:  "the zaentrum-admin or the zaentrum-addon role",
 	} {
 		if got := testPolicy.Requirement(a); got != want {
 			t.Errorf("requirement %d: %q, want %q", a, got, want)

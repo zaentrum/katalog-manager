@@ -18,13 +18,16 @@ type SourceReplacer interface {
 // ReplaceSourceRequest gives the title another file: the title named one
 // way, by its id or by the path of the file replaced; Path the new file.
 // DeleteOldFile deletes the old file once the title has the new one, and
-// Reencode encodes the title again from it.
+// Reencode encodes the title again from it. IfIdle refuses the replace
+// (SOURCE_BUSY) while the title's transcode or package runs or waits for its
+// worker, which reads the old file.
 type ReplaceSourceRequest struct {
 	ItemID        string
 	ItemPath      string
 	Path          string
 	DeleteOldFile bool
 	Reencode      bool
+	IfIdle        bool
 }
 
 // ReplaceSourceResult says what a replaceSource call did.
@@ -41,8 +44,9 @@ type ReplaceSourceResult struct {
 
 // SourceRefused refuses a replaceSource, saying why: Code is its GraphQL code
 // (NOT_FOUND a title there is not, SOURCE_CONFLICT a file that is another
-// title's or an extra's already, SOURCE_REFUSED anything else), and ItemID
-// and ExtraID name the title or the extra in the way.
+// title's or an extra's already, SOURCE_BUSY a title whose encode runs, asked
+// with ifIdle, SOURCE_REFUSED anything else), and ItemID and ExtraID name the
+// title or the extra in the way.
 type SourceRefused struct {
 	Code    string
 	Message string
@@ -72,21 +76,24 @@ func RefuseSource(code, format string, args ...any) *SourceRefused {
 
 // ReplaceSource gives a title another file and keeps the title (see the
 // SDL). Nothing leaves the disk unless asked: deleteOldFile omitted is false;
-// reencode omitted is true.
+// reencode omitted is true; ifIdle omitted is false.
 func (r *Resolver) ReplaceSource(ctx context.Context, args struct {
 	ItemID        *graphql.ID
 	ItemPath      *string
 	Path          string
 	DeleteOldFile *bool
 	Reencode      *bool
+	IfIdle        *bool
 }) (*replaceSourceResultResolver, error) {
 	if err := r.allow(ctx, "Mutation.replaceSource"); err != nil {
 		return nil, err
 	}
-	// The service account may give a title another file, never delete one:
-	// a seed Job deletes the old file itself, once the title has the new one.
+	// The platform's service account may give a title another file, never
+	// delete one: a seed Job deletes the old file itself, once the title has
+	// the new one. An addon may, carrying out what an admin asked it: the old
+	// file of a title it grabbed a better one for goes once the title has it.
 	if derefBool(args.DeleteOldFile) {
-		if err := r.access.Check(ctx, auth.Admin, "replaceSource with deleteOldFile"); err != nil {
+		if err := r.access.Check(ctx, auth.Addon, "replaceSource with deleteOldFile"); err != nil {
 			return nil, err
 		}
 	}
@@ -94,7 +101,8 @@ func (r *Resolver) ReplaceSource(ctx context.Context, args struct {
 		return nil, errNotConfigured
 	}
 	req := ReplaceSourceRequest{ItemPath: strDeref(args.ItemPath), Path: args.Path,
-		DeleteOldFile: derefBool(args.DeleteOldFile), Reencode: args.Reencode == nil || *args.Reencode}
+		DeleteOldFile: derefBool(args.DeleteOldFile), Reencode: args.Reencode == nil || *args.Reencode,
+		IfIdle: derefBool(args.IfIdle)}
 	if args.ItemID != nil {
 		req.ItemID = string(*args.ItemID)
 	}

@@ -560,11 +560,12 @@ func TestOperationsCallEveryRootField(t *testing.T) {
 
 // Every operation, through the service as main wires it and with the bearer
 // tokens of a realm: refused with FORBIDDEN to a viewer, another
-// confidential client, an addon and (on all but triggerScan) the service
-// account — replaceSource's here deletes the old file, an admin's alone —
-// before anything is read or changed; done for an admin, also one
-// signed in with the CLI, whose token names no audience; and no answer
-// carries a secret.
+// confidential client, an addon (on all but replaceSource, which an addon
+// carries out for an admin who asked it) and (on all but triggerScan) the
+// service account — replaceSource's here deletes the old file, an admin's or
+// an addon's — before anything is read or changed; done for an admin, also
+// one signed in with the CLI, whose token names no audience, and for an
+// addon its replaceSource; and no answer carries a secret.
 func TestEveryOperationIsForWhomItIsFor(t *testing.T) {
 	in := newInstance(t)
 	iss := in.iss
@@ -574,13 +575,19 @@ func TestEveryOperationIsForWhomItIsFor(t *testing.T) {
 		{"an addon", iss.Addon(t)},
 	}
 	service := iss.Service(t, "zaentrum-manager")
+	addon := struct{ name, token string }{"an addon", iss.Addon(t)}
 	allowed := []struct{ name, token string }{{"an admin", iss.Admin(t)}, {"an admin through the CLI", iss.CLIAdmin(t)}}
 
 	before := fingerprint(t, in.st)
 	for _, op := range operations {
-		callers := refused
+		var callers []struct{ name, token string }
+		for _, c := range refused {
+			if c.name != addon.name || !strings.Contains(op.doc, "replaceSource") {
+				callers = append(callers, c)
+			}
+		}
 		if !strings.Contains(op.doc, "triggerScan") {
-			callers = append(slices.Clone(refused), struct{ name, token string }{"the service account", service})
+			callers = append(callers, struct{ name, token string }{"the service account", service})
 		}
 		for _, c := range callers {
 			code, a := in.gql(t, "/api/manage/query", c.token, op.doc)
@@ -589,7 +596,7 @@ func TestEveryOperationIsForWhomItIsFor(t *testing.T) {
 			nothing := string(a.Data) == "null" || string(a.Data) == `{"`+field+`":null}`
 			if code != http.StatusOK || len(a.Errors) != 1 || a.Errors[0].Extensions["code"] != "FORBIDDEN" ||
 				!strings.HasPrefix(a.Errors[0].Message, "forbidden: "+field+" ") ||
-				!strings.Contains(a.Errors[0].Message, " requires the zaentrum-admin role") || !nothing {
+				!strings.Contains(a.Errors[0].Message, " requires the zaentrum-admin ") || !nothing {
 				t.Errorf("%s: %s: %d %s %v, want it refused with FORBIDDEN", c.name, op.doc, code, a.Data, a.Errors)
 			}
 		}
@@ -605,6 +612,9 @@ func TestEveryOperationIsForWhomItIsFor(t *testing.T) {
 		callers := allowed
 		if strings.Contains(op.doc, "triggerScan") {
 			callers = append(slices.Clone(allowed), struct{ name, token string }{"the service account", service})
+		}
+		if strings.Contains(op.doc, "replaceSource") {
+			callers = append(slices.Clone(allowed), addon)
 		}
 		for _, c := range callers {
 			code, a := in.gql(t, "/api/manage/query", c.token, op.doc)

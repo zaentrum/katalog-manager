@@ -15,9 +15,12 @@ import (
 // REST artwork routes. So every field is an administrator's: what the catalog
 // holds down to its paths on disk and the pipeline's errors, how much it
 // holds, the scan jobs, the settings, the deletion log, and every change. The
-// other callers are a deployment's Jobs, with the platform's service account:
-// the scan Job calls triggerScan, and a seed Job that brings a title a better
-// file hands it over with replaceSource (deleting a file stays an admin's).
+// other callers are a deployment's Jobs, with the platform's service account,
+// and addons, with theirs: the scan Job calls triggerScan; a seed Job that
+// brings a title a better file hands it over with replaceSource, and so does
+// an addon that grabbed a better file of a title the library holds for an
+// admin who asked it. Deleting the old file with it is an admin's or an
+// addon's, never the platform's service account's.
 //
 // A root field missing here is refused to everyone (allow), and
 // TestEveryRootFieldHasARule keeps the table and the schema in step.
@@ -67,7 +70,7 @@ var fieldAccess = map[string]auth.Access{
 	"Mutation.retryStep":                auth.Admin,
 	"Mutation.retryFailed":              auth.Admin,
 	"Mutation.reencodeItem":             auth.Admin,
-	"Mutation.replaceSource":            auth.Worker, // a seed Job's; deleteOldFile is an admin's (ReplaceSource)
+	"Mutation.replaceSource":            auth.Ingest, // a seed Job's, an addon's; deleteOldFile an admin's or an addon's (ReplaceSource)
 	"Mutation.packageItem":              auth.Admin,
 	"Mutation.validateItem":             auth.Admin,
 	"Mutation.createItem":               auth.Admin,

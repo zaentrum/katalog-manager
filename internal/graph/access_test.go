@@ -116,11 +116,13 @@ func TestEveryRootFieldHasARule(t *testing.T) {
 	}
 }
 
-// Every root field is an admin's, and triggerScan the service account's too:
-// a viewer, an addon, the service account (on anything else) and a context
-// without a caller are refused with FORBIDDEN before the field reads or
-// changes anything. The resolvers have no store and no services here, so a
-// field that did not refuse first would fail some other way.
+// Every root field is an admin's, triggerScan the service account's too, and
+// replaceSource the service account's and an addon's too: a viewer, an addon
+// (on anything but replaceSource), the service account (on anything but
+// those two) and a context without a caller are refused with FORBIDDEN
+// before the field reads or changes anything. The resolvers have no store and
+// no services here, so a field that did not refuse first would fail some
+// other way.
 func TestRootFieldsRefuseWhomTheyAreNotFor(t *testing.T) {
 	schema := MustSchema(NewResolver(nil, testConfig, Services{}))
 	fields := rootFields(t)
@@ -135,7 +137,10 @@ func TestRootFieldsRefuseWhomTheyAreNotFor(t *testing.T) {
 			op = "mutation"
 		}
 		doc := document(op, field)
-		callers := map[string]context.Context{"a viewer": as(viewer), "an addon": as(addon), "no caller": context.Background()}
+		callers := map[string]context.Context{"a viewer": as(viewer), "no caller": context.Background()}
+		if a := fieldAccess[name]; a != auth.Ingest && a != auth.Addon {
+			callers["an addon"] = as(addon)
+		}
 		if fieldAccess[name] == auth.Admin {
 			callers["the service account"] = as(service)
 		}
@@ -146,6 +151,40 @@ func TestRootFieldsRefuseWhomTheyAreNotFor(t *testing.T) {
 				t.Errorf("%s, %s: %v, want it refused with FORBIDDEN", who, doc, resp.Errors)
 			}
 		}
+	}
+}
+
+// replaceSource is an admin's, the platform's service account's and an
+// addon's; deleting the old file with it an admin's or an addon's, not the
+// service account's, which is refused before anything is asked.
+func TestReplaceSourceIsTheServiceAccountsAndAnAddonsToo(t *testing.T) {
+	const doc = `mutation { replaceSource(itemId: "m1", path: "/media/new.mkv", deleteOldFile: %v) { itemId } }`
+	for _, tc := range []struct {
+		who    string
+		ctx    context.Context
+		delete bool
+		ok     bool
+	}{
+		{"an admin", as(admin), true, true},
+		{"an addon", as(addon), true, true},
+		{"an addon, the old file kept", as(addon), false, true},
+		{"the service account, the old file kept", as(service), false, true},
+		{"the service account", as(service), true, false},
+		{"a viewer", as(viewer), false, false},
+	} {
+		f := &fakeSources{res: ReplaceSourceResult{ItemID: "m1"}}
+		resp := MustSchema(NewResolver(nil, testConfig, Services{Sources: f})).Exec(tc.ctx, fmt.Sprintf(doc, tc.delete), "", nil)
+		switch {
+		case tc.ok && (len(resp.Errors) > 0 || len(f.got) != 1 || f.got[0].DeleteOldFile != tc.delete):
+			t.Errorf("%s: %v, asked %+v, want it done", tc.who, resp.Errors, f.got)
+		case !tc.ok && (len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != "FORBIDDEN" || len(f.got) != 0):
+			t.Errorf("%s: %v, asked %+v, want it refused", tc.who, resp.Errors, f.got)
+		}
+	}
+	resp := MustSchema(NewResolver(nil, testConfig, Services{Sources: &fakeSources{}})).Exec(as(service), fmt.Sprintf(doc, true), "", nil)
+	if len(resp.Errors) != 1 || resp.Errors[0].Message !=
+		"forbidden: replaceSource with deleteOldFile requires the zaentrum-admin or the zaentrum-addon role" {
+		t.Errorf("the service account deleting the old file: %v", resp.Errors)
 	}
 }
 

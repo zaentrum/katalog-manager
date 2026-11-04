@@ -21,7 +21,9 @@ func (f *fakeSources) ReplaceSource(_ context.Context, in ReplaceSourceRequest) 
 // The title travels as it was named, by its id or by its file, with the new
 // file. Nothing leaves the disk unless asked: deleteOldFile omitted or null
 // is false; the title is encoded again unless asked not to: reencode omitted
-// or null is true. So too with variables, as a Job sends them.
+// or null is true; a busy title is given its file unless asked otherwise:
+// ifIdle omitted or null is false. So too with variables, as a Job and an
+// addon send them.
 func TestReplaceSourcePassesItsArguments(t *testing.T) {
 	const path = "/media/Big Buck Bunny (2008).mov"
 	for _, tc := range []struct {
@@ -34,6 +36,8 @@ func TestReplaceSourcePassesItsArguments(t *testing.T) {
 		{`itemId: "m1", path: "` + path + `", reencode: false`, ReplaceSourceRequest{ItemID: "m1", Path: path}},
 		{`itemId: "m1", path: "` + path + `", deleteOldFile: null, reencode: null`, ReplaceSourceRequest{ItemID: "m1", Path: path, Reencode: true}},
 		{`itemId: "m1", path: "` + path + `", deleteOldFile: false, reencode: true`, ReplaceSourceRequest{ItemID: "m1", Path: path, Reencode: true}},
+		{`itemId: "m1", path: "` + path + `", ifIdle: true`, ReplaceSourceRequest{ItemID: "m1", Path: path, Reencode: true, IfIdle: true}},
+		{`itemId: "m1", path: "` + path + `", ifIdle: null`, ReplaceSourceRequest{ItemID: "m1", Path: path, Reencode: true}},
 	} {
 		f := &fakeSources{res: ReplaceSourceResult{ItemID: "m1"}}
 		q := `mutation { replaceSource(` + tc.args + `) { itemId } }`
@@ -51,6 +55,15 @@ func TestReplaceSourcePassesItsArguments(t *testing.T) {
 	if want := (ReplaceSourceRequest{ItemPath: "/media/BigBuckBunny_320x180.mp4", Path: path, DeleteOldFile: true, Reencode: true}); len(resp.Errors) > 0 ||
 		len(f.got) != 1 || f.got[0] != want {
 		t.Errorf("with variables: %v, asked %+v, want %+v", resp.Errors, f.got, want)
+	}
+	f = &fakeSources{res: ReplaceSourceResult{ItemID: "m1"}}
+	resp = MustSchema(NewResolver(nil, testConfig, Services{Sources: f})).Exec(as(admin),
+		`mutation($item: ID!, $path: String!, $delete: Boolean, $reencode: Boolean, $idle: Boolean) {
+			replaceSource(itemId: $item, path: $path, deleteOldFile: $delete, reencode: $reencode, ifIdle: $idle) { itemId } }`,
+		"", map[string]any{"item": "m1", "path": path, "delete": true, "reencode": true, "idle": true})
+	if want := (ReplaceSourceRequest{ItemID: "m1", Path: path, DeleteOldFile: true, Reencode: true, IfIdle: true}); len(resp.Errors) > 0 ||
+		len(f.got) != 1 || f.got[0] != want {
+		t.Errorf("as an addon sends it: %v, asked %+v, want %+v", resp.Errors, f.got, want)
 	}
 }
 

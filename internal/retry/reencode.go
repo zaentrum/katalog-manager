@@ -283,38 +283,12 @@ func (s *Service) reset(ctx context.Context, itemID string) (transcode, why stri
 		return "", "", err
 	}
 
-	secs := make([]float64, len(chain))
-	for i, step := range chain {
-		secs[i] = s.pol.Timeout(step).Seconds()
-	}
-	rows, err = tx.Query(ctx, `SELECT s.step, s.status, s.dispatchedat IS NOT NULL,
-			CASE s.status
-				WHEN 'in_progress' THEN `+heard+` >= localtimestamp - make_interval(secs => t.secs)
-				WHEN 'pending' THEN COALESCE(s.dispatchedat, (`+heard+`)::timestamptz) >= now() - make_interval(secs => t.secs)
-				ELSE false END,
-			COALESCE(s.dispatchedat, COALESCE(s.modifiedat, s.startedat, s.createdat)::timestamptz)
-		FROM `+tbl+` s JOIN unnest($2::text[], $3::float8[]) AS t(step, secs) ON t.step = s.step
-		WHERE s.item_id = $1
-		ORDER BY s.step
-		FOR UPDATE OF s`, itemID, chain, secs)
+	cur, err := s.chainOf(ctx, tx, itemID)
 	if err != nil {
 		return "", "", err
 	}
-	cur := map[string]chainStep{}
-	for rows.Next() {
-		var step string
-		var c chainStep
-		if err := rows.Scan(&step, &c.status, &c.sent, &c.within, &c.since); err != nil {
-			rows.Close()
-			return "", "", err
-		}
-		if !added[step] {
-			cur[step] = c
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return "", "", err
+	for step := range added {
+		delete(cur, step)
 	}
 	if why := s.busy(cur); why != "" {
 		return "", why, nil
@@ -341,6 +315,55 @@ func (s *Service) reset(ctx context.Context, itemID string) (transcode, why stri
 		return "", "", err
 	}
 	return transcode, "", tx.Commit(ctx)
+}
+
+// chainOf reads, in tx, the title's transcode and package as a re-encode
+// looks at them — each one's status, whether its trigger was sent, whether it
+// runs or waits within its timeout, and since when —, and locks them until
+// tx ends.
+func (s *Service) chainOf(ctx context.Context, tx pgx.Tx, itemID string) (map[string]chainStep, error) {
+	secs := make([]float64, len(chain))
+	for i, step := range chain {
+		secs[i] = s.pol.Timeout(step).Seconds()
+	}
+	rows, err := tx.Query(ctx, `SELECT s.step, s.status, s.dispatchedat IS NOT NULL,
+			CASE s.status
+				WHEN 'in_progress' THEN `+heard+` >= localtimestamp - make_interval(secs => t.secs)
+				WHEN 'pending' THEN COALESCE(s.dispatchedat, (`+heard+`)::timestamptz) >= now() - make_interval(secs => t.secs)
+				ELSE false END,
+			COALESCE(s.dispatchedat, COALESCE(s.modifiedat, s.startedat, s.createdat)::timestamptz)
+		FROM `+tbl+` s JOIN unnest($2::text[], $3::float8[]) AS t(step, secs) ON t.step = s.step
+		WHERE s.item_id = $1
+		ORDER BY s.step
+		FOR UPDATE OF s`, itemID, chain, secs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cur := map[string]chainStep{}
+	for rows.Next() {
+		var step string
+		var c chainStep
+		if err := rows.Scan(&step, &c.status, &c.sent, &c.within, &c.since); err != nil {
+			return nil, err
+		}
+		cur[step] = c
+	}
+	return cur, rows.Err()
+}
+
+// BusyIn says, in tx, why a re-encode of the title would leave it alone now —
+// its transcode or package running, or waiting for its worker, within the
+// step's timeout (busy) —, "" when it would not. The title's steps stay
+// locked until tx ends, so no re-encode resets them meanwhile: replaceSource
+// asked with ifIdle gives a title its new file only while no run of it reads
+// the old one.
+func (s *Service) BusyIn(ctx context.Context, tx pgx.Tx, itemID string) (string, error) {
+	cur, err := s.chainOf(ctx, tx, itemID)
+	if err != nil {
+		return "", err
+	}
+	return s.busy(cur), nil
 }
 
 // busy says why a title's transcode and package are left alone, "" when they

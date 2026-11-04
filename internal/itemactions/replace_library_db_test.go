@@ -1,10 +1,13 @@
 package itemactions
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/graph"
@@ -138,5 +141,89 @@ func TestReplaceSourceWaitsForALostHandover(t *testing.T) {
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET state = 'complete' WHERE id = $1`, vid)
 	if res, err := svc.ReplaceSource(asOperator, graph.ReplaceSourceRequest{ItemID: bunnyID, Path: handed}); err != nil || !res.Replaced {
 		t.Errorf("ReplaceSource once the version is recorded: %+v, %v", res, err)
+	}
+}
+
+// busyReencoder is a re-encoder that tells a title busy (why) or idle ("").
+type busyReencoder struct {
+	fakeReencoder
+	why  string
+	asks int
+}
+
+func (b *busyReencoder) BusyIn(context.Context, pgx.Tx, string) (string, error) {
+	b.asks++
+	return b.why, nil
+}
+
+// Asked only while the title is idle (ifIdle), a replace of a title whose
+// encode runs is refused with SOURCE_BUSY before anything changes: the
+// title keeps its file, the new one stays in .work/replace. A permanent
+// refusal is said first, before the title is asked about; and a service whose
+// re-encoder cannot tell whether the title is idle refuses rather than guess.
+// Idle, the title is given the file.
+func TestReplaceSourceIfIdle(t *testing.T) {
+	st := storetest.Open(t)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('l', 'library.layout', 'v2')`)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{NFSRoot: dir + "/media", PackagesRoot: dir + "/packages", LibraryRoot: dir, WorkRoot: dir + "/.work",
+		ArrivalsRoot: dir + "/.work/incoming", ExtrasRoot: dir + "/.work/extras"}
+	f := &replacing{st: st, cfg: cfg, dir: dir}
+	re := &busyReencoder{why: "transcode is running: its worker last reported at 2026-11-04T10:00:00Z"}
+	svc := New(st, cfg, processing.New(st.Pool()), nil).WithReencoder(re)
+	old := f.write(t, ".work/incoming/Bunny (2008).mkv", 100)
+	storetest.AddItem(t, st, bunny, "movie", "Big Buck Bunny", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state)
+		VALUES ('s-old', $1, 'Bunny (2008).mkv', $2, 100, 'present')`, bunny, old)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, sizebytes, isprimary, kind, sourceid)
+		VALUES ('a-bunny', $1, $2, 100, true, 'primary', 's-old')`, bunny, old)
+	handed := f.write(t, ".work/replace/acquire/tg_1/Big Buck Bunny (2008).mkv", 5000)
+	in := graph.ReplaceSourceRequest{ItemID: bunny, Path: handed, DeleteOldFile: true, Reencode: true, IfIdle: true}
+	kept := func(what string) {
+		t.Helper()
+		if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE id = 'a-bunny' AND path = $1`, old); n != 1 {
+			t.Errorf("%s: the title lost its file", what)
+		}
+		for _, p := range []string{old, handed} {
+			if _, err := os.Stat(p); err != nil {
+				t.Errorf("%s: %s went: %v", what, p, err)
+			}
+		}
+		if len(re.take()) > 0 {
+			t.Errorf("%s: the title was encoded again", what)
+		}
+	}
+
+	_, err = svc.ReplaceSource(asOperator, in)
+	if r := sourceRefusal(t, err); r.Code != codeSourceBusy || !strings.Contains(r.Message, "(ifIdle): transcode is running") {
+		t.Errorf("a busy title: %+v", r)
+	}
+	kept("a busy title")
+
+	// A file the catalog does not take is refused as such, the title not asked.
+	re.asks = 0
+	notVideo := f.write(t, ".work/replace/acquire/tg_1/Big Buck Bunny (2008).nfo", 10)
+	_, err = svc.ReplaceSource(asOperator, graph.ReplaceSourceRequest{ItemID: bunny, Path: notVideo, IfIdle: true})
+	if r := sourceRefusal(t, err); r.Code != codeSourceRefused || re.asks != 0 {
+		t.Errorf("a file that is no title's, busy: %+v, asked %d", r, re.asks)
+	}
+
+	plain := New(st, cfg, processing.New(st.Pool()), nil).WithReencoder(&fakeReencoder{})
+	_, err = plain.ReplaceSource(asOperator, in)
+	if r := sourceRefusal(t, err); r.Code != codeSourceRefused || !strings.Contains(r.Message, "nothing here tells") {
+		t.Errorf("a service that cannot tell: %+v", r)
+	}
+	kept("a service that cannot tell")
+
+	re.why = ""
+	res, err := svc.ReplaceSource(asOperator, in)
+	if err != nil || !res.Replaced || !res.OldFileDeleted || res.Path != filepath.Join(cfg.ArrivalsRoot, "Big Buck Bunny (2008).mkv") {
+		t.Fatalf("an idle title: %+v %v", res, err)
+	}
+	if ids := re.take(); len(ids) != 1 || ids[0] != bunny {
+		t.Errorf("encoded again: %v", ids)
 	}
 }

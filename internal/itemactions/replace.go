@@ -31,12 +31,22 @@ func (s *Service) WithReencoder(r Reencoder) *Service {
 	return s
 }
 
+// BusyTeller tells, in a transaction, why a re-encode would leave a title
+// alone now — its transcode or package running, or waiting for its worker,
+// within the step's timeout —, "" when it would not, the title's steps
+// locked until the transaction ends (retry.Service). A replace asked with
+// ifIdle asks it of its Reencoder.
+type BusyTeller interface {
+	BusyIn(ctx context.Context, tx pgx.Tx, itemID string) (string, error)
+}
+
 var _ graph.SourceReplacer = (*Service)(nil)
 
 // The GraphQL codes of a replaceSource refusal (graph.SourceRefused).
 const (
 	codeSourceRefused  = "SOURCE_REFUSED"
 	codeSourceConflict = "SOURCE_CONFLICT"
+	codeSourceBusy     = "SOURCE_BUSY"
 	codeNotFound       = "NOT_FOUND"
 )
 
@@ -70,6 +80,12 @@ type source struct {
 //     title or another, nor a live extra's (SOURCE_CONFLICT, naming it). A
 //     scan finds a file's title by its path, so a file is one title's; one
 //     replace onto a file runs at a time.
+//
+// Asked with IfIdle, a title whose transcode or package is running, or waits
+// for its worker, is given no file (SOURCE_BUSY): that run reads the old
+// file, which the replace may delete under it, and the re-encode that
+// follows would be left alone. Its steps stay locked until the replace's
+// transaction ends, so none starts meanwhile.
 //
 // Anything else refused is SOURCE_REFUSED. In one transaction the title's
 // source asset row moves to the new file, which it describes as a scan does
@@ -187,6 +203,11 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	if err := takenAlready(ctx, tx, src, arrival); err != nil {
 		return res, err
 	}
+	if in.IfIdle {
+		if err := s.idle(ctx, tx, src.itemID); err != nil {
+			return res, err
+		}
+	}
 	sidecars, err := s.oldSidecars(ctx, tx, src)
 	if err != nil {
 		return res, err
@@ -251,6 +272,26 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	res.Message = replacedMessage(res, said, sidecars)
 	log.Printf("replaced the file of item %s (%q, %s), by %s: %s", src.itemID, src.title, src.typ, by, res.Message)
 	return res, nil
+}
+
+// idle refuses, in tx, a replace asked only while the title is idle when its
+// transcode or package runs or waits for its worker (SOURCE_BUSY), its
+// re-encoder's word (BusyTeller), the title's steps locked until tx ends. A
+// service whose re-encoder cannot tell refuses it too, rather than guess.
+func (s *Service) idle(ctx context.Context, tx pgx.Tx, itemID string) error {
+	bt, ok := s.reencoder.(BusyTeller)
+	if !ok {
+		return graph.RefuseSource(codeSourceRefused,
+			"ifIdle is asked, and nothing here tells whether the title's transcode or package runs: ask without it")
+	}
+	why, err := bt.BusyIn(ctx, tx, itemID)
+	if err != nil {
+		return fmt.Errorf("whether the title's transcode or package runs could not be read: %w", err)
+	}
+	if why != "" {
+		return graph.RefuseSource(codeSourceBusy, "the title is given no other file while it is encoded (ifIdle): %s", why)
+	}
+	return nil
 }
 
 // handoverLost says why, with the v2 layout, the title is given no other

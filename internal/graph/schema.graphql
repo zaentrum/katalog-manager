@@ -1250,11 +1250,18 @@ type Mutation {
   # taken in as a title of its own by the next scan, unless it is moved out or
   # deleted. reencode (true when omitted) encodes the title again from the new
   # file, as reencodeItem does: a title whose transcode or package is running
-  # is left alone (busy), and that run is the old file's. A refusal is an
-  # error whose extensions.code is NOT_FOUND (a title there is not),
-  # SOURCE_CONFLICT (the file is another title's or an extra's, named in
-  # itemId and extraId) or SOURCE_REFUSED.
-  replaceSource(itemId: ID, itemPath: String, path: String!, deleteOldFile: Boolean, reencode: Boolean): ReplaceSourceResult!
+  # is left alone (busy), and that run is the old file's. ifIdle (false when
+  # omitted) gives the title no file while its transcode or package is
+  # running or waits for its worker, as reencodeItem tells one busy: the
+  # replace is refused then, nothing changed and the old file kept for that
+  # run, to be asked again once it is done. A refusal is an error whose
+  # extensions.code is NOT_FOUND (a title there is not), SOURCE_CONFLICT (the
+  # file is another title's or an extra's, named in itemId and extraId),
+  # SOURCE_BUSY (asked with ifIdle, the title's encode runs) or
+  # SOURCE_REFUSED. An admin, the platform's service account and an addon's
+  # may ask it; deleteOldFile an admin or an addon, which carries out what an
+  # admin asked it.
+  replaceSource(itemId: ID, itemPath: String, path: String!, deleteOldFile: Boolean, reencode: Boolean, ifIdle: Boolean): ReplaceSourceResult!
   packageItem(id: ID!): PackageResult!
   validateItem(id: ID!): ValidateResult!
 
