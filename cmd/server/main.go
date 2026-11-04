@@ -202,6 +202,11 @@ func run() error {
 	if err := st.EnsureSupersededSources(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/056_superseded_sources.sql is missing and could not be applied: %v; a replace that deletes the old file is refused, and a replace's key is not kept, until it is", err)
 	}
+	// What holds a superseded original for an admin, and what an admin
+	// decides of it (migration 057, after 056).
+	if err := st.EnsureSupersededDecisions(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/057_superseded_decisions.sql is missing and could not be applied: %v; the retire job retires no superseded original until it is", err)
+	}
 	// An item the scanner made before it wrote its own name into the row has
 	// it in its record alone: the row follows the record (bounded, in the
 	// background).

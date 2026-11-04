@@ -15,9 +15,12 @@ import (
 
 // typeRef is a type as introspection gives it, wrapped in NON_NULL and LIST.
 type typeRef struct {
-	Kind   string   `json:"kind"`
-	Name   string   `json:"name"`
-	OfType *typeRef `json:"ofType"`
+	Kind       string   `json:"kind"`
+	Name       string   `json:"name"`
+	OfType     *typeRef `json:"ofType"`
+	EnumValues []struct {
+		Name string `json:"name"`
+	} `json:"enumValues"`
 }
 
 func (t *typeRef) named() *typeRef {
@@ -36,7 +39,7 @@ type rootField struct {
 	Type typeRef `json:"type"`
 }
 
-const typeFields = `kind name ofType { kind name ofType { kind name ofType { kind name } } }`
+const typeFields = `kind name ofType { kind name enumValues { name } ofType { kind name ofType { kind name } } }`
 
 // rootFields reads the schema's root fields by introspection, which any
 // caller may run: "Query.items" and "Mutation.deleteItem", each with its
@@ -85,6 +88,8 @@ func document(op string, f rootField) string {
 			v = "1"
 		case a.Type.OfType.Name == "Boolean":
 			v = "true"
+		case a.Type.OfType.Kind == "ENUM" && len(a.Type.OfType.EnumValues) > 0:
+			v = a.Type.OfType.EnumValues[0].Name
 		}
 		args = append(args, a.Name+": "+v)
 	}

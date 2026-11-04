@@ -51,6 +51,7 @@ var fieldAccess = map[string]auth.Access{
 	"Query.retireRun":             auth.Admin,
 	"Query.pictureAreas":          auth.Admin,
 	"Query.chapterReads":          auth.Admin,
+	"Query.supersededOriginals":   auth.Admin,
 
 	"Mutation.triggerScan":              auth.Worker, // the scan Job's
 	"Mutation.acceptChapterReads":       auth.Admin,
@@ -88,6 +89,7 @@ var fieldAccess = map[string]auth.Access{
 	"Mutation.packageExtra":             auth.Admin,
 	"Mutation.packageExtras":            auth.Admin,
 	"Mutation.holdOriginal":             auth.Admin,
+	"Mutation.decideSupersededOriginal": auth.Admin,
 	"Mutation.clearReencodeQueue":       auth.Admin,
 	"Mutation.queueRework":              auth.Admin,
 	"Mutation.queueReworkMatching":      auth.Admin,

@@ -14,8 +14,8 @@
 // store.EnsureIdentityIndexes, store.EnsureAttachedSubtitles,
 // store.EnsureLibraryWriteThrough, which applies 050 after 041,
 // store.EnsureCompliance, store.EnsureRetireRuns, store.EnsureStyledSubtitles,
-// store.EnsurePictureAreas, store.EnsureChapterReads and
-// store.EnsureSupersededSources).
+// store.EnsurePictureAreas, store.EnsureChapterReads,
+// store.EnsureSupersededSources and store.EnsureSupersededDecisions).
 // It applies 035, which drops what is left of a retired integration, at every
 // start when any of that is there (store.DropRetiredJobTables), and 049, the
 // catalog search, in the background after startup, one statement at a time:
@@ -200,3 +200,11 @@ var ChapterReads string
 //
 //go:embed 056_superseded_sources.sql
 var SupersededSources string
+
+// SupersededDecisions is 057_superseded_decisions.sql: what holds an original
+// another file took the place of for an admin — what deleting it gives up
+// against its title's master beyond library.superseded.accept — and what an
+// admin decides of it (accept or keep).
+//
+//go:embed 057_superseded_decisions.sql
+var SupersededDecisions string

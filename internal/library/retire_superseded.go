@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -33,9 +34,17 @@ import (
 //     complete version, nothing it took the place of is retired. One whose
 //     retirement failed is looked at again an hour later. Each counts against
 //     library.retire.rate.
-//  2. Held: its package must carry the surround the original had, as of an
-//     original retired by the policy (SurroundHeld): one that has none is
-//     kept, superseded, saying why on its row.
+//  2. The owner's rules: what deleting it gives up against the master — the
+//     deletion gate of the master's package for the original's record — must
+//     lie within library.superseded.accept (maxAudioChannels, surround,
+//     losslessAudio, objectAudio and stereo3d by default; maxAudioChannels
+//     only while the master keeps a stereo track), or within what an admin
+//     accepted of it. Anything else, as dolbyVision, a language or a track,
+//     and an original whose record does not tell, holds it for an admin
+//     (decideSupersededOriginal), superseded, its row saying what it gives
+//     up (supersededhold, against which master); a new master looks at it
+//     again, and an admin keeps it or has it go. One an admin keeps is never
+//     retired by the job.
 //  3. Claim (tx A, under the title's lock): retiring, its event's id and
 //     moment and its trash noted; supersededby stays, which tells this
 //     retirement from another's.
@@ -45,11 +54,14 @@ import (
 //     hash); its record verifies, when it has one; the master verifies.
 //  5. Its original-deleted event, when the source has its record in the
 //     title's folder: naming the version made of it (the one whose folder
-//     keeps it, else the latest), what that version's package does not carry
-//     of it accepted (the deletion gate), its reason the master that took its
-//     place. A source with no record — an original replaced before any
-//     version was made of it — has no event: nothing in the title's folder
-//     names it, and its row records its deletion.
+//     keeps it, else the latest), accepting what deleting it gives up against
+//     the master as far as that version's gate names it (accepted may name no
+//     more), its reason the master that took its place, what deleting it
+//     gives up against it — the gate against the master, all of it — and on
+//     whose word. A source with no record — an original replaced before any
+//     version was made of it, which an admin accepted — has no event: nothing
+//     in the title's folder names it, and its row records its deletion. Its
+//     row's lost is the gate against the master.
 //  6. Move it into the trash, .work/trash/<day>/<sourceId>/ (deleteFiles;
 //     unlinked with a trash grace of 0), alone: the subtitle files beside it
 //     stay the title's where they are. The retire job purges the day once
@@ -80,8 +92,8 @@ func supersededReason(by, master string) string {
 const supersededRetry = time.Hour
 
 // supersededOriginals retires the superseded originals that are due, at most
-// budget: it answers how many were deleted, how many were kept for their
-// surround and how many failed.
+// budget: it answers how many were deleted, how many were held for an admin
+// and how many failed.
 func (r *Retirer) supersededOriginals(ctx context.Context, p Paths, set Settings, now time.Time, budget int) (done, held, failed int,
 	err error) {
 	ids, err := r.supersededDue(ctx, set, now, budget)
@@ -139,6 +151,8 @@ func (r *Retirer) supersededDue(ctx context.Context, set Settings, now time.Time
 		JOIN com_nalet_katalog_itemversions v ON v.item_id = s.item_id AND v.state = 'complete' AND NOT (s.id = ANY(v.sourceids))
 		  AND l.id = ANY(v.sourceids)
 		WHERE s.state = 'superseded' AND s.supersededby IS NOT NULL AND NOT i.retirehold
+		  AND s.supersededdecision IS DISTINCT FROM 'keep'
+		  AND (s.supersededhold IS NULL OR s.supersededdecision = 'accept' OR s.supersededholdfor IS DISTINCT FROM v.id)
 		  AND v.completedat + make_interval(secs => $1::float8) <= $2::timestamptz
 		  AND (s.error IS NULL OR s.modifiedat + make_interval(secs => $5::float8) <= $2::timestamptz)
 		  AND `+originalStepsOver("s.item_id", "$3")+`
@@ -348,24 +362,23 @@ func (r *Retirer) prepareSuperseded(ctx context.Context, p Paths, set Settings, 
 	}
 	rt.ver = master
 	recorded := Recorded(rt.itemDir, s)
-	if recorded {
-		lacks, err := surroundLost(rt.itemDir, master.ID, s.ID)
-		if err != nil {
-			return r.fail(ctx, rt, fmt.Sprintf("the essences of the source and of version %s cannot be read: %v; nothing is deleted",
-				master.ID, err))
-		}
-		if lacks {
-			if lacks, err = SurroundExpected(ctx, r.pool); err != nil {
-				return err
-			}
-		}
-		if lacks {
-			if err := r.holdSuperseded(ctx, rt); err != nil {
-				return err
-			}
+	held, err := r.heldForAnAdmin(ctx, set, rt, master, recorded)
+	if err != nil {
+		return err
+	}
+	if held != "" {
+		if s.State == SourceRetiring {
+			// claimed when the rules let it go, and they do not now: it is
+			// superseded again, and held at its next turn
+			err := r.callOff(ctx, rt, held)
 			rt.src = nil
-			return errHeld
+			return err
 		}
+		if err := r.holdSuperseded(ctx, rt, held); err != nil {
+			return err
+		}
+		rt.src = nil
+		return errHeld
 	}
 	if s.State == SourceSuperseded {
 		claimed, err := r.claimSuperseded(ctx, p, now, rt)
@@ -422,16 +435,19 @@ func (r *Retirer) prepareSuperseded(ctx context.Context, p Paths, set Settings, 
 			return err
 		}
 		if vid != "" {
-			rt.accepted = []string{}
+			// accepted names no more than the gate of the version it names
+			rt.accepted = slices.Clone(rt.lost)
 			if _, err := os.Stat(VersionDir(rt.itemDir, vid)); err == nil {
-				if rt.accepted, err = GateOf(rt.itemDir, vid, s.ID); err != nil {
+				old, err := GateOf(rt.itemDir, vid, s.ID)
+				if err != nil {
 					return r.fail(ctx, rt, fmt.Sprintf("the deletion gate cannot be read: %v; the original is kept", err))
 				}
+				rt.accepted = intersect(rt.lost, old)
 			}
 			if err := r.claimedStill(ctx, rt); err != nil {
 				return err
 			}
-			reason := supersededReason(rt.superseded, master.ID)
+			reason := supersededReason(rt.superseded, master.ID) + "; " + rt.word
 			if _, err := WriteEvent(rt.itemDir, Event{ID: *s.RetireEventID, At: *s.RetireEventAt, By: rt.auth.By,
 				Kind: EventOriginalDeleted, VersionID: vid, SourceID: s.ID, Reason: &reason, Accepted: rt.accepted}); err != nil {
 				return r.fail(ctx, rt, fmt.Sprintf("the event cannot be recorded: %v; the original is kept", err))
@@ -521,17 +537,135 @@ func (r *Retirer) claimSuperseded(ctx context.Context, p Paths, now time.Time, r
 	return true, nil
 }
 
-// holdSuperseded keeps the superseded original of rt, whose title's master's
-// package has no 5.1 of its surround: it stays superseded, its row saying
-// why, and is looked at again an hour later (supersededDue) — once another
-// version is complete, its master is that one.
-func (r *Retirer) holdSuperseded(ctx context.Context, rt *retirement) error {
+// heldForAnAdmin says why the superseded original of rt waits for an admin,
+// against its master, "" when the owner's rules let it go (step 2): what
+// deleting it gives up against the master lies within
+// library.superseded.accept and what an admin accepted of it. It notes, on
+// rt, what that is (lost) and on whose word (word).
+func (r *Retirer) heldForAnAdmin(ctx context.Context, set Settings, rt *retirement, master *Version, recorded bool) (string,
+	error) {
 	s := rt.src
-	why := SurroundHeld + " (version " + rt.ver.ID + ")"
-	if _, err := r.pool.Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET error = $2, modifiedat = now()
-		WHERE id = $1 AND state = 'superseded'`, s.ID, clip(why, 500)); err != nil {
+	var decision, decidedBy *string
+	var accepted []byte
+	err := r.pool.QueryRow(ctx, `SELECT supersededdecision, supersededaccepted, supersededdecidedby
+		FROM com_nalet_katalog_itemsources WHERE id = $1`, s.ID).Scan(&decision, &accepted, &decidedBy)
+	if err != nil {
+		return "", err
+	}
+	admin := deref(decision) == DecisionAccept
+	if !recorded {
+		if !admin {
+			return "no record of it tells what it carries, so what deleting it gives up against version " + master.ID +
+				" can't be told", nil
+		}
+		rt.lost, rt.word = []string{}, "accepted, with no record to tell what it carries, by "+deref(decidedBy)
+		return "", nil
+	}
+	losses, err := GateOf(rt.itemDir, master.ID, s.ID)
+	if err != nil {
+		return "", r.fail(ctx, rt, fmt.Sprintf("the essences of the source and of version %s cannot be read: %v; nothing is deleted",
+			master.ID, err))
+	}
+	pkg, err := Essence(filepath.Join(VersionDir(rt.itemDir, master.ID), PackageFile))
+	if err != nil {
+		return "", r.fail(ctx, rt, fmt.Sprintf("the essence of version %s cannot be read: %v; nothing is deleted", master.ID, err))
+	}
+	ok := map[string]bool{}
+	for _, n := range set.SupersededAccept {
+		ok[n] = true
+	}
+	if ok["maxAudioChannels"] && !keepsStereo(pkg) {
+		delete(ok, "maxAudioChannels")
+	}
+	byAdmin := map[string]bool{}
+	if admin {
+		for _, n := range namesOf(accepted) {
+			byAdmin[n] = true
+		}
+	}
+	var over []string
+	for _, l := range losses {
+		if !ok[l] && !byAdmin[l] {
+			over = append(over, l)
+		}
+	}
+	rt.lost = losses
+	if len(over) > 0 {
+		gives := "nothing"
+		if len(losses) > 0 {
+			gives = strings.Join(losses, ", ")
+		}
+		return fmt.Sprintf("deleting it gives up, against version %s: %s; %s is not within library.superseded.accept (%s)%s",
+			master.ID, gives, strings.Join(over, ", "), orNone(set.SupersededAccept), stereoNote(ok, set, pkg)), nil
+	}
+	rt.word = "what it gives up, " + orNothing(losses) + ", within library.superseded.accept"
+	if admin && len(byAdmin) > 0 {
+		rt.word = "what it gives up, " + orNothing(losses) + ", accepted by library.superseded.accept and by " + deref(decidedBy)
+	}
+	return "", nil
+}
+
+// keepsStereo reports whether a package whose essence is pkg keeps a stereo
+// track: two channels or more.
+func keepsStereo(pkg Doc) bool {
+	v, _ := pkg.Get("maxAudioChannels")
+	n, ok := toFloat(v)
+	return ok && n >= 2
+}
+
+// stereoNote says why maxAudioChannels is not accepted when the setting
+// accepts it: the master keeps no stereo track.
+func stereoNote(ok map[string]bool, set Settings, pkg Doc) string {
+	if slices.Contains(set.SupersededAccept, "maxAudioChannels") && !ok["maxAudioChannels"] {
+		return "; maxAudioChannels is given up only while the master keeps a stereo track, and it keeps none"
+	}
+	return ""
+}
+
+func orNone(names []string) string {
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
+}
+
+func orNothing(names []string) string {
+	if len(names) == 0 {
+		return "nothing"
+	}
+	return strings.Join(names, ", ")
+}
+
+// intersect is what of a is in b too, in a's order.
+func intersect(a, b []string) []string {
+	out := []string{}
+	for _, x := range a {
+		if slices.Contains(b, x) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// holdSuperseded holds the superseded original of rt for an admin, against
+// its master rt.ver, saying why (why) and what deleting it gives up
+// (rt.lost; none when no record tells): it stays superseded, a decision to
+// accept it that no longer covers what it gives up is undone, and a new
+// master looks at it again (supersededDue).
+func (r *Retirer) holdSuperseded(ctx context.Context, rt *retirement, why string) error {
+	s := rt.src
+	var losses any
+	if rt.lost != nil {
+		losses = nonNil(rt.lost)
+	}
+	why = "kept for an admin: " + why + "; decideSupersededOriginal accepts it (it is retired) or keeps it"
+	if _, err := r.pool.Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET supersededhold = left($2, 1000), supersededholdfor = $3,
+			supersededlosses = $4, supersededdecision = CASE WHEN supersededdecision = 'accept' THEN NULL ELSE supersededdecision END,
+			supersededaccepted = CASE WHEN supersededdecision = 'accept' THEN NULL ELSE supersededaccepted END,
+			error = NULL, modifiedat = now()
+		WHERE id = $1 AND state = 'superseded'`, s.ID, why, rt.ver.ID, losses); err != nil {
 		return err
 	}
-	r.say("source:"+s.ID, fmt.Sprintf("superseded original %s of item %s is kept: %s", s.ID, s.ItemID, why))
+	r.say("source:"+s.ID, fmt.Sprintf("superseded original %s of item %s is %s", s.ID, s.ItemID, why))
 	return nil
 }

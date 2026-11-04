@@ -140,3 +140,156 @@ func NoteReplaced(itemDir, by string, old *Source, newName string, superseded bo
 	}
 	return ev.ID, nil
 }
+
+// Superseded is what the catalog holds of an original another file took the
+// place of (migrations 056 and 057): the source, its title, the source that
+// took its place and since when, why it waits for an admin, against which
+// master, and what deleting it gives up against that master (Losses, nil
+// when no record tells), and what an admin decided (accept or keep), what
+// they accepted, who and when.
+type Superseded struct {
+	SourceID, ItemID string
+	By               string
+	At               *time.Time
+	Hold, HoldFor    *string
+	Losses           []string
+	Decision         *string
+	Accepted         []string
+	DecidedBy        *string
+	DecidedAt        *time.Time
+}
+
+// The decisions an admin takes of a superseded original that waits for one.
+const (
+	DecisionAccept = "accept"
+	DecisionKeep   = "keep"
+)
+
+const supersededCols = `id, item_id, COALESCE(supersededby, ''), supersededat, supersededhold, supersededholdfor, supersededlosses,
+	supersededdecision, supersededaccepted, supersededdecidedby, supersededdecidedat`
+
+func scanSuperseded(row pgx.Row) (*Superseded, error) {
+	var x Superseded
+	var losses, accepted []byte
+	if err := row.Scan(&x.SourceID, &x.ItemID, &x.By, &x.At, &x.Hold, &x.HoldFor, &losses, &x.Decision, &accepted, &x.DecidedBy,
+		&x.DecidedAt); err != nil {
+		return nil, err
+	}
+	x.Losses, x.Accepted = namesOf(losses), namesOf(accepted)
+	return &x, nil
+}
+
+// namesOf are the names of a JSON list of them; nil for none, or SQL NULL.
+func namesOf(b []byte) []string {
+	if len(b) == 0 {
+		return nil
+	}
+	v, err := Decode(b)
+	if err != nil {
+		return nil
+	}
+	return stringsOf(v)
+}
+
+// SupersededOf is what the catalog holds of the item's sources that are or
+// were superseded, by their ids; nil without migration 057.
+func SupersededOf(ctx context.Context, q Querier, itemID string) (map[string]*Superseded, error) {
+	rows, err := q.Query(ctx, `SELECT `+supersededCols+` FROM com_nalet_katalog_itemsources
+		WHERE item_id = $1 AND supersededby IS NOT NULL ORDER BY id`, itemID)
+	if isUndefinedColumn(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]*Superseded{}
+	for rows.Next() {
+		x, err := scanSuperseded(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[x.SourceID] = x
+	}
+	return out, rows.Err()
+}
+
+// SupersededOriginal is a superseded original as an admin lists it: what the
+// catalog holds of it, its title, and where its file lies.
+type SupersededOriginal struct {
+	Superseded
+	Title, Filename string
+	Path            *string
+	State           string
+	SizeBytes       int64
+}
+
+// SupersededOriginals lists the originals that are superseded now, those
+// waiting for an admin first (held: those alone), the ones superseded first
+// first, at most limit.
+func SupersededOriginals(ctx context.Context, q Querier, held bool, limit int) ([]*SupersededOriginal, error) {
+	rows, err := q.Query(ctx, `SELECT `+supersededColsOf("s")+`, i.title, s.filename, s.arrivalpath, s.state, s.sizebytes
+		FROM com_nalet_katalog_itemsources s JOIN com_nalet_katalog_items i ON i.id = s.item_id
+		WHERE s.state = 'superseded' AND (NOT $1 OR (s.supersededhold IS NOT NULL AND s.supersededdecision IS NULL))
+		ORDER BY (s.supersededhold IS NOT NULL AND s.supersededdecision IS NULL) DESC, s.supersededat, s.id
+		LIMIT $2`, held, limit)
+	if isUndefinedColumn(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*SupersededOriginal
+	for rows.Next() {
+		var x SupersededOriginal
+		var losses, accepted []byte
+		if err := rows.Scan(&x.SourceID, &x.ItemID, &x.By, &x.At, &x.Hold, &x.HoldFor, &losses, &x.Decision, &accepted,
+			&x.DecidedBy, &x.DecidedAt, &x.Title, &x.Filename, &x.Path, &x.State, &x.SizeBytes); err != nil {
+			return nil, err
+		}
+		x.Losses, x.Accepted = namesOf(losses), namesOf(accepted)
+		out = append(out, &x)
+	}
+	return out, rows.Err()
+}
+
+// supersededColsOf is supersededCols of the row alias a.
+func supersededColsOf(a string) string {
+	return a + `.id, ` + a + `.item_id, COALESCE(` + a + `.supersededby, ''), ` + a + `.supersededat, ` + a + `.supersededhold, ` +
+		a + `.supersededholdfor, ` + a + `.supersededlosses, ` + a + `.supersededdecision, ` + a + `.supersededaccepted, ` +
+		a + `.supersededdecidedby, ` + a + `.supersededdecidedat`
+}
+
+// ErrNotSuperseded says a decision was asked of a source that is no
+// superseded original (any more).
+type ErrNotSuperseded struct{ ID, State string }
+
+func (e *ErrNotSuperseded) Error() string {
+	return fmt.Sprintf("source %s is %s, no superseded original: there is nothing to decide of it", e.ID, e.State)
+}
+
+// DecideSuperseded notes an admin's decision of the superseded original
+// sourceID, by: accept has the retire job retire it, giving up what its hold
+// says deleting it gives up against its master (or anything, when no record
+// tells), once its other conditions hold; keep keeps it, never retired by the
+// job until an admin accepts it. A source that is not superseded is
+// ErrNotSuperseded. It answers the source as it is then.
+func DecideSuperseded(ctx context.Context, q Querier, sourceID, decision, by string) (*Superseded, error) {
+	if decision != DecisionAccept && decision != DecisionKeep {
+		return nil, fmt.Errorf("a decision is %s or %s, not %q", DecisionAccept, DecisionKeep, decision)
+	}
+	x, err := scanSuperseded(q.QueryRow(ctx, `UPDATE com_nalet_katalog_itemsources SET supersededdecision = $2::text,
+			supersededaccepted = CASE WHEN $2::text = 'accept' THEN supersededlosses END, supersededdecidedby = left($3, 255),
+			supersededdecidedat = now(), modifiedat = now()
+		WHERE id = $1 AND state = 'superseded'
+		RETURNING `+supersededCols, sourceID, decision, by))
+	if errors.Is(err, pgx.ErrNoRows) {
+		state := "gone"
+		if s, serr := SourceByID(ctx, q, sourceID); serr == nil && s != nil {
+			state = s.State
+		}
+		return nil, &ErrNotSuperseded{ID: sourceID, State: state}
+	}
+	return x, err
+}

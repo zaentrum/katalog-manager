@@ -188,6 +188,41 @@ type LibrarySource {
   lost: [String!]!
   # why its retirement did not go through
   error: String
+  # of an original another file took the place of (superseded): the source
+  # that took its place, and since when; null for one none did
+  supersededBy: ID
+  supersededAt: Time
+  # why it waits for an admin — what deleting it gives up against the
+  # title's master (holdLosses, the deletion gate; null when no record
+  # tells), beyond library.superseded.accept — and against which master
+  # (holdFor); null while it does not
+  hold: String
+  holdFor: ID
+  holdLosses: [String!]
+  # what an admin decided of it (decideSupersededOriginal: accept or keep),
+  # what they accepted it gives up, who and when
+  decision: String
+  acceptedLosses: [String!]
+  decidedBy: String
+  decidedAt: Time
+}
+
+# An original another file took the place of as its title's, superseded
+# now, as an admin lists it (supersededOriginals): its title, and its source,
+# which says why it waits for an admin, if it does.
+type SupersededOriginal {
+  itemId: ID!
+  title: String!
+  source: LibrarySource!
+}
+
+# What an admin decides of a superseded original that waits for one: ACCEPT
+# has the retire job retire it, giving up what its hold says (anything, when
+# no record tells), once its other conditions hold; KEEP keeps it, the retire
+# job never retiring it.
+enum SupersededDecision {
+  ACCEPT
+  KEEP
 }
 
 # A fact the title's folder records (events/): an original deleted, a
@@ -1081,6 +1116,11 @@ type ValidateResult {
 # ---------------------------------------------------------------------------
 
 type Query {
+  # the originals another file took the place of that are there still
+  # (superseded), those waiting for an admin first (held: those alone), the
+  # ones superseded first first, at most first (50); none on a catalog older
+  # than migration 057
+  supersededOriginals(held: Boolean, first: Int): [SupersededOriginal!]!
   item(id: ID!): Item
   # The items, newest first, of type, genre and year, whose title holds
   # search, and with hasOriginal those whose Item.hasOriginal is that (never
@@ -1153,6 +1193,10 @@ type Mutation {
   # job then leaves whatever library.originals says, or let them go; a
   # series' hold is its episodes' too. Answers what the library holds of it.
   holdOriginal(id: ID!, hold: Boolean!): ItemLibrary!
+  # the library: decide a superseded original (see SupersededDecision), one
+  # that waits for an admin or any other; NOT_FOUND for a source that is no
+  # superseded original. Answers it as it is then.
+  decideSupersededOriginal(sourceId: ID!, decision: SupersededDecision!): SupersededOriginal!
   # operator actions
   triggerScan(source: String): ScanJob!
   enrichOne(id: ID!): EnrichResult!

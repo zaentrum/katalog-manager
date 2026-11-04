@@ -159,9 +159,13 @@ func TestASupersededOriginalIsRetiredOnceItsTitlesMasterIsVerified(t *testing.T)
 	by, _ := ev.Get("by")
 	reason, _ := ev.Get("reason")
 	acc, _ := ev.Get("accepted")
-	if vid != rtVersion || sid != rtSource || by != SupersededRetiredBy || reason != supersededReason(rtNewSource, rtNewVersion) ||
+	if vid != rtVersion || sid != rtSource || by != SupersededRetiredBy ||
+		reason != supersededReason(rtNewSource, rtNewVersion)+"; what it gives up, maxAudioChannels, within library.superseded.accept" ||
 		strings.Join(stringsOf(acc), ",") != "maxAudioChannels" {
 		t.Errorf("the event: %v", ev)
+	}
+	if got := string(s.Lost); got != `["maxAudioChannels"]` {
+		t.Errorf("the row's lost: %s, want what it gave up against the master", got)
 	}
 	if step := f.step(t, rtFilm); step != "none" {
 		t.Errorf("the title's retire step: %s; want it left alone", step)
@@ -220,12 +224,12 @@ func countOf(t *testing.T, f *retireFixture, sql string, args ...any) int {
 
 // A superseded original is retired only as an original is: it is kept,
 // superseded, while the title holds its originals, while a step that reads
-// an original runs, while its master's package lacks its surround (the pass
-// counts it held, its row saying why), while its master does not verify, its
-// file changed since it was recorded, its record does not verify, or a
-// title's file is the file still — each failure noted on its row, the title's
-// retire step left alone — and while the master is complete for less than
-// library.retire.delay.
+// an original runs, while its master does not verify, its file changed since
+// it was recorded, its record does not verify, or a title's or an extra's
+// file is the file still — each failure noted on its row, the title's retire
+// step left alone — and while the master is complete for less than
+// library.superseded.delay. (What it gives up against the master: the
+// owner's rules, below.)
 func TestASupersededOriginalWaitsForItsConditions(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
@@ -243,7 +247,7 @@ func TestASupersededOriginalWaitsForItsConditions(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{name: "its surround lost", pkg: stereo, held: true, says: SurroundHeld + " (version " + rtNewVersion + ")"},
+
 		{name: "the master does not verify", pkg: withFiveOne, says: "the title's master, version " + rtNewVersion + ", does not verify",
 			before: func(t *testing.T, f *retireFixture) {
 				librarytest.Write(t, filepath.Join(VersionDir(f.itemDir, rtNewVersion), "hls/v0/seg0.m4s"), []byte("damaged"))
@@ -260,6 +264,11 @@ func TestASupersededOriginalWaitsForItsConditions(t *testing.T) {
 			before: func(t *testing.T, f *retireFixture) {
 				f.execSQL(t, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind)
 					VALUES ('x-old', $1, $2, false, 'original')`, rtFilm, f.original)
+			}},
+		{name: "an extra's file still", pkg: withFiveOne, says: "is an extra's file still",
+			before: func(t *testing.T, f *retireFixture) {
+				f.execSQL(t, `INSERT INTO com_nalet_katalog_itemextras (id, item_id, kind, title, registeredby, sourcepath)
+					VALUES ('x-old', $1, 'other', 'Other', 'api', $2)`, rtFilm, f.original)
 			}},
 		{name: "the master complete just now", pkg: withFiveOne, before: func(t *testing.T, f *retireFixture) {
 			f.execSQL(t, `UPDATE com_nalet_katalog_itemversions SET completedat = now() WHERE id = $1`, rtNewVersion)
@@ -392,11 +401,12 @@ func TestASupersededOriginalsRetirementResumes(t *testing.T) {
 	})
 }
 
-// An original replaced before any version was made of it has no record: it
-// is retired once the title's master is verified with no event — nothing in
-// the title's folder names it —, checked against what its row recorded, and
-// its row says it is deleted. One stopped once its file left its place is
-// finished with no check, its row deleted.
+// An original replaced before any version was made of it has no record, which
+// would tell what deleting it gives up: it waits for an admin, and once an
+// admin accepts it, it is retired with no event — nothing in the title's
+// folder names it —, checked against what its row recorded, and its row says
+// it is deleted. One stopped once its file left its place is finished with no
+// check, its row deleted.
 func TestASupersededOriginalWithNoRecordIsRetiredWithoutAnEvent(t *testing.T) {
 	for _, stopped := range []bool{false, true} {
 		f := newRetireFixture(t)
@@ -415,6 +425,19 @@ func TestASupersededOriginalWithNoRecordIsRetiredWithoutAnEvent(t *testing.T) {
 			}
 			librarytest.Write(t, filepath.Join(*rt.src.TrashPath, "Example Film.mkv"), []byte("moved"))
 			if err := os.Remove(f.original); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !stopped {
+			if rep := f.pass(t); rep.ForAnAdmin != 1 || rep.Superseded != 0 {
+				t.Fatalf("the pass: %+v; want it kept for an admin", rep)
+			}
+			x := f.supersededInfo(t)
+			if x.Hold == nil || !strings.Contains(*x.Hold, "no record of it tells what it carries") || x.Losses != nil ||
+				deref(x.HoldFor) != rtNewVersion {
+				t.Fatalf("the hold: %+v", x)
+			}
+			if _, err := DecideSuperseded(context.Background(), f.st.Pool(), rtSource, DecisionAccept, "admin-1"); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -681,4 +704,144 @@ func TestTheMasterIsMadeOfTheLatestFileThatTookItsPlace(t *testing.T) {
 			t.Errorf("the master of the first: %+v, %v; want none", v, err)
 		}
 	})
+}
+
+// supersededInfo is what the catalog holds of the fixture's superseded
+// original.
+func (f *retireFixture) supersededInfo(t *testing.T) *Superseded {
+	t.Helper()
+	all, err := SupersededOf(context.Background(), f.st.Pool(), rtFilm)
+	if err != nil || all[rtSource] == nil {
+		t.Fatalf("the superseded original: %v, %v", all, err)
+	}
+	return all[rtSource]
+}
+
+// The owner's rules: a superseded original goes on its own only when what
+// deleting it gives up against its master lies within
+// library.superseded.accept — by default maxAudioChannels (while the master
+// keeps a stereo track), surround, losslessAudio, objectAudio and stereo3d.
+// Anything else — Dolby Vision, a subtitle language, the channels of a
+// master that keeps no stereo, whatever the setting leaves out — holds it for
+// an admin, superseded, its row saying what it gives up and against which
+// master, not looked at again until a new master or an admin's decision:
+// accepted, it is retired, its event saying on whose word; kept, never.
+func TestTheOwnersRulesForASupersededOriginal(t *testing.T) {
+	with := func(base map[string]any, kv ...any) map[string]any {
+		out := map[string]any{}
+		for k, v := range base {
+			out[k] = v
+		}
+		for i := 0; i+1 < len(kv); i += 2 {
+			out[kv[i].(string)] = kv[i+1]
+		}
+		return out
+	}
+	dolby := with(sevenOne, "dolbyVision", true, "losslessAudio", true, "objectAudio", true, "stereo3d", true)
+	for _, c := range []struct {
+		name        string
+		src, master map[string]any
+		accept      string // library.superseded.accept; "" its default
+		held        string // what the hold says is not accepted; "" retired
+	}{
+		{name: "surround, channels, lossless and object audio, 3D", src: with(sevenOne, "losslessAudio", true, "objectAudio", true,
+			"stereo3d", true), master: stereo},
+		{name: "Dolby Vision", src: dolby, master: stereo, held: "dolbyVision is not within library.superseded.accept"},
+		{name: "a subtitle language", src: sevenOne, master: with(withFiveOne, "subtitleLanguages", []string{"en"}),
+			held: "subLanguages"},
+		{name: "the channels, the master keeping no stereo", src: sevenOne, master: with(stereo, "maxAudioChannels", 1),
+			held: "maxAudioChannels is given up only while the master keeps a stereo track"},
+		{name: "what the setting leaves out", src: sevenOne, master: stereo, accept: "maxAudioChannels",
+			held: "surround is not within library.superseded.accept (maxAudioChannels)"},
+		{name: "nothing accepted", src: sevenOne, master: withFiveOne, accept: "none",
+			held: "maxAudioChannels is not within library.superseded.accept (none)"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newRetireFixtureOf(t, c.src, withFiveOne)
+			f.supersede(t, true, c.master)
+			if c.accept != "" {
+				f.set(t, SettingSupersededAccept, c.accept)
+			}
+			rep := f.pass(t)
+			if c.held == "" {
+				if rep.Superseded != 1 {
+					t.Fatalf("the pass: %+v; want it retired", rep)
+				}
+				return
+			}
+			if rep.ForAnAdmin != 1 || rep.Superseded != 0 {
+				t.Fatalf("the pass: %+v; want it kept for an admin", rep)
+			}
+			f.superseded(t, c.name)
+			x := f.supersededInfo(t)
+			if c.held == "subLanguages" {
+				c.held = "subtitleLanguages:de is not within"
+			}
+			if x.Hold == nil || !strings.Contains(*x.Hold, c.held) || !strings.HasPrefix(*x.Hold, "kept for an admin: deleting it gives up, "+
+				"against version "+rtNewVersion+": ") || deref(x.HoldFor) != rtNewVersion || len(x.Losses) == 0 {
+				t.Fatalf("the hold: %v %+v; want it saying %q", deref(x.Hold), x, c.held)
+			}
+			if rep := f.pass(t); rep.ForAnAdmin+rep.Superseded != 0 {
+				t.Errorf("a pass again: %+v; want it left for the admin", rep)
+			}
+			if _, err := DecideSuperseded(context.Background(), f.st.Pool(), rtSource, DecisionAccept, "admin-1"); err != nil {
+				t.Fatal(err)
+			}
+			if rep := f.pass(t); rep.Superseded != 1 {
+				t.Fatalf("the pass once an admin accepted it: %+v", rep)
+			}
+			evs := f.originalDeletedEvents(t)
+			if len(evs) != 1 {
+				t.Fatalf("events: %v", evs)
+			}
+			if reason, _ := evs[0].Get("reason"); !strings.Contains(reason.(string), "accepted by library.superseded.accept and by admin-1") {
+				t.Errorf("the event's reason: %v", reason)
+			}
+		})
+	}
+	t.Run("kept by an admin", func(t *testing.T) {
+		f := newRetireFixtureOf(t, dolby, withFiveOne)
+		f.supersede(t, true, stereo)
+		f.pass(t)
+		if _, err := DecideSuperseded(context.Background(), f.st.Pool(), rtSource, DecisionKeep, "admin-1"); err != nil {
+			t.Fatal(err)
+		}
+		f.complete2(t, with(dolby, "maxAudioChannels", 6)) // a new master that carries all of it
+		if rep := f.pass(t); rep.Superseded+rep.ForAnAdmin != 0 {
+			t.Errorf("a pass of one an admin keeps: %+v", rep)
+		}
+		f.superseded(t, "kept by an admin")
+		if x := f.supersededInfo(t); deref(x.Decision) != DecisionKeep || deref(x.DecidedBy) != "admin-1" || x.DecidedAt == nil {
+			t.Errorf("the decision: %+v", x)
+		}
+	})
+	t.Run("a new master", func(t *testing.T) {
+		f := newRetireFixtureOf(t, dolby, withFiveOne)
+		f.supersede(t, true, stereo)
+		if rep := f.pass(t); rep.ForAnAdmin != 1 {
+			t.Fatalf("the pass: %+v", rep)
+		}
+		f.complete2(t, with(dolby, "maxAudioChannels", 6))
+		if rep := f.pass(t); rep.Superseded != 1 {
+			t.Errorf("the pass once a master carries what the first lacked: %+v", rep)
+		}
+	})
+	if _, err := DecideSuperseded(context.Background(), newRetireFixture(t).st.Pool(), rtSource, DecisionAccept, "admin-1"); err == nil ||
+		!strings.Contains(err.Error(), "no superseded original") {
+		t.Errorf("a decision of a present source: %v", err)
+	}
+}
+
+// complete2 makes another version of the new file the title's master, of a
+// package whose essence is pkg: the one before superseded by it.
+func (f *retireFixture) complete2(t *testing.T, pkg map[string]any) {
+	t.Helper()
+	const id, pid = "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d", "8b2c3d4e-5f6a-4b7c-8d8e-9f0a1b2c3d4e"
+	dir := VersionDir(f.itemDir, id)
+	librarytest.WriteVersion(t, dir, librarytest.Version{VersionID: id, PackageID: pid, SourceIDs: []string{rtNewSource},
+		CreatedAt: "2026-11-04T14:00:00Z", Package: map[string]any{"essence": pkg}})
+	f.execSQL(t, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2, supersededat = now()
+		WHERE item_id = $1 AND state = 'complete'`, rtFilm, id)
+	f.execSQL(t, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
+		VALUES ($1, $2, ARRAY[$3::varchar], 'complete', $4, $5, now() - interval '1 hour')`, id, rtFilm, rtNewSource, pid, dir)
 }

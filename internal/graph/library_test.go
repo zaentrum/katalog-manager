@@ -117,3 +117,63 @@ func TestHoldOriginal(t *testing.T) {
 		t.Errorf("an unknown item: %v", resp.Errors)
 	}
 }
+
+// An admin lists the superseded originals, those waiting for one first, each
+// with why it waits and what deleting it gives up, and decides one: accepted,
+// the retire job has it go; kept, never. A source that is no superseded
+// original is NOT_FOUND; a viewer may do neither. A title's library says the
+// same of its sources.
+func TestAnAdminDecidesASupersededOriginal(t *testing.T) {
+	st := storetest.Open(t)
+	withItemView(t, st)
+	const film = "a2a2a2a2-0000-4000-8000-000000000002"
+	storetest.AddItem(t, st, film, "movie", "Example Film", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state, supersededby,
+			supersededat, supersededhold, supersededholdfor, supersededlosses) VALUES
+		('s-held', $1, 'Film.mkv', '/lib/.work/incoming/Film.mkv', 1000, 'superseded', 's-new', '2026-11-04 10:00:00+00',
+		 'kept for an admin: deleting it gives up, against version v2: dolbyVision', 'v2', '["dolbyVision"]'),
+		('s-free', $1, 'Film 2.mkv', '/lib/.work/incoming/Film 2.mkv', 900, 'superseded', 's-new', '2026-11-03 10:00:00+00', NULL, NULL, NULL),
+		('s-new', $1, 'Film 4K.mkv', '/lib/.work/incoming/Film 4K.mkv', 5000, 'present', NULL, NULL, NULL, NULL, NULL)`, film)
+	schema := MustSchema(NewResolver(st, testConfig, Services{}))
+	const fields = `itemId title source { id state supersededBy supersededAt hold holdFor holdLosses decision acceptedLosses decidedBy }`
+	resp := schema.Exec(as(admin), `{ supersededOriginals { `+fields+` } }`, "", nil)
+	if len(resp.Errors) > 0 {
+		t.Fatal(resp.Errors)
+	}
+	want := `{"supersededOriginals":[{"itemId":"` + film + `","title":"Example Film","source":{"id":"s-held","state":"superseded",` +
+		`"supersededBy":"s-new","supersededAt":"2026-11-04T10:00:00Z","hold":"kept for an admin: deleting it gives up, against version v2: ` +
+		`dolbyVision","holdFor":"v2","holdLosses":["dolbyVision"],"decision":null,"acceptedLosses":null,"decidedBy":null}},` +
+		`{"itemId":"` + film + `","title":"Example Film","source":{"id":"s-free","state":"superseded","supersededBy":"s-new",` +
+		`"supersededAt":"2026-11-03T10:00:00Z","hold":null,"holdFor":null,"holdLosses":null,"decision":null,"acceptedLosses":null,` +
+		`"decidedBy":null}}]}`
+	if string(resp.Data) != want {
+		t.Errorf("the list:\n%s\nwant\n%s", resp.Data, want)
+	}
+	if got := query(t, st, `{ supersededOriginals(held: true) { source { id } } }`); got != `{"supersededOriginals":[{"source":{"id":"s-held"}}]}` {
+		t.Errorf("those waiting for an admin: %s", got)
+	}
+	resp = schema.Exec(as(admin), `mutation { decideSupersededOriginal(sourceId: "s-held", decision: ACCEPT) { source { id decision
+		acceptedLosses decidedBy } } }`, "", nil)
+	if len(resp.Errors) > 0 || string(resp.Data) != `{"decideSupersededOriginal":{"source":{"id":"s-held","decision":"accept",`+
+		`"acceptedLosses":["dolbyVision"],"decidedBy":"admin-1"}}}` {
+		t.Errorf("accept: %s %v", resp.Data, resp.Errors)
+	}
+	resp = schema.Exec(as(admin), `mutation { decideSupersededOriginal(sourceId: "s-free", decision: KEEP) { source { decision } } }`, "", nil)
+	if len(resp.Errors) > 0 || string(resp.Data) != `{"decideSupersededOriginal":{"source":{"decision":"keep"}}}` {
+		t.Errorf("keep: %s %v", resp.Data, resp.Errors)
+	}
+	resp = schema.Exec(as(admin), `mutation { decideSupersededOriginal(sourceId: "s-new", decision: KEEP) { itemId } }`, "", nil)
+	if len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != "NOT_FOUND" {
+		t.Errorf("a present source: %v", resp.Errors)
+	}
+	for _, q := range []string{`{ supersededOriginals { itemId } }`, `mutation { decideSupersededOriginal(sourceId: "s-held", decision: KEEP) { itemId } }`} {
+		if resp := schema.Exec(as(viewer), q, "", nil); len(resp.Errors) != 1 || resp.Errors[0].Extensions["code"] != "FORBIDDEN" {
+			t.Errorf("a viewer: %s: %v", q, resp.Errors)
+		}
+	}
+	got := query(t, st, `{ item(id: "`+film+`") { library { sources { id decision holdLosses supersededBy } } } }`)
+	if !strings.Contains(got, `{"id":"s-held","decision":"accept","holdLosses":["dolbyVision"],"supersededBy":"s-new"}`) ||
+		!strings.Contains(got, `{"id":"s-new","decision":null,"holdLosses":null,"supersededBy":null}`) {
+		t.Errorf("the title's sources: %s", got)
+	}
+}

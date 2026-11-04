@@ -73,3 +73,46 @@ func TestTheSupersededSourcesMigrationIsIdempotent(t *testing.T) {
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, replacekey)
 		VALUES ('other', 'j', 'f.mkv', 1, 'grab-1')`)
 }
+
+// Migration 057 keeps what holds a superseded original for an admin and what
+// an admin decides of it: applied after 056, and again, unchanged, by
+// EnsureSupersededDecisions and by the file itself; a decision is accept or
+// keep. A catalog without 040 keeps no sources, and it leaves it so.
+func TestTheSupersededDecisionsMigrationIsIdempotent(t *testing.T) {
+	st := storetest.OpenBase(t)
+	ctx := context.Background()
+	ready := func() bool {
+		t.Helper()
+		ok, err := st.SupersededDecisionsReady(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if err := st.EnsureSupersededDecisions(ctx); err != nil || ready() {
+		t.Fatalf("EnsureSupersededDecisions without 040: ready %v, %v", ready(), err)
+	}
+	for _, ensure := range []func(context.Context) error{st.EnsureDeletionLog, st.EnsurePeople, st.EnsureItemExtras, st.EnsureLibrary,
+		st.EnsureSupersededSources} {
+		if err := ensure(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ready() {
+		t.Fatal("a catalog with 056 alone is ready")
+	}
+	for i := 0; i < 2; i++ {
+		if err := st.EnsureSupersededDecisions(ctx); err != nil {
+			t.Fatalf("EnsureSupersededDecisions, %d. time: %v", i+1, err)
+		}
+		storetest.Exec(t, st, migrations.SupersededDecisions)
+		if !ready() {
+			t.Fatalf("after EnsureSupersededDecisions and the file %d times: not ready", i+1)
+		}
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state, supersededby,
+		supersededhold, supersededlosses, supersededdecision) VALUES ('s', 'i', 'f.mkv', 1, 'superseded', 'n', 'why', '["dolbyVision"]', 'keep')`)
+	if _, err := st.Pool().Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET supersededdecision = 'maybe' WHERE id = 's'`); err == nil {
+		t.Error("a decision that is neither accept nor keep")
+	}
+}

@@ -525,6 +525,8 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { packageExtra(id: "x1") { queued busy notSent message extras { id state } } }`, "package extra x1"},
 	{`mutation { packageExtras(itemId: "m1") { queued message extras { id } } }`, "package extras m1"},
 	{`mutation { holdOriginal(id: "m1", hold: true) { hold versions { id } } }`, ""},
+	{`{ supersededOriginals(held: true, first: 10) { itemId title source { id hold holdLosses decision } } }`, ""},
+	{`mutation { decideSupersededOriginal(sourceId: "s-held", decision: KEEP) { itemId source { decision } } }`, ""},
 }
 
 var rootField = regexp.MustCompile(`^(?:mutation )?\{ (\w+)`)
@@ -569,6 +571,8 @@ func TestOperationsCallEveryRootField(t *testing.T) {
 func TestEveryOperationIsForWhomItIsFor(t *testing.T) {
 	in := newInstance(t)
 	iss := in.iss
+	storetest.Exec(t, in.st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state, supersededby, supersededat)
+		VALUES ('s-held', 'm1', 'A Film (1999).mkv', 100, 'superseded', 's-new', now())`)
 	refused := []struct{ name, token string }{
 		{"a viewer", iss.Viewer(t)},
 		{"another confidential client", iss.Service(t, "zaentrum-other")},

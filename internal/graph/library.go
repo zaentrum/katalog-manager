@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/graph-gophers/graphql-go"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/zaentrum/katalog-manager/internal/auth"
 	"github.com/zaentrum/katalog-manager/internal/library"
 	"github.com/zaentrum/katalog-manager/internal/store"
 )
@@ -63,6 +66,9 @@ func libraryOf(ctx context.Context, s *store.Store, lib library.Paths, id string
 	if out.sources, err = library.SourcesOf(ctx, s.Pool(), id); err != nil {
 		return nil, err
 	}
+	if out.superseded, err = library.SupersededOf(ctx, s.Pool(), id); err != nil {
+		return nil, err
+	}
 	pl, err := library.PlaceOf(ctx, s.Pool(), id)
 	var unplaced *library.Unplaced
 	switch {
@@ -83,12 +89,13 @@ func libraryOf(ctx context.Context, s *store.Store, lib library.Paths, id string
 }
 
 type itemLibraryResolver struct {
-	recorded *time.Time
-	hold     bool
-	dir      *string
-	versions []*library.Version
-	sources  []*library.Source
-	events   []library.Doc
+	recorded   *time.Time
+	hold       bool
+	dir        *string
+	versions   []*library.Version
+	sources    []*library.Source
+	superseded map[string]*library.Superseded
+	events     []library.Doc
 }
 
 func (r *itemLibraryResolver) Recorded() *graphql.Time { return utcTime(r.recorded) }
@@ -106,7 +113,7 @@ func (r *itemLibraryResolver) Versions() []*libraryVersionResolver {
 func (r *itemLibraryResolver) Sources() []*librarySourceResolver {
 	out := make([]*librarySourceResolver, 0, len(r.sources))
 	for _, s := range r.sources {
-		out = append(out, &librarySourceResolver{s})
+		out = append(out, &librarySourceResolver{m: s, x: r.superseded[s.ID]})
 	}
 	return out
 }
@@ -142,7 +149,157 @@ func (r *libraryVersionResolver) SourceIds() []graphql.ID {
 	return out
 }
 
-type librarySourceResolver struct{ m *library.Source }
+// librarySourceResolver is a source, with what the catalog holds of it as a
+// superseded original (x; nil for one none took the place of).
+type librarySourceResolver struct {
+	m *library.Source
+	x *library.Superseded
+}
+
+func (r *librarySourceResolver) SupersededBy() *graphql.ID {
+	if r.x == nil || r.x.By == "" {
+		return nil
+	}
+	return gidp(&r.x.By)
+}
+func (r *librarySourceResolver) SupersededAt() *graphql.Time {
+	if r.x == nil {
+		return nil
+	}
+	return utcTime(r.x.At)
+}
+func (r *librarySourceResolver) Hold() *string {
+	if r.x == nil {
+		return nil
+	}
+	return r.x.Hold
+}
+func (r *librarySourceResolver) HoldFor() *graphql.ID {
+	if r.x == nil {
+		return nil
+	}
+	return gidp(r.x.HoldFor)
+}
+func (r *librarySourceResolver) HoldLosses() *[]string {
+	if r.x == nil || r.x.Losses == nil {
+		return nil
+	}
+	return &r.x.Losses
+}
+func (r *librarySourceResolver) Decision() *string {
+	if r.x == nil {
+		return nil
+	}
+	return r.x.Decision
+}
+func (r *librarySourceResolver) AcceptedLosses() *[]string {
+	if r.x == nil || r.x.Accepted == nil {
+		return nil
+	}
+	return &r.x.Accepted
+}
+func (r *librarySourceResolver) DecidedBy() *string {
+	if r.x == nil {
+		return nil
+	}
+	return r.x.DecidedBy
+}
+func (r *librarySourceResolver) DecidedAt() *graphql.Time {
+	if r.x == nil {
+		return nil
+	}
+	return utcTime(r.x.DecidedAt)
+}
+
+// supersededOriginalResolver is a superseded original as an admin lists it.
+type supersededOriginalResolver struct{ m *library.SupersededOriginal }
+
+func (r *supersededOriginalResolver) ItemID() graphql.ID { return gid(r.m.ItemID) }
+func (r *supersededOriginalResolver) Title() string      { return r.m.Title }
+func (r *supersededOriginalResolver) Source() *librarySourceResolver {
+	return &librarySourceResolver{m: &library.Source{ID: r.m.SourceID, ItemID: r.m.ItemID, Filename: r.m.Filename,
+		ArrivalPath: r.m.Path, State: r.m.State, SizeBytes: r.m.SizeBytes}, x: &r.m.Superseded}
+}
+
+// SupersededOriginals lists the superseded originals, those waiting for an
+// admin first (held: those alone), at most first (50, up to 500).
+func (r *Resolver) SupersededOriginals(ctx context.Context, args struct {
+	Held  *bool
+	First *int32
+}) ([]*supersededOriginalResolver, error) {
+	if err := r.allow(ctx, "Query.supersededOriginals"); err != nil {
+		return nil, err
+	}
+	if ok, err := ready(ctx, r.store); err != nil || !ok {
+		return []*supersededOriginalResolver{}, err
+	}
+	n := 50
+	if args.First != nil && *args.First > 0 {
+		n = min(int(*args.First), 500)
+	}
+	list, err := library.SupersededOriginals(ctx, r.store.Pool(), derefBool(args.Held), n)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*supersededOriginalResolver, 0, len(list))
+	for _, x := range list {
+		out = append(out, &supersededOriginalResolver{x})
+	}
+	return out, nil
+}
+
+// DecideSupersededOriginal notes an admin's decision of a superseded
+// original (library.DecideSuperseded): accept has the retire job retire it,
+// keep keeps it. It is logged with who decided it.
+func (r *Resolver) DecideSupersededOriginal(ctx context.Context, args struct {
+	SourceID graphql.ID
+	Decision string
+}) (*supersededOriginalResolver, error) {
+	if err := r.allow(ctx, "Mutation.decideSupersededOriginal"); err != nil {
+		return nil, err
+	}
+	if ok, err := ready(ctx, r.store); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, Refused(http.StatusServiceUnavailable, "UNAVAILABLE",
+			"migration 040 (db/migrations/040_library_v2.sql) is not applied: the catalog holds no library")
+	}
+	decision := strings.ToLower(args.Decision)
+	by := auth.Actor(ctx, "katalog-manager")
+	x, err := library.DecideSuperseded(ctx, r.store.Pool(), string(args.SourceID), decision, by)
+	var none *library.ErrNotSuperseded
+	switch {
+	case errors.As(err, &none):
+		return nil, Refused(http.StatusNotFound, "NOT_FOUND", "%s", none.Error())
+	case err != nil:
+		return nil, err
+	}
+	p, _ := auth.PrincipalFrom(ctx)
+	log.Printf("decideSupersededOriginal: %s decided %s of the superseded original %s of item %s, which gives up %s",
+		r.access.Describe(p), decision, x.SourceID, x.ItemID, orNothing(x.Losses))
+	list, err := library.SupersededOriginals(ctx, r.store.Pool(), false, 500)
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range list {
+		if o.SourceID == x.SourceID {
+			return &supersededOriginalResolver{o}, nil
+		}
+	}
+	return &supersededOriginalResolver{&library.SupersededOriginal{Superseded: *x}}, nil
+}
+
+// orNothing writes names for a log: "nothing", or the names; "what no record
+// tells" for none known (nil).
+func orNothing(names []string) string {
+	switch {
+	case names == nil:
+		return "what no record tells"
+	case len(names) == 0:
+		return "nothing"
+	}
+	return strings.Join(names, ", ")
+}
 
 func (r *librarySourceResolver) ID() graphql.ID             { return gid(r.m.ID) }
 func (r *librarySourceResolver) Filename() string           { return r.m.Filename }

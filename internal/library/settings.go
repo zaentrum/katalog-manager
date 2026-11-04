@@ -70,6 +70,13 @@ const (
 	// its place can still be taken back: counted from the master's
 	// completion, then the trash's grace as for any retired original.
 	SettingSupersededDelay = "library.superseded.delay"
+	// SettingSupersededAccept is what the retire job may give up of a
+	// superseded original against its title's master (the deletion gate's
+	// names, by commas or spaces) before it retires it on its own:
+	// DefaultSupersededAccept unless it says otherwise, "none" nothing. Any
+	// other loss holds the original for an admin (decideSupersededOriginal).
+	// maxAudioChannels is given up only while the master keeps a stereo track.
+	SettingSupersededAccept = "library.superseded.accept"
 	// SettingReplaceClients names the addons that may give a title another
 	// file (replaceSource), and have its old original go: the OIDC clients
 	// of their service accounts (a token's azp), separated by commas or
@@ -94,6 +101,15 @@ const (
 	defaultRetireNum = 30
 	defaultReencode  = 4
 )
+
+// DefaultSupersededAccept is what the retire job gives up of a superseded
+// original on its own unless library.superseded.accept says otherwise: the
+// owner's rules for retiring an original, the losses that are accepted.
+var DefaultSupersededAccept = []string{"maxAudioChannels", "surround", "losslessAudio", "objectAudio", "stereo3d"}
+
+// lossName is a name of the deletion gate: an essence property, or a
+// property and one of its languages after a colon.
+var lossName = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9]*(:[A-Za-z0-9-]+)?$`)
 
 // Settings are the library's settings as they are read.
 type Settings struct {
@@ -123,6 +139,9 @@ type Settings struct {
 	// SupersededDelay is how long a superseded original's master is
 	// complete at least before the original is retired.
 	SupersededDelay time.Duration
+	// SupersededAccept is what the retire job may give up of a superseded
+	// original against its master on its own (library.superseded.accept).
+	SupersededAccept []string
 	// Problems says of each setting that could not be read what it held and
 	// what is used instead.
 	Problems []string
@@ -134,7 +153,8 @@ func Defaults() Settings {
 		RetireRate: defaultRetireNum, Verify: VerifyFull, VerifyMaxAge: 30 * 24 * time.Hour, VerifyNew: true,
 		SupersededGrace: 24 * time.Hour, TrashGrace: 24 * time.Hour,
 		ReencodeRate: defaultReencode, ReencodeInflight: defaultReencode, RetireList: RetireListDryRun,
-		RetireListMaxAge: 24 * time.Hour, SupersededDelay: 7 * 24 * time.Hour}
+		RetireListMaxAge: 24 * time.Hour, SupersededDelay: 7 * 24 * time.Hour,
+		SupersededAccept: slices.Clone(DefaultSupersededAccept)}
 }
 
 // V2 reports whether the environment runs the v2 layout.
@@ -262,6 +282,21 @@ func (s *Settings) set(key, value string) {
 		} else {
 			bad("a duration above 0, as 24h or 2d; it is 24h")
 		}
+	case SettingSupersededAccept:
+		var names []string
+		for _, n := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) {
+			if !lossName.MatchString(n) {
+				bad("the deletion gate's names, by commas, or none; it is " + strings.Join(DefaultSupersededAccept, ","))
+				return
+			}
+			if !slices.Contains(names, n) {
+				names = append(names, n)
+			}
+		}
+		if lower == "none" {
+			names = []string{}
+		}
+		s.SupersededAccept = names
 	case SettingReplaceClients:
 		s.ReplaceClients = nil
 		for _, c := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) {

@@ -216,8 +216,10 @@ type Report struct {
 	Held      int // originals kept: their package has no 5.1 of their surround
 	Failed    int // originals, extras and versions that could not be
 	// Superseded is how many superseded originals were deleted
-	// (retire_superseded.go).
+	// (retire_superseded.go), and ForAnAdmin how many were held for an
+	// admin's decision.
 	Superseded int
+	ForAnAdmin int
 }
 
 // String says what the pass did; "" when it did nothing.
@@ -228,7 +230,8 @@ func (r Report) String() string {
 		what string
 	}{{r.Originals, "originals deleted"}, {r.Extras, "extras' originals deleted"}, {r.Versions, "superseded versions removed"},
 		{r.Legacy, "legacy package folders moved aside"}, {r.Purged, "days of the trash and the legacy folder deleted"},
-		{r.Superseded, "superseded originals deleted"}, {r.Held, "originals kept for their surround"}, {r.Failed, "failed"}} {
+		{r.Superseded, "superseded originals deleted"}, {r.Held, "originals kept for their surround"},
+		{r.ForAnAdmin, "superseded originals kept for an admin"}, {r.Failed, "failed"}} {
 		if c.n > 0 {
 			out = append(out, fmt.Sprintf("%d %s", c.n, c.what))
 		}
@@ -280,10 +283,10 @@ func (r *Retirer) Pass(ctx context.Context) (Report, error) {
 	// library.originals says.
 	if left := set.RetireRate - n - held - failed; left > 0 {
 		n, held, failed, err = r.supersededOriginals(ctx, p, set, now, left)
-		rep.Superseded, rep.Held, rep.Failed = n, rep.Held+held, rep.Failed+failed
+		rep.Superseded, rep.ForAnAdmin, rep.Failed = n, held, rep.Failed+failed
 		errs = append(errs, err)
 	}
-	if used := rep.Originals + rep.Superseded + rep.Held + rep.Failed; set.DeleteOriginals() && used < set.RetireRate {
+	if used := rep.Originals + rep.Superseded + rep.Held + rep.ForAnAdmin + rep.Failed; set.DeleteOriginals() && used < set.RetireRate {
 		n, failed, err = r.extras(ctx, p, set, now, set.RetireRate-used)
 		rep.Extras, rep.Failed = n, rep.Failed+failed
 		errs = append(errs, err)
@@ -414,8 +417,11 @@ type retirement struct {
 	// original, whose retirement this is (retire_superseded.go): ver is its
 	// title's master, its sidecars stay, and its title's retire step is
 	// left alone; called off or failed before its event, it is superseded
-	// again.
+	// again. lost is what deleting it gives up against the master (the
+	// gate), which its row keeps, and word on whose word it goes.
 	superseded string
+	lost       []string
+	word       string
 }
 
 // back is the state the source of rt is in again when its retirement is
@@ -1369,7 +1375,11 @@ func pruneEmpty(dir, stop string) {
 // saying what the deletion gave up.
 func (r *Retirer) deleted(ctx context.Context, now time.Time, rt *retirement) error {
 	s := rt.src
-	lost, err := json.Marshal(nonNil(rt.accepted))
+	gaveUp := rt.accepted
+	if rt.superseded != "" && rt.lost != nil {
+		gaveUp = rt.lost
+	}
+	lost, err := json.Marshal(nonNil(gaveUp))
 	if err != nil {
 		return err
 	}
