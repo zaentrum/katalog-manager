@@ -562,3 +562,71 @@ func TestNoRetryReadsARetiredOriginal(t *testing.T) {
 		t.Errorf("sent for m1: %v", got)
 	}
 }
+
+// A title is idle (BusyIn, which replaceSource asked with ifIdle reads) only
+// while none of its steps that read its original runs, or waits for its
+// worker, within the step's timeout: an analysis, its transcode, its
+// package, its take-in. One done, failed, past its timeout, or a package
+// waiting for a transcode that has not finished leaves it idle. The steps
+// stay locked until the transaction ends.
+func TestATitleIsIdleOnlyWhileNoStepReadsItsOriginal(t *testing.T) {
+	ctx := context.Background()
+	idle := func(t *testing.T, st *store.Store, s *Service) string {
+		t.Helper()
+		tx, err := st.Pool().Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		why, err := s.BusyIn(ctx, tx, "m1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return why
+	}
+	for _, step := range processing.OriginalSteps {
+		for _, c := range []struct {
+			status, set, says string
+		}{
+			{processing.StatusInProgress, "", step + " is running"},
+			{processing.StatusPending, "", step + " is waiting for its worker"},
+			{processing.StatusInProgress, "modifiedat = localtimestamp - interval '3 hours'", ""},
+			{processing.StatusDone, "", ""},
+			{processing.StatusFailed, "", ""},
+		} {
+			st := catalog(t)
+			s := newService(t, st, &bus{})
+			if step == "package" {
+				put(t, st, "m1", "transcode", processing.StatusDone, "")
+			}
+			put(t, st, "m1", step, c.status, c.set)
+			if got := idle(t, st, s); (c.says == "") != (got == "") || !strings.HasPrefix(got, c.says) {
+				t.Errorf("%s %s (%s): %q, want %q", step, c.status, c.set, got, c.says)
+			}
+		}
+	}
+	// A package waiting for a transcode not finished waits for it.
+	st := catalog(t)
+	s := newService(t, st, &bus{})
+	put(t, st, "m1", "transcode", processing.StatusFailed, "")
+	put(t, st, "m1", "package", processing.StatusPending, "")
+	if got := idle(t, st, s); got != "" {
+		t.Errorf("a package waiting for a failed transcode: %q", got)
+	}
+	// Locked until the transaction ends: no worker reports meanwhile.
+	tx, err := st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	put(t, st, "m1", "chapter", processing.StatusDone, "")
+	if _, err := s.BusyIn(ctx, tx, "m1"); err != nil {
+		t.Fatal(err)
+	}
+	quick, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+	if _, err := st.Pool().Exec(quick, `UPDATE com_nalet_katalog_itemprocessingsteps SET status = 'in_progress'
+		WHERE item_id = 'm1' AND step = 'chapter'`); err == nil {
+		t.Error("a step of a title asked idle changed before the transaction ended")
+	}
+}

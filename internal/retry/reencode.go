@@ -322,8 +322,14 @@ func (s *Service) reset(ctx context.Context, itemID string) (transcode, why stri
 // runs or waits within its timeout, and since when —, and locks them until
 // tx ends.
 func (s *Service) chainOf(ctx context.Context, tx pgx.Tx, itemID string) (map[string]chainStep, error) {
-	secs := make([]float64, len(chain))
-	for i, step := range chain {
+	return s.stepsOf(ctx, tx, itemID, chain)
+}
+
+// stepsOf reads, in tx, the title's steps of steps as chainOf reads its
+// transcode and package, and locks them until tx ends.
+func (s *Service) stepsOf(ctx context.Context, tx pgx.Tx, itemID string, steps []string) (map[string]chainStep, error) {
+	secs := make([]float64, len(steps))
+	for i, step := range steps {
 		secs[i] = s.pol.Timeout(step).Seconds()
 	}
 	rows, err := tx.Query(ctx, `SELECT s.step, s.status, s.dispatchedat IS NOT NULL,
@@ -335,7 +341,7 @@ func (s *Service) chainOf(ctx context.Context, tx pgx.Tx, itemID string) (map[st
 		FROM `+tbl+` s JOIN unnest($2::text[], $3::float8[]) AS t(step, secs) ON t.step = s.step
 		WHERE s.item_id = $1
 		ORDER BY s.step
-		FOR UPDATE OF s`, itemID, chain, secs)
+		FOR UPDATE OF s`, itemID, steps, secs)
 	if err != nil {
 		return nil, err
 	}
@@ -352,18 +358,42 @@ func (s *Service) chainOf(ctx context.Context, tx pgx.Tx, itemID string) (map[st
 	return cur, rows.Err()
 }
 
-// BusyIn says, in tx, why a re-encode of the title would leave it alone now —
-// its transcode or package running, or waiting for its worker, within the
-// step's timeout (busy) —, "" when it would not. The title's steps stay
-// locked until tx ends, so no re-encode resets them meanwhile: replaceSource
-// asked with ifIdle gives a title its new file only while no run of it reads
-// the old one.
+// BusyIn says, in tx, why the title is not idle now: one of its steps that
+// read its original (processing.OriginalSteps: its analyses, its transcode,
+// its package, its take-in) running, or waiting for its worker, within the
+// step's timeout — a package waiting while its transcode has not finished
+// waits for that transcode, as for a re-encode (busy) —; "" when none is.
+// Those steps stay locked until tx ends, so none starts, and no re-encode
+// resets them, meanwhile: replaceSource asked with ifIdle gives a title its
+// new file only while no run reads the old one, whose report would be taken
+// for the new file's.
 func (s *Service) BusyIn(ctx context.Context, tx pgx.Tx, itemID string) (string, error) {
-	cur, err := s.chainOf(ctx, tx, itemID)
+	cur, err := s.stepsOf(ctx, tx, itemID, processing.OriginalSteps)
 	if err != nil {
 		return "", err
 	}
-	return s.busy(cur), nil
+	if why := s.busy(cur); why != "" {
+		return why, nil
+	}
+	for _, step := range processing.OriginalSteps {
+		c, ok := cur[step]
+		if !ok || !c.within || step == "transcode" || step == "package" {
+			continue
+		}
+		since := "an unknown time"
+		if c.since != nil {
+			since = c.since.UTC().Format(time.RFC3339)
+		}
+		switch c.status {
+		case processing.StatusInProgress:
+			return fmt.Sprintf("%s is running: its worker last reported at %s, and reads the old file; wait for it, or for its "+
+				"timeout of %s", step, since, Label(s.pol.Timeout(step))), nil
+		case processing.StatusPending:
+			return fmt.Sprintf("%s is waiting for its worker since %s, and would read the old file; wait for it, or for its "+
+				"timeout of %s", step, since, Label(s.pol.Timeout(step))), nil
+		}
+	}
+	return "", nil
 }
 
 // busy says why a title's transcode and package are left alone, "" when they
