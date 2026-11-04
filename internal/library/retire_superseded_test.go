@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -692,6 +693,9 @@ func TestTheMasterIsMadeOfTheLatestFileThatTookItsPlace(t *testing.T) {
 		f := newRetireFixture(t)
 		f.supersede(t, true, withFiveOne) // the second file's version complete: the master of the first, until the third
 		f.supersedeAgain(t)
+		if ids, err := f.r.supersededDue(ctx, f.settings(t), time.Now(), 10); err != nil || len(ids) != 0 {
+			t.Errorf("due while the latest file has no version: %v, %v; want none", ids, err)
+		}
 		if rep := f.passKeeping(t); rep.Superseded != 0 {
 			t.Errorf("a pass while the latest file has no version: %+v", rep)
 		}
@@ -768,6 +772,26 @@ func TestTheOwnersRulesForASupersededOriginal(t *testing.T) {
 				if rep.Superseded != 1 {
 					t.Fatalf("the pass: %+v; want it retired", rep)
 				}
+				// its event accepts what the version it names lacks too, its
+				// reason all it gives up against the master
+				evs := f.originalDeletedEvents(t)
+				if len(evs) != 1 {
+					t.Fatalf("events: %v", evs)
+				}
+				named, _ := evs[0].Get("versionId")
+				old, err := GateOf(f.itemDir, named.(string), rtSource)
+				if err != nil {
+					t.Fatal(err)
+				}
+				acc, _ := evs[0].Get("accepted")
+				for _, a := range stringsOf(acc) {
+					if !slices.Contains(old, a) {
+						t.Errorf("the event accepts %s, which version %v's package does not lack (%v)", a, named, old)
+					}
+				}
+				if reason, _ := evs[0].Get("reason"); !strings.Contains(reason.(string), "surround") {
+					t.Errorf("the event's reason says nothing of the surround the master gives up: %v", reason)
+				}
 				return
 			}
 			if rep.ForAnAdmin != 1 || rep.Superseded != 0 {
@@ -814,6 +838,24 @@ func TestTheOwnersRulesForASupersededOriginal(t *testing.T) {
 		f.superseded(t, "kept by an admin")
 		if x := f.supersededInfo(t); deref(x.Decision) != DecisionKeep || deref(x.DecidedBy) != "admin-1" || x.DecidedAt == nil {
 			t.Errorf("the decision: %+v", x)
+		}
+	})
+	t.Run("accepted, then a master that gives up more", func(t *testing.T) {
+		f := newRetireFixtureOf(t, dolby, withFiveOne)
+		f.supersede(t, true, stereo)
+		if rep := f.pass(t); rep.ForAnAdmin != 1 {
+			t.Fatalf("the pass: %+v", rep)
+		}
+		if _, err := DecideSuperseded(context.Background(), f.st.Pool(), rtSource, DecisionAccept, "admin-1"); err != nil {
+			t.Fatal(err)
+		}
+		// before its turn, another master, which gives up a subtitle language besides
+		f.complete2(t, with(stereo, "subtitleLanguages", []string{"en"}))
+		if rep := f.pass(t); rep.Superseded != 0 || rep.ForAnAdmin != 1 {
+			t.Fatalf("the pass: %+v; want it kept for an admin again, the admin having accepted less", rep)
+		}
+		if x := f.supersededInfo(t); x.Hold == nil || !strings.Contains(*x.Hold, "subtitleLanguages:de") || x.Decision != nil {
+			t.Errorf("the hold: %v, decision %v", deref(x.Hold), deref(x.Decision))
 		}
 	})
 	t.Run("a new master", func(t *testing.T) {
