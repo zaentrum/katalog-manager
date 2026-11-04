@@ -291,6 +291,73 @@ func TestAScanWaitsForAReplaceOfTheFileItMeets(t *testing.T) {
 	}
 }
 
+// A scan that waits for the lock on a file it met reads the file again once
+// it has the lock: one gone meanwhile (a replace that took it into the
+// arrivals failed and handed it back), one the library has as an original
+// now, and one of another size than the scan met make no title; the next
+// scan sees what is there.
+func TestAScanReadsTheFileAgainOnceItHasTheLock(t *testing.T) {
+	const rel = ".work/incoming/A.Film.1999.2160p.mkv"
+	for _, c := range []struct {
+		name      string
+		meanwhile func(t *testing.T, f *v2, cur string)
+	}{
+		{"gone", func(t *testing.T, f *v2, cur string) {
+			if err := os.Remove(cur); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"an original", func(t *testing.T, f *v2, cur string) {
+			storetest.AddItem(t, f.st, "film", "movie", "A Film", "")
+			storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state,
+				supersededby, supersededat) VALUES ('s-old', 'film', 'A.Film.1999.2160p.mkv', $1, 5000, 'superseded', 's-new', now())`, cur)
+		}},
+		{"another size", func(t *testing.T, f *v2, cur string) {
+			f.write(t, rel, 6000, 'm')
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newV2(t)
+			ctx := context.Background()
+			cur := f.write(t, rel, 5000, 'n')
+			tx, err := f.st.Pool().Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback(ctx) }()
+			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('com_nalet_katalog_playbackassets:' || $1))`, cur); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan scanResult, 1)
+			go func() {
+				res, err := f.s.walk(ctx, func() {})
+				if err != nil {
+					t.Error(err)
+				}
+				done <- res
+			}()
+			select {
+			case res := <-done:
+				t.Fatalf("the scan did not wait for the lock: %+v", res)
+			case <-time.After(400 * time.Millisecond):
+			}
+			c.meanwhile(t, f, cur)
+			_ = tx.Rollback(ctx)
+			select {
+			case res := <-done:
+				if res.itemsInserted != 0 {
+					t.Errorf("the scan made %d title(s) of a file that is not as it met it", res.itemsInserted)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the scan did not end once the lock was let go")
+			}
+			if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE path = $1`, cur); n != 0 {
+				t.Errorf("%d titles have the file", n)
+			}
+		})
+	}
+}
+
 // An original another file took the place of as its title's (superseded) is
 // no title of its own: a scan that meets it where it lies, or a copy of it,
 // leaves it alone, told by its size and quick hash; an original the library
