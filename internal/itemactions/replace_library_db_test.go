@@ -2,6 +2,7 @@ package itemactions
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -269,7 +270,8 @@ const (
 func newInVersion(t *testing.T) *inVersion {
 	t.Helper()
 	st := storetest.Open(t)
-	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('l', 'library.layout', 'v2')`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('l', 'library.layout', 'v2'),
+		('r', 'library.replace.clients', 'example-addon')`)
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -583,6 +585,55 @@ func TestWhatAFileHandedOverMayNotBe(t *testing.T) {
 	_, err = iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true})
 	if r := sourceRefusal(t, err); r.Code != codeSourceBusy || !strings.Contains(r.Message, "cannot be read") {
 		t.Errorf("a file that cannot be read: %+v", r)
+	}
+}
+
+// An addon replaces a title's file only once the catalog names its client
+// (library.replace.clients, among others, by commas or spaces): one it does
+// not name is refused (FORBIDDEN) whatever its role, nothing changed, the
+// setting saying whom it names. An admin, and the platform's service
+// account, are no addon.
+func TestOnlyTheAddonsTheCatalogNamesReplaceATitlesFile(t *testing.T) {
+	iv := newInVersion(t)
+	other := auth.WithPrincipal(context.Background(), &auth.Principal{Subject: "addon-2", Client: "another-addon",
+		Claims: map[string]any{"realm_access": map[string]any{"roles": []any{"zaentrum-addon"}}}})
+	in := graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true}
+	_, err := iv.svc.ReplaceSource(other, in)
+	var forbidden *auth.Forbidden
+	if !errors.As(err, &forbidden) || forbidden.Extensions()["code"] != "FORBIDDEN" ||
+		!strings.Contains(err.Error(), "library.replace.clients names (it names example-addon, and not another-addon)") {
+		t.Fatalf("an addon the catalog does not name: %v", err)
+	}
+	if n := storetest.Count(t, iv.f.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE id = 'a-bunny' AND path = $1`,
+		iv.old); n != 1 {
+		t.Error("a forbidden replace changed the title")
+	}
+	if _, err := os.Stat(iv.handed); err != nil {
+		t.Errorf("a forbidden replace took the file: %v", err)
+	}
+	storetest.Exec(t, iv.f.st, `UPDATE com_nalet_katalog_settings SET valuetext = ' example-addon,another-addon ' WHERE key = 'library.replace.clients'`)
+	if res, err := iv.svc.ReplaceSource(other, in); err != nil || !res.Replaced {
+		t.Fatalf("an addon the catalog names among others: %+v %v", res, err)
+	}
+	storetest.Exec(t, iv.f.st, `DELETE FROM com_nalet_katalog_settings WHERE key = 'library.replace.clients'`)
+	for name, ctx := range map[string]context.Context{
+		"an addon":      asAddon,
+		"another addon": other,
+	} {
+		if _, err := iv.svc.ReplaceSource(ctx, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.arrive}); !errors.As(err, &forbidden) ||
+			!strings.Contains(err.Error(), "(it names none, and not ") {
+			t.Errorf("%s with none named: %v", name, err)
+		}
+	}
+	admin := auth.WithPrincipal(context.Background(), &auth.Principal{Subject: "admin-1", Client: "zaentrum-portal",
+		Claims: map[string]any{"realm_access": map[string]any{"roles": []any{"zaentrum-admin", "zaentrum-addon"}}}})
+	service := auth.WithPrincipal(context.Background(), &auth.Principal{Subject: "service-1", Client: "zaentrum-manager",
+		Claims: map[string]any{"realm_access": map[string]any{"roles": []any{"zaentrum-addon"}}}})
+	for name, ctx := range map[string]context.Context{"an admin": admin, "the service account": service} {
+		if res, err := iv.svc.ReplaceSource(ctx, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.arrive}); err != nil ||
+			res.Replaced {
+			t.Errorf("%s with no addon named: %+v %v; want it asked, nothing to change", name, res, err)
+		}
 	}
 }
 

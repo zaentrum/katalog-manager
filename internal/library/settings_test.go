@@ -43,6 +43,27 @@ func TestTheReencodeSettingsAreRead(t *testing.T) {
 	}
 }
 
+// The addons that may replace a title's file are the clients
+// library.replace.clients names, by commas or spaces, each once; none by
+// default, and none when it names nobody.
+func TestTheAddonsThatMayReplaceAreRead(t *testing.T) {
+	if d := Defaults(); len(d.ReplaceClients) != 0 || d.MayReplace("example-addon") || d.MayReplace("") {
+		t.Errorf("the default: %v", d.ReplaceClients)
+	}
+	s := Defaults()
+	s.set(SettingReplaceClients, " example-addon,another-addon  example-addon\tthird ")
+	if got := strings.Join(s.ReplaceClients, "|"); got != "example-addon|another-addon|third" || len(s.Problems) != 0 {
+		t.Errorf("read: %q, %v", got, s.Problems)
+	}
+	if !s.MayReplace("another-addon") || s.MayReplace("example") || s.MayReplace("") {
+		t.Error("MayReplace does not hold to the names")
+	}
+	s.set(SettingReplaceClients, " , ")
+	if len(s.ReplaceClients) != 0 {
+		t.Errorf("a setting that names nobody: %v", s.ReplaceClients)
+	}
+}
+
 // A window is HH:MM-HH:MM of the local time, from its start up to its end,
 // past midnight when it ends before it starts; empty is any time, and one
 // that starts where it ends is the whole day.

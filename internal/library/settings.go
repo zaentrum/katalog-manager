@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -62,6 +64,12 @@ const (
 	// holds for a run of them (24h): a run of an older dry run is refused,
 	// and a title its dry run checked longer ago is not retired.
 	SettingRetireListMaxAge = "library.retire.list.maxAge"
+	// SettingReplaceClients names the addons that may give a title another
+	// file (replaceSource), and have its old original go: the OIDC clients
+	// of their service accounts (a token's azp), separated by commas or
+	// spaces. None by default: an addon not named is refused (FORBIDDEN),
+	// whatever its role.
+	SettingReplaceClients = "library.replace.clients"
 )
 
 // The values of the settings.
@@ -103,6 +111,9 @@ type Settings struct {
 	RetireList string
 	// RetireListMaxAge is how long a dry run's word on a title holds.
 	RetireListMaxAge time.Duration
+	// ReplaceClients are the clients of the addons that may replace a
+	// title's file (library.replace.clients); none by default.
+	ReplaceClients []string
 	// Problems says of each setting that could not be read what it held and
 	// what is used instead.
 	Problems []string
@@ -240,7 +251,20 @@ func (s *Settings) set(key, value string) {
 		} else {
 			bad("a duration above 0, as 24h or 2d; it is 24h")
 		}
+	case SettingReplaceClients:
+		s.ReplaceClients = nil
+		for _, c := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) {
+			if !slices.Contains(s.ReplaceClients, c) {
+				s.ReplaceClients = append(s.ReplaceClients, c)
+			}
+		}
 	}
+}
+
+// MayReplace reports whether the addon whose service account's client is
+// client may replace a title's file (library.replace.clients).
+func (s Settings) MayReplace(client string) bool {
+	return client != "" && slices.Contains(s.ReplaceClients, client)
 }
 
 // DurationText writes d as the settings write one: "24h", "90m", "1h30m",

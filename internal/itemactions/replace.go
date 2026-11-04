@@ -157,6 +157,14 @@ func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	// waiting: no title is given its file without its old file's deletion and
 	// its re-encode.
 	ctx = context.WithoutCancel(ctx)
+	set, err := library.ReadSettings(ctx, s.st.Pool())
+	if err != nil {
+		return res, graph.RefuseSource(codeSourceBusy, "the library's settings could not be read: %v", err)
+	}
+	// An addon replaces a title's file when the catalog names it.
+	if err := s.addonMay(ctx, set); err != nil {
+		return res, err
+	}
 	// An episode another episode's file covers has no file of its own: its
 	// holder's is the one to replace.
 	if itemID != "" {
@@ -171,7 +179,27 @@ func (s *Service) ReplaceSource(ctx context.Context, in graph.ReplaceSourceReque
 			return res, r
 		}
 	}
-	return s.replaceSource(ctx, in, path, itemID, itemPath)
+	return s.replaceSource(ctx, in, set, path, itemID, itemPath)
+}
+
+// addonMay refuses a replace asked by an addon's service account whose
+// client the setting library.replace.clients does not name (FORBIDDEN): an
+// addon replaces a title's file, and has its old original go, only once the
+// catalog names it. An admin, and the platform's service account, are no
+// addon.
+func (s *Service) addonMay(ctx context.Context, set library.Settings) error {
+	p, _ := auth.PrincipalFrom(ctx)
+	pol := s.cfg.Policy()
+	if p == nil || p.Unrestricted || pol.IsAdmin(p) || pol.IsService(p) || !pol.IsAddon(p) || set.MayReplace(p.Client) {
+		return nil
+	}
+	named := "names none"
+	if len(set.ReplaceClients) > 0 {
+		named = "names " + strings.Join(set.ReplaceClients, ", ")
+	}
+	return &auth.Forbidden{Operation: "replaceSource", Role: pol.AdminRole,
+		Requires: "the " + pol.AdminRole + " role, or an addon whose client the setting " + library.SettingReplaceClients +
+			" names (it " + named + ", and not " + orDash(p.Client) + ")"}
 }
 
 // logReplace logs a replace, whatever came of it: who asked it — the token's
@@ -199,9 +227,12 @@ func (s *Service) logReplace(ctx context.Context, in graph.ReplaceSourceRequest,
 	}
 	outcome := "replaced: " + res.Message
 	var refused *graph.SourceRefused
+	var forbidden *auth.Forbidden
 	switch {
 	case errors.As(err, &refused):
 		outcome = "refused (" + refused.Code + "): " + refused.Message
+	case errors.As(err, &forbidden):
+		outcome = "refused (FORBIDDEN): " + forbidden.Error()
 	case err != nil:
 		outcome = "failed: " + err.Error()
 	case !res.Replaced:
@@ -242,14 +273,10 @@ func orDash(s string) string {
 
 // replaceSource is ReplaceSource of the title named by itemID or itemPath,
 // which no other's file covers, and the new file at path, absolute and clean.
-func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceRequest, path, itemID, itemPath string) (
-	graph.ReplaceSourceResult, error) {
+func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceRequest, set library.Settings, path, itemID,
+	itemPath string) (graph.ReplaceSourceResult, error) {
 	var res graph.ReplaceSourceResult
 	pool := s.st.Pool()
-	set, err := library.ReadSettings(ctx, pool)
-	if err != nil {
-		return res, graph.RefuseSource(codeSourceBusy, "the library's settings could not be read: %v", err)
-	}
 	v2 := set.V2()
 	key := strings.TrimSpace(in.Key)
 	switch {

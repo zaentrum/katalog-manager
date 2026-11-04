@@ -657,6 +657,9 @@ func TestEveryReplaceIsLoggedWithWhoAskedIt(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	addon := auth.WithPrincipal(context.Background(), &auth.Principal{Subject: "addon-1", Client: "example-addon",
 		Claims: map[string]any{"realm_access": map[string]any{"roles": []any{"zaentrum-addon"}}}})
+	unnamed := auth.WithPrincipal(context.Background(), &auth.Principal{Subject: "addon-2", Client: "another-addon",
+		Claims: map[string]any{"realm_access": map[string]any{"roles": []any{"zaentrum-addon"}}}})
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('r', 'library.replace.clients', 'example-addon')`)
 
 	if _, err := svc.ReplaceSource(addon, graph.ReplaceSourceRequest{ItemID: bunny, Path: f.cur, DeleteOldFile: true, Reencode: true}); err != nil {
 		t.Fatal(err)
@@ -677,6 +680,10 @@ func TestEveryReplaceIsLoggedWithWhoAskedIt(t *testing.T) {
 		{asOperator, operator + " (client -, a viewer)", graph.ReplaceSourceRequest{ItemID: bunny, Path: f.cur},
 			"item " + bunny + ` ("Big Buck Bunny", movie), old file ` + f.cur + ", new file " + f.cur + ", deleteOldFile false, reencode false, " +
 				"ifIdle false: nothing changed: " + f.cur + " is the title's file already: nothing changed"},
+		{unnamed, "addon-2 (client another-addon, an addon (zaentrum-addon))", graph.ReplaceSourceRequest{ItemID: bunny, Path: f.cur},
+			"item " + bunny + ` ("Big Buck Bunny", movie), old file -, new file ` + f.cur + ", deleteOldFile false, reencode false, " +
+				"ifIdle false: refused (FORBIDDEN): forbidden: replaceSource requires the zaentrum-admin role, or an addon whose client " +
+				"the setting library.replace.clients names (it names example-addon, and not another-addon)"},
 		{context.Background(), "nobody signed in", graph.ReplaceSourceRequest{Path: "relative.mkv"},
 			"item - (?), old file -, new file relative.mkv, deleteOldFile false, reencode false, ifIdle false: refused (SOURCE_REFUSED): relative.mkv is no absolute path"},
 	} {

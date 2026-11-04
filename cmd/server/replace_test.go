@@ -263,8 +263,21 @@ func TestAnAddonReplacesAHeldTitlesFileWhileItIsIdle(t *testing.T) {
 		itemId oldPath path replaced oldFileDeleted oldFileSuperseded reencode { reencoded busy } message } }`, jsonString(handed))
 	addon := in.iss.Addon(t)
 
+	// An addon the catalog does not name is refused, whatever its role.
 	before := fingerprint(t, st)
 	_, a := in.gql(t, "/api/manage/query", addon, doc)
+	if len(a.Errors) != 1 || a.Errors[0].Extensions["code"] != "FORBIDDEN" ||
+		!strings.Contains(a.Errors[0].Message, "library.replace.clients names (it names none, and not example-addon)") {
+		t.Fatalf("a replace by an addon the catalog does not name: %s %v", a.Data, a.Errors)
+	}
+	if after := fingerprint(t, st); after != before {
+		t.Errorf("a forbidden replace changed the catalog:\nbefore %s\nafter  %s", before, after)
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('set-clients', 'library.replace.clients',
+		'example-addon')`)
+
+	before = fingerprint(t, st)
+	_, a = in.gql(t, "/api/manage/query", addon, doc)
 	if len(a.Errors) != 1 || a.Errors[0].Extensions["code"] != "SOURCE_BUSY" ||
 		!strings.HasPrefix(a.Errors[0].Message, "the title is given no other file while it is encoded (ifIdle): transcode is running") {
 		t.Fatalf("a replace while the title's transcode runs: %s %v", a.Data, a.Errors)
