@@ -529,13 +529,16 @@ func TestWhatIsDueAndClaimedOfASupersededOriginal(t *testing.T) {
 
 // A superseded original that lies outside every root the retire job deletes
 // under (the arrivals, the extras' arrivals, the media root) and outside its
-// version's folder, or under the package store, is kept, its row saying why.
+// version's folder, or under the package store — one inside the media root
+// too —, is kept, its row saying why.
 func TestASupersededOriginalOutsideTheRootsIsKept(t *testing.T) {
 	for _, where := range []string{"elsewhere", "packages"} {
 		f := newRetireFixture(t)
 		f.supersede(t, true, withFiveOne)
 		moved := filepath.Join(f.cfg.LibraryRoot, where, "Example Film.mkv")
 		if where == "packages" {
+			f.cfg.PackagesRoot = filepath.Join(f.cfg.NFSRoot, "packages")
+			f.r = NewRetirer(f.st.Pool(), f.cfg, processing.New(f.st.Pool()))
 			moved = filepath.Join(f.cfg.PackagesRoot, "Example Film.mkv")
 		}
 		if err := os.MkdirAll(filepath.Dir(moved), 0o755); err != nil {
@@ -552,5 +555,25 @@ func TestASupersededOriginalOutsideTheRootsIsKept(t *testing.T) {
 		if s.State != SourceSuperseded || !exists(moved) || !strings.Contains(deref(s.Error), "nothing is deleted") {
 			t.Errorf("%s: the old source: %s, its file there %v, %q", where, s.State, exists(moved), deref(s.Error))
 		}
+	}
+}
+
+// The master of a superseded original is its title's complete version while
+// that is not made of it; none while it is, or while the title has none.
+func TestTheMasterOfASupersededOriginal(t *testing.T) {
+	f := newRetireFixture(t)
+	ctx := context.Background()
+	f.supersede(t, false, withFiveOne)
+	s := f.source(t, rtSource)
+	if v, err := f.r.masterOf(ctx, s); err != nil || v != nil {
+		t.Errorf("while the complete version is made of it: %+v, %v", v, err)
+	}
+	f.complete(t, withFiveOne)
+	if v, err := f.r.masterOf(ctx, s); err != nil || v == nil || v.ID != rtNewVersion {
+		t.Errorf("once the new version is complete: %+v, %v", v, err)
+	}
+	f.execSQL(t, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded' WHERE id = $1`, rtNewVersion)
+	if v, err := f.r.masterOf(ctx, s); err != nil || v != nil {
+		t.Errorf("with no complete version: %+v, %v", v, err)
 	}
 }

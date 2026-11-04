@@ -13,6 +13,11 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
 
+// releasesLocks are the retire job's locks as each release holds its own:
+// the release before, unscoped, as hashtext($1) of the lock's name, and this
+// one, scoped by the catalog's schema. A pass and a list hold both.
+var releasesLocks = []string{`hashtext('library-retire')`, `hashtext('library-retire/' || current_schema())`}
+
 // holdRetireLock holds one of the retire job's locks, key, on a connection of
 // its own, as an instance of the release before (retireLockLegacy) or of this
 // one runs a pass, until the answer is called.
@@ -44,7 +49,7 @@ func (f *retireFixture) holdRetireLock(t *testing.T, key string) func() {
 // release never runs beside one of the other, nor beside an admin's list. A
 // pass that finds either held does nothing, and lets go of what it took.
 func TestAPassRunsOnlyWithBothLocksOfTheRetireJob(t *testing.T) {
-	for _, key := range retireLocks {
+	for _, key := range releasesLocks {
 		t.Run(key, func(t *testing.T) {
 			f := newRetireFixture(t)
 			f.r.lockWait = 100 * time.Millisecond
@@ -78,7 +83,7 @@ func TestTheRetireJobsOwnLockIsTheCatalogs(t *testing.T) {
 // An admin's list waits for both of the retire job's locks as a pass takes
 // them, and holds both while it retires an original.
 func TestAListWaitsForBothLocksOfTheRetireJob(t *testing.T) {
-	for _, key := range retireLocks {
+	for _, key := range releasesLocks {
 		t.Run(key, func(t *testing.T) {
 			f := newRetireFixture(t)
 			l := NewRetireList(f.st.Pool(), f.cfg, processing.New(f.st.Pool()), nil)
@@ -177,6 +182,51 @@ func TestAStaleRetirementRecordsAndMovesNothing(t *testing.T) {
 				t.Errorf("the source is %s; want %s, as it was changed", s.State, c.state)
 			}
 		})
+	}
+}
+
+// A retirement finished by another — its event recorded, its original moved
+// into the trash and its source deleted — is not finished again by a copy of
+// it that reads it retiring still: an original put back from the trash since
+// stays where it is, and the title's retire step stays done.
+func TestAStaleRetirementOfARecordedEventMovesNothing(t *testing.T) {
+	f := newRetireFixture(t)
+	ctx := context.Background()
+	set, err := ReadSettings(ctx, f.st.Pool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	rt := &retirement{src: f.source(t, rtSource), auth: byPolicy, itemDir: f.itemDir}
+	if rt.ver, err = Current(ctx, f.st.Pool(), rtFilm); err != nil || rt.ver == nil {
+		t.Fatalf("the version: %v", err)
+	}
+	if claimed, err := f.r.claim(ctx, f.p, now, rt); err != nil || !claimed {
+		t.Fatalf("the claim: %v, %v", claimed, err)
+	}
+	stale := *rt.src
+	if rep := f.pass(t); rep.Originals != 1 {
+		t.Fatalf("the pass that finishes it: %+v", rep)
+	}
+	done := f.step(t, rtFilm)
+	// put back from the trash, as an admin puts a wrong retirement back
+	trashed := filepath.Join(f.p.TrashDir(*stale.RetireEventAt, rtSource), filepath.Base(f.original))
+	if err := os.MkdirAll(filepath.Dir(f.original), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(trashed, f.original); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := f.r.retireOf(ctx, f.p, set, now, &retirement{src: &stale, auth: byPolicy})
+	var refused *retireFailed
+	if deleted || !errors.As(err, &refused) {
+		t.Fatalf("a stale retirement of a recorded event: deleted %v, %v; want it refused", deleted, err)
+	}
+	if !exists(f.original) {
+		t.Error("the original put back was moved again")
+	}
+	if step := f.step(t, rtFilm); step != done {
+		t.Errorf("the retire step: %s; want it as it was, %s", step, done)
 	}
 }
 
