@@ -577,3 +577,91 @@ func TestTheMasterOfASupersededOriginal(t *testing.T) {
 		t.Errorf("with no complete version: %+v, %v", v, err)
 	}
 }
+
+// rtThirdSource is a third file the fixture's movie is given, in place of the
+// second.
+const (
+	rtThirdSource  = "4d8e9f0a-1b2c-4d3e-8f4a-5b6c7d8e9f0a"
+	rtThirdVersion = "5e9f0a1b-2c3d-4e4f-8a5b-6c7d8e9f0a1b"
+	rtThirdPackage = "6f0a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c"
+)
+
+// supersedeAgain gives the fixture's movie a third file in place of the
+// second, as a second replace does: the second superseded by it where it
+// lies. It answers the third file's path.
+func (f *retireFixture) supersedeAgain(t *testing.T) string {
+	t.Helper()
+	cur := filepath.Join(f.p.Arrivals, "Example Film REMUX.mkv")
+	librarytest.Write(t, cur, []byte(strings.Repeat("a third file ", 30000)))
+	size, qh1, err := QH1(cur)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.execSQL(t, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, librarypath, sizebytes, qh1, state)
+		VALUES ($1, $2, 'Example Film REMUX.mkv', $3, 'Example Film REMUX.mkv', $4, $5, 'present')`, rtThirdSource, rtFilm, cur, size, qh1)
+	f.execSQL(t, `UPDATE com_nalet_katalog_playbackassets SET path = $2, sizebytes = $3, sourceid = $4
+		WHERE item_id = $1 AND kind = 'primary'`, rtFilm, cur, size, rtThirdSource)
+	if err := Supersede(context.Background(), f.st.Pool(), rtNewSource, rtThirdSource); err != nil {
+		t.Fatal(err)
+	}
+	return cur
+}
+
+// The master of a superseded original is a complete version made of the
+// latest file that took its place, the chain of files followed: a title given
+// a file that was never encoded (a replace without a re-encode, or one whose
+// re-encode failed), then another, keeps every file the latest took the place
+// of while the latest has no complete version — whatever complete version it
+// has, of an older file or of none of them —, and retires them once one made
+// of the latest is complete.
+func TestTheMasterIsMadeOfTheLatestFileThatTookItsPlace(t *testing.T) {
+	ctx := context.Background()
+	t.Run("the second file never encoded", func(t *testing.T) {
+		f := newRetireFixture(t)
+		second := f.supersede(t, false, withFiveOne)
+		third := f.supersedeAgain(t)
+		if latest, err := LatestOf(ctx, f.st.Pool(), rtSource); err != nil || latest != rtThirdSource {
+			t.Fatalf("the latest file of the first: %q, %v", latest, err)
+		}
+		if rep := f.passKeeping(t); rep.Superseded != 0 {
+			t.Errorf("a pass while the latest file has no version: %+v", rep)
+		}
+		for id, path := range map[string]string{rtSource: f.original, rtNewSource: second} {
+			if s := f.source(t, id); s.State != SourceSuperseded || !exists(path) {
+				t.Errorf("source %s: %s, its file there %v; want superseded, kept", id, s.State, exists(path))
+			}
+		}
+		dir := VersionDir(f.itemDir, rtThirdVersion)
+		librarytest.WriteVersion(t, dir, librarytest.Version{VersionID: rtThirdVersion, PackageID: rtThirdPackage,
+			SourceIDs: []string{rtThirdSource}, CreatedAt: "2026-11-04T12:00:00Z", Package: map[string]any{"essence": withFiveOne}})
+		f.execSQL(t, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2, supersededat = now()
+			WHERE id = $1`, rtVersion, rtThirdVersion)
+		f.execSQL(t, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
+			VALUES ($1, $2, ARRAY[$3::varchar], 'complete', $4, $5, now() - interval '1 hour')`, rtThirdVersion, rtFilm,
+			rtThirdSource, rtThirdPackage, dir)
+		f.passKeeping(t)
+		if s := f.source(t, rtSource); s.State != SourceDeleted || exists(f.original) {
+			t.Errorf("the first original once the third file's version is complete: %s, there %v", s.State, exists(f.original))
+		}
+		if !exists(third) {
+			t.Error("the latest file went")
+		}
+	})
+	t.Run("the second file encoded, the third not", func(t *testing.T) {
+		f := newRetireFixture(t)
+		f.supersede(t, true, withFiveOne) // the second file's version complete: the master of the first, until the third
+		f.supersedeAgain(t)
+		if rep := f.passKeeping(t); rep.Superseded != 0 {
+			t.Errorf("a pass while the latest file has no version: %+v", rep)
+		}
+		f.superseded(t, "the latest file not encoded")
+		master, _ := Current(ctx, f.st.Pool(), rtFilm)
+		rt := &retirement{src: f.source(t, rtSource), superseded: rtNewSource, itemDir: f.itemDir, ver: master}
+		if claimed, err := f.r.claimSuperseded(ctx, f.p, time.Now(), rt); err != nil || claimed {
+			t.Errorf("claimed against a version of the second file: %v, %v; want it not", claimed, err)
+		}
+		if v, err := f.r.masterOf(ctx, f.source(t, rtSource)); err != nil || v != nil {
+			t.Errorf("the master of the first: %+v, %v; want none", v, err)
+		}
+	})
+}

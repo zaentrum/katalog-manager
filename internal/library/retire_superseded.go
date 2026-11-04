@@ -25,9 +25,13 @@ import (
 //
 //  1. Due: the source is superseded; the title does not hold its originals
 //     (retirehold); none of its steps that read an original waits or runs;
-//     its master is not made of it and has been complete for
-//     library.retire.delay. One whose retirement failed is looked at again an
-//     hour later. Each counts against library.retire.rate.
+//     its master — the title's complete version made of the file that took
+//     its place, the latest one when the title was given another file more
+//     than once (supersededby, followed) — is not made of it and has been
+//     complete for library.retire.delay. While the latest file has no
+//     complete version, nothing it took the place of is retired. One whose
+//     retirement failed is looked at again an hour later. Each counts against
+//     library.retire.rate.
 //  2. Held: its package must carry the surround the original had, as of an
 //     original retired by the policy (SurroundHeld): one that has none is
 //     kept, superseded, saying why on its row.
@@ -119,9 +123,19 @@ func (r *Retirer) supersededOriginals(ctx context.Context, p Paths, set Settings
 // over, whose master is not made of it and complete for library.retire.delay.
 // None on a catalog without migration 056.
 func (r *Retirer) supersededDue(ctx context.Context, set Settings, now time.Time, n int) ([]string, error) {
-	rows, err := r.pool.Query(ctx, `SELECT s.id FROM com_nalet_katalog_itemsources s
+	rows, err := r.pool.Query(ctx, `WITH RECURSIVE chain(start, id, depth) AS (
+			SELECT s.id, s.supersededby, 1 FROM com_nalet_katalog_itemsources s
+			WHERE s.state = 'superseded' AND s.supersededby IS NOT NULL
+			UNION ALL
+			SELECT c.start, n.supersededby, c.depth + 1 FROM chain c
+			JOIN com_nalet_katalog_itemsources n ON n.id = c.id
+			WHERE n.supersededby IS NOT NULL AND c.depth < `+chainDepthSQL+`),
+		latest AS (SELECT DISTINCT ON (start) start, id FROM chain ORDER BY start, depth DESC)
+		SELECT s.id FROM com_nalet_katalog_itemsources s
+		JOIN latest l ON l.start = s.id
 		JOIN com_nalet_katalog_items i ON i.id = s.item_id
 		JOIN com_nalet_katalog_itemversions v ON v.item_id = s.item_id AND v.state = 'complete' AND NOT (s.id = ANY(v.sourceids))
+		  AND l.id = ANY(v.sourceids)
 		WHERE s.state = 'superseded' AND s.supersededby IS NOT NULL AND NOT i.retirehold
 		  AND v.completedat + make_interval(secs => $1::float8) <= $2::timestamptz
 		  AND (s.error IS NULL OR s.modifiedat + make_interval(secs => $5::float8) <= $2::timestamptz)
@@ -146,12 +160,45 @@ func (r *Retirer) supersededDue(ctx context.Context, set Settings, now time.Time
 	return out, rows.Err()
 }
 
+// chainDepth is how many files a title may have been given one after the
+// other that the chain of a superseded original is followed through: more is
+// no chain the library makes.
+const (
+	chainDepth    = 64
+	chainDepthSQL = "64"
+)
+
+// LatestOf is the source at the end of the chain of the source id: the one
+// that took its place, the one that took that one's, and so on, as their
+// rows name them (supersededby); id itself when nothing took its place. An
+// error when the chain is longer than chainDepth, or comes back to itself.
+func LatestOf(ctx context.Context, q Querier, id string) (string, error) {
+	seen := map[string]bool{id: true}
+	cur := id
+	for range chainDepth {
+		next, err := SupersededBy(ctx, q, cur)
+		if err != nil || next == "" {
+			return cur, err
+		}
+		if seen[next] {
+			return "", fmt.Errorf("the sources that took the place of source %s come back to %s", id, next)
+		}
+		seen[next], cur = true, next
+	}
+	return "", fmt.Errorf("the sources that took the place of source %s are more than %d", id, chainDepth)
+}
+
 // masterOf is the master of the title of the superseded original s that no
-// longer needs it: its complete version, when that is not made of s; nil when
-// there is none.
+// longer needs it: its complete version, when that is made of the latest of
+// the files that took the place of s (LatestOf) and not of s; nil when there
+// is none, as while the latest file has no complete version.
 func (r *Retirer) masterOf(ctx context.Context, s *Source) (*Version, error) {
+	latest, err := LatestOf(ctx, r.pool, s.ID)
+	if err != nil {
+		return nil, err
+	}
 	v, err := Current(ctx, r.pool, s.ItemID)
-	if err != nil || v == nil || slices.Contains(v.SourceIDs, s.ID) {
+	if err != nil || v == nil || latest == s.ID || slices.Contains(v.SourceIDs, s.ID) || !slices.Contains(v.SourceIDs, latest) {
 		return nil, err
 	}
 	return v, nil
@@ -270,7 +317,7 @@ func (r *Retirer) supersededCalledOff(ctx context.Context, rt *retirement) (stri
 	case err != nil:
 		return "", err
 	case master == nil:
-		return "no complete version of the title made without it holds: the superseded original is kept", nil
+		return "no complete version of the title made of the file that took its place holds: the superseded original is kept", nil
 	case rt.ver != nil && master.ID != rt.ver.ID:
 		return "the title's master changed meanwhile, to version " + master.ID + ": it is looked at again", nil
 	}
@@ -288,7 +335,7 @@ func (r *Retirer) prepareSuperseded(ctx context.Context, p Paths, set Settings, 
 		return err
 	}
 	if master == nil {
-		why := "no complete version of the title made without it holds: the superseded original is kept"
+		why := "no complete version of the title made of the file that took its place holds: the superseded original is kept"
 		if s.State == SourceRetiring {
 			err := r.callOff(ctx, rt, why)
 			rt.src = nil
@@ -433,10 +480,11 @@ func (r *Retirer) fileOfATitle(ctx context.Context, path string) (string, error)
 
 // claimSuperseded is tx A of a superseded original's retirement: under the
 // title's lock, the source is retiring if it still qualifies — superseded,
-// the title not holding its originals, its master rt.ver complete and not
-// made of it, its steps that read an original over —, its event's id and
-// moment and its trash noted. It stays superseded by the source that took
-// its place.
+// the title not holding its originals, its master rt.ver complete, made of
+// the latest of the files that took its place as the chain reads under the
+// lock, and not made of it, its steps that read an original over —, its
+// event's id and moment and its trash noted. It stays superseded by the
+// source that took its place.
 func (r *Retirer) claimSuperseded(ctx context.Context, p Paths, now time.Time, rt *retirement) (bool, error) {
 	s := rt.src
 	tx, err := r.pool.Begin(ctx)
@@ -447,15 +495,20 @@ func (r *Retirer) claimSuperseded(ctx context.Context, p Paths, now time.Time, r
 	if err := LockItem(ctx, tx, s.ItemID); err != nil {
 		return false, err
 	}
+	latest, err := LatestOf(ctx, tx, s.ID)
+	if err != nil {
+		return false, err
+	}
 	at := now.Truncate(time.Second)
 	claimed, err := sourceRow(ctx, tx, `UPDATE com_nalet_katalog_itemsources s SET state = 'retiring', retireeventid = $2,
 			retireeventat = $3, trashpath = $4, error = NULL, modifiedat = now()
-		WHERE s.id = $1 AND s.state = 'superseded' AND s.supersededby IS NOT NULL
+		WHERE s.id = $1 AND s.state = 'superseded' AND s.supersededby IS NOT NULL AND $7::text <> s.id
 		  AND NOT COALESCE((SELECT retirehold FROM com_nalet_katalog_items i WHERE i.id = s.item_id), true)
 		  AND EXISTS (SELECT 1 FROM com_nalet_katalog_itemversions v
-			WHERE v.id = $5 AND v.item_id = s.item_id AND v.state = 'complete' AND NOT (s.id = ANY(v.sourceids)))
+			WHERE v.id = $5 AND v.item_id = s.item_id AND v.state = 'complete' AND NOT (s.id = ANY(v.sourceids))
+			  AND $7::text = ANY(v.sourceids))
 		  AND `+originalStepsOver("s.item_id", "$6")+`
-		RETURNING `+sourceCols, s.ID, NewID(), at, p.TrashDir(at, s.ID), rt.ver.ID, processing.OriginalSteps)
+		RETURNING `+sourceCols, s.ID, NewID(), at, p.TrashDir(at, s.ID), rt.ver.ID, processing.OriginalSteps, latest)
 	if err != nil || claimed == nil {
 		return false, err
 	}
