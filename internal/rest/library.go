@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zaentrum/katalog-manager/internal/chapters"
 	"github.com/zaentrum/katalog-manager/internal/library"
 )
 
@@ -198,8 +199,21 @@ func (h *Handlers) itemLibraryOf(ctx context.Context, itemID string) (*itemLibra
 		}
 	}
 	b.Mode, b.CreatedBy, b.Chapters, b.Segments = mode, "katalog-manager", []recordChapter{}, []recordSegment{}
+	// The catalog's chapters go with a version of the original they are of
+	// alone: one of another original - a title given another file - carries
+	// the chapters its file holds, which the packager reads of it.
+	ours := true
+	if src != nil {
+		if ours, err = chapters.OfSource(ctx, pool, itemID, src.ID); err != nil {
+			return nil, err
+		}
+		if !ours {
+			log.Printf("the worker record of %s: the catalog's chapters are of another original than %s: version %s carries "+
+				"those of its file", itemID, src.ID, b.VersionID)
+		}
+	}
 	rows, err := pool.Query(ctx, `SELECT startms, COALESCE(NULLIF(endms, 0), startms), title FROM com_nalet_katalog_itemchapters
-		WHERE item_id = $1 ORDER BY COALESCE(ordinal, 0), startms, id`, itemID)
+		WHERE item_id = $1 AND $2::boolean ORDER BY COALESCE(ordinal, 0), startms, id`, itemID, ours)
 	if err != nil {
 		return nil, err
 	}

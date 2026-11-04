@@ -307,3 +307,76 @@ func TestTheWorkerRecordSaysWhatTheRunDoes(t *testing.T) {
 		t.Errorf("the subtitle files of a packaged source whose original lies in a version's folder: %v, want the copy", s)
 	}
 }
+
+// The chapters the catalog holds go with a version of the original they are
+// of alone: read of it, or of no original known while the title has had no
+// other. A title given another file builds its version with none of the
+// catalog's - the packager takes those its new file holds -, whether they
+// were read of the old original or of none known; once they are read of the
+// new one, its version carries them.
+func TestTheWorkerRecordHandsTheChaptersOfTheBuildsOriginalAlone(t *testing.T) {
+	st := storetest.Open(t)
+	dir := t.TempDir()
+	cfg := v2Config(dir)
+	h, iss := server(t, st, cfg)
+	svc := iss.Service(t, "zaentrum-manager")
+	files(t, dir, map[string]int64{".work/incoming/Sintel (2010).mkv": 3000, ".work/incoming/Sintel.2010.2160p.mkv": 9000})
+	original, better := cfg.ArrivalsRoot+"/Sintel (2010).mkv", cfg.ArrivalsRoot+"/Sintel.2010.2160p.mkv"
+	storetest.AddItem(t, st, filmItem, "movie", "Sintel", "")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, sizebytes)
+		VALUES ('src-f1', $1, $2, true, 3000)`, filmItem, original)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemchapters (id, item_id, startms, endms, title, ordinal) VALUES
+		('c1', $1, 0, 61000, 'Opening', 1), ('c2', $1, 61000, 120000, 'The Gate', 2)`, filmItem)
+	v2Layout(t, st)
+	build := func(what string) (map[string]any, bool) {
+		t.Helper()
+		lib, _ := recordOf(t, h, svc, "/api/analyze/items/"+filmItem)["library"].(map[string]any)
+		b, _ := lib["build"].(map[string]any)
+		if b == nil {
+			t.Fatalf("%s: no build: %v", what, lib)
+		}
+		chs, _ := b["chapters"].([]any)
+		handed := len(chs) == 2 && b["chaptersFrom"] == "original-file"
+		if !handed && (len(chs) != 0 || b["chaptersFrom"] != nil) {
+			t.Fatalf("%s: the build's chapters %v from %v", what, b["chapters"], b["chaptersFrom"])
+		}
+		// the version it builds completes, for the next to be built afresh
+		storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded' WHERE item_id = $1 AND state = 'complete'`,
+			filmItem)
+		storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET state = 'complete', dir = $2 WHERE id = $1`, b["versionId"],
+			dir+"/movies/f1/"+filmItem+"/versions/"+b["versionId"].(string))
+		return b, handed
+	}
+	if _, handed := build("of no original known, the title's only one"); !handed {
+		t.Error("the chapters of the title's only original were not handed")
+	}
+	var first string
+	if err := st.Pool().QueryRow(t.Context(), `SELECT sourceid FROM com_nalet_katalog_playbackassets WHERE id = 'src-f1'`).
+		Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_chapterreads (item_id, state, readfrom, sourceid, rowssourceid, found, written)
+		VALUES ($1, 'read', 'header', $2, $2, 2, 2)`, filmItem, first)
+	if _, handed := build("read of it"); !handed {
+		t.Error("the chapters read of the build's original were not handed")
+	}
+	// the title given another file: the old original superseded by it
+	const next = "5d5d5d5d-0000-4000-8000-000000000002"
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, librarypath, sizebytes, state)
+		VALUES ($1, $2, 'Sintel.2010.2160p.mkv', $3, 'Sintel.2010.2160p.mkv', 9000, 'present')`, next, filmItem, better)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemsources SET state = 'superseded', supersededby = $2, supersededat = now()
+		WHERE id = $1`, first, next)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_playbackassets SET path = $2, sizebytes = 9000, sourceid = $3 WHERE id = $1`,
+		"src-f1", better, next)
+	if _, handed := build("read of the old original"); handed {
+		t.Error("the chapters read of the old original went with the new one's version")
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_chapterreads SET rowssourceid = NULL WHERE item_id = $1`, filmItem)
+	if _, handed := build("of no original known, the title having had another"); handed {
+		t.Error("chapters of no original known went with the version of the title's second original")
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_chapterreads SET rowssourceid = $2 WHERE item_id = $1`, filmItem, next)
+	if _, handed := build("read of the new original"); !handed {
+		t.Error("the chapters read of the new original were not handed")
+	}
+}

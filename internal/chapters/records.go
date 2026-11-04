@@ -36,6 +36,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/zaentrum/katalog-manager/internal/library"
+	"github.com/zaentrum/katalog-manager/internal/store"
 )
 
 // ProbeFile is the source record's probe, beside its source.json.
@@ -379,4 +380,32 @@ func same(have, got []Chapter) bool {
 		}
 	}
 	return true
+}
+
+// OfSource reports whether the chapters the catalog holds of the title itemID
+// are of its original sourceID: read of it (the reads' rowssourceid), or of
+// no original known (chapters written before reads were kept, or by a writer
+// that keeps none) while the title has had no other original. A version made
+// of that original carries them; one of another original, a title given
+// another file, carries the chapters its file holds instead. A catalog
+// without migration 055 tells the second alone.
+func OfSource(ctx context.Context, q library.Querier, itemID, sourceID string) (bool, error) {
+	var ready bool
+	if err := q.QueryRow(ctx, `SELECT to_regclass('`+store.ChapterReadsTable+`') IS NOT NULL`).Scan(&ready); err != nil {
+		return false, err
+	}
+	if ready {
+		var rows *string
+		switch err := q.QueryRow(ctx, `SELECT rowssourceid FROM `+store.ChapterReadsTable+` WHERE item_id = $1`, itemID).
+			Scan(&rows); {
+		case err == nil && rows != nil:
+			return *rows == sourceID, nil
+		case err != nil && !errors.Is(err, pgx.ErrNoRows):
+			return false, err
+		}
+	}
+	var other bool
+	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_itemsources WHERE item_id = $1 AND id <> $2)`,
+		itemID, sourceID).Scan(&other)
+	return !other, err
 }

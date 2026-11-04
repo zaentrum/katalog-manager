@@ -1174,3 +1174,32 @@ func TestMarksPastTheFilesEnd(t *testing.T) {
 		t.Errorf("m3, the record's taken: %+v", r)
 	}
 }
+
+// The chapters the catalog holds are of an original when they were read of
+// it, or of no original known while the title has had no other; a title
+// given another file has them of the old one, or of none known, until they
+// are read of the new one.
+func TestTheChaptersOfAnOriginal(t *testing.T) {
+	l := newLib(t)
+	ctx := context.Background()
+	id, s1, s2 := uid('a', 1), uid('b', 1), uid('b', 2)
+	l.title(id, s1, opts{chapters: true})
+	l.rows(id, Chapter{StartMs: 0, EndMs: 1000, Title: str("One"), Ordinal: 1})
+	of := func(what, source string, want bool) {
+		t.Helper()
+		if got, err := OfSource(ctx, l.st.Pool(), id, source); err != nil || got != want {
+			t.Errorf("%s: %v, %v; want %v", what, got, err, want)
+		}
+	}
+	of("of no original known, the title's only one", s1, true)
+	storetest.Exec(t, l.st, `INSERT INTO com_nalet_katalog_chapterreads (item_id, state, sourceid, rowssourceid) VALUES ($1, 'read', $2, $2)`,
+		id, s1)
+	of("read of it", s1, true)
+	l.replace(id, s1, s2)
+	of("read of the old original", s2, false)
+	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_chapterreads SET rowssourceid = NULL WHERE item_id = $1`, id)
+	of("of no original known, the title having had another", s2, false)
+	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_chapterreads SET rowssourceid = $2 WHERE item_id = $1`, id, s2)
+	of("read of the new original", s2, true)
+	of("read of another", s1, false)
+}
