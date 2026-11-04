@@ -37,10 +37,13 @@ type ReplaceSourceResult struct {
 	Path           string // the file it has now
 	Replaced       bool   // false: Path was its file already, and nothing changed
 	OldFileDeleted bool
-	OldFileTrash   string          // where the old file lies in the library's trash, for its grace; "" when it is not there
-	OldSidecars    int32           // the subtitle files beside the old file named after it, which the title keeps
-	Reencode       *ReencodeResult // what encoding it again did; nil when not asked, or nothing changed
-	Message        string
+	// OldFileSuperseded says, with the library's v2 layout, that the old
+	// original asked to go is superseded: kept where it lies until the retire
+	// job retires it.
+	OldFileSuperseded bool
+	OldSidecars       int32           // the subtitle files beside the old file named after it, which the title keeps
+	Reencode          *ReencodeResult // what encoding it again did; nil when not asked, or nothing changed
+	Message           string
 }
 
 // SourceRefused refuses a replaceSource, saying why: Code is its GraphQL code
@@ -116,19 +119,14 @@ func (r *Resolver) ReplaceSource(ctx context.Context, args struct {
 
 type replaceSourceResultResolver struct{ m ReplaceSourceResult }
 
-func (r *replaceSourceResultResolver) ItemID() graphql.ID   { return gid(r.m.ItemID) }
-func (r *replaceSourceResultResolver) OldPath() string      { return r.m.OldPath }
-func (r *replaceSourceResultResolver) Path() string         { return r.m.Path }
-func (r *replaceSourceResultResolver) Replaced() bool       { return r.m.Replaced }
-func (r *replaceSourceResultResolver) OldFileDeleted() bool { return r.m.OldFileDeleted }
-func (r *replaceSourceResultResolver) OldFileTrash() *string {
-	if r.m.OldFileTrash == "" {
-		return nil
-	}
-	return &r.m.OldFileTrash
-}
-func (r *replaceSourceResultResolver) OldSidecars() int32 { return r.m.OldSidecars }
-func (r *replaceSourceResultResolver) Message() string    { return r.m.Message }
+func (r *replaceSourceResultResolver) ItemID() graphql.ID      { return gid(r.m.ItemID) }
+func (r *replaceSourceResultResolver) OldPath() string         { return r.m.OldPath }
+func (r *replaceSourceResultResolver) Path() string            { return r.m.Path }
+func (r *replaceSourceResultResolver) Replaced() bool          { return r.m.Replaced }
+func (r *replaceSourceResultResolver) OldFileDeleted() bool    { return r.m.OldFileDeleted }
+func (r *replaceSourceResultResolver) OldFileSuperseded() bool { return r.m.OldFileSuperseded }
+func (r *replaceSourceResultResolver) OldSidecars() int32      { return r.m.OldSidecars }
+func (r *replaceSourceResultResolver) Message() string         { return r.m.Message }
 func (r *replaceSourceResultResolver) Reencode() *reencodeResultResolver {
 	if r.m.Reencode == nil {
 		return nil

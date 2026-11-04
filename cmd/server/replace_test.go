@@ -230,8 +230,9 @@ func TestTheServiceAccountGivesATitleAnotherFileAndDeletesNone(t *testing.T) {
 // While the title's transcode runs it is refused with SOURCE_BUSY and nothing
 // changes: the title keeps its old file, the new one waits in .work/replace,
 // nothing is sent. Once the transcode is done the title takes the new file
-// into the arrivals, the old file goes and is a source no more, and the
-// title's encode is sent; a scan then takes nothing in.
+// into the arrivals, the old file stays where it lies, superseded by the new
+// one, and the title's encode is sent; a scan then takes nothing in, the old
+// file no title of its own — even one recorded without its quick hash.
 func TestAnAddonReplacesAHeldTitlesFileWhileItIsIdle(t *testing.T) {
 	b := &markingBus{}
 	in := newInstanceWired(t, replacing(b))
@@ -259,7 +260,7 @@ func TestAnAddonReplacesAHeldTitlesFileWhileItIsIdle(t *testing.T) {
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemprocessingsteps (id, createdat, modifiedat, item_id, step, status, attempts, failures) VALUES
 		('st-film-t', now(), now(), 'film', 'transcode', 'in_progress', 1, 0), ('st-film-p', now(), now(), 'film', 'package', 'pending', 0, 0)`)
 	doc := fmt.Sprintf(`mutation { replaceSource(itemId: "film", path: %s, deleteOldFile: true, reencode: true, ifIdle: true) {
-		itemId oldPath path replaced oldFileDeleted reencode { reencoded busy } message } }`, jsonString(handed))
+		itemId oldPath path replaced oldFileDeleted oldFileSuperseded reencode { reencoded busy } message } }`, jsonString(handed))
 	addon := in.iss.Addon(t)
 
 	before := fingerprint(t, st)
@@ -291,24 +292,24 @@ func TestAnAddonReplacesAHeldTitlesFileWhileItIsIdle(t *testing.T) {
 		t.Fatalf("the replace once the title is idle: %v", a.Errors)
 	}
 	want := `{"replaceSource":{"itemId":"film","oldPath":` + jsonString(old) + `,"path":` + jsonString(taken) +
-		`,"replaced":true,"oldFileDeleted":true,"reencode":{"reencoded":1,"busy":0},"message":`
+		`,"replaced":true,"oldFileDeleted":false,"oldFileSuperseded":true,"reencode":{"reencoded":1,"busy":0},"message":`
 	if !strings.HasPrefix(string(a.Data), want) {
 		t.Errorf("the replace once the title is idle:\n %s\nwant\n %s…", a.Data, want)
 	}
 	if sent := b.take(); sent != events.TopicAnalyzed+" film transcode reencode reencode movie" {
 		t.Errorf("the replace sent %q, want the transcoder's trigger", sent)
 	}
-	for _, p := range []string{old, handed} {
-		if _, err := os.Stat(p); !os.IsNotExist(err) {
-			t.Errorf("%s is still there: %v", p, err)
+	if _, err := os.Stat(handed); !os.IsNotExist(err) {
+		t.Errorf("%s is still there: %v", handed, err)
+	}
+	for _, p := range []string{old, taken} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s is not there: %v", p, err)
 		}
 	}
-	if _, err := os.Stat(taken); err != nil {
-		t.Errorf("the new file is not in the arrivals: %v", err)
-	}
-	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemsources WHERE id = 's-old' AND state = 'removed'
-		AND arrivalpath IS NULL`); n != 1 {
-		t.Error("the deleted old file is still a source")
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemsources WHERE id = 's-old' AND state = 'superseded'
+		AND arrivalpath = $1`, old); n != 1 {
+		t.Error("the old original is not superseded where it lies")
 	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_playbackassets p JOIN com_nalet_katalog_itemsources s
 		ON s.id = p.sourceid WHERE p.id = 'a-film' AND p.path = $1 AND s.state = 'present'`, taken); n != 1 {

@@ -746,6 +746,17 @@ func (h *Handlers) ingestKnown(w http.ResponseWriter, r *http.Request, path stri
 		Scan(&existing); err == nil {
 		return existing, true
 	}
+	switch k, err := library.SourceAt(ctx, pool, path); {
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "ingest failed: "+err.Error())
+		return "", true
+	case k != nil && (k.State == library.SourcePresent || k.State == library.SourceRetiring || k.State == library.SourceSuperseded):
+		// An original of a title that is no title's file now: another file
+		// took its place.
+		writeJSON(w, http.StatusConflict, map[string]any{"error": path + " is an old original of item " + k.ItemID + " (" + k.State +
+			"): another file took its place, and it is no title of its own", "itemId": k.ItemID})
+		return "", true
+	}
 	size, qh1, err := library.QH1(path)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "there is no file to take in at "+path+": "+err.Error())
@@ -785,6 +796,10 @@ func (h *Handlers) ingestKnown(w http.ResponseWriter, r *http.Request, path stri
 		case library.SourceRetiring, library.SourceDeleted:
 			writeJSON(w, http.StatusConflict, map[string]any{"error": path + " is already in the library as item " + k.ItemID +
 				" (retired); use replaceSource to make it a new version", "itemId": k.ItemID})
+			return "", true
+		case library.SourceSuperseded:
+			writeJSON(w, http.StatusConflict, map[string]any{"error": path + " is the old original of item " + k.ItemID +
+				", another file took its place (superseded): it is no title of its own", "itemId": k.ItemID})
 			return "", true
 		}
 	}

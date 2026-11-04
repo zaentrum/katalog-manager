@@ -362,3 +362,28 @@ func TestARemovalKeepsAnOriginalWhoseHandoverWasLost(t *testing.T) {
 		t.Errorf("the file that may be an original is gone: %v", err)
 	}
 }
+
+// A removal with deleteFiles deletes the original another file took the
+// place of (superseded) with the title's file, where it lies: no file of
+// the title stays behind, for a scan to make a title of.
+func TestARemovalDeletesASupersededOriginal(t *testing.T) {
+	l := newV2Library(t)
+	ctx := context.Background()
+	old, _ := l.title(t, v2Film, "movie", "", false)
+	cur := filepath.Join(l.p.Arrivals, "Title f0f0 4K.mkv")
+	librarytest.Write(t, cur, []byte("a better original"))
+	storetest.Exec(t, l.st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state)
+		VALUES ('s-new', $1, 'Title f0f0 4K.mkv', $2, 17, 'present')`, v2Film, cur)
+	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_playbackassets SET path = $2, sourceid = 's-new' WHERE item_id = $1`, v2Film, cur)
+	storetest.Exec(t, l.st, `UPDATE com_nalet_katalog_itemsources SET state = 'superseded', supersededby = 's-new', supersededat = now()
+		WHERE arrivalpath = $1`, old)
+	res, err := l.svc.RemoveItem(ctx, v2Film, true, false, "")
+	if err != nil || !res.Deleted || res.FilesRemoved != 2 || len(res.Errors) != 0 {
+		t.Fatalf("RemoveItem: %+v, %v", res, err)
+	}
+	for _, gone := range []string{old, cur} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s is there: %v", gone, err)
+		}
+	}
+}

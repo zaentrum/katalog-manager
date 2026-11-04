@@ -91,3 +91,47 @@ func TestIngestTakesArrivalsWithTheirSources(t *testing.T) {
 		t.Errorf("a retired original again: %d %s", code, body)
 	}
 }
+
+// An original another file took the place of as its title's is no title of
+// its own to an ingest either: neither superseded, nor a copy of it, nor one
+// kept beside the file that took its place, at its very path, even recorded
+// without its quick hash — each refused, naming whose it is.
+func TestIngestRefusesAnOriginalAnotherFileTookThePlaceOf(t *testing.T) {
+	st := storetest.Open(t)
+	v2Layout(t, st)
+	dir := t.TempDir()
+	cfg := v2Config(dir)
+	h, iss := server(t, st, cfg)
+	svc := iss.Service(t, "zaentrum-manager")
+	files(t, dir, map[string]int64{".work/incoming/Sintel.mkv": 3000, ".work/incoming/Bunny.mkv": 2000})
+	ingest := func(path, title string) (int, string) {
+		w := do(h, http.MethodPost, "/api/ingest", `{"path": "`+path+`", "type": "movie", "title": "`+title+`"}`, svc)
+		return w.Code, w.Body.String()
+	}
+	sintel, bunny := cfg.ArrivalsRoot+"/Sintel.mkv", cfg.ArrivalsRoot+"/Bunny.mkv"
+	for path, title := range map[string]string{sintel: "Sintel", bunny: "Bunny"} {
+		if code, body := ingest(path, title); code != http.StatusOK {
+			t.Fatalf("%s: %d %s", path, code, body)
+		}
+	}
+	// Each title has another file now: Sintel's original superseded by it,
+	// Bunny's kept beside it, without its quick hash.
+	files(t, dir, map[string]int64{".work/incoming/Sintel 4K.mkv": 5000, ".work/incoming/Bunny 4K.mkv": 4000})
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_playbackassets SET path = replace(path, '.mkv', ' 4K.mkv'), sourceid = NULL`)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemsources SET state = 'superseded', supersededby = id, supersededat = now()
+		WHERE arrivalpath = $1`, sintel)
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemsources SET qh1 = NULL WHERE arrivalpath = $1`, bunny)
+	files(t, dir, map[string]int64{".work/incoming/copy/Sintel.mkv": 3000})
+	for path, says := range map[string]string{
+		sintel:                                "is an old original of item",
+		cfg.ArrivalsRoot + "/copy/Sintel.mkv": "another file took its place (superseded): it is no title of its own",
+		bunny:                                 "is an old original of item",
+	} {
+		if code, body := ingest(path, "Again"); code != http.StatusConflict || !strings.Contains(body, says) {
+			t.Errorf("%s: %d %s, want 409 saying %s", path, code, body, says)
+		}
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items`); n != 2 {
+		t.Errorf("%d titles, want the two", n)
+	}
+}

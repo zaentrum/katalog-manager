@@ -289,8 +289,9 @@ func (s *Service) RemoveItem(ctx context.Context, id string, deleteFiles, delete
 }
 
 // presentArrivals are the files a removal with the v2 layout deletes: the
-// originals the items still have (present sources, and primary assets of no
-// source) and their extras' files, where they arrived (ARRIVALS_ROOT,
+// originals the items still have (present sources, superseded ones another
+// file took the place of, and primary assets of no source) and their extras'
+// files, where they arrived (ARRIVALS_ROOT,
 // EXTRAS_ROOT) or under the media root before the library (NFS_ROOT). Never
 // a file in the record, nor an original being retired: the retire job has
 // it. stops gets the root each lies in.
@@ -299,7 +300,7 @@ func (s *Service) presentArrivals(ctx context.Context, ids []string, extras []*m
 	roots := []string{p.Arrivals, p.Extras, s.cfg.NFSRoot, s.cfg.Roots(false).Extras}
 	rows, err := s.st.Pool().Query(ctx, `
 		SELECT arrivalpath FROM com_nalet_katalog_itemsources
-		WHERE item_id = ANY($1) AND state = 'present' AND arrivalpath IS NOT NULL
+		WHERE item_id = ANY($1) AND state IN ('present', 'superseded') AND arrivalpath IS NOT NULL
 		UNION
 		SELECT path FROM com_nalet_katalog_playbackassets
 		WHERE item_id = ANY($1) AND isprimary = true AND sourceid IS NULL AND path IS NOT NULL
@@ -343,7 +344,8 @@ func (s *Service) presentArrivals(ctx context.Context, ids []string, extras []*m
 type recordedOriginal struct{ path, arrival string }
 
 // recordedOriginals are the originals the items still have in their
-// versions' folders (present sources, and those being retired), each with
+// versions' folders (present sources, superseded ones, and those being
+// retired), each with
 // where it arrived ("" when the catalog does not say): those the catalog has
 // there, and those a run renamed into a version's folder whose handover was
 // not taken (library.UnrecordedOriginal), which go back where the catalog
@@ -358,7 +360,8 @@ func (s *Service) recordedOriginals(ctx context.Context, ids []string) ([]record
 			return nil, err
 		}
 		for _, src := range sources {
-			if (src.State != library.SourcePresent && src.State != library.SourceRetiring) || src.ArrivalPath == nil {
+			if (src.State != library.SourcePresent && src.State != library.SourceRetiring &&
+				src.State != library.SourceSuperseded) || src.ArrivalPath == nil {
 				continue
 			}
 			if inRecord(p, *src.ArrivalPath) {

@@ -68,18 +68,18 @@ func TestReplaceSourcePassesItsArguments(t *testing.T) {
 }
 
 // The answer says what the replace did, with what encoding the title again
-// did; reencode is null when none was asked, and oldFileTrash when the old
-// file is in no trash.
+// did; reencode is null when none was asked. oldFileSuperseded says the old
+// original is kept superseded, for the retire job.
 func TestReplaceSourceAnswers(t *testing.T) {
 	const doc = `mutation { replaceSource(itemId: "m1", path: "/media/new.mkv") { itemId oldPath path replaced oldFileDeleted
-		oldFileTrash oldSidecars reencode { itemId titles reencoded busy notSent message } message } }`
+		oldFileSuperseded oldSidecars reencode { itemId titles reencoded busy notSent message } message } }`
 	f := &fakeSources{res: ReplaceSourceResult{ItemID: "m1", OldPath: "/lib/versions/v1/original.mkv", Path: "/media/new.mkv", Replaced: true,
-		OldFileDeleted: true, OldFileTrash: "/lib/.work/trash/20261104/s1/original.mkv", OldSidecars: 2,
+		OldFileSuperseded: true, OldSidecars: 2,
 		Reencode: &ReencodeResult{ItemID: "m1", Titles: 1, Reencoded: 1, Message: "encoding it again"}, Message: "replaced"}}
 	schema := MustSchema(NewResolver(nil, testConfig, Services{Sources: f}))
 	resp := schema.Exec(as(admin), doc, "", nil)
 	if want := `{"replaceSource":{"itemId":"m1","oldPath":"/lib/versions/v1/original.mkv","path":"/media/new.mkv","replaced":true,` +
-		`"oldFileDeleted":true,"oldFileTrash":"/lib/.work/trash/20261104/s1/original.mkv","oldSidecars":2,` +
+		`"oldFileDeleted":false,"oldFileSuperseded":true,"oldSidecars":2,` +
 		`"reencode":{"itemId":"m1","titles":1,"reencoded":1,"busy":0,"notSent":0,` +
 		`"message":"encoding it again"},"message":"replaced"}}`; len(resp.Errors) > 0 || string(resp.Data) != want {
 		t.Errorf("the answer: %s %v\nwant %s", resp.Data, resp.Errors, want)
@@ -87,7 +87,7 @@ func TestReplaceSourceAnswers(t *testing.T) {
 	f.res = ReplaceSourceResult{ItemID: "m1", OldPath: "/media/new.mkv", Path: "/media/new.mkv", Message: "nothing changed"}
 	resp = schema.Exec(as(admin), doc, "", nil)
 	if want := `{"replaceSource":{"itemId":"m1","oldPath":"/media/new.mkv","path":"/media/new.mkv","replaced":false,` +
-		`"oldFileDeleted":false,"oldFileTrash":null,"oldSidecars":0,"reencode":null,"message":"nothing changed"}}`; len(resp.Errors) > 0 || string(resp.Data) != want {
+		`"oldFileDeleted":false,"oldFileSuperseded":false,"oldSidecars":0,"reencode":null,"message":"nothing changed"}}`; len(resp.Errors) > 0 || string(resp.Data) != want {
 		t.Errorf("a replace that changed nothing: %s %v\nwant %s", resp.Data, resp.Errors, want)
 	}
 }

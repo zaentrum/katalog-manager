@@ -19,6 +19,12 @@ import (
 //     the library already, so it is no new title either, and is left alone,
 //     said in the log: a better file is given to its title with
 //     replaceSource;
+//   - one another file took the place of as its title's (superseded), there
+//     until the retire job retires it, is that title's old original — where
+//     it lies, or a copy of it —, no new title, and is left alone, said in
+//     the log; so is any original the library has at the file's very path
+//     that is no title's file now (one kept beside the file that took its
+//     place), whatever its quick hash, which an older row may not hold;
 //   - any other is a new title, taken in as before, with its source.
 // A file known at its path whose size changed before its record was written
 // gets its quick hash again.
@@ -41,6 +47,15 @@ func (s *Scanner) knownArrival(ctx context.Context, lib library.Paths, path stri
 	}
 	f := &fixity{size: size, qh1: qh1}
 	pool := s.st.Pool()
+	switch k, err := library.SourceAt(ctx, pool, path); {
+	case err != nil:
+		log.Printf("scanner: the original at %s could not be read, and it is passed over: %v", path, err)
+		return f, true
+	case k != nil && (k.State == library.SourcePresent || k.State == library.SourceRetiring || k.State == library.SourceSuperseded):
+		log.Printf("scanner: %s is an original of item %s (%s) that is no title's file now: another file took its place, "+
+			"and it is no title of its own", path, k.ItemID, k.State)
+		return f, true
+	}
 	known, err := library.SourcesByFixity(ctx, pool, size, qh1)
 	if err != nil {
 		log.Printf("scanner: the originals %s may be could not be read, and it is passed over: %v", path, err)
@@ -65,6 +80,10 @@ func (s *Scanner) knownArrival(ctx context.Context, lib library.Paths, path stri
 			}
 			log.Printf("scanner: %s is already in the library as item %s (retired %s); use replaceSource to make it a new version",
 				path, k.ItemID, when)
+			return f, true
+		case library.SourceSuperseded:
+			log.Printf("scanner: %s is the old original of item %s, another file took its place, and is no title of its own: "+
+				"the retire job retires it once the title's version made without it is complete and verified", path, k.ItemID)
 			return f, true
 		}
 	}

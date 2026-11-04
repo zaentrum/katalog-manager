@@ -13,13 +13,16 @@ import (
 )
 
 // What became of an original (com_nalet_katalog_itemsources.state): it is
-// there (present), its deletion is claimed (retiring), it was deleted after
-// packaging (deleted), or it is no original of its item after all (removed).
+// there (present), its deletion is claimed (retiring), another file took its
+// place as its title's and it is there still (superseded, migration 056), it
+// was deleted after packaging or once superseded (deleted), or it is no
+// original of its item after all (removed).
 const (
-	SourcePresent  = "present"
-	SourceRetiring = "retiring"
-	SourceDeleted  = "deleted"
-	SourceRemoved  = "removed"
+	SourcePresent    = "present"
+	SourceRetiring   = "retiring"
+	SourceSuperseded = "superseded"
+	SourceDeleted    = "deleted"
+	SourceRemoved    = "removed"
 )
 
 // Source is an original a title was given: a row of

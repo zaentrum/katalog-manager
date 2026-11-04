@@ -15,6 +15,10 @@ const (
 	EventVersionRemoved    = "version-removed"
 	EventPackageSuperseded = "package-superseded"
 	EventExtraRemoved      = "extra-removed"
+	// EventNote changes nothing: something recorded about the item that no
+	// other record holds, as what became of an original another file took
+	// the place of.
+	EventNote = "note"
 )
 
 // EventFile is an event's record, written once in a folder of its own.

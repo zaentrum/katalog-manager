@@ -146,7 +146,8 @@ func idsOf(rows map[string]onDiskRow) []string {
 
 // What a title has on disk, as the catalog's list reads it: the size of its
 // sources present, every one of them (a version in parts, an old file
-// replaceSource kept beside the new one), not one removed nor one retired, a
+// replaceSource kept beside the new one, or superseded until the retire job
+// retires it), not one removed nor one retired, a
 // file of no source (the legacy layout's) with its size as its original, and
 // the size of its packaged row, none for a title taken in without one. A
 // title whose original was retired has its package and no original. An
@@ -169,6 +170,7 @@ func TestWhatATitleHasOnDisk(t *testing.T) {
 		{"m5", "movie", "An Old Film", ""},       // the legacy layout's: a file of no source
 		{"m6", "movie", "A Remastered Film", ""}, // replaceSource kept its old file
 		{"m7", "movie", "A Lost Film", ""},       // a file of no source whose size isn't known
+		{"m8", "movie", "A Replaced Film", ""},   // replaceSource superseded its old file
 		{"s1", "series", "A Show", ""},
 		{"sn", "season", "Season 2", "s1"},
 		{"al", "album", "An Album", ""},
@@ -191,6 +193,8 @@ func TestWhatATitleHasOnDisk(t *testing.T) {
 		('src-m4c', 'm4', 'Another Cut.mkv', 3000000000, 'removed'),
 		('src-m6old', 'm6', 'A Remastered Film (1999).mp4', 5000000000, 'present'),
 		('src-m6', 'm6', 'A Remastered Film (1999).mkv', 3500000000, 'present'),
+		('src-m8old', 'm8', 'A Replaced Film (1999).mp4', 5000000000, 'superseded'),
+		('src-m8', 'm8', 'A Replaced Film (1999).mkv', 3000000000, 'present'),
 		('src-e1', 'e1', 'original.mkv', 2000000000, 'present'),
 		('src-e3', 'e3', 'original.mkv', 1800000000, 'deleted')`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state) VALUES
@@ -210,6 +214,7 @@ func TestWhatATitleHasOnDisk(t *testing.T) {
 		('a-m5', 'm5', '/media/An Old Film (1999).mkv', 700000000, true, 'primary', NULL, NULL, NULL),
 		('a-m6', 'm6', '/media/A Remastered Film (1999).mkv', 3500000000, true, 'primary', 'src-m6', NULL, NULL),
 		('a-m7', 'm7', '/media/A Lost Film (1931).mkv', NULL, true, 'primary', NULL, NULL, NULL),
+		('a-m8', 'm8', '/media/A Replaced Film (1999).mkv', 3000000000, true, 'primary', 'src-m8', NULL, NULL),
 		('a-e1', 'e1', '/library/s1/e1/versions/v-e1/original.mkv', 2000000000, true, 'primary', 'src-e1', NULL, NULL),
 		('p-e1', 'e1', '/library/s1/e1/versions/v-e1/package.json', 800000000, false, 'packaged', NULL, 'v-e1', 'hvc1'),
 		('a-e3', 'e3', '/library/s1/e3/sources/src-e3/source.json', 1800000000, false, 'original', 'src-e3', NULL, NULL),
@@ -229,6 +234,7 @@ func TestWhatATitleHasOnDisk(t *testing.T) {
 		"m5": {"m5", f(7e8), nil, yes},
 		"m6": {"m6", f(8.5e9), nil, yes},
 		"m7": {"m7", nil, nil, no},
+		"m8": {"m8", f(8e9), nil, yes},
 		"s1": {"s1", nil, nil, nil},
 		"sn": {"sn", nil, nil, nil},
 		"al": {"al", nil, nil, nil},
@@ -246,12 +252,12 @@ func TestWhatATitleHasOnDisk(t *testing.T) {
 		args string
 		want []string
 	}{
-		{`hasOriginal: true`, []string{"e1", "e2", "m1", "m3", "m4", "m5", "m6"}},
+		{`hasOriginal: true`, []string{"e1", "e2", "m1", "m3", "m4", "m5", "m6", "m8"}},
 		{`hasOriginal: false`, []string{"e3", "e4", "m2", "m7"}},
 		{`type: "movie", hasOriginal: false`, []string{"m2", "m7"}},
 		{`type: "series", hasOriginal: false`, []string{}},
 		{`type: "episode", hasOriginal: true`, []string{"e1", "e2"}},
-		{`search: "film", hasOriginal: true`, []string{"m1", "m3", "m4", "m5", "m6"}},
+		{`search: "film", hasOriginal: true`, []string{"m1", "m3", "m4", "m5", "m6", "m8"}},
 		{`hasOriginal: null`, idsOf(want)},
 	} {
 		got := listed(t, query(t, st, `{ items(`+tc.args+`) { `+fields+` } }`), "items")

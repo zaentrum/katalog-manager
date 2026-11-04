@@ -988,16 +988,19 @@ type ReplaceSourceResult {
   # false: path was the title's file already, and nothing changed (nothing
   # deleted, nothing sent)
   replaced: Boolean!
-  # whether the old file was deleted (deleteOldFile): only one under the media
-  # root and outside the package store, that no title's file or extra is any
-  # more, and that the new file does not lead to; with the library's v2
-  # layout, one of the arrivals, or the title's original in its version's
-  # folder, which goes into the library's trash as a retired one does
+  # whether the old file was deleted (deleteOldFile), with the legacy layout:
+  # only one under the media root and outside the package store, that no
+  # title's file or extra is any more, and that the new file does not lead
+  # to. With the library's v2 layout no file is deleted by a replace: false.
   oldFileDeleted: Boolean!
-  # where the old file lies in the library's trash (.work/trash/<day>/
-  # <sourceId>/), until library.trash.grace is over after its day, from where
-  # it can be put back; null when it is not there (unlinked, or kept)
-  oldFileTrash: String
+  # whether, with the library's v2 layout, the old original asked to go
+  # (deleteOldFile) is superseded: kept where it lies, in the arrivals or in
+  # its version's folder, until a version of the title made without it is
+  # complete and verified, when the retire job moves it into the library's
+  # trash (.work/trash/<day>/<sourceId>/, for library.trash.grace), unless
+  # the title holds its originals (holdOriginal). LibrarySource says where
+  # it is.
+  oldFileSuperseded: Boolean!
   # the subtitle files beside the old file named after it (Film.srt,
   # Film.en.srt beside Film.mp4), which stay the title's subtitles as they
   # are. Beside a new file of the same name (Film.mkv) they pair with it as
@@ -1254,15 +1257,19 @@ type Mutation {
   # when it is under the media root, outside the package store, and no
   # title's file or extra is it any more; one kept under the media root is
   # taken in as a title of its own by the next scan, unless it is moved out or
-  # deleted. With the library's v2 layout an old file of the arrivals is
-  # deleted so, and the title's original in its version's folder goes the way
-  # the retire job takes an original: into the library's trash
-  # (.work/trash/<day>/<sourceId>/) for library.trash.grace — purged with its
-  # day once that is over, put back from there until then —, its source
-  # deleted by whoever asked, its original-deleted event recorded in the
-  # title's folder, saying it was replaced. Such a replace holds the retire
-  # job's lock, waiting a minute at most for a pass that runs, and is refused
-  # with SOURCE_BUSY, nothing changed, when it is not given up. reencode (true when omitted) encodes the title again from the new
+  # deleted. With the library's v2 layout a replace deletes no file: the old
+  # original asked to go is superseded (oldFileSuperseded), kept where it
+  # lies, the title's old original to a scan, until a version of the title
+  # made without it is complete and verified: the retire job then moves it
+  # into the library's trash (.work/trash/<day>/<sourceId>/) for
+  # library.trash.grace, records its original-deleted event when it has a
+  # record, and notes its source deleted, unless the title holds its
+  # originals (holdOriginal). Until then the old original and its version
+  # stay, so that a wrong file given in its place can be taken back. Not
+  # asked to go, it stays a source of the title. The title's folder records a
+  # note of what became of it, by whoever asked. A title whose original is
+  # being retired is refused with SOURCE_BUSY, nothing changed.
+  # reencode (true when omitted) encodes the title again from the new
   # file, as reencodeItem does: a title whose transcode or package is running
   # is left alone (busy), and that run is the old file's. ifIdle (false when
   # omitted) gives the title no file while its transcode or package is

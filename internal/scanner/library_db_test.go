@@ -290,3 +290,61 @@ func TestAScanWaitsForAReplaceOfTheFileItMeets(t *testing.T) {
 		t.Errorf("after the rolled-back replace: %d title(s), want the file a title of its own", n)
 	}
 }
+
+// An original another file took the place of as its title's (superseded) is
+// no title of its own: a scan that meets it where it lies, or a copy of it,
+// leaves it alone, told by its size and quick hash; an original the library
+// has at the very path the scan meets that is no title's file now — kept
+// beside the file that took its place —, by its path, even one recorded
+// without its quick hash.
+func TestAnOriginalAnotherFileTookThePlaceOfIsNoTitle(t *testing.T) {
+	f := newV2(t)
+	ctx := context.Background()
+	old := f.write(t, ".work/incoming/Sintel.mkv", 3000, 's')
+	kept := f.write(t, ".work/incoming/Bunny.mkv", 2000, 'b')
+	f.scan(t)
+	var sintel, bunny string
+	if err := f.st.Pool().QueryRow(ctx, `SELECT (SELECT id FROM com_nalet_katalog_items WHERE title = 'Sintel'),
+		(SELECT id FROM com_nalet_katalog_items WHERE title = 'Bunny')`).Scan(&sintel, &bunny); err != nil {
+		t.Fatal(err)
+	}
+	// Each title is given another file, as replaceSource gives one: Sintel's
+	// old original superseded, Bunny's kept beside its new file, recorded
+	// without its quick hash.
+	for _, c := range []struct{ item, old, cur string }{
+		{sintel, old, f.write(t, ".work/incoming/Sintel 4K.mkv", 5000, 'S')},
+		{bunny, kept, f.write(t, ".work/incoming/Bunny 4K.mkv", 4000, 'B')},
+	} {
+		size, qh1, err := library.QH1(c.cur)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ns, err := library.PathsOf(f.cfg).AddSource(ctx, f.st.Pool(), c.item, c.cur, size, qh1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_playbackassets SET path = $2, sizebytes = $3, sourceid = $4
+			WHERE item_id = $1 AND isprimary`, c.item, c.cur, size, ns.ID)
+		if c.item == sintel {
+			old, err := library.SourceAt(ctx, f.st.Pool(), c.old)
+			if err != nil || old == nil {
+				t.Fatalf("the old source: %v", err)
+			}
+			if err := library.Supersede(ctx, f.st.Pool(), old.ID, ns.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_itemsources SET qh1 = NULL WHERE arrivalpath = $1`, kept)
+	f.write(t, ".work/incoming/copies/Sintel.mkv", 3000, 's')
+	if res := f.scan(t); res.itemsInserted != 0 {
+		t.Errorf("the old originals and a copy made %d titles", res.itemsInserted)
+	}
+	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_items`); n != 2 {
+		t.Errorf("%d titles, want the two", n)
+	}
+	if got := f.sources(t); !strings.Contains(got, "Sintel superseded Sintel.mkv Sintel.mkv 3000 false") ||
+		!strings.Contains(got, "Bunny present Bunny.mkv Bunny.mkv 2000 false") {
+		t.Errorf("the sources:\n%s", got)
+	}
+}

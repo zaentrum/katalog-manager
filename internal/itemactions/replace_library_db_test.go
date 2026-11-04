@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -24,7 +23,8 @@ import (
 // file of its name there). The new file is a source of the title of its own,
 // which its asset names; the old original stays one, present. A title whose
 // original was retired is given a file anew. A file under the legacy media
-// root is refused, and the old file deleted when asked is a source no more.
+// root is refused, and the old original asked to go is superseded by the new
+// one, kept where it lies.
 func TestReplaceSourceWithTheV2Layout(t *testing.T) {
 	st := storetest.Open(t)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('l', 'library.layout', 'v2')`)
@@ -97,15 +97,20 @@ func TestReplaceSourceWithTheV2Layout(t *testing.T) {
 		t.Errorf("the message: %s", res.Message)
 	}
 
-	// The old original deleted with a replace is no source any more.
+	// The old original asked to go is superseded by the new one: there
+	// still, where it lies, and no file of the title's.
 	newer := f.write(t, ".work/incoming/Bunny 8K.mkv", 9500)
 	if res, err = svc.ReplaceSource(asOperator, graph.ReplaceSourceRequest{ItemID: bunny, Path: newer, DeleteOldFile: true}); err != nil ||
-		!res.OldFileDeleted {
-		t.Fatalf("with the old file deleted: %+v, %v", res, err)
+		res.OldFileDeleted || !res.OldFileSuperseded {
+		t.Fatalf("with the old file asked to go: %+v, %v", res, err)
 	}
-	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemsources WHERE filename = 'Bunny 4K.mkv'
-		AND state = 'removed' AND arrivalpath IS NULL`); n != 1 {
-		t.Error("the deleted old file is still a source")
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemsources o JOIN com_nalet_katalog_itemsources n
+		ON n.id = o.supersededby WHERE o.filename = 'Bunny 4K.mkv' AND o.state = 'superseded' AND o.arrivalpath = $1
+		AND o.supersededat IS NOT NULL AND n.arrivalpath = $2 AND n.state = 'present'`, better, newer); n != 1 {
+		t.Error("the old original is not superseded by the new one where it lies")
+	}
+	if _, err := os.Stat(better); err != nil {
+		t.Errorf("the superseded original is gone: %v", err)
 	}
 }
 
@@ -224,7 +229,7 @@ func TestReplaceSourceIfIdle(t *testing.T) {
 
 	re.why = ""
 	res, err := svc.ReplaceSource(asOperator, in)
-	if err != nil || !res.Replaced || !res.OldFileDeleted || res.Path != filepath.Join(cfg.ArrivalsRoot, "Big Buck Bunny (2008).mkv") {
+	if err != nil || !res.Replaced || !res.OldFileSuperseded || res.Path != filepath.Join(cfg.ArrivalsRoot, "Big Buck Bunny (2008).mkv") {
 		t.Fatalf("an idle title: %+v %v", res, err)
 	}
 	if ids := re.take(); len(ids) != 1 || ids[0] != bunny {
@@ -234,7 +239,8 @@ func TestReplaceSourceIfIdle(t *testing.T) {
 
 // inVersion is a v2 catalog whose movie's original lies in the folder of its
 // complete version (versions/<versionId>/original.mkv), its source present
-// there and its asset naming it, and a file handed over in .work/replace/.
+// there and recorded, its asset naming it, and a file handed over in
+// .work/replace/.
 type inVersion struct {
 	f              *replacing
 	svc            *Service
@@ -245,6 +251,7 @@ type inVersion struct {
 const (
 	ivVersion = "9c0b0b0b-0000-4000-8000-00000000000c"
 	ivPackage = "4c0b0b0b-0000-4000-8000-00000000000c"
+	ivSource  = "5c0b0b0b-0000-4000-8000-00000000000c"
 )
 
 func newInVersion(t *testing.T) *inVersion {
@@ -263,17 +270,19 @@ func newInVersion(t *testing.T) *inVersion {
 	p := library.PathsOf(cfg)
 	iv.itemDir = p.MovieDir(bunny)
 	vdir := library.VersionDir(iv.itemDir, ivVersion)
-	librarytest.WriteVersion(t, vdir, librarytest.Version{VersionID: ivVersion, PackageID: ivPackage, SourceIDs: []string{"s-old"},
+	librarytest.WriteVersion(t, vdir, librarytest.Version{VersionID: ivVersion, PackageID: ivPackage, SourceIDs: []string{ivSource},
 		CreatedAt: "2026-10-06T10:00:00Z"})
 	iv.old = filepath.Join(vdir, "original.mkv")
 	librarytest.Write(t, iv.old, make([]byte, 100))
+	librarytest.WriteSource(t, library.SourceDir(iv.itemDir, ivSource), map[string]any{"sourceId": ivSource,
+		"file": map[string]any{"name": "original.mkv", "sizeBytes": 100}}, nil)
 	storetest.AddItem(t, st, bunny, "movie", "Big Buck Bunny", "")
-	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state)
-		VALUES ('s-old', $1, 'original.mkv', $2, 100, 'present')`, bunny, iv.old)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state, recordedat)
+		VALUES ($3, $1, 'original.mkv', $2, 100, 'present', now())`, bunny, iv.old, ivSource)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
-		VALUES ($1, $2, ARRAY['s-old'::varchar], 'complete', $3, $4, now() - interval '1 day')`, ivVersion, bunny, ivPackage, vdir)
+		VALUES ($1, $2, ARRAY[$5::varchar], 'complete', $3, $4, now() - interval '1 day')`, ivVersion, bunny, ivPackage, vdir, ivSource)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, sizebytes, isprimary, kind, sourceid)
-		VALUES ('a-bunny', $1, $2, 100, true, 'primary', 's-old')`, bunny, iv.old)
+		VALUES ('a-bunny', $1, $2, 100, true, 'primary', $3)`, bunny, iv.old, ivSource)
 	iv.handed = iv.f.write(t, ".work/replace/acquire/tg_1/Big.Buck.Bunny.2008.2160p.mkv", 5000)
 	iv.arrive = filepath.Join(cfg.ArrivalsRoot, "Big.Buck.Bunny.2008.2160p.mkv")
 	return iv
@@ -284,66 +293,110 @@ var asAddon = auth.WithPrincipal(context.Background(), &auth.Principal{Subject: 
 	Claims: map[string]any{"realm_access": map[string]any{"roles": []any{"zaentrum-addon"}}}})
 
 // A title given another file in place of its original in its version's
-// folder, the old file asked to go, has the old one go the way the retire
-// job takes an original: into the library's trash, its source deleted by the
-// addon that asked, its original-deleted event recorded — the answer says
-// where it lies and until when.
-func TestAnOriginalInItsVersionsFolderGoesIntoTheTrash(t *testing.T) {
+// folder, the old file asked to go, keeps the old one where it lies,
+// superseded by the new one: no file is deleted or moved but the one handed
+// over, no original-deleted event is recorded, and the title's folder
+// records a note of what became of the old original, by the addon that
+// asked, naming its source, whose record is there. The answer says so.
+func TestAnOldOriginalAskedToGoIsSuperseded(t *testing.T) {
 	iv := newInVersion(t)
 	res, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true,
 		Reencode: true, IfIdle: true})
-	if err != nil || !res.Replaced || !res.OldFileDeleted || res.Path != iv.arrive || res.OldPath != iv.old {
+	if err != nil || !res.Replaced || res.OldFileDeleted || !res.OldFileSuperseded || res.Path != iv.arrive || res.OldPath != iv.old {
 		t.Fatalf("the replace: %+v %v", res, err)
 	}
-	src, err := library.SourceByID(context.Background(), iv.f.st.Pool(), "s-old")
-	if err != nil || src == nil || src.State != library.SourceDeleted || src.RetireEventAt == nil ||
-		derefTest(src.DeletedBy) != "replaceSource, asked by addon-1 (client example-addon, an addon (zaentrum-addon))" {
+	ctx := context.Background()
+	src, err := library.SourceByID(ctx, iv.f.st.Pool(), ivSource)
+	if err != nil || src == nil || src.State != library.SourceSuperseded || derefTest(src.ArrivalPath) != iv.old ||
+		src.RetireEventID != nil || src.TrashPath != nil || src.DeletedBy != nil {
 		t.Fatalf("the old source: %+v %v", src, err)
 	}
-	trash := filepath.Join(library.PathsOf(iv.f.cfg).TrashDir(*src.RetireEventAt, "s-old"), "original.mkv")
-	if _, err := os.Stat(trash); err != nil || res.OldFileTrash != trash {
-		t.Errorf("the old file is not in the trash at %s (the answer says %q): %v", trash, res.OldFileTrash, err)
+	if by, err := library.SupersededBy(ctx, iv.f.st.Pool(), ivSource); err != nil || by == "" {
+		t.Fatalf("superseded by: %q, %v", by, err)
+	} else if n := storetest.Count(t, iv.f.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE id = 'a-bunny'
+		AND sourceid = $1 AND path = $2`, by, iv.arrive); n != 1 {
+		t.Errorf("the source that took its place, %s, is not the title's file's", by)
 	}
-	if _, err := os.Stat(iv.old); !os.IsNotExist(err) {
-		t.Errorf("the old file is still in its version's folder: %v", err)
+	if _, err := os.Stat(iv.old); err != nil {
+		t.Errorf("the old file left its version's folder: %v", err)
 	}
-	if dir, _ := library.FindEvent(iv.itemDir, derefTest(src.RetireEventID), library.EventOriginalDeleted); dir == "" {
-		t.Error("no original-deleted event recorded")
+	if got := filesUnder(t, filepath.Join(iv.f.cfg.WorkRoot, "trash")); len(got) > 0 {
+		t.Errorf("the trash holds %v", got)
 	}
-	if !strings.Contains(res.Message, "the old file, the title's original in version "+ivVersion+", is in the library's trash, "+trash+
-		", until ") || !strings.Contains(res.Message, "from where it can be put back; its source s-old is noted deleted") {
+	evs, err := library.ReadEvents(iv.itemDir)
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("the title's events: %v, %v; want its note", evs, err)
+	}
+	kind, _ := evs[0].Get("kind")
+	by, _ := evs[0].Get("by")
+	sid, _ := evs[0].Get("sourceId")
+	reason, _ := evs[0].Get("reason")
+	if kind != library.EventNote || by != "replaceSource, asked by addon-1 (client example-addon, an addon (zaentrum-addon))" ||
+		sid != ivSource || !strings.Contains(reason.(string), "its original original.mkv is superseded, kept where it lies") {
+		t.Errorf("the note: %v", evs[0])
+	}
+	if !strings.Contains(res.Message, "the old file stays where it lies, superseded: the retire job moves it into the library's trash "+
+		"once a version of the title made of the new file is complete and verified; the title's folder records it (note ") {
 		t.Errorf("the message: %s", res.Message)
 	}
 }
 
-// While the retire job's lock is held — a pass, or an admin's list —, a
-// replace that asks its old file to go is refused as busy once its wait is
-// over, before anything changes: the title keeps its file, the old one stays
-// in its version's folder, the file handed over in .work/replace.
-func TestAReplaceWaitsForTheRetireJob(t *testing.T) {
+// A title that holds its originals (holdOriginal) is given its new file all
+// the same, its old original superseded, and kept so: the answer says it
+// stays while the title holds them.
+func TestAHeldTitlesOldOriginalStaysSuperseded(t *testing.T) {
 	iv := newInVersion(t)
-	release, err := library.HoldRetire(context.Background(), iv.f.st.Pool(), time.Second)
-	if err != nil {
-		t.Fatal(err)
+	storetest.Exec(t, iv.f.st, `UPDATE com_nalet_katalog_items SET retirehold = true WHERE id = $1`, bunny)
+	res, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true})
+	if err != nil || !res.OldFileSuperseded || !strings.Contains(res.Message, "and not while the title holds its originals (holdOriginal)") {
+		t.Fatalf("the replace of a held title: %+v %v", res, err)
 	}
-	defer release()
-	retireWait = 300 * time.Millisecond
-	t.Cleanup(func() { retireWait = time.Minute })
-	_, err = iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true, Reencode: true})
-	if r := sourceRefusal(t, err); r.Code != codeSourceBusy || !strings.Contains(r.Message, "the library's retire job is running") {
-		t.Errorf("a replace while the retire job runs: %+v", r)
-	}
-	if n := storetest.Count(t, iv.f.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE id = 'a-bunny' AND path = $1`, iv.old); n != 1 {
-		t.Error("the title lost its file")
-	}
-	for _, p := range []string{iv.old, iv.handed} {
-		if _, err := os.Stat(p); err != nil {
-			t.Errorf("%s went: %v", p, err)
-		}
-	}
-	if src, _ := library.SourceByID(context.Background(), iv.f.st.Pool(), "s-old"); src == nil || src.State != library.SourcePresent {
+	if src, _ := library.SourceByID(context.Background(), iv.f.st.Pool(), ivSource); src == nil || src.State != library.SourceSuperseded {
 		t.Errorf("the old source: %+v", src)
 	}
+}
+
+// A title whose original is being retired is given no other file, asked to
+// keep the old one or not: refused as busy, nothing changed — the title
+// keeps its file, the old one stays in its version's folder, retiring, and
+// the file handed over in .work/replace.
+func TestAReplaceOfAnOriginalBeingRetiredIsBusy(t *testing.T) {
+	for _, drop := range []bool{true, false} {
+		iv := newInVersion(t)
+		storetest.Exec(t, iv.f.st, `UPDATE com_nalet_katalog_itemsources SET state = 'retiring' WHERE id = $1`, ivSource)
+		_, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: drop, Reencode: true})
+		if r := sourceRefusal(t, err); r.Code != codeSourceBusy || !strings.Contains(r.Message, "is being retired") {
+			t.Errorf("deleteOldFile %v, while the original is retired: %+v", drop, r)
+		}
+		if n := storetest.Count(t, iv.f.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE id = 'a-bunny' AND path = $1
+			AND sourceid = $2`, iv.old, ivSource); n != 1 {
+			t.Error("the title lost its file")
+		}
+		for _, p := range []string{iv.old, iv.handed} {
+			if _, err := os.Stat(p); err != nil {
+				t.Errorf("%s went: %v", p, err)
+			}
+		}
+		if n := storetest.Count(t, iv.f.st, `SELECT count(*) FROM com_nalet_katalog_itemsources WHERE item_id = $1`, bunny); n != 1 {
+			t.Errorf("%d sources, want the old one alone", n)
+		}
+		if src, _ := library.SourceByID(context.Background(), iv.f.st.Pool(), ivSource); src == nil || src.State != library.SourceRetiring {
+			t.Errorf("the old source: %+v", src)
+		}
+	}
+}
+
+// filesUnder lists the files under dir.
+func filesUnder(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	_ = filepath.WalkDir(dir, func(path string, e os.DirEntry, err error) error {
+		if err == nil && !e.IsDir() {
+			out = append(out, path)
+		}
+		return nil
+	})
+	return out
 }
 
 func derefTest(s *string) string {

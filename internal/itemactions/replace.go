@@ -107,10 +107,16 @@ type source struct {
 // With the setting library.layout=v2 the new file lies under ARRIVALS_ROOT or
 // in .work/replace/, from where it is taken into the arrivals (refused when a
 // file of its name is there already). It is a source of the title of its own
-// (a new sourceId); the old original, while it is there, stays one, and is
-// retired after its version as any is. A title whose original was retired
-// (it has no file) may be given one: it gets its file anew. The re-encode is
-// then a new version of the title, which supersedes the one there is.
+// (a new sourceId). The old original stays where it lies, whatever is asked:
+// asked to go (deleteOldFile), it is superseded (library.Supersede), and the
+// retire job retires it once a version of the title made without it is
+// complete and verified, through the trash, unless the title holds its
+// originals; not asked, it stays a source of the title, as it is. A source of
+// the old original that is being retired refuses the replace as busy. The
+// title's folder records a note of what became of the old original
+// (library.NoteReplaced). A title whose original was retired (it has no file)
+// may be given one: it gets its file anew. The re-encode is then a new
+// version of the title, which supersedes the one there is.
 //
 // An episode another episode's file covers (migration 045) has that file:
 // named by its id, its holder is given the new one, the answer the holder's
@@ -219,11 +225,6 @@ func orDash(s string) string {
 	return s
 }
 
-// retireWait is how long a replace that deletes an old file with the v2
-// layout waits for the retire job's lock (library.HoldRetire) before it is
-// refused as busy. A variable for the tests.
-var retireWait = time.Minute
-
 // replaceSource is ReplaceSource of the title named by itemID or itemPath,
 // which no other's file covers, and the new file at path, absolute and clean.
 func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceRequest, path, itemID, itemPath string) (
@@ -234,6 +235,14 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 		return res, fmt.Errorf("the library's settings could not be read: %w", err)
 	}
 	v2 := set.V2()
+	// With the v2 layout an old original asked to go is kept superseded,
+	// which migration 056 lets a source be.
+	if v2 && in.DeleteOldFile {
+		if ready, err := library.SupersedeReady(ctx, s.st.Pool()); err != nil || !ready {
+			return res, graph.RefuseSource(codeSourceBusy, "the catalog cannot keep an old original superseded yet "+
+				"(migration db/migrations/056_superseded_sources.sql is not in place%s): the title is given no other file now", errNote(err))
+		}
+	}
 	// With the v2 layout a file handed over in .work/replace/ is taken into
 	// the arrivals first: the title's file is the one there.
 	arrival := path
@@ -244,23 +253,6 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 		}
 	}
 
-	// With the v2 layout an old file asked to go may be an original in its
-	// version's folder, which goes the way the retire job takes one, under
-	// its lock (library.TrashReplaced): held from here to the end, so no pass
-	// retires the title's sources meanwhile. A pass that runs on refuses the
-	// replace as busy, nothing changed.
-	if v2 && in.DeleteOldFile {
-		release, err := library.HoldRetire(ctx, s.st.Pool(), retireWait)
-		if errors.Is(err, library.ErrRetireBusy) {
-			return res, graph.RefuseSource(codeSourceBusy, "%v, and an old file asked to go goes through its trash: "+
-				"the title is given no other file now; ask again in a minute", err)
-		}
-		if err != nil {
-			return res, err
-		}
-		defer release()
-	}
-
 	tx, err := s.st.Pool().Begin(ctx)
 	if err != nil {
 		return res, err
@@ -269,9 +261,21 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('com_nalet_katalog_playbackassets:' || $1))`, arrival); err != nil {
 		return res, err
 	}
+	// The title's lock, which the retire job holds while it claims and
+	// retires its originals, first: its rows are locked after it.
+	id, err := itemOf(ctx, tx, itemID, itemPath)
+	if err != nil {
+		return res, err
+	}
+	if err := library.LockItem(ctx, tx, id); err != nil {
+		return res, err
+	}
 	src, err := sourceOf(ctx, tx, itemID, itemPath, v2)
 	if err != nil {
 		return res, err
+	}
+	if src.itemID != id {
+		return res, graph.RefuseSource(codeSourceBusy, "the file %s changed hands meanwhile: ask again", itemPath)
 	}
 	res.ItemID, res.OldPath, res.Path = src.itemID, src.path, arrival
 	if src.assetID != "" && filepath.Clean(src.path) == arrival {
@@ -301,6 +305,18 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	if err != nil {
 		return res, err
 	}
+	var old *library.Source // the old original's source, with the v2 layout
+	if v2 && src.assetID != "" {
+		if old, err = s.oldSourceOf(ctx, tx, src); err != nil {
+			return res, err
+		}
+		// The retire job has an original being retired: it is no title's
+		// file to replace meanwhile.
+		if old != nil && old.State == library.SourceRetiring {
+			return res, graph.RefuseSource(codeSourceBusy, "%v: the title is given no other file now; ask again once it is",
+				&library.ErrNotPresent{ID: old.ID, State: old.State})
+		}
+	}
 	by := auth.Actor(ctx, "katalog-manager")
 	if src.assetID == "" {
 		// A title whose original was retired is given a file anew.
@@ -326,6 +342,17 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 		}
 		if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET sourceid = $2 WHERE id = $1`, src.assetID, ns.ID); err != nil {
 			return res, err
+		}
+		// The old original asked to go is superseded by the new one, kept
+		// where it lies for the retire job.
+		if old != nil && in.DeleteOldFile {
+			var busy *library.ErrNotPresent
+			if err := library.Supersede(ctx, tx, old.ID, ns.ID); errors.As(err, &busy) {
+				return res, graph.RefuseSource(codeSourceBusy, "%v: the title is given no other file now; ask again once it is", err)
+			} else if err != nil {
+				return res, err
+			}
+			res.OldFileSuperseded = true
 		}
 	}
 	if err := forgetTheOldFile(ctx, tx, src.itemID); err != nil {
@@ -354,7 +381,11 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	res.Replaced, res.OldSidecars = true, int32(len(sidecars))
 
 	var said string
-	res.OldFileDeleted, res.OldFileTrash, said = s.dropOldFile(ctx, src.itemID, src.path, arrival, in.DeleteOldFile, v2)
+	if v2 {
+		said = s.keptOld(ctx, src, old, arrival, res.OldFileSuperseded)
+	} else {
+		res.OldFileDeleted, said = s.dropOldFile(ctx, src.path, arrival, in.DeleteOldFile)
+	}
 	if in.Reencode {
 		res.Reencode = s.encodeAgain(ctx, src.itemID)
 	}
@@ -641,110 +672,159 @@ func forgetTheOldFile(ctx context.Context, tx pgx.Tx, itemID string) error {
 }
 
 // dropOldFile deletes the title's old file once the title has its new one,
-// when asked: as RemoveItem deletes a title's files, only under the media
-// root (its root guard) and never under the package store, and only one
-// nothing of the catalog is any more (no asset row, no live extra) and the
-// new file does not lead to (a link to it); the folders it leaves empty go,
-// up to the root. It says what became of the file, also when it was not
-// asked to go.
-func (s *Service) dropOldFile(ctx context.Context, itemID, old, cur string, asked, v2 bool) (bool, string, string) {
+// when asked, with the legacy layout: as RemoveItem deletes a title's files,
+// only under the media root (its root guard) and never under the package
+// store, and only one nothing of the catalog is any more (no asset row, no
+// live extra) and the new file does not lead to (a link to it); the folders
+// it leaves empty go, up to the root. It says what became of the file, also
+// when it was not asked to go.
+func (s *Service) dropOldFile(ctx context.Context, old, cur string, asked bool) (bool, string) {
 	root := s.cfg.NFSRoot
-	if v2 {
-		root = library.PathsOf(s.cfg).Arrivals
-	}
 	if old == "" {
-		return false, "", "the title had no file: its original was retired"
+		return false, "the title had no file"
 	}
 	media := underRoot(root, old)
-	// With the v2 layout an original lies in its version's folder from its
-	// first version on: one asked to go goes the way the retire job takes an
-	// original, into the library's trash (trashOld).
-	inVersion := false
-	if v2 && !media {
-		var err error
-		if _, inVersion, err = library.OriginalInVersion(ctx, s.st.Pool(), library.PathsOf(s.cfg), itemID, old); err != nil {
-			return false, "", "the old file is kept: whether it is the title's original in its version's folder could not be read: " + err.Error()
-		}
-	}
 	switch {
-	case !asked && (media || inVersion) && v2:
-		return false, "", "the old file stays, a source of the title until it is retired after its version"
 	case !asked && media:
-		return false, "", "the old file stays, under the media root: the next scan takes it in as a title of its own unless it is moved out of it or deleted"
+		return false, "the old file stays, under the media root: the next scan takes it in as a title of its own unless it is moved out of it or deleted"
 	case !asked:
-		return false, "", "the old file stays"
-	case !media && !inVersion:
-		return false, "", "the old file is kept: it is not under the media root"
+		return false, "the old file stays"
+	case !media:
+		return false, "the old file is kept: it is not under the media root"
 	case underRoot(s.cfg.PackagesRoot, old):
-		return false, "", "the old file is kept: it is under the package store"
+		return false, "the old file is kept: it is under the package store"
 	}
 	if why, err := s.stillHeld(ctx, old); err != nil {
-		return false, "", "the old file is kept: whether the catalog holds it still could not be read: " + err.Error()
+		return false, "the old file is kept: whether the catalog holds it still could not be read: " + err.Error()
 	} else if why != "" {
-		return false, "", "the old file is kept: " + why
+		return false, "the old file is kept: " + why
 	}
 	if a, err := filepath.EvalSymlinks(cur); err == nil {
 		if b, err := filepath.EvalSymlinks(old); err == nil && a == b {
-			return false, "", "the old file is kept: the new one leads to it"
+			return false, "the old file is kept: the new one leads to it"
 		}
-	}
-	if inVersion {
-		return s.trashOld(ctx, itemID, old)
 	}
 	fi, err := os.Lstat(old)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		return false, "", "the old file was gone already"
+		return false, "the old file was gone already"
 	case err != nil:
-		return false, "", "the old file is kept: " + err.Error()
+		return false, "the old file is kept: " + err.Error()
 	case fi.IsDir():
-		return false, "", "the old file is kept: it is a folder"
+		return false, "the old file is kept: it is a folder"
 	}
 	if err := os.Remove(old); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return false, "", "the old file was gone already"
+			return false, "the old file was gone already"
 		}
-		return false, "", "the old file could not be deleted: " + err.Error()
+		return false, "the old file could not be deleted: " + err.Error()
 	}
 	pruneEmptyDirs(filepath.Dir(old), root)
-	if v2 {
-		// Its source is no original of the title any more.
-		if _, err := s.st.Pool().Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET state = 'removed', arrivalpath = NULL,
-				modifiedat = now() WHERE arrivalpath = $1 AND state = 'present'`, old); err != nil {
-			log.Printf("replace: the source of the deleted file %s could not be noted removed: %v", old, err)
-		}
-	}
-	return true, "", "the old file is deleted"
+	return true, "the old file is deleted"
 }
 
-// trashOld takes the old file, the title's original in its version's folder,
-// into the library's trash the way the retire job takes an original
-// (library.TrashReplaced), by whoever asked the replace: its source deleted,
-// its original-deleted event recorded, the file purged with the trash's day
-// once library.trash.grace is over, and put back from there until then. The
-// caller holds the retire job's lock. It says what became of the file: kept
-// when it could not be claimed, and on its way to the trash, for the retire
-// job to finish, when its event is recorded and the rest failed.
-func (s *Service) trashOld(ctx context.Context, itemID, old string) (bool, string, string) {
-	pool := s.st.Pool()
-	t, err := library.NewRetirer(pool, s.cfg, s.steps).TrashReplaced(ctx, itemID, old, library.ReplacedBy(s.callerOf(ctx)))
-	if err != nil {
-		if t.SourceID != "" {
-			if src, serr := library.SourceByID(ctx, pool, t.SourceID); serr == nil && src != nil && src.State == library.SourceRetiring {
-				return false, "", "the old file goes into the library's trash once the retire job finishes what is begun (its event " +
-					t.EventID + " is recorded): " + err.Error()
-			}
+// keptOld says, with the v2 layout, what became of the title's old original,
+// which stays where it lies (old: its source, nil when it had none), and
+// records a note of it in the title's folder: superseded, retired by the
+// retire job once a version of the title made without it is complete and
+// verified — unless the title holds its originals —, or a source of the title
+// still, as it was.
+func (s *Service) keptOld(ctx context.Context, src source, old *library.Source, cur string, superseded bool) string {
+	var said string
+	switch {
+	case src.path == "":
+		return "the title had no file: its original was retired"
+	case old == nil:
+		said = "the old file was gone already"
+	case superseded:
+		said = "the old file stays where it lies, superseded: the retire job moves it into the library's trash once a version " +
+			"of the title made of the new file is complete and verified"
+		var held bool
+		if err := s.st.Pool().QueryRow(ctx, `SELECT retirehold FROM com_nalet_katalog_items WHERE id = $1`, src.itemID).
+			Scan(&held); err == nil && held {
+			said += ", and not while the title holds its originals (holdOriginal)"
 		}
-		return false, "", "the old file is kept: " + err.Error()
+	default:
+		said = "the old file stays where it lies, a source of the title as it was"
 	}
-	where, trash := "deleted at once (library.trash.grace is 0)", ""
-	if t.Trash != "" {
-		trash = filepath.Join(t.Trash, filepath.Base(old))
-		where = fmt.Sprintf("in the library's trash, %s, until %s at the earliest, from where it can be put back",
-			trash, library.Timestamp(t.PurgedFrom))
+	pl, err := library.PlaceOf(ctx, s.st.Pool(), src.itemID)
+	if err != nil {
+		return said
 	}
-	return true, trash, fmt.Sprintf("the old file, the title's original in version %s, is %s; its source %s is noted deleted, "+
-		"and the title's folder records its original-deleted event %s", t.VersionID, where, t.SourceID, t.EventID)
+	note, err := library.NoteReplaced(library.PathsOf(s.cfg).ItemDir(pl), library.ReplacedBy(s.callerOf(ctx)), old,
+		filepath.Base(cur), superseded, time.Now())
+	switch {
+	case err != nil:
+		log.Printf("replace: the note of what became of the old file of item %s could not be recorded: %v", src.itemID, err)
+		said += "; the title's folder records no note of it: " + err.Error()
+	case note != "":
+		said += "; the title's folder records it (note " + note + ")"
+	}
+	return said
+}
+
+// itemOf is, in tx, the title named one way, by its id or by the path of its
+// file, as sourceOf finds it, without locking anything: the item whose lock
+// the replace takes first. One there is not is answered as sourceOf answers
+// it.
+func itemOf(ctx context.Context, tx pgx.Tx, itemID, itemPath string) (string, error) {
+	if itemPath == "" {
+		return itemID, nil
+	}
+	var id string
+	err := tx.QueryRow(ctx, `SELECT item_id FROM com_nalet_katalog_playbackassets
+		WHERE isprimary = true AND COALESCE(kind, 'primary') = 'primary' AND path = $1 ORDER BY item_id, id LIMIT 1`, itemPath).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", graph.RefuseSource(codeNotFound, "no item has the file %s", itemPath)
+	}
+	return id, err
+}
+
+// oldSourceOf is, in tx, the source of the title's old file with the v2
+// layout: the one its asset names, or the one whose original lies at its
+// path; one the catalog has none of yet (a row from before migration 040) is
+// taken in as one now, as library.EnsureSource does. nil when the old file is
+// gone, and there is nothing to keep of it. One that cannot be read refuses
+// the replace as busy: its file stays the title's.
+func (s *Service) oldSourceOf(ctx context.Context, tx pgx.Tx, src source) (*library.Source, error) {
+	var named *string
+	if err := tx.QueryRow(ctx, `SELECT sourceid FROM com_nalet_katalog_playbackassets WHERE id = $1`, src.assetID).
+		Scan(&named); err != nil {
+		return nil, err
+	}
+	if named != nil {
+		old, err := library.SourceByID(ctx, tx, *named)
+		if err != nil || old != nil {
+			return old, err
+		}
+	}
+	old, err := library.SourceAt(ctx, tx, src.path)
+	if err != nil || old != nil {
+		return old, err
+	}
+	if _, err := os.Lstat(src.path); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	size, qh1, err := library.QH1(src.path)
+	if err != nil {
+		return nil, graph.RefuseSource(codeSourceBusy, "the title's old file %s cannot be read: %v; it stays the title's", src.path, err)
+	}
+	old, err = library.PathsOf(s.cfg).AddSource(ctx, tx, src.itemID, src.path, size, qh1)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET sourceid = $2 WHERE id = $1`, src.assetID, old.ID); err != nil {
+		return nil, err
+	}
+	return old, nil
+}
+
+// errNote is ": err" of an error, nothing of none.
+func errNote(err error) string {
+	if err == nil {
+		return ""
+	}
+	return ": " + err.Error()
 }
 
 // stillHeld says what of the catalog the file at path is still, "" when

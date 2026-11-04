@@ -19,7 +19,7 @@ import (
 //     removal is noted first (removedat, the event's id), then the
 //     version-removed event is recorded, its folder deleted, and it is
 //     removed. A version whose folder still holds an original (one the
-//     catalog has there, present or being retired, or any file beside its
+//     catalog has there, present, superseded or being retired, or any file beside its
 //     record and its package's folders) is never removed: it waits until
 //     its original is retired;
 //   - a legacy package folder (PACKAGES_ROOT/<category>/<aa>/<itemId>) of an
@@ -51,7 +51,7 @@ func (r *Retirer) removeVersions(ctx context.Context, p Paths, set Settings, now
 		WHERE state = 'superseded'
 		  AND (removedat IS NOT NULL OR supersededat + make_interval(secs => $1::float8) <= $2::timestamptz)
 		  AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemsources s
-			WHERE s.item_id = v.item_id AND s.state IN ('present', 'retiring') AND v.dir IS NOT NULL
+			WHERE s.item_id = v.item_id AND s.state IN ('present', 'retiring', 'superseded') AND v.dir IS NOT NULL
 			  AND left(s.arrivalpath, length(v.dir) + 1) = v.dir || '/')
 		ORDER BY removedat NULLS LAST, supersededat, id
 		LIMIT $3`, set.SupersededGrace.Seconds(), now, 4*n)

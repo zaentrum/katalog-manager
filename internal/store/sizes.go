@@ -33,11 +33,12 @@ func mayHaveFile(alias string) string {
 
 // presentOf is the SQL condition that the row o of the sources is a source of
 // the title item present on disk. Every one counts: the parts of a version in
-// parts, and an old file replaceSource kept beside the new one, which
-// library.OriginalsOf (the retire job, the compliance check) does not take
-// for the title's original, as it plays the other.
+// parts, and an old file replaceSource kept beside the new one, present or
+// superseded until the retire job retires it, which library.OriginalsOf (the
+// retire job, the compliance check) does not take for the title's original,
+// as it plays the other.
 func presentOf(item string) string {
-	return `o.item_id = ` + item + ` AND o.state = 'present'`
+	return `o.item_id = ` + item + ` AND o.state IN ('present', 'superseded')`
 }
 
 // fileOf is the SQL condition that the row f of the playback assets is the
