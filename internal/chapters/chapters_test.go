@@ -1,0 +1,143 @@
+package chapters
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+func str(s string) *string { return &s }
+
+func i32(v int32) *int32 { return &v }
+
+// A chapter's title is kept as its column holds it: no NUL (no text column
+// holds one) nor other control characters, at most 120 characters, none when
+// nothing is left.
+func TestAChaptersTitleIsKeptAsItsColumnHoldsIt(t *testing.T) {
+	long := strings.Repeat("é", TitleMax+5)
+	for _, tc := range []struct {
+		in   *string
+		want *string
+	}{
+		{nil, nil},
+		{str(""), nil},
+		{str("   "), nil},
+		{str("\x00\x01"), nil},
+		{str("Act\x001"), str("Act1")},
+		{str("Act\t1\nCold Open"), str("Act 1 Cold Open")},
+		{str("  Opening  "), str("Opening")},
+		{&long, str(strings.Repeat("é", TitleMax))},
+		{str("bad \xff byte"), str("bad  byte")},
+	} {
+		got := CleanTitle(tc.in)
+		if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+			t.Errorf("CleanTitle(%q) = %v, want %v", deref(tc.in), deref(got), deref(tc.want))
+		}
+	}
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return *s
+}
+
+// A report says what it leaves its title in: a read that found chapters, one
+// that found none, one that failed, a claim given back; one that can't be
+// taken says why.
+func TestAReportSaysWhatItLeavesItsTitleIn(t *testing.T) {
+	ch := []Chapter{{StartMs: 0, EndMs: 1000, Ordinal: 1}}
+	for _, tc := range []struct {
+		name string
+		r    Report
+		want string
+		bad  string
+	}{
+		{"chapters found", Report{Read: ReadReport{Path: "/m.mkv", Found: i32(1)}, Chapters: ch}, StateRead, ""},
+		{"none found", Report{Read: ReadReport{Path: "/m.mkv", Found: i32(0)}, Chapters: []Chapter{}}, StateNone, ""},
+		{"marks without a length", Report{Read: ReadReport{Path: "/m.mkv", Found: i32(2)}, Chapters: []Chapter{}}, StateNone, ""},
+		{"failed", Report{Read: ReadReport{Path: "/m.mkv", Error: "ffprobe did not answer within 120 s"}}, StateFailed, ""},
+		{"released", Report{Released: true, Token: "t"}, "", ""},
+		{"no path", Report{Chapters: ch}, "", "read.path"},
+		{"neither chapters nor an error", Report{Read: ReadReport{Path: "/m.mkv"}}, "", "chapters, [] for none"},
+		{"failed with chapters", Report{Read: ReadReport{Path: "/m.mkv", Error: "x"}, Chapters: ch}, "", "found no chapters"},
+		{"a chapter of no length", Report{Read: ReadReport{Path: "/m.mkv"}, Chapters: []Chapter{{StartMs: 5, EndMs: 5}}}, "",
+			"of chapter 1"},
+		{"a negative start", Report{Read: ReadReport{Path: "/m.mkv"}, Chapters: []Chapter{{StartMs: -1, EndMs: 5}}}, "",
+			"need 0 <= start < end"},
+		{"found below 0", Report{Read: ReadReport{Path: "/m.mkv", Found: i32(-1)}, Chapters: ch}, "", "read.found"},
+	} {
+		got, err := tc.r.state()
+		switch {
+		case tc.bad != "":
+			if err == nil || !strings.Contains(err.Error(), tc.bad) {
+				t.Errorf("%s: %q, %v; want it refused saying %q", tc.name, got, err, tc.bad)
+			}
+		case err != nil || got != tc.want:
+			t.Errorf("%s: %q, %v; want %q", tc.name, got, err, tc.want)
+		}
+	}
+}
+
+// A failure waits an hour, twice as long after each in a row, a day at most:
+// the fifth, which settles the title as unreadable, comes 15 hours after the
+// first at the earliest.
+func TestAFailureWaitsItsBackoff(t *testing.T) {
+	want := []time.Duration{time.Hour, 2 * time.Hour, 4 * time.Hour, 8 * time.Hour, 16 * time.Hour, 24 * time.Hour, 24 * time.Hour}
+	var sum time.Duration
+	for i, w := range want {
+		if got := backoff(int32(i + 1)); got != w {
+			t.Errorf("after failure %d: %v, want %v", i+1, got, w)
+		}
+		if i+1 < MaxFailures {
+			sum += w
+		}
+	}
+	if sum != 15*time.Hour {
+		t.Errorf("the reads before the %dth failure span %v, want 15h", MaxFailures, sum)
+	}
+}
+
+// The backfill's settings: off, 22:00-17:00 UTC, one at a time, 120 an hour
+// and a lease of 30 minutes unless set; a value that can't be read is its
+// default and said so, and a window that can't be read hands out nothing.
+func TestTheBackfillsSettings(t *testing.T) {
+	s := DefaultSettings()
+	if s.On || s.Window.String() != "22:00-17:00 UTC" || s.Inflight != 1 || s.Rate != 120 || s.Lease != 30*time.Minute {
+		t.Fatalf("defaults: %+v", s)
+	}
+	for _, at := range []struct {
+		hour int
+		in   bool
+	}{{16, true}, {17, false}, {21, false}, {22, true}, {3, true}} {
+		if got := s.Window.Contains(time.Date(2026, 11, 4, at.hour, 30, 0, 0, time.UTC)); got != at.in {
+			t.Errorf("%02d:30 UTC in the window: %v, want %v", at.hour, got, at.in)
+		}
+	}
+	s.set(SettingBackfill, " ON ")
+	s.set(SettingInflight, "3")
+	s.set(SettingRate, "0")
+	s.set(SettingLease, "2h")
+	if !s.On || s.Inflight != 3 || s.Rate != 0 || s.Lease != 2*time.Hour || len(s.Problems) != 0 {
+		t.Errorf("set: %+v", s)
+	}
+	s = DefaultSettings()
+	s.set(SettingBackfill, "yes")
+	s.set(SettingInflight, "0")
+	s.set(SettingRate, "-1")
+	s.set(SettingLease, "10s")
+	s.set(SettingWindow, "evenings")
+	if s.On || s.Inflight != 1 || s.Rate != 120 || s.Lease != 30*time.Minute || len(s.Problems) != 5 {
+		t.Errorf("unreadable: %+v", s)
+	}
+	if !s.Window.Never || s.Window.Contains(time.Date(2026, 11, 4, 3, 0, 0, 0, time.UTC)) ||
+		!strings.HasPrefix(s.Window.String(), "never") || !s.Window.Closes(time.Now()).IsZero() {
+		t.Errorf("a window that can't be read: %+v %s", s.Window, s.Window.String())
+	}
+	s = DefaultSettings()
+	s.set(SettingWindow, "")
+	if !s.Window.Contains(time.Date(2026, 11, 4, 18, 0, 0, 0, time.UTC)) || s.Window.String() != "any time" {
+		t.Errorf("no window: %s", s.Window.String())
+	}
+}
