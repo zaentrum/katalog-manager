@@ -128,7 +128,7 @@ account, whose token carries the addon role. Everyone else signed in is a
 |---|---|
 | every GraphQL query and mutation (the catalog with its paths on disk, scan jobs, activity, settings, the deletion log, every change) | admin |
 | GraphQL `triggerScan` | admin, service account |
-| GraphQL `replaceSource` | admin, service account (`deleteOldFile: true` an admin's) |
+| GraphQL `replaceSource` | admin, service account, addon (`deleteOldFile: true` an admin's or an addon's) |
 | `GET /api/manage/stream` (the console's live stream) | admin |
 | `GET /api/artwork/...`, `/api/manage/artwork/...` (also a person's portrait) | any signed-in caller, or a stream token; a capped viewer is answered for a title above its cap as for a title there is not |
 | `GET /api/play/...`, `GET /api/subtitles/...` | any signed-in caller; a capped viewer as for the artwork |
@@ -576,20 +576,36 @@ mutation {
   admin asks once it is done; a run whose old file was deleted under it may
   fail instead, and its retry reads the new file. Without an event bus or
   migration 033 nothing is encoded again, and `reencode.message` says why.
+- **`ifIdle`** (false when omitted) gives the title no file while its
+  transcode or package is running or waits for its worker, as `reencodeItem`
+  tells one busy: the replace is refused then (`SOURCE_BUSY`), nothing
+  changes and the old file stays for that run, and the caller asks again once
+  it is done. The title's steps stay locked until the replace's transaction
+  ends, so none starts meanwhile. A file the catalog does not take is
+  refused as such first, whatever the title does.
 - **A refusal** is an error whose `extensions.code` is `NOT_FOUND` (a title
   there is not), `SOURCE_CONFLICT` (the file is another title's or an
-  extra's, named in `itemId` and `extraId`) or `SOURCE_REFUSED`, and nothing
+  extra's, named in `itemId` and `extraId`), `SOURCE_BUSY` (asked with
+  `ifIdle`, the title is being encoded) or `SOURCE_REFUSED`, and nothing
   changes. The old file's deletion and the re-encode never fail the call:
   the title has its new file whatever they do, and `message` says what they
   did. Every replace is logged, with whoever asked it.
 
 Replace a file before a scan meets it: a file a scan took in first is
-another title's, and refused. `replaceSource` is an administrator's and the
-platform's service account's, the one field besides `triggerScan` a
-deployment's Job may ask (see [Who may do what](#who-may-do-what)): a seed
-Job gives a title its better file with the service account, then deletes the
-old file itself. `deleteOldFile: true` stays an administrator's: the service
-account may move a title onto a file, never have the catalog delete one.
+another title's, and refused. With the library's v2 layout a file handed over
+from `.work/replace` — outside the arrivals the scan walks — is taken into the
+arrivals in the replace's own transaction, so no scan meets it on its own.
+`replaceSource` is an administrator's, the platform's service account's and
+an addon's, the one field besides `triggerScan` a deployment's Job may ask and
+the one an addon may (see [Who may do what](#who-may-do-what)): a seed Job
+gives a title its better file with the service account, then deletes the old
+file itself; an addon that grabbed a better file of a title the library holds
+for an admin who asked it hands it over with its own service account, from
+`.work/replace`, with `deleteOldFile: true` and `ifIdle: true`.
+`deleteOldFile: true` is an administrator's or an addon's: the platform's
+service account, which every worker and Job mints its tokens with, may move a
+title onto a file, never have the catalog delete one. An addon may, as it
+carries out what an admin asked it, long after the admin's own token ran out.
 
 ## Ratings
 
