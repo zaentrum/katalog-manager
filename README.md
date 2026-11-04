@@ -1418,7 +1418,8 @@ title in one of these states:
   chapters writes them, in place of the title's.
 - `none`: the original holds no chapter with a length (`found` the marks it
   held). A read of the header that finds none never deletes chapters, and
-  leaves those read before of the same original as they are; otherwise it
+  leaves those read before of the same original as they are, and a none of
+  it confirmed before; otherwise it
   is held against the original's source record: where the record holds
   chapters they are written, read from it (`readFrom` `record`); where the
   record holds none with a length, or the compliance check's record of that
