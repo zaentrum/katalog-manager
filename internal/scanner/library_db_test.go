@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/config"
 	"github.com/zaentrum/katalog-manager/internal/library"
@@ -211,5 +212,81 @@ func TestTheScanRootFollowsTheLayoutWithoutARestart(t *testing.T) {
 	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE title IN ('Legacy', 'Arrival')`); n != 2 {
 		t.Errorf("%d titles, want both", n)
+	}
+}
+
+// A scan that meets a file while a replace gives a title it — the replace
+// took it into the arrivals in its transaction and holds the lock ingest and
+// replaceSource take on the path — waits for that transaction, reads the
+// path again, and finds the file the title's: it makes no title of its own.
+// Once the lock is given up without the path a title's file (the replace
+// rolled back and the file stayed), a scan takes it in as a new title.
+func TestAScanWaitsForAReplaceOfTheFileItMeets(t *testing.T) {
+	f := newV2(t)
+	ctx := context.Background()
+	storetest.AddItem(t, f.st, "film", "movie", "A Film", "")
+	// Its original in its version's folder, which no scan walks.
+	old := f.write(t, "movies/fi/film/versions/9a2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5a/original.mkv", 100, 'o')
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, sizebytes, isprimary)
+		VALUES ('a-film', 'film', $1, 100, true)`, old)
+	cur := f.write(t, ".work/incoming/A.Film.1999.2160p.mkv", 5000, 'n')
+
+	replace := func(commit bool) {
+		t.Helper()
+		tx, err := f.st.Pool().Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('com_nalet_katalog_playbackassets:' || $1))`, cur); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_playbackassets SET path = $1 WHERE id = 'a-film'`, cur); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan scanResult, 1)
+		go func() {
+			res, err := f.s.walk(ctx, func() {})
+			if err != nil {
+				t.Error(err)
+			}
+			done <- res
+		}()
+		select {
+		case res := <-done:
+			t.Fatalf("the scan did not wait for the replace: %+v", res)
+		case <-time.After(400 * time.Millisecond):
+		}
+		if commit {
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			_ = tx.Rollback(ctx)
+		}
+		select {
+		case res := <-done:
+			if commit && res.itemsInserted != 0 {
+				t.Errorf("the scan after the replace made %d title(s)", res.itemsInserted)
+			}
+			if !commit && res.itemsInserted != 1 {
+				t.Errorf("the scan after a replace that rolled back made %d title(s), want the file a title of its own", res.itemsInserted)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("the scan did not end once the replace was done")
+		}
+	}
+
+	replace(true)
+	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_items`); n != 1 ||
+		storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE path = $1 AND item_id = 'film'`, cur) != 1 {
+		t.Errorf("after the replace: %d title(s), and the new file is not the title's alone", n)
+	}
+
+	// The file given back: the old one the title's, the new one no title's.
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_playbackassets SET path = $1 WHERE id = 'a-film'`, old)
+	replace(false)
+	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_items`); n != 2 {
+		t.Errorf("after the rolled-back replace: %d title(s), want the file a title of its own", n)
 	}
 }

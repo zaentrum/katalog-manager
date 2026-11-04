@@ -266,6 +266,49 @@ func (s *Scanner) walk(ctx context.Context, beat func()) (scanResult, error) {
 	return res, walkErr
 }
 
+// newItem records a new title of the file at path, its item and its primary
+// asset, in one transaction under the lock the ingest and replaceSource take
+// on the path, which it reads again first: a replace that takes this file
+// into the arrivals and gives a title it in its transaction, or an ingest of
+// it, holding the lock now, is waited for, and the path is that title's file
+// then. It answers the item made, "" when the path is a title's file.
+func (s *Scanner) newItem(ctx context.Context, path, typ, title string, year *int32, parentID *string,
+	seasonNumber, episodeNumber *int32, size int64) (string, error) {
+	tx, err := s.st.Pool().Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('com_nalet_katalog_playbackassets:' || $1))`, path); err != nil {
+		return "", err
+	}
+	var taken string
+	switch err := tx.QueryRow(ctx, `SELECT item_id FROM com_nalet_katalog_playbackassets WHERE path = $1 LIMIT 1`, path).
+		Scan(&taken); {
+	case err == nil:
+		return "", nil
+	case !errors.Is(err, pgx.ErrNoRows):
+		return "", err
+	}
+	var itemID string
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO com_nalet_katalog_items
+		   (id, type, title, sorttitle, year, parent_id, seasonnumber, episodenumber, createdby, createdat, modifiedat)
+		 VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, $5, $6, $7, '`+createdByScanner+`', now(), now())
+		 RETURNING id`,
+		typ, title, strings.ToLower(title), year, parentID, seasonNumber, episodeNumber).Scan(&itemID); err != nil {
+		return "", err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO com_nalet_katalog_playbackassets
+		   (id, item_id, path, sizebytes, isprimary)
+		 VALUES (gen_random_uuid()::varchar, $1, $2, $3, true)`,
+		itemID, path, size); err != nil {
+		return "", err
+	}
+	return itemID, tx.Commit(ctx)
+}
+
 // processFile classifies one regular file and upserts the catalog rows for it.
 // Errors are swallowed (logged-equivalent) so the walk continues. lib is the
 // library's paths with library.layout=v2, nil otherwise.
@@ -355,30 +398,21 @@ func (s *Scanner) processFile(ctx context.Context, root, path string, d fs.DirEn
 			}
 			fixity = f
 		}
-		// New item: INSERT items + primary asset + seed the 'scan' step.
-		if err := pool.QueryRow(ctx,
-			`INSERT INTO com_nalet_katalog_items
-			   (id, type, title, sorttitle, year, parent_id, seasonnumber, episodenumber, createdby, createdat, modifiedat)
-			 VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, $5, $6, $7, '`+createdByScanner+`', now(), now())
-			 RETURNING id`,
-			typ, title, strings.ToLower(title), year, parentID, seasonNumber, episodeNumber).Scan(&itemID); err != nil {
-			return
-		}
-		res.itemsInserted++
-
 		// The size the file has when its quick hash was taken, which its
 		// source records too: the directory entry's may be from before the
 		// file was all there, or none (0) when it could not be read.
 		if fixity != nil {
 			size = fixity.size
 		}
-		if _, err := pool.Exec(ctx,
-			`INSERT INTO com_nalet_katalog_playbackassets
-			   (id, item_id, path, sizebytes, isprimary)
-			 VALUES (gen_random_uuid()::varchar, $1, $2, $3, true)`,
-			itemID, absPath, size); err != nil {
+		// New item: INSERT items + primary asset (newItem) + seed the 'scan'
+		// step. A file an ingest or a replace made a title's file meanwhile
+		// is no new title: the next scan finds it that title's.
+		id, err := s.newItem(ctx, absPath, typ, title, year, parentID, seasonNumber, episodeNumber, size)
+		if err != nil || id == "" {
 			return
 		}
+		itemID = id
+		res.itemsInserted++
 		if fixity != nil {
 			s.addSource(ctx, *lib, itemID, absPath, *fixity)
 		}
