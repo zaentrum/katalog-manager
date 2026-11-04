@@ -1044,6 +1044,11 @@ type ReplaceSourceResult {
   # already: nothing changed, and the answer is what that one did (its new
   # file, the old original it superseded); reencode is null
   repeated: Boolean!
+  # of a repeated answer, what became of the file that replace gave the
+  # title since: present (at path), superseded (another file took its place,
+  # kept at path until it is retired), retiring, deleted (retired through the
+  # library's trash: path is empty) or removed; null otherwise
+  fileState: String
   # the subtitle files beside the old file named after it (Film.srt,
   # Film.en.srt beside Film.mp4), which stay the title's subtitles as they
   # are. Beside a new file of the same name (Film.mkv) they pair with it as
@@ -1116,6 +1121,16 @@ type ValidateResult {
 # ---------------------------------------------------------------------------
 
 type Query {
+  # What a replace of the title asked with key did (replaceSource's key), as
+  # replaceSource asked again with that key answers it (repeated: its new
+  # file, the old original it superseded, what became of its file since),
+  # changing nothing; null when no replace of the title was asked with it.
+  # An addon asks it before it hands a file over again once an answer was
+  # lost. Refused as replaceSource refuses the key (SOURCE_REFUSED with the
+  # legacy layout, which keeps none; SOURCE_BUSY without migration 056;
+  # NOT_FOUND a title there is not); whom replaceSource is for may ask it,
+  # an addon whose client library.replace.clients names.
+  replaceSourceDone(itemId: ID!, key: String!): ReplaceSourceResult
   # the originals another file took the place of that are there still
   # (superseded), those waiting for an admin first (held: those alone), the
   # ones superseded first first, at most first (50); none on a catalog older

@@ -18,6 +18,14 @@ func (f *fakeSources) ReplaceSource(_ context.Context, in ReplaceSourceRequest) 
 	return f.res, f.err
 }
 
+func (f *fakeSources) ReplaceSourceDone(_ context.Context, itemID, key string) (*ReplaceSourceResult, error) {
+	f.got = append(f.got, ReplaceSourceRequest{ItemID: itemID, Key: key})
+	if f.err != nil || !f.res.Repeated {
+		return nil, f.err
+	}
+	return &f.res, nil
+}
+
 // The title travels as it was named, by its id or by its file, with the new
 // file. Nothing leaves the disk unless asked: deleteOldFile omitted or null
 // is false; the title is encoded again unless asked not to: reencode omitted

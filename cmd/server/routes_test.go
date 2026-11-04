@@ -124,6 +124,11 @@ func (f *fakes) ReplaceSource(_ context.Context, in graph.ReplaceSourceRequest) 
 	return graph.ReplaceSourceResult{ItemID: in.ItemID, OldPath: "/media/a-film.mkv", Path: in.Path, Replaced: true,
 		Reencode: &graph.ReencodeResult{ItemID: in.ItemID, Titles: 1, Reencoded: 1, Message: "encoding it again"}, Message: "replaced"}, nil
 }
+func (f *fakes) ReplaceSourceDone(_ context.Context, itemID, key string) (*graph.ReplaceSourceResult, error) {
+	f.called("what the replace of " + itemID + " asked with " + key + " did")
+	return &graph.ReplaceSourceResult{ItemID: itemID, Path: "/media/a-film-1080p.mkv", Replaced: true, Repeated: true,
+		FileState: "present", Message: "a replace asked with the key " + key + " gave the title its file already"}, nil
+}
 func (f *fakes) Overview(context.Context, string, int32, int32) (graph.ProcessingOverview, error) {
 	f.called("processing overview")
 	return graph.ProcessingOverview{}, nil
@@ -507,6 +512,8 @@ var operations = []struct{ doc, calls string }{
 	{`mutation { replaceSource(itemId: "m1", path: "/media/a-film-1080p.mkv", deleteOldFile: true) { itemId oldPath path
 		replaced oldFileDeleted oldSidecars reencode { reencoded busy notSent message } message } }`,
 		"replace the file of m1 with /media/a-film-1080p.mkv, delete true, reencode true"},
+	{`{ replaceSourceDone(itemId: "m1", key: "tg_1") { itemId path replaced repeated fileState message } }`,
+		"what the replace of m1 asked with tg_1 did"},
 	{`mutation { packageItem(id: "m1") { status } }`, "package m1"},
 	{`mutation { validateItem(id: "m1") { code } }`, "validate m1"},
 	{`mutation { createItem(input: {type: "movie", title: "Made Here"}) { id } }`, ""},
@@ -562,12 +569,14 @@ func TestOperationsCallEveryRootField(t *testing.T) {
 
 // Every operation, through the service as main wires it and with the bearer
 // tokens of a realm: refused with FORBIDDEN to a viewer, another
-// confidential client, an addon (on all but replaceSource, which an addon
-// carries out for an admin who asked it) and (on all but triggerScan) the
-// service account — replaceSource's here deletes the old file, an admin's or
-// an addon's — before anything is read or changed; done for an admin, also
-// one signed in with the CLI, whose token names no audience, and for an
-// addon its replaceSource; and no answer carries a secret.
+// confidential client, an addon (on all but replaceSource and
+// replaceSourceDone, which an addon carries out for an admin who asked it)
+// and (on all but triggerScan and replaceSourceDone) the service account —
+// replaceSource's here deletes the old file, an admin's or an addon's —
+// before anything is read or changed; done for an admin, also one signed in
+// with the CLI, whose token names no audience, for an addon its
+// replaceSource and replaceSourceDone, and for the service account the
+// latter; and no answer carries a secret.
 func TestEveryOperationIsForWhomItIsFor(t *testing.T) {
 	in := newInstance(t)
 	iss := in.iss
@@ -590,7 +599,7 @@ func TestEveryOperationIsForWhomItIsFor(t *testing.T) {
 				callers = append(callers, c)
 			}
 		}
-		if !strings.Contains(op.doc, "triggerScan") {
+		if !strings.Contains(op.doc, "triggerScan") && !strings.Contains(op.doc, "replaceSourceDone") {
 			callers = append(callers, struct{ name, token string }{"the service account", service})
 		}
 		for _, c := range callers {
@@ -619,6 +628,9 @@ func TestEveryOperationIsForWhomItIsFor(t *testing.T) {
 		}
 		if strings.Contains(op.doc, "replaceSource") {
 			callers = append(slices.Clone(allowed), addon)
+		}
+		if strings.Contains(op.doc, "replaceSourceDone") {
+			callers = append(callers, struct{ name, token string }{"the service account", service})
 		}
 		for _, c := range callers {
 			code, a := in.gql(t, "/api/manage/query", c.token, op.doc)

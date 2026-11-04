@@ -696,21 +696,24 @@ func (s *Service) hasFile(itemID, path string) (bool, error) {
 }
 
 // repeatedOf is, in tx, what the replace of the title asked with key did
-// once already, as its answer says it (repeated); nil when none of the
-// title's sources was given its file by one asked with key.
+// once already, as its answer says it (repeated): the file it gave the title,
+// where it is now and what became of it since (FileState: present,
+// superseded, retiring, deleted or removed; a file no longer on disk has no
+// path), and the old original it superseded. nil when none of the title's
+// sources was given its file by one asked with key.
 func repeatedOf(ctx context.Context, tx pgx.Tx, itemID, key string) (*graph.ReplaceSourceResult, error) {
-	var sourceID, filename string
+	var sourceID, filename, state string
 	var at time.Time
 	var arrival *string
-	err := tx.QueryRow(ctx, `SELECT id, filename, arrivalpath, createdat FROM com_nalet_katalog_itemsources
-		WHERE item_id = $1 AND replacekey = $2`, itemID, key).Scan(&sourceID, &filename, &arrival, &at)
+	err := tx.QueryRow(ctx, `SELECT id, filename, arrivalpath, createdat, state FROM com_nalet_katalog_itemsources
+		WHERE item_id = $1 AND replacekey = $2`, itemID, key).Scan(&sourceID, &filename, &arrival, &at, &state)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	res := &graph.ReplaceSourceResult{ItemID: itemID, Replaced: true, Repeated: true}
+	res := &graph.ReplaceSourceResult{ItemID: itemID, Replaced: true, Repeated: true, FileState: state}
 	if arrival != nil {
 		res.Path = *arrival
 	}
@@ -725,13 +728,60 @@ func repeatedOf(ctx context.Context, tx pgx.Tx, itemID, key string) (*graph.Repl
 	case !errors.Is(err, pgx.ErrNoRows):
 		return nil, err
 	}
-	where := "where it is now"
+	where := "no longer on disk"
 	if arrival != nil {
-		where = *arrival
+		where = "at " + *arrival
+	}
+	if state != library.SourcePresent {
+		where += ", " + state + " since"
 	}
 	res.Message = fmt.Sprintf("a replace asked with the key %q gave the title its file %s at %s already (source %s, %s): "+
 		"nothing changed", key, filename, library.Timestamp(at), sourceID, where)
 	return res, nil
+}
+
+// ReplaceSourceDone implements graph.SourceReplacer: what the replace of the
+// title itemID asked with key did, as ReplaceSource asked again with that
+// key answers it (repeated), changing nothing; nil when none of the title's
+// replaces was asked with it. Whom ReplaceSource is for may ask it (an addon
+// whose client library.replace.clients names), and it is refused as
+// ReplaceSource would refuse the key: with the legacy layout, which keeps no
+// key, or without migration 056.
+func (s *Service) ReplaceSourceDone(ctx context.Context, itemID, key string) (*graph.ReplaceSourceResult, error) {
+	pool := s.st.Pool()
+	set, err := library.ReadSettings(ctx, pool)
+	if err != nil {
+		return nil, graph.RefuseSource(codeSourceBusy, "the library's settings could not be read: %v", err)
+	}
+	if err := s.addonMay(ctx, set); err != nil {
+		return nil, err
+	}
+	key, itemID = strings.TrimSpace(key), strings.TrimSpace(itemID)
+	switch {
+	case itemID == "" || key == "":
+		return nil, graph.RefuseSource(codeSourceRefused, "a replace is asked about by its title's id and its key: both are required")
+	case !set.V2():
+		return nil, graph.RefuseSource(codeSourceRefused, "a replace's key is kept with the library's v2 layout alone")
+	case len(key) > 255:
+		return nil, graph.RefuseSource(codeSourceRefused, "a replace's key is 255 characters at most")
+	}
+	if ready, err := library.SupersedeReady(ctx, pool); err != nil || !ready {
+		return nil, graph.RefuseSource(codeSourceBusy, "the catalog keeps no replace's key yet (migration "+
+			"db/migrations/056_superseded_sources.sql is not in place%s)", errNote(err))
+	}
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	var known bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_items WHERE id = $1)`, itemID).Scan(&known); err != nil {
+		return nil, err
+	}
+	if !known {
+		return nil, graph.RefuseSource(codeNotFound, "unknown item: %s", itemID)
+	}
+	return repeatedOf(ctx, tx, itemID, key)
 }
 
 // idle refuses, in tx, a replace asked only while the title is idle when its

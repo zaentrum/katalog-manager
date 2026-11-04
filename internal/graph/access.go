@@ -52,6 +52,7 @@ var fieldAccess = map[string]auth.Access{
 	"Query.pictureAreas":          auth.Admin,
 	"Query.chapterReads":          auth.Admin,
 	"Query.supersededOriginals":   auth.Admin,
+	"Query.replaceSourceDone":     auth.Ingest, // whom replaceSource is for (ReplaceSourceDone)
 
 	"Mutation.triggerScan":              auth.Worker, // the scan Job's
 	"Mutation.acceptChapterReads":       auth.Admin,

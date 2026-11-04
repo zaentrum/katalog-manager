@@ -14,6 +14,10 @@ import (
 // (implemented by itemactions).
 type SourceReplacer interface {
 	ReplaceSource(ctx context.Context, in ReplaceSourceRequest) (ReplaceSourceResult, error)
+	// ReplaceSourceDone is what the replace of the title asked with key did,
+	// as ReplaceSource asked again with that key answers it; nil when none
+	// was asked with it.
+	ReplaceSourceDone(ctx context.Context, itemID, key string) (*ReplaceSourceResult, error)
 }
 
 // ReplaceSourceRequest gives the title another file: the title named one
@@ -48,8 +52,10 @@ type ReplaceSourceResult struct {
 	OldFileSuperseded bool
 	// Repeated says the replace was asked with a key a replace of the title
 	// was asked with already: nothing changed, and the answer is what that
-	// one did.
+	// one did, FileState what became of its file since (present,
+	// superseded, retiring, deleted or removed).
 	Repeated    bool
+	FileState   string
 	OldSidecars int32           // the subtitle files beside the old file named after it, which the title keeps
 	Reencode    *ReencodeResult // what encoding it again did; nil when not asked, or nothing changed
 	Message     string
@@ -129,6 +135,25 @@ func (r *Resolver) ReplaceSource(ctx context.Context, args struct {
 	return &replaceSourceResultResolver{m: res}, nil
 }
 
+// ReplaceSourceDone answers what the replace of a title asked with a key did,
+// changing nothing (see the SDL).
+func (r *Resolver) ReplaceSourceDone(ctx context.Context, args struct {
+	ItemID graphql.ID
+	Key    string
+}) (*replaceSourceResultResolver, error) {
+	if err := r.allow(ctx, "Query.replaceSourceDone"); err != nil {
+		return nil, err
+	}
+	if r.svc.Sources == nil {
+		return nil, errNotConfigured
+	}
+	res, err := r.svc.Sources.ReplaceSourceDone(ctx, string(args.ItemID), args.Key)
+	if err != nil || res == nil {
+		return nil, err
+	}
+	return &replaceSourceResultResolver{m: *res}, nil
+}
+
 // refusedReplace logs a replaceSource refused before it was asked of the
 // catalog's sources (whoever may not ask it), as every replace is logged:
 // who asked it, the title, the new file, and why.
@@ -153,8 +178,14 @@ func (r *replaceSourceResultResolver) Replaced() bool          { return r.m.Repl
 func (r *replaceSourceResultResolver) OldFileDeleted() bool    { return r.m.OldFileDeleted }
 func (r *replaceSourceResultResolver) OldFileSuperseded() bool { return r.m.OldFileSuperseded }
 func (r *replaceSourceResultResolver) Repeated() bool          { return r.m.Repeated }
-func (r *replaceSourceResultResolver) OldSidecars() int32      { return r.m.OldSidecars }
-func (r *replaceSourceResultResolver) Message() string         { return r.m.Message }
+func (r *replaceSourceResultResolver) FileState() *string {
+	if r.m.FileState == "" {
+		return nil
+	}
+	return &r.m.FileState
+}
+func (r *replaceSourceResultResolver) OldSidecars() int32 { return r.m.OldSidecars }
+func (r *replaceSourceResultResolver) Message() string    { return r.m.Message }
 func (r *replaceSourceResultResolver) Reencode() *reencodeResultResolver {
 	if r.m.Reencode == nil {
 		return nil

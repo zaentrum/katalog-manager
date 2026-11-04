@@ -616,6 +616,69 @@ func (p *lockProbe) ReencodeItem(ctx context.Context, id string) (graph.Reencode
 	return graph.ReencodeResult{ItemID: id, Titles: 1, Reencoded: 1, Message: "encoding it again"}, nil
 }
 
+// A replace asked again with its key once the file it gave the title went on
+// - superseded by another, then retired - answers what it did and what became
+// of the file since: where it is while it is there, no path once it is not;
+// replaceSourceDone answers the same, changing nothing, and nil for a key no
+// replace of the title was asked with. It is refused as replaceSource refuses
+// a key: a title there is not, the legacy layout, an addon not named.
+func TestARepeatedAnswerSaysWhatBecameOfTheFile(t *testing.T) {
+	iv := newInVersion(t)
+	in := graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true, Key: "tg_1"}
+	if done, err := iv.svc.ReplaceSourceDone(asAddon, bunny, "tg_1"); err != nil || done != nil {
+		t.Fatalf("before any replace: %+v, %v", done, err)
+	}
+	if res, err := iv.svc.ReplaceSource(asAddon, in); err != nil || !res.Replaced || res.Repeated || res.FileState != "" {
+		t.Fatalf("the replace: %+v %v", res, err)
+	}
+	done, err := iv.svc.ReplaceSourceDone(asAddon, bunny, "tg_1")
+	if err != nil || done == nil || !done.Repeated || !done.Replaced || done.FileState != library.SourcePresent ||
+		done.Path != iv.arrive || done.OldPath != iv.old || !done.OldFileSuperseded {
+		t.Fatalf("what it did: %+v, %v", done, err)
+	}
+	if done, err := iv.svc.ReplaceSourceDone(asAddon, bunny, "tg_9"); err != nil || done != nil {
+		t.Errorf("another key: %+v, %v", done, err)
+	}
+	// another file took its place
+	other := iv.f.write(t, ".work/replace/acquire/tg_2/Big.Buck.Bunny.2008.REMUX.mkv", 6000)
+	if res, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: other, DeleteOldFile: true,
+		Key: "tg_2"}); err != nil || !res.Replaced {
+		t.Fatalf("the replace after it: %+v %v", res, err)
+	}
+	again, err := iv.svc.ReplaceSource(asAddon, in)
+	if err != nil || !again.Repeated || again.FileState != library.SourceSuperseded || again.Path != iv.arrive ||
+		!strings.Contains(again.Message, "at "+iv.arrive+", superseded since") {
+		t.Errorf("superseded since: %+v %v", again, err)
+	}
+	// retired
+	storetest.Exec(t, iv.f.st, `UPDATE com_nalet_katalog_itemsources SET state = 'deleted', arrivalpath = NULL, deletedat = now()
+		WHERE replacekey = 'tg_1'`)
+	again, err = iv.svc.ReplaceSource(asAddon, in)
+	if err != nil || !again.Repeated || !again.Replaced || again.FileState != library.SourceDeleted || again.Path != "" ||
+		!strings.Contains(again.Message, "no longer on disk, deleted since") {
+		t.Errorf("retired since: %+v %v", again, err)
+	}
+	if done, err := iv.svc.ReplaceSourceDone(asAddon, bunny, "tg_1"); err != nil || done == nil || done.FileState != library.SourceDeleted ||
+		done.Path != "" {
+		t.Errorf("what it did, retired since: %+v, %v", done, err)
+	}
+
+	_, err = iv.svc.ReplaceSourceDone(asAddon, "c1c1c1c1-0000-4000-8000-00000000000c", "tg_1")
+	if r := sourceRefusal(t, err); r.Code != codeNotFound {
+		t.Errorf("a title there is not: %+v", r)
+	}
+	other2 := auth.WithPrincipal(context.Background(), &auth.Principal{Subject: "addon-2", Client: "another-addon",
+		Claims: map[string]any{"realm_access": map[string]any{"roles": []any{"zaentrum-addon"}}}})
+	if _, err := iv.svc.ReplaceSourceDone(other2, bunny, "tg_1"); err == nil || !strings.Contains(err.Error(), "library.replace.clients") {
+		t.Errorf("an addon the catalog does not name: %v", err)
+	}
+	storetest.Exec(t, iv.f.st, `UPDATE com_nalet_katalog_settings SET valuetext = 'legacy' WHERE key = 'library.layout'`)
+	_, err = iv.svc.ReplaceSourceDone(asAddon, bunny, "tg_1")
+	if r := sourceRefusal(t, err); r.Code != codeSourceRefused || !strings.Contains(r.Message, "v2 layout alone") {
+		t.Errorf("the legacy layout: %+v", r)
+	}
+}
+
 // A replace stopped halfway is finished by the next ask: a link of the file
 // handed over that it left in the arrivals, uncommitted, is taken as it is;
 // one committed whose name in .work/replace was not removed is the title's
