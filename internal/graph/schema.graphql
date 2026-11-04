@@ -1339,7 +1339,9 @@ type Mutation {
   # goes once the replace is committed. A refusal is an error whose
   # extensions.code is NOT_FOUND (a title there is not), SOURCE_COVERED (an
   # episode another's file covers, which has no file of its own: the holder
-  # is named in itemId, its file the one to replace), SOURCE_CONFLICT (the
+  # is named in itemId), SOURCE_COVERS (the holder, named in itemId, while
+  # its file covers other episodes too: no replace of a file of several
+  # episodes is designed yet), SOURCE_CONFLICT (the
   # file is another title's, an extra's or an original the library keeps,
   # named in itemId and extraId), SOURCE_BUSY (what a later ask may not meet:
   # asked with ifIdle, a step runs; the title's original being retired; its

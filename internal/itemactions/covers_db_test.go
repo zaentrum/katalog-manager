@@ -138,8 +138,9 @@ func TestRemovingAHolderOrAnEpisodeItCovers(t *testing.T) {
 
 // replaceSource of an episode another's file covers is refused: it has no
 // file of its own (SOURCE_COVERED, naming the holder), and nothing changes;
-// the holder's file is replaced by naming the holder, the episodes it covers
-// staying covered.
+// the holder's too, while its file covers others (SOURCE_COVERS: no replace
+// of a file of several episodes is designed yet). Once it covers none, its
+// file is replaced.
 func TestReplacingTheFileOfACoveredEpisodeIsRefused(t *testing.T) {
 	f := newReplacing(t)
 	ctx := context.Background()
@@ -161,9 +162,18 @@ func TestReplacingTheFileOfACoveredEpisodeIsRefused(t *testing.T) {
 	if got := assetOf(t, f.st, "a-e1"); !strings.Contains(got, old) || len(f.re.take()) != 0 {
 		t.Fatalf("a refused replace changed the holder: %s", got)
 	}
+	_, err = f.svc.ReplaceSource(ctx, graph.ReplaceSourceRequest{ItemID: episode1, Path: cur, Reencode: true})
+	if r := sourceRefusal(t, err); r.Code != codeSourceCovers || r.ItemID != episode1 ||
+		!strings.Contains(r.Message, "covers episodes "+episode2+" too") {
+		t.Fatalf("replace the holder's file: %+v", r)
+	}
+	if got := assetOf(t, f.st, "a-e1"); !strings.Contains(got, old) {
+		t.Fatalf("a refused replace changed the holder: %s", got)
+	}
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_items SET coveredby = NULL WHERE id = $1`, episode2)
 	res, err := f.svc.ReplaceSource(ctx, graph.ReplaceSourceRequest{ItemID: episode1, Path: cur, Reencode: true})
 	if err != nil || !res.Replaced || res.ItemID != episode1 || res.OldPath != old {
-		t.Fatalf("replace the holder's file: %+v, %v", res, err)
+		t.Fatalf("replace the holder's file once it covers none: %+v, %v", res, err)
 	}
 	if got := assetOf(t, f.st, "a-e1"); !strings.Contains(got, cur) {
 		t.Errorf("the holder's asset: %s", got)
@@ -172,9 +182,6 @@ func TestReplacingTheFileOfACoveredEpisodeIsRefused(t *testing.T) {
 		t.Errorf("encoded again: %v, want the holder", got)
 	}
 	if n := storetest.Count(t, f.st, `SELECT count(*) FROM com_nalet_katalog_playbackassets WHERE item_id = $1`, episode2); n != 0 {
-		t.Error("the covered episode got a file")
-	}
-	if h, err := library.HolderOf(ctx, f.st.Pool(), episode2); err != nil || h != episode1 {
-		t.Errorf("the covered episode is covered by %q, %v; want the holder still", h, err)
+		t.Error("the episode it covered got a file")
 	}
 }

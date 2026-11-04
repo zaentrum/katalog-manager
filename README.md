@@ -544,8 +544,11 @@ mutation {
   replaced each on its own), and a title with two files is named by the one
   replaced. An episode another episode's file covers has no file of its own
   and is refused (`SOURCE_COVERED`, `extensions.itemId` naming the holder,
-  whose file is the one to replace; see
-  [One file, several episodes](#one-file-several-episodes)).
+  whose file it is; see
+  [One file, several episodes](#one-file-several-episodes)); the holder is
+  refused too while its file covers other episodes (`SOURCE_COVERS`,
+  `extensions.itemId` naming it): no replace of a file of several episodes
+  is designed yet.
 - **`path`** is the new file: an absolute path of an existing video file of
   its own — no link — under the media root, never under the package store,
   never in a folder whose link leads out of the media root, that a scan takes
@@ -623,6 +626,7 @@ mutation {
   twice.
 - **A refusal** is an error whose `extensions.code` is `NOT_FOUND` (a title
   there is not), `SOURCE_COVERED` (an episode another's file covers),
+  `SOURCE_COVERS` (the holder of a file that covers other episodes too),
   `SOURCE_CONFLICT` (the file is another title's, an extra's or an original
   the library keeps, named in `itemId` and `extraId`), `SOURCE_BUSY` (what a
   later ask may not meet: asked with `ifIdle`, a step runs; the title's
@@ -2179,9 +2183,10 @@ model).
   re-encode queue, `packageItem` (`POST /api/items/{id}/package`) and the
   take-in (`POST /api/items/{id}/takein`) by its id each act on the holder,
   the answer the holder's and saying so; `replaceSource` of a covered
-  episode is refused (`SOURCE_COVERED`, naming the holder, whose file is the
-  one to replace); the analyzer's reset of a series leaves a covered episode
-  alone.
+  episode is refused (`SOURCE_COVERED`, naming the holder), and of the holder
+  too while its file covers others (`SOURCE_COVERS`: no replace of a file of
+  several episodes is designed yet); the analyzer's reset of a series leaves
+  a covered episode alone.
 - **The library's records**: the worker record of the holder names the
   episodes its file covers in its `library.source` (`covers`: the holder
   first, then the others in episode order), which the packager writes in its

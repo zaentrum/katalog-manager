@@ -51,6 +51,7 @@ const (
 	codeSourceConflict = "SOURCE_CONFLICT"
 	codeSourceBusy     = "SOURCE_BUSY"
 	codeSourceCovered  = "SOURCE_COVERED"
+	codeSourceCovers   = "SOURCE_COVERS"
 	codeNotFound       = "NOT_FOUND"
 )
 
@@ -78,7 +79,9 @@ type source struct {
 //     path of the file replaced. One there is not is NOT_FOUND. An episode
 //     another episode's file covers (migration 045) has no file of its own:
 //     it is refused (SOURCE_COVERED, naming the holder, whose file is the one
-//     to replace).
+//     to replace); and so is the holder, whose file covers other episodes
+//     too, while it does (SOURCE_COVERS): no replace of a file of several
+//     episodes is designed yet.
 //   - The new file is an absolute path of an existing regular file of its
 //     own — no link — under the media root and outside the package store, as
 //     written and with the links of its folders followed, that a scan takes
@@ -325,6 +328,20 @@ func (s *Service) replaceSource(ctx context.Context, in graph.ReplaceSourceReque
 	}
 	if src.itemID != id {
 		return res, graph.RefuseSource(codeSourceBusy, "the file %s changed hands meanwhile: ask again", itemPath)
+	}
+	// The file of an episode that covers others is theirs too: no replace
+	// of it is designed yet.
+	if covered, err := library.CoveredOf(ctx, tx, src.itemID); err != nil {
+		return res, err
+	} else if len(covered) > 0 {
+		ids := make([]string, 0, len(covered))
+		for _, c := range covered {
+			ids = append(ids, c.ID)
+		}
+		r := graph.RefuseSource(codeSourceCovers, "the file of item %s covers episodes %s too: the file of several episodes is "+
+			"not given another yet", src.itemID, strings.Join(ids, ", "))
+		r.ItemID = src.itemID
+		return res, r
 	}
 	res.ItemID, res.OldPath, res.Path = src.itemID, src.path, arrival
 	if src.assetID != "" && filepath.Clean(src.path) == arrival {
