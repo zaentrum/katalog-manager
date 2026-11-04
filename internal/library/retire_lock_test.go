@@ -86,18 +86,25 @@ func TestAListWaitsForBothLocksOfTheRetireJob(t *testing.T) {
 			release := f.holdRetireLock(t, key)
 			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 			defer cancel()
+			// a connection of its own: one whose query the end of ctx cut is closed
+			waiting, err := f.st.Pool().Acquire(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if unlock, err := l.lockRetire(ctx, waiting); err != nil || unlock != nil {
+				if unlock != nil {
+					unlock()
+				}
+				waiting.Release()
+				t.Fatalf("the list's lock while %s is held: %v, %v; want it to wait", key, unlock != nil, err)
+			}
+			waiting.Release()
+			release()
 			conn, err := f.st.Pool().Acquire(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer conn.Release()
-			if unlock, err := l.lockRetire(ctx, conn); err != nil || unlock != nil {
-				if unlock != nil {
-					unlock()
-				}
-				t.Fatalf("the list's lock while %s is held: %v, %v; want it to wait", key, unlock != nil, err)
-			}
-			release()
 			held, err := l.lockRetire(context.Background(), conn)
 			if err != nil || held == nil {
 				t.Fatalf("the list's lock once %s is let go of: %v", key, err)
