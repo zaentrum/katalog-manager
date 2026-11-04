@@ -13,8 +13,8 @@
 // store.EnsureMultiEpisodeFiles, store.EnsureSeriesScanTitle,
 // store.EnsureIdentityIndexes, store.EnsureAttachedSubtitles,
 // store.EnsureLibraryWriteThrough, which applies 050 after 041,
-// store.EnsureCompliance, store.EnsureRetireRuns, store.EnsureStyledSubtitles and
-// store.EnsurePictureAreas).
+// store.EnsureCompliance, store.EnsureRetireRuns, store.EnsureStyledSubtitles,
+// store.EnsurePictureAreas and store.EnsureChapterReads).
 // It applies 035, which drops what is left of a retired integration, at every
 // start when any of that is there (store.DropRetiredJobTables), and 049, the
 // catalog search, in the background after startup, one statement at a time:
@@ -184,3 +184,10 @@ var StyledSubtitles string
 //
 //go:embed 054_picture_areas.sql
 var PictureAreas string
+
+// ChapterReads is 055_chapter_reads.sql: what reading each title's chapters
+// from its original found, and the view of the titles whose original is
+// still needed for them.
+//
+//go:embed 055_chapter_reads.sql
+var ChapterReads string

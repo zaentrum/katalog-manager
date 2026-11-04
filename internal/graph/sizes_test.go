@@ -309,8 +309,8 @@ func TestAPageThatCannotBeReadKeepsTheList(t *testing.T) {
 	withItemView(t, st)
 	storetest.AddItem(t, st, "m1", "movie", "A Film", "")
 	storetest.AddItem(t, st, "m2", "movie", "Another Film", "")
-	query(t, st, `{ items { id hasOriginal } }`) // the catalog's migrations seen in place
-	storetest.Exec(t, st, `DROP TABLE com_nalet_katalog_itemsources`)
+	query(t, st, `{ items { id hasOriginal } }`)                              // the catalog's migrations seen in place
+	storetest.Exec(t, st, `DROP TABLE com_nalet_katalog_itemsources CASCADE`) // and the view of migration 055 that reads it
 	resp := MustSchema(NewResolver(st, testConfig, Services{})).Exec(as(admin),
 		`{ items { id originalBytes packageBytes hasOriginal } }`, "", nil)
 	if got := listed(t, string(resp.Data), "items"); !reflect.DeepEqual(idsOf(got), []string{"m1", "m2"}) ||

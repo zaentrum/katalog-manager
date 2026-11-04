@@ -110,6 +110,9 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	if err := st.EnsurePictureAreas(ctx); err != nil {
 		t.Fatalf("apply the picture areas migration: %v", err)
 	}
+	if err := st.EnsureChapterReads(ctx); err != nil {
+		t.Fatalf("apply the chapter reads migration: %v", err)
+	}
 	return st
 }
 
