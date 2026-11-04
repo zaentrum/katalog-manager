@@ -416,9 +416,11 @@ the base schema in the order of their numbers, and each is idempotent:
 - `055_chapter_reads.sql` keeps the last read of each title's chapters
   (`com_nalet_katalog_chapterreads`: a movie or an episode a row, its
   state, its reader, whether a none is confirmed, the original read, the
-  marks found and the chapters written, what read it, why it failed, the
-  catalog's last read of its source record, the backfill's claim of it,
-  its runs, its failures and its storage's, and an admin's acceptance),
+  original the chapters in the catalog were read of, the chapters a read
+  replaced (to undo), the marks found and the chapters written, what read
+  it, why it failed, the catalog's last read of its source record, the
+  backfill's claim of it, its runs, its failures and its storage's, and an
+  admin's decision),
   the backfill's claims (`com_nalet_katalog_chapterclaims`), and the view
   of the titles whose original is still needed for their chapters
   (`com_nalet_katalog_chaptersmissing`), with SELECT on all three for the
@@ -1373,9 +1375,17 @@ catalog. Two readers read them. The analyzer reads the original's header
 the backfill below. The catalog reads the original's source record
 (`sources/<id>/ffprobe.json` beside its `source.json`: ffprobe's whole
 probe of the file as the library recorded it, its chapters among it, a
-small JSON file that stays when the original is retired). The catalog
-keeps each title's last read (migration 055): of which original, by which
-reader, what it found, in the transaction that writes the chapters.
+small JSON file that stays when the original is retired), and takes it only
+when it is the probe its `source.json` names (`probe.sha256`, of its bytes)
+and of the original the catalog holds (`file.sizeBytes`, the probe's
+`format.size` where it gives one, and the catalog's size of the original):
+any other record can't say. The catalog keeps each title's last read
+(migration 055): of which original, by which reader, what it found, which
+original the chapters in the catalog were read of (`rowsSourceId`; none for
+chapters of no original known: written before the reads were kept, by a PUT
+without a read, after a `DELETE`, or by the chapters database), and the
+chapters a read replaced last (`replaced`), in the transaction that writes
+the chapters.
 
 The analyzer's side, for the service account and admins:
 
@@ -1387,15 +1397,17 @@ The analyzer's side, for the service account and admins:
   "fileSize", "found", "error", "transient", "note", "probe", "seconds"}`,
   what the read of the header was, and the `token` of the backfill's claim
   it read for, the catalog keeps the read and answers it (below). A PUT
-  without `read` writes the chapters as it always did, of no known
-  original: they settle nothing. `{"released": true, "token"}` gives a
-  title the backfill handed out back unread; it waits 15 minutes. 400 for
+  without `read` writes the chapters as it always did, of no original known:
+  they settle nothing, and a `DELETE` leaves the title none of any.
+  `{"released": true, "token"}` gives a title the backfill handed out back
+  unread; it waits 15 minutes. 400 for
   chapters or a read that can't be taken (a failed read with chapters, a
   read with neither, a series), 404 for no such item. A catalog without
   migration 055 writes the chapters a read found and keeps no read; a read
   that failed or found none answers 503 there, and changes nothing.
 - `GET /api/chapters/items/{id}` answers the title's `chapters`, its last
-  `read` (`state`, `readFrom`, `confirmed`, `sourceId`, `path`, `fileSize`,
+  `read` (`state`, `readFrom`, `confirmed`, `sourceId`, `rowsSourceId`,
+  `replaced` (`{"at", "by", "sourceId", "chapters"}`), `path`, `fileSize`,
   `found`, `written`, `probe`, `seconds`, `reason`, `readAt`,
   `recordSourceId`, `recordAt`, `recordNote`, `attempts`, `failures`,
   `transients`, `nextAttemptAt`, `claimedAt`, `acceptedAt`, `acceptedBy`;
@@ -1414,21 +1426,44 @@ of the item's versions, the first original that version was made of; else
 the source of the item's primary asset of that path. A read leaves its
 title in one of these states:
 
-- `read`: chapters found and written. A read of the header that found
-  chapters writes them, in place of the title's.
+- `read`: chapters found and written. A read's chapters replace the
+  chapters of another original, and those of no original known when they
+  are as many or more; the chapters they replace are kept on the read
+  (`replaced`: when, by which reader, of which original, and they), and an
+  admin's `revertChapterReplacement` (GraphQL) puts them back as the
+  title's, keeping the read's to undo in turn. Chapters in the catalog that
+  are the read's (as many, each starting within a millisecond, of the same
+  title) are kept as they are, now of that original. Fewer than those of no
+  original known, or than an earlier read of the same original wrote, hold
+  the title (`held`).
 - `none`: the original holds no chapter with a length (`found` the marks it
-  held). A read of the header that finds none never deletes chapters, and
-  leaves those read before of the same original as they are, and a none of
-  it confirmed before; otherwise it
-  is held against the original's source record: where the record holds
-  chapters they are written, read from it (`readFrom` `record`); where the
-  record holds none with a length, or the compliance check's record of that
-  original says it holds no chapter at all, the none is `confirmed`; where
-  the record can't be read and the compliance check's says the original has
-  chapters, the read counts as a failure; where nothing can say, the none
-  stays unconfirmed and settles nothing, and the record is read again a day
-  later. ffprobe cannot tell a file cut short before its chapters from one
-  without them: only the record can.
+  held). A read of the header that finds none leaves the chapters read
+  before of the same original as they are, and a none of it confirmed
+  before; otherwise it is held against the original's source record: where
+  the record holds chapters they are taken as a read's, read from it
+  (`readFrom` `record`); where the record holds none with a length, or the
+  compliance check's record of that original says it holds no chapter at
+  all, the none is `confirmed`, and the chapters of another original (one
+  the title had before its file was replaced) go with it, kept to undo;
+  where the record can't be read and the compliance check's says the
+  original has chapters, the read counts as a failure; where nothing can
+  say, the none stays unconfirmed, takes no chapter away and settles
+  nothing, and the record is read again a day later. A none never deletes
+  chapters of no original known: it holds the title. ffprobe cannot tell a
+  file cut short before its chapters from one without them: only the record
+  can.
+- `held`: what a read found and the chapters in the catalog disagree (fewer
+  chapters, or none, than those of no original known; fewer than an earlier
+  read of the same original wrote), or the record's marks lie past the
+  file's end and do not fit it an hour earlier. Its chapters stay as they
+  are (a read that fails leaves it held), it is neither handed out nor its
+  record read again, and its original is kept until an admin's
+  `acceptChapterReads(items, take)` decides:
+  `CATALOG` takes the chapters in the catalog as the title's, now of its
+  current original (none, when it has none); `RECORD` its source record's,
+  which replace the catalog's (kept to undo), or none, where its marks have
+  no place in the file. A read of another original holds nothing of the
+  current one.
 - `failed`: the last read failed (`reason`), and the title's chapters stay
   as they are. A failure of the storage or of the worker (`transient`: no
   file to read, no answer in time, an error of the storage, a lease that
@@ -1440,8 +1475,9 @@ title in one of these states:
   only says why.
 - `unreadable`: the fifth counted failure in a row, at least 15 hours after
   the first. It is handed out no more, and settles nothing by itself: an
-  admin's `acceptChapterReads` (GraphQL) accepts it (`acceptedAt`,
-  `acceptedBy`), and then its original may go without its chapters.
+  admin's `acceptChapterReads` (GraphQL, `take` `CATALOG`) accepts it
+  (`acceptedAt`, `acceptedBy`), and then its original may go without its
+  chapters.
 - `pending`: handed out, nothing reported yet.
 
 A report ends the claim its `token` names and no other: the analyzer's
@@ -1458,15 +1494,17 @@ title: `item_id`, `sourceid`, and its read's `state`, `failures`,
 `missing`) while it is a movie or an episode with an original present on
 disk and no read of its current original settled it. Its current original
 is its primary asset's source while that is present, else its newest
-present one. A read of the current original settles it when it wrote
-chapters that are in the catalog, is a confirmed none, or is an unreadable
-an admin accepted; so does the compliance check's record of the current
-original when it says the file holds no chapter at all (a boolean
+present one. While no read holds the current original for an admin, the
+title is settled when the chapters in the catalog were read of the current
+original (`rowssourceid`), when a read of it is a confirmed none and the
+catalog holds no chapter, or is an unreadable an admin accepted; and by the
+compliance check's record of the current original when it says the file
+holds no chapter at all and the catalog holds none (a boolean
 `srcEssence.chapters` false in a record whose key names that original). A
 record that is missing, unread, no boolean or of another original settles
-nothing: the view fails closed. Chapters written without a read, or read
-of another original (one a title had before its file was replaced), count
-for nothing until a read of the current original settles them, which the
+nothing: the view fails closed. Chapters of no original known, or read of
+another original (one a title had before its file was replaced), count for
+nothing until a read of the current original settles them, which the
 backfill's record step does without rewriting chapters that are the
 record's.
 
@@ -1475,23 +1513,37 @@ that found none from a title not read yet by the view itself, or by the
 read: `com_nalet_katalog_chapterreads.state` `none` with `confirmed`, of
 `sourceid` the current original, is a read that found none; no row,
 `pending`, `failed`, an unconfirmed `none`, an `unreadable` not accepted,
-or a read of another original, is a title not read yet.
+a `held` one, or a read of another original, is a title not read yet.
+Chapters written before migration 055 are of no original known, so every
+such title misses them until the record step has read its record (at most
+`chapters.backfill.records` an hour): a deletion wave reads the view only
+once the backfill, switched on, has run over them.
 
 The backfill reads the titles in the view. Each claim first has the
 catalog read the source records of titles whose current original's record
 it has not read yet (`recordSourceId`), at most
-`chapters.backfill.records` an hour, 50 a claim, ten seconds at most: a
-record that holds chapters settles the title with them (the chapters in the
-catalog are kept as they are when they are the record's), one whose marks
-have no length settles it as a confirmed none (a record never deletes
-chapters); one that can't say (no probe written, no chapters list in it,
-an error of the storage) is noted (`recordNote`), and only then is the
-title handed out to the analyzer. Titles whose version is complete go
-first (their originals are the deletion waves' next), movies before
-episodes, none of a disc image, nor an episode another's file covers, nor
-an unreadable one. A title whose original was retired with no chapters in
-the catalog has them restored from its last original's record, after
-those (unless the compliance check's record of it says it holds none).
+`chapters.backfill.records` an hour, 50 a claim, ten seconds at most. It
+reads a record's chapters as the analyzer reads a header (the marks in
+their order, a mark without a length left out); marks that all lie past the
+file's end, as a broadcast's from 01:00:00 do, are read an hour earlier
+when every one of them fits the file so, in order, and otherwise hold the
+title: they are never taken for a file without chapters, as a single mark
+of no length at its start is. A record that says takes the title's
+chapters as a read does (above): its chapters settle it (those in the
+catalog kept as they are when they are the record's), one that holds no
+chapter with a length settles it as a confirmed none, the chapters of
+another original going with it; chapters of no original known it never
+deletes, nor replaces with fewer: it holds the title. One that can't say (no
+probe written, no chapters list in it, not the probe its `source.json`
+names, of another file, an error of the storage) is noted (`recordNote`),
+and only then is the title handed out to the analyzer. Titles whose
+version is complete go first (their originals are the deletion waves'
+next), movies before episodes, none of a disc image, nor an episode
+another's file covers, nor an unreadable or a held one. A title whose
+original was retired with no chapters in the catalog has them restored
+from its last original's record, after those (unless the compliance
+check's record of it says it holds none; a record whose marks do not fit
+the file holds no retired original, there being none to keep).
 The settings are read on every claim, so an instance starts it, slows it
 or moves its hours without a restart:
 
@@ -1516,10 +1568,11 @@ backfill resumes where it was after a restart of either side, and one
 instance hands out titles at a time (an advisory lock). `chapterReads`
 (GraphQL, admins) says how far it is: the titles that miss their chapters
 (`missing`, `missingPackaged`), the reads by what they found (`read`,
-`fromRecord`, `none`, `unconfirmed`, `unreadable`, `accepted`, `failed`),
-those handed out now and in the last hour, the records read in the last
-hour, when the last read was reported, the settings as read and why it
-reads nothing now.
+`fromRecord`, `none`, `unconfirmed`, `unreadable`, `accepted`, `failed`,
+`held`), the titles whose chapters a read replaced (`replaced`), those
+handed out now and in the last hour, the records read in the last hour,
+when the last read was reported, the settings as read and why it reads
+nothing now.
 
 ## Ingest
 
