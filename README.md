@@ -1431,8 +1431,8 @@ in; an extra's while its package is the one measured (one from before the
 library: measured since it was packaged). A title whose file was replaced
 has its old area kept and not served, and is measured again.
 
-The backfill hands out the titles without an area of what they play now,
-movies first, then episodes, then extras. A movie or an episode is measured
+The backfill hands out the titles without an area of what they play now:
+movies, episodes and extras. A movie or an episode is measured
 of its original while that is on disk, else of its package (the playlist of
 its largest video rendition): an original has a keyframe at its cuts, a
 package's encoded rung one every 6 s and none at a cut, of which the
@@ -1447,10 +1447,19 @@ than the analyzer's that asks, one it could not tell of 30 days ago (but
 not a package it could not tell for its keyframes' gaps, `sampling.doubt`
 `gap`, nor a title too costly to measure, `cost`: those answers stay until
 the file or the method changes), one a package could not tell while the
-original is there, one whose area is of another file. No title is measured
-again within a day of its last measurement. A title given back unmeasured
-waits 15 minutes before it is handed out again, twice as long after each
-release in a row, a day at most, and the titles after it go meanwhile.
+original is there, one whose area is of another file. Of the titles alike
+so far, those whose frame could hold bars go first, as the compliance
+check's record of its size (`resolution`) tells it: 16:9 or 4:3 (its width
+over its height within 0.03 of either), 576 lines or fewer (SD,
+anamorphic), or a size it doesn't tell; then those whose frame is cut to
+its picture (as 1920x800, which seldom holds a bar); then the extras. Of
+each, the newest packages first, by when the complete version completed:
+a title just packaged is the nearest to having its original retired, and a
+new title gets its fit soonest; then movies before episodes. No title is
+measured again within a day of its last measurement. A title given back
+unmeasured waits 15 minutes before it is handed out again, twice as long
+after each release in a row, a day at most, and the titles after it go
+meanwhile.
 
 A run that had its whole lease (not cut short by the window's end, nor
 given back before the lease's end because its worker stopped) and did not
