@@ -2522,7 +2522,10 @@ removal's errors.
 The verifier verifies each new version once, with `library.verify.new` on
 (the default), every minute, in one instance at a time: a complete version
 no one verified (the retire job, the fill run of a migration's checksums),
-one at a time, the one completed first first, in full — its chain and every
+one at a time, the one completed last first (its files, written just now,
+are the likeliest to be in the share's cache still, and its original the
+nearest to being retired; those that wait are verified once the new ones
+are, when packaging is quiet), in full — its chain and every
 file's hash against its checksums — and notes it as the fill run does,
 verified in full at the moment its verification began, only while the
 version is what it read (complete, in that folder, of the package its
