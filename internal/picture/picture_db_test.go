@@ -72,6 +72,14 @@ func (l lib) original(st *store.Store, item, source string) string {
 	return p
 }
 
+// sized gives the item the compliance check's record of its video's size,
+// W×H as the check writes it; an empty size is a record that tells none yet.
+func sized(t *testing.T, st *store.Store, item, size string) {
+	t.Helper()
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_compliance (item_id, kind, ruleshash, resolution)
+		SELECT id, lower(type), 'rules', NULLIF($2, '') FROM com_nalet_katalog_items WHERE id = $1`, item, size)
+}
+
 func setting(t *testing.T, st *store.Store, key, value string) {
 	t.Helper()
 	storetest.Exec(t, st, `DELETE FROM com_nalet_katalog_settings WHERE key = $1`, key)
@@ -783,6 +791,103 @@ func TestAnUnknownOfAnOlderMethodOfItsOriginalGoesFirst(t *testing.T) {
 	// of the analyzer's own method, the unknowns stand
 	if got := claim("picture/4"); got != "m1,m2,m3" {
 		t.Errorf("of the same method: handed out %v, want m1,m2,m3", got)
+	}
+}
+
+// Of the titles alike otherwise, the backfill hands out first those whose
+// frame could hold bars, as the compliance check's record of its size says:
+// 16:9 or 4:3 (its width over its height within 0.03 of either), 576 lines or
+// fewer, or a size it doesn't tell; then those whose frame is cut to its
+// picture, then the extras. The titles with their original still go first.
+func TestAFrameThatCouldHoldBarsGoesFirst(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	now := night
+	l := lib{t, t.TempDir()}
+	s := service(t, st, l.root, &now)
+	for id, size := range map[string]string{
+		"m1": "1920×800", // cut to its picture
+		"m2": "1920×1080",
+		"m3": "1440×1080",
+		"m4": "720×576",   // SD, its pixels maybe not square
+		"m5": "1920×1072", // within 0.03 of 16:9
+		"m6": "1920×1040", // not: cut to its picture
+		"m7": "",          // a record that tells no size yet
+	} {
+		storetest.AddItem(t, st, id, "movie", "Film "+id, "")
+		l.original(st, id, "s"+id)
+		sized(t, st, id, size)
+	}
+	storetest.AddItem(t, st, "m8", "movie", "Film m8", "") // no record at all
+	l.original(st, "m8", "sm8")
+	// packaged, their originals gone
+	storetest.AddItem(t, st, "m9", "movie", "Film m9", "")
+	storetest.AddItem(t, st, "s1", "series", "A Show", "")
+	storetest.AddItem(t, st, "e1", "episode", "Pilot", "s1")
+	for id, size := range map[string]string{"m9": "1920×1080", "e1": "3840×1600"} {
+		l.version(st, id, "v"+id, "complete", "s"+id, false)
+		sized(t, st, id, size)
+	}
+	xdir := filepath.Join(l.root, "movies", "m9", "extras", "x1")
+	l.file("movies/m9/extras/x1/package.json", `{"renditions": {"video": [{"id": "v0", "dir": "hls/v0", "width": 1920, "height": 1080}]}}`)
+	l.file("movies/m9/extras/x1/hls/v0/playlist.m3u8", "#EXTM3U\n")
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemextras (id, item_id, kind, title, registeredby, state,
+		packagepath, packagedat, packageid) VALUES ('x1', 'm9', 'trailer', 'Trailer', 'api', 'ready', $1, now(), 'p1')`, xdir)
+	setting(t, st, SettingBackfill, "on")
+	setting(t, st, SettingInflight, "20")
+	c, err := s.Claim(ctx, "analyzer-0", 20, "picture/2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, j := range c.Items {
+		got = append(got, j.ID)
+	}
+	if strings.Join(got, ",") != "m2,m3,m4,m5,m7,m8,m1,m6,m9,e1,x1" {
+		t.Errorf("handed out %v, want m2,m3,m4,m5,m7,m8 (could hold bars), m1,m6 (cut to the picture), "+
+			"then without their original m9 (could hold bars), e1 (cut), x1 (an extra)", got)
+	}
+}
+
+// Of the titles alike otherwise, the backfill hands out first the one whose
+// complete version completed last, movies before episodes only then: a title
+// just packaged has the original nearest to going, and a new one gets its fit
+// soonest. A title without a complete version goes after them, and a frame
+// cut to its picture after every one that could hold bars, however new its
+// package.
+func TestTheNewestPackagesGoFirst(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	now := night
+	l := lib{t, t.TempDir()}
+	s := service(t, st, l.root, &now)
+	storetest.AddItem(t, st, "s1", "series", "A Show", "")
+	storetest.AddItem(t, st, "e1", "episode", "Pilot", "s1")
+	for _, id := range []string{"m1", "m2", "m3", "m4"} {
+		storetest.AddItem(t, st, id, "movie", "Film "+id, "")
+	}
+	for id, ago := range map[string]time.Duration{"m1": 48 * time.Hour, "m2": time.Hour, "e1": 30 * time.Minute,
+		"m4": time.Minute} {
+		l.original(st, id, "s"+id)
+		l.version(st, id, "v"+id, "complete", "s"+id, false)
+		storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET completedat = $1 WHERE id = $2`,
+			night.Add(-ago), "v"+id)
+	}
+	l.original(st, "m3", "sm3")
+	sized(t, st, "m4", "1920×800")
+	setting(t, st, SettingBackfill, "on")
+	setting(t, st, SettingInflight, "10")
+	c, err := s.Claim(ctx, "analyzer-0", 10, "picture/2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, j := range c.Items {
+		got = append(got, j.ID)
+	}
+	if strings.Join(got, ",") != "e1,m2,m1,m3,m4" {
+		t.Errorf("handed out %v, want e1,m2,m1 (the newest package first), m3 (no complete version), "+
+			"m4 (cut to the picture)", got)
 	}
 }
 

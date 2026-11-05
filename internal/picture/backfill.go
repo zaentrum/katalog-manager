@@ -16,14 +16,19 @@ package picture
 // NeedsOriginal), and of them first those it could not tell of their
 // original by an older method than the analyzer's that asks (but not those
 // too costly to measure): what a new method tells better. The titles never
-// measured go next (movies, then episodes, then extras), then those
-// measured again: of an older method than the
+// measured go next, then those measured again: of an older method than the
 // analyzer's that asks, one it could not tell of a month ago
 // (UnknownAgain) but not a package it could not tell for its keyframes'
 // gaps (that answer stays until the package changes), one a package could
 // not tell while the original is there, one whose area is of another file
-// than the title plays now. No title is measured again within a day of its
-// last measurement (MeasureAgainAfter), whatever it plays.
+// than the title plays now. Of the titles alike so far, those whose frame
+// could hold bars go first (16:9 or 4:3, SD, or of a size the compliance
+// check doesn't tell), then those whose frame is cut to its picture (as
+// 1920x800: no bars to find, as a rule), then the extras; of each, the
+// newest packages first (a title just packaged is the nearest to having its
+// original retired, and a new title gets its fit soonest), then movies
+// before episodes. No title is measured again within a day of its last
+// measurement (MeasureAgainAfter), whatever it plays.
 
 import (
 	"context"
@@ -475,7 +480,13 @@ func idle(why string, after time.Duration) Claim {
 // not claimed now, not waiting out a failure's or a release's backoff ($1 is
 // now), and not measured since $5 (a day ago); the titles with their original
 // first, of them first one its original could not tell by an older method
-// than $3 (not for its cost), then those never measured; with each, its
+// than $3 (not for its cost), then those never measured; of the titles alike
+// so far, first those whose frame could hold bars as the compliance check's
+// record of its size (W×H) tells it: 16:9 or 4:3 (its width over its height
+// within 0.03 of either), 576 lines or fewer (SD, anamorphic), or a size it
+// doesn't tell; then those whose frame is cut to its picture, then the
+// extras; of each, the title whose complete version completed last first (a
+// title without one last), then movies before episodes; with each, its
 // costly runs in a row.
 var candidatesSQL = `
 	SELECT t.kind, t.id, t.item_id, t.type, t.durationms, COALESCE(pa.costlyruns, 0)
@@ -483,8 +494,15 @@ var candidatesSQL = `
 		SELECT 'item' AS kind, i.id, i.id AS item_id, i.type, i.durationms,
 		       CASE i.type WHEN 'movie' THEN 0 ELSE 1 END AS rank,
 		       EXISTS (SELECT 1 FROM com_nalet_katalog_playbackassets a
-		               WHERE a.item_id = i.id AND a.isprimary AND COALESCE(a.kind, 'primary') = 'primary') AS original
+		               WHERE a.item_id = i.id AND a.isprimary AND COALESCE(a.kind, 'primary') = 'primary') AS original,
+		       CASE WHEN f.h > 576 AND abs(f.w / f.h - 16.0 / 9) > 0.03 AND abs(f.w / f.h - 4.0 / 3) > 0.03
+		            THEN 1 ELSE 0 END AS frame,
+		       cv.completedat
 		FROM com_nalet_katalog_items i
+		LEFT JOIN (SELECT item_id, split_part(resolution, '×', 1)::numeric AS w,
+		                  split_part(resolution, '×', 2)::numeric AS h
+		           FROM com_nalet_katalog_compliance WHERE resolution ~ '^[1-9][0-9]*×[1-9][0-9]*$') f ON f.item_id = i.id
+		LEFT JOIN com_nalet_katalog_itemversions cv ON cv.item_id = i.id AND cv.state = 'complete'
 		WHERE i.type IN ('movie', 'episode') AND i.coveredby IS NULL AND NOT ` + processing.DiscImageOf("i.id") + `
 		  AND (EXISTS (SELECT 1 FROM com_nalet_katalog_itemversions v
 		               WHERE v.item_id = i.id AND v.state = 'complete' AND v.dir IS NOT NULL)
@@ -492,7 +510,7 @@ var candidatesSQL = `
 		               WHERE a.item_id = i.id AND ((a.isprimary AND COALESCE(a.kind, 'primary') = 'primary')
 		                                          OR a.kind = 'packaged')))
 		UNION ALL
-		SELECT 'extra', x.id, x.item_id, 'extra', x.durationms, 2, false
+		SELECT 'extra', x.id, x.item_id, 'extra', x.durationms, 2, false, 2, NULL
 		FROM com_nalet_katalog_itemextras x
 		WHERE x.removedat IS NULL AND x.packagedat IS NOT NULL AND x.packagepath IS NOT NULL
 	) t
@@ -510,7 +528,7 @@ var candidatesSQL = `
 	         NOT (pa.state IS NOT DISTINCT FROM 'unknown' AND $3 <> '' AND pa.method IS DISTINCT FROM $3
 	              AND pa.measuredon IS NOT DISTINCT FROM 'original'
 	              AND NOT COALESCE(pa.sampling->'doubt' @> '["cost"]'::jsonb, false)),
-	         pa.measuredat IS NOT NULL, t.rank, t.id
+	         pa.measuredat IS NOT NULL, t.frame, t.completedat DESC NULLS LAST, t.rank, t.id
 	LIMIT $2`
 
 // expire takes the claims whose lease ended for failures of their titles:
