@@ -2528,7 +2528,7 @@ verified in full at the moment its verification began, only while the
 version is what it read (complete, in that folder, of the package its
 `package.json` names, and noted by no one meanwhile). It reads the library
 and writes nothing in it, all of it on one connection, the one that holds
-its lock, and a shutdown stops it at the file it is at, nothing noted (one
+its lock, and a shutdown stops it at the files it is at, nothing noted (one
 that comes once every file is hashed lets it note the version). A
 version whose chain does not hold, whose checksums are pending, whose folder
 lies outside the library or whose `package.json` is another package's, one
@@ -2542,7 +2542,13 @@ originals to retire takes a version verified once at least, so it takes a
 title processed again once the verifier has verified its new version. The
 retire job checks the version again before it retires an original: its
 chain alone within `library.verify.maxAge` of a full verification, every
-file's hash after.
+file's hash after. A verification looks at four of the package's files at
+once (in full it hashes them; of the chain alone it hashes the record and
+reads the others' sizes): a package's files are many and most of them
+small, and on a network share a file's open and first read cost more than
+its bytes, so that read one after another the share mostly waits. Of
+several files that do not hold it names the first by name, as reading them
+one after another does.
 
 Once a title's original is retired, nothing reads it any more: reencodeItem
 says so, naming the event (a better version is a new arrival:
@@ -2827,8 +2833,8 @@ run done with a title it would retire (`FROM_RUN`), with `library.layout`
 `legacy` (`LEGACY`) or without migration 052 (`UNAVAILABLE`). It retires one
 original at a time, each while the retire job runs no pass (it holds the
 job's lock), at most `library.retire.rate` a minute, the job's own pace: the
-verifications read the share, and nothing is read or moved in parallel. A dry
-run keeps no pace.
+verifications read the share (four files at once), and no two titles are
+read or moved in parallel. A dry run keeps no pace.
 
 `retireRun` is the run begun last, running or not (null when none ran):
 its `state` (`RUNNING`, `DONE`, `STOPPED` or `FAILED`, the last two with their
