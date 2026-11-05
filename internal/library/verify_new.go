@@ -36,10 +36,11 @@ import (
 // VerifyNewBackoffMax (the waits are the process's: a restart tries each
 // again). One that went or that another verified meanwhile waits for no one.
 // It reads the library and writes nothing in it, all of it on one
-// connection, the one that holds its lock; a shutdown stops it at the file
-// it is at, and one that comes once every file is hashed lets the note be
-// written. It runs with library.layout=v2 and library.verify.new on (the
-// default), every VerifyNewInterval, in one instance at a time.
+// connection, the one that holds its lock; a shutdown stops it at the files
+// it is at (a verification reads verifyReads at once), and one that comes
+// once every file is hashed lets the note be written. It runs with
+// library.layout=v2 and library.verify.new on (the default), every
+// VerifyNewInterval, in one instance at a time.
 
 // VerifyNewInterval is how often the verifier looks for versions to verify.
 const VerifyNewInterval = time.Minute
@@ -213,7 +214,7 @@ func (v *Verifier) next(ctx context.Context, q Querier) (*waiting, error) {
 
 // verify verifies the version w in full and notes it verified on q, or
 // leaves it, saying why; it counts what it did in rep. An error is the
-// catalog's; ctx ending stops it at the file it is at, nothing noted, and
+// catalog's; ctx ending stops it at the files it is at, nothing noted, and
 // once every file is hashed it notes the version all the same.
 func (v *Verifier) verify(ctx context.Context, q Querier, w waiting, rep *VerifyReport) error {
 	leave := func(why string) {

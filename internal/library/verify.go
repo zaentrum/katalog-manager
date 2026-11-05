@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // The records of a version folder and of an extra's folder, and the chain
@@ -69,7 +70,9 @@ var ErrChecksumsPending = errors.New("its package's checksums are pending: no fi
 // hash of package.json, package.json's checksums the hash of
 // checksums.sha256, which lists exactly version.json and the files under
 // hls/, subs/ and trickplay/, as many as it says and of the bytes it says,
-// and version.json's digest. full hashes every listed file too.
+// and version.json's digest. full hashes every listed file too, verifyReads
+// of them at once: of several that do not hold, the error names the first
+// by name, as hashing them one after another does.
 //
 // A subtitle attached to the version (attached.go), after its package
 // completed or before, while the version was taken in, is no file of the
@@ -88,18 +91,21 @@ func VerifyVersion(dir string, full bool) (*Chain, error) {
 }
 
 // VerifyVersionContext is VerifyVersion, given up once ctx ends: its error
-// then names the file it was at.
+// then names the file it was at, the first by name of those it was reading.
 func VerifyVersionContext(ctx context.Context, dir string, full bool) (*Chain, error) {
-	return verifyChain(ctx, dir, VersionFile, versionPackageDirs, full)
+	return verifyChain(ctx, dir, VersionFile, versionPackageDirs, full, verifyReads)
 }
 
 // VerifyExtra checks the chain of an extra's folder as VerifyVersion checks a
 // version's, its record extra.json.
 func VerifyExtra(dir string, full bool) (*Chain, error) {
-	return verifyChain(context.Background(), dir, ExtraFile, extraPackageDirs, full)
+	return verifyChain(context.Background(), dir, ExtraFile, extraPackageDirs, full, verifyReads)
 }
 
-func verifyChain(ctx context.Context, dir, record string, dirs []string, full bool) (*Chain, error) {
+// verifyChain checks the chain of the folder dir, its record record and its
+// package's files under dirs, reading reads of its files at once
+// (verifyReads; a test reads one at a time to compare).
+func verifyChain(ctx context.Context, dir, record string, dirs []string, full bool, reads int) (*Chain, error) {
 	c := &Chain{}
 	at := func(name string) string { return filepath.Join(dir, name) }
 	complete, err := os.ReadFile(at(CompleteFile))
@@ -182,15 +188,21 @@ func verifyChain(ctx context.Context, dir, record string, dirs []string, full bo
 		}
 	}
 	if full {
-		for _, rel := range attached {
+		// an attached subtitle's bytes are no package's: they count for none
+		subtitle := func(ctx context.Context, i int) (int64, error) {
+			rel := attached[i]
 			sum, _ := AttachedSum(filepath.Base(rel))
-			digest, _, err := SHA256FileContext(ctx, at(rel))
+			digest, _, err := hashFile(ctx, at(rel))
 			if err != nil {
-				return nil, broken(at(rel), "%v", err)
+				return 0, broken(at(rel), "%v", err)
 			}
 			if digest != sum {
-				return nil, broken(at(rel), "an attached subtitle whose hash is sha256:%s, and its name says %s", digest, sum)
+				return 0, broken(at(rel), "an attached subtitle whose hash is sha256:%s, and its name says %s", digest, sum)
 			}
+			return 0, nil
+		}
+		if _, err := checkFiles(ctx, reads, len(attached), subtitle); err != nil {
+			return nil, err
 		}
 	}
 	if c.Pending {
@@ -237,24 +249,26 @@ func verifyChain(ctx context.Context, dir, record string, dirs []string, full bo
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	for _, name := range names {
-		path := at(name)
+	listed := func(ctx context.Context, i int) (int64, error) {
+		name, path := names[i], at(names[i])
 		if name == record || full {
-			digest, size, err := SHA256FileContext(ctx, path)
+			digest, size, err := hashFile(ctx, path)
 			if err != nil {
-				return nil, broken(path, "%v", err)
+				return 0, broken(path, "%v", err)
 			}
 			if digest != c.Listed[name] {
-				return nil, broken(path, "its hash is sha256:%s, and checksums.sha256 lists %s", digest, c.Listed[name])
+				return 0, broken(path, "its hash is sha256:%s, and checksums.sha256 lists %s", digest, c.Listed[name])
 			}
-			c.SizeBytes += size
-			continue
+			return size, nil
 		}
 		fi, err := os.Stat(path)
 		if err != nil {
-			return nil, broken(path, "%v", err)
+			return 0, broken(path, "%v", err)
 		}
-		c.SizeBytes += fi.Size()
+		return fi.Size(), nil
+	}
+	if c.SizeBytes, err = checkFiles(ctx, reads, len(names), listed); err != nil {
+		return nil, err
 	}
 	if n, ok := number(sums, "bytes"); ok && n != float64(c.SizeBytes) {
 		return nil, broken(at(SumsFile), "the files it lists hold %d bytes, and package.json says %v", c.SizeBytes, n)
@@ -262,6 +276,108 @@ func verifyChain(ctx context.Context, dir, record string, dirs []string, full bo
 		return nil, broken(at(PackageFile), "its checksums say no bytes")
 	}
 	return c, nil
+}
+
+// verifyReads is how many files of a package a verification reads at once.
+// A package's files are many and most of them small (an episode's are some
+// thousands, of a few hundred kilobytes each), and on a network share over
+// slow disks a file's open and first read, a round trip and a seek, cost
+// more than its bytes: read one after another, a verification waits on the
+// share most of the time. Four reads at once wait together, some four times
+// as fast while the waits are the cost; more would add seeks among the
+// packager's writes and the players' reads, which the same disks serve, for
+// less and less. A verification holds four of SHA256FileContext's buffers (a
+// megabyte each) at most.
+const verifyReads = 4
+
+// hashFile hashes a file of a package as a verification reads it:
+// SHA256FileContext (a test's stand in for a share slow to answer, or one
+// that fails a read).
+var hashFile = SHA256FileContext
+
+// errUnchecked is the answer of a file checkFiles did not check, which it
+// never gives: it checks every file before the first that fails.
+var errUnchecked = errors.New("the file was not checked")
+
+// checkFiles checks the files 0 to n-1 with check, reads of them at once, and
+// answers the bytes check counted of them, summed, or the error of the first
+// of them, in that order, whose check failed: what checking them one after
+// another answers, whichever finishes first. The files are handed out in
+// their order, so that every file before one that fails was handed out: once
+// one fails, no file is handed out any more, those after it being read are
+// given up (the context their check is given ends), and those before it are
+// read to their end, as one of them failing is the error to answer. ctx
+// ending ends the context of every check; every check has returned when
+// checkFiles does.
+func checkFiles(ctx context.Context, reads, n int, check func(ctx context.Context, i int) (int64, error)) (int64, error) {
+	if n == 0 {
+		return 0, nil
+	}
+	sizes, errs := make([]int64, n), make([]error, n)
+	for i := range errs {
+		errs[i] = errUnchecked // until its check answers: a file not checked holds nothing
+	}
+	// a reader reads the file at (-1: none) with ctx, which stop ends
+	type reader struct {
+		at   int
+		ctx  context.Context
+		stop context.CancelFunc
+	}
+	readers := make([]reader, max(1, min(reads, n)))
+	for r := range readers {
+		readers[r].at = -1
+		readers[r].ctx, readers[r].stop = context.WithCancel(ctx)
+	}
+	var mu sync.Mutex
+	next, first := 0, n // the file handed out next; the first whose check failed, n for none
+	take := func(r int) (int, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		readers[r].at = -1
+		if next >= first { // every file handed out, or one failed
+			return 0, false
+		}
+		readers[r].at, next = next, next+1
+		return readers[r].at, true
+	}
+	answer := func(i int, size int64, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		sizes[i], errs[i] = size, err
+		if err != nil && i < first {
+			first = i
+			for _, x := range readers {
+				if x.at > i {
+					x.stop() // its file comes after one that failed: no one needs its answer
+				}
+			}
+		}
+	}
+	var wg sync.WaitGroup
+	for r := range readers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer readers[r].stop()
+			for {
+				i, ok := take(r)
+				if !ok {
+					return
+				}
+				size, err := check(readers[r].ctx, i)
+				answer(i, size, err)
+			}
+		}()
+	}
+	wg.Wait()
+	var total int64
+	for i := range n {
+		if errs[i] != nil {
+			return 0, errs[i]
+		}
+		total += sizes[i]
+	}
+	return total, nil
 }
 
 // str is d's key as a string, "" when it is none.
