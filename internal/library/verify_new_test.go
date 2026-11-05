@@ -326,9 +326,9 @@ func TestTheVerifierReadsNoOtherVersion(t *testing.T) {
 	}
 }
 
-// The versions waiting are verified in one pass, the one completed first
+// The versions waiting are verified in one pass, the one completed last
 // first.
-func TestTheVerifierVerifiesTheVersionCompletedFirstFirst(t *testing.T) {
+func TestTheVerifierVerifiesTheVersionCompletedLastFirst(t *testing.T) {
 	f := newRetireFixture(t)
 	f.addMovie(t, ltFilm, ltSource, ltVersion, ltPackage, "Another Film")
 	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_itemversions SET completedat = now() - interval '3 hours' WHERE id = $1`,
@@ -343,8 +343,8 @@ func TestTheVerifierVerifiesTheVersionCompletedFirstFirst(t *testing.T) {
 	if rep := verifyPass(t, v); rep.Verified != 2 || rep.Left != 0 {
 		t.Fatalf("the pass: %+v", rep)
 	}
-	if len(read) != 2 || read[0] != ltVersion || read[1] != rtVersion {
-		t.Errorf("read %v, want the other film's first", read)
+	if len(read) != 2 || read[0] != rtVersion || read[1] != ltVersion {
+		t.Errorf("read %v, want the film completed last first", read)
 	}
 }
 

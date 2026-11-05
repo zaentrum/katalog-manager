@@ -24,7 +24,10 @@ import (
 // library.verify.maxAge of a full verification), while a list of originals
 // to retire (retireOriginals) takes a version verified before. The verifier
 // verifies each complete version no one verified, one at a time, the one
-// completed first first, in full (every listed file's hash), and notes it as
+// completed last first (its files, written just now, are the likeliest to be
+// in the share's cache still, and its original the nearest to being retired;
+// those that wait are verified once the new ones are, when packaging is
+// quiet), in full (every listed file's hash), and notes it as
 // the fill run notes one: verifiedat the moment it began, verifiedlevel full,
 // only while the version is what it read (complete, in that folder, of the
 // package its package.json names, and noted by no one meanwhile). A version
@@ -202,7 +205,7 @@ func (v *Verifier) next(ctx context.Context, q Querier) (*waiting, error) {
 	err := q.QueryRow(ctx, `SELECT id, item_id, dir, packageid FROM com_nalet_katalog_itemversions
 		WHERE state = 'complete' AND verifiedat IS NULL AND dir IS NOT NULL AND packageid IS NOT NULL
 		  AND NOT (id = ANY($1::text[]))
-		ORDER BY completedat NULLS LAST, id LIMIT 1`, skip).Scan(&w.id, &w.itemID, &w.dir, &w.packageID)
+		ORDER BY completedat DESC NULLS LAST, id LIMIT 1`, skip).Scan(&w.id, &w.itemID, &w.dir, &w.packageID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
