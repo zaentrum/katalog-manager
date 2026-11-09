@@ -157,6 +157,17 @@ token without the claim is not capped.
 
 ## Data
 
+The base schema comes with the platform's chart (`files/sql/schema-postgres.sql` and
+`schema-extra.sql`, in the ConfigMap `katalog-schema`) and is applied before the service
+starts. One `items` table holds every type — `movie`, `series`, `season`, `episode`, and the
+scanner's `track` — and `parent_id` links an episode to its season or series. Beside it are
+`itemexternalids`, `genres` and `itemgenres`, `people` and `itempeople` (a role each),
+`itemtags`, `itemartwork` and `itemartworkdata` (the image bytes), `playbackassets` (path,
+codec, resolution, bit rate, size, hash, the primary flag), `subtitleassets`,
+`mediasegments`, `itemchapters`, `itemprocessingsteps`, `itemdiagnostics`,
+`itemtrailerlinks`, `scanjobs`, `enrichmentjobs` and `settings`, each with the
+`com_nalet_katalog_` prefix.
+
 The service reuses the existing `katalog` Postgres database **unchanged** — the
 lowercase `com_nalet_katalog_*` tables and the computed `katalogservice_*` views.
 No migration destroys data: the one that drops anything (035) drops only tables
@@ -1746,6 +1757,21 @@ handed out now and in the last hour, the records read in the last hour,
 when the last read was reported, the settings as read and why it reads
 nothing now.
 
+## Scanning
+
+`triggerScan` walks the scan root (`SCANNER_NFS_ROOT`, default `/var/lib/katalog/media`; with
+the library's v2 layout, `ARRIVALS_ROOT`) in a scan job of its own and returns the job's id at
+once. It takes in video files (`.mkv`, `.mp4`, `.avi`, `.mov`, `.m4v`, `.webm`) and the
+subtitle files beside them (`.srt`, `.vtt`, `.ass`, `.ssa`). Audio files (`.flac`, `.mp3`,
+`.ogg`, `.m4a`, `.opus`, `.wav`) become items of type `track`, which nothing plays yet.
+
+- A file under a `series/`, `tv/`, `shows/` or `tvshows/` folder, or whose name numbers an
+  episode (`S01E02`), is an episode; any other video is a movie.
+- The title is the file name with dots and underscores as spaces and the year taken out; the
+  year is the one in brackets, else the first from 1900 to 2099.
+- An item is keyed on its file's absolute path, so a later scan finds the same item and only
+  touches it: what enrichment set — the title, the sort title, the year — stays as it is.
+
 ## Ingest
 
 `POST /api/ingest` (an admin, the service account, an addon) takes a file
@@ -2852,6 +2878,12 @@ against), `result` (`RETIRED`, `SKIPPED`, `FAILED`, `WOULD_RETIRE`; null while
 it waits), `reason`, `bytes` and `at`.
 
 ## Configuration
+
+A bearer's issuer is `SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI` (or
+`OIDC_ISSUER`). Its audience is checked only with `KATALOG_AUDIENCE_REQUIRED=true`, against
+`KATALOG_AUDIENCE` (default `katalog`; the chart sets the instance's); otherwise any token of
+the issuer is accepted, and its roles decide what it may do ([who may do what](#who-may-do-what)).
+`NFS_ROOT` is an older name of `SCANNER_NFS_ROOT`.
 
 Env vars mirror the previous service so existing manifests keep working — see
 `internal/config/config.go`. Key ones: `SPRING_DATASOURCE_URL/USERNAME/PASSWORD`,
