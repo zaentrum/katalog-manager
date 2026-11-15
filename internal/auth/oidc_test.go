@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -55,16 +56,17 @@ func TestActor(t *testing.T) {
 	}
 }
 
-// TestNewJWTVerifier_DisabledAuthorizesAll confirms the disabled/blank-issuer
-// path still authorizes every caller as "anonymous", who may do anything: a
-// service with its auth off has nobody to tell apart.
+// TestNewJWTVerifier_DisabledAuthorizesAll confirms that a verifier switched
+// off on purpose (AUTH_DISABLED) authorizes every caller as "anonymous", who
+// may do anything, with an issuer or without one: a service with its auth
+// off has nobody to tell apart.
 func TestNewJWTVerifier_DisabledAuthorizesAll(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		issuer   string
 		disabled bool
 	}{
-		{"blank issuer", "", false},
+		{"auth disabled, no issuer", "", true},
 		{"auth disabled", "http://issuer.example/realms/zaentrum", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -81,5 +83,17 @@ func TestNewJWTVerifier_DisabledAuthorizesAll(t *testing.T) {
 				t.Fatal("the caller of a service with its auth off is not an admin")
 			}
 		})
+	}
+}
+
+// TestNewJWTVerifier_NoIssuerRefuses: without an issuer, and not switched off
+// on purpose, there is no verifier — the server refuses to start rather than
+// let every caller through.
+func TestNewJWTVerifier_NoIssuerRefuses(t *testing.T) {
+	for _, issuer := range []string{"", "   "} {
+		v, err := NewJWTVerifier(context.Background(), issuer, "chino", false, false)
+		if !errors.Is(err, ErrNoIssuer) || v != nil {
+			t.Fatalf("issuer %q: got verifier %v, error %v; want no verifier and ErrNoIssuer", issuer, v, err)
+		}
 	}
 }

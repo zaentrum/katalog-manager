@@ -13,6 +13,10 @@ import (
 )
 
 var (
+	// ErrNoIssuer is a server given no identity provider to check its callers'
+	// tokens against, and not told to run without sign-in.
+	ErrNoIssuer = errors.New("no identity provider: set SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI (or OIDC_ISSUER) to its issuer, or AUTH_DISABLED=true to run without sign-in")
+
 	errStreamKeyNotBase64 = errors.New("STREAM_SIGNING_KEY must be base64")
 	errStreamKeyTooShort  = errors.New("STREAM_SIGNING_KEY must be at least 16 bytes (base64-decoded)")
 )
@@ -29,7 +33,7 @@ type Principal struct {
 	// them.
 	Claims map[string]any
 	// Unrestricted is the caller of a service whose auth is off
-	// (AUTH_DISABLED, or no issuer): it may do anything.
+	// (AUTH_DISABLED): it may do anything.
 	Unrestricted bool
 	// streamCap is the rating cap a stream token carries (MaxRating); nil
 	// for one that carries none, and for a bearer, whose claims say.
@@ -63,8 +67,8 @@ func Actor(ctx context.Context, service string) string {
 
 // JWTVerifier validates bearer access tokens against an OIDC issuer's JWKS.
 // MVP semantics mirror the CAP service: issuer + signature + expiry only
-// (audience optional). A disabled verifier (no issuer configured, or
-// AuthDisabled) authorizes everything.
+// (audience optional). A disabled verifier (AuthDisabled) authorizes
+// everything.
 //
 // OIDC discovery is resolved LAZILY: the issuer's discovery document is fetched
 // once at construction (bounded), and on failure the constructor does NOT error
@@ -84,14 +88,19 @@ type JWTVerifier struct {
 	verifier *oidc.IDTokenVerifier // nil until discovery succeeds
 }
 
-// NewJWTVerifier builds a verifier. When disabled is true or issuer is blank,
-// every request is authorized (principal subject "anonymous", unrestricted:
-// a no-IdP dev convenience that must not run in a cluster). Otherwise it
-// attempts OIDC discovery once; discovery failure is non-fatal (see the type
-// doc) — the caller keeps running and the verifier self-heals in the background.
+// NewJWTVerifier builds a verifier. When disabled is true every request is
+// authorized (principal subject "anonymous", unrestricted: a no-IdP dev
+// convenience that must not run in a cluster). Otherwise an issuer is
+// required: without one it returns ErrNoIssuer, and the server does not
+// start. With one it attempts OIDC discovery once; discovery failure is
+// non-fatal (see the type doc) — the caller keeps running and the verifier
+// self-heals in the background.
 func NewJWTVerifier(ctx context.Context, issuer, audience string, audienceRequired, disabled bool) (*JWTVerifier, error) {
-	if disabled || issuer == "" {
+	if disabled {
 		return &JWTVerifier{disabled: true}, nil
+	}
+	if strings.TrimSpace(issuer) == "" {
+		return nil, ErrNoIssuer
 	}
 	cfg := &oidc.Config{SkipClientIDCheck: !audienceRequired}
 	if audienceRequired {

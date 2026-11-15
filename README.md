@@ -3446,7 +3446,8 @@ instances share is led by one of them, which cannot see the other's topics
 where the broker's ACLs keep them apart, and the other's enricher is given
 no partition and enriches nothing.
 `AUTH_DISABLED=true` turns off auth for local dev: every caller may then do
-anything.
+anything. It is the only way to: without an issuer, and without
+`AUTH_DISABLED=true`, the server refuses to start.
 
 Who may do what: `KATALOG_ADMIN_ROLE` (default `zaentrum-admin`, as the
 portal's `PORTAL_ADMIN_ROLE`) is the role an administrator's token carries,

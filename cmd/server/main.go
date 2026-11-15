@@ -311,8 +311,8 @@ func wire(ctx context.Context, cfg config.Config, st *store.Store) (*service, er
 		return nil, err
 	}
 	authMW := auth.NewMiddleware(jwtVerifier, streamVerifier)
-	if cfg.AuthDisabled || cfg.OIDCIssuer == "" {
-		log.Printf("auth: OFF (AUTH_DISABLED or no issuer) — every caller may do anything")
+	if cfg.AuthDisabled {
+		log.Printf("auth: OFF (AUTH_DISABLED) — every caller may do anything")
 	} else {
 		log.Printf("auth: admins carry the %s role and addons the %s role (at %s); the service account is %v",
 			cfg.AdminRole, cfg.AddonRole, cfg.RolesClaim, cfg.ServiceClients)
