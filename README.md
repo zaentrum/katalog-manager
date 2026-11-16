@@ -2647,7 +2647,21 @@ catalog keeps it, complete and of that package, in the folder the journal
 names, and its chain holds from the `package.json` the tool wrote. It takes
 `{"items": ["<itemId>", …]}` to work on some items only, and answers `{"run",
 "versions", "unchanged", "skipped": [{"itemId", "versionId", "reason"}]}`;
-calling it again changes nothing. Where the library record holds subtitles the catalog
+calling it again changes nothing. The schemas' `library-v2-mend.py` changes
+boxes of a version's init segments in place after its package completed — an
+`avsync-editlist`, a video edit list that presented the picture early — and
+closes the chain again as a fill does: the file's line in `checksums.sha256`,
+`package.json` with the checksums' new hash and the change in its `mends`, and
+`.complete`. A verification holds a mended file to its line as any other, and
+its entries to the checksums: they run with no gap (each made to the bytes the
+one before left) and the last ends at the digest the checksums list; a file
+changed with no entry fails its line. After
+each `--apply` or `--undo` of it, `POST /api/library/migrations/<run>/mends`
+(the service account and admins) verifies every version the run's
+`mends.jsonl` says it mended or put back again, in full, and notes it
+verified then, while it is what the tool left; it takes `{"items": [...]}` and
+answers as the checksums call does, and calling it again changes nothing.
+Where the library record holds subtitles the catalog
 has no rows for — the migration's subtitles phase finds them with the
 schemas' `library-v2-rebuild.py --compare --differences` and plans them in
 the run's `subtitles-plan.json` — `POST /api/library/migrations/<run>/subtitles`

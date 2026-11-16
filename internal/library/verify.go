@@ -123,6 +123,11 @@ func verifyChain(ctx context.Context, dir, record string, dirs []string, full bo
 	if c.Package, err = DecodeDoc(pkg); err != nil {
 		return nil, broken(at(PackageFile), "no JSON object: %v", err)
 	}
+	// the entries of a package mended after it completed (mends.go)
+	mended, err := mendsOf(c.Package)
+	if err != nil {
+		return nil, broken(at(PackageFile), "%v", err)
+	}
 	cs, _ := c.Package.Get("checksums")
 	sums, _ := cs.(Doc)
 	file := str(sums, "file")
@@ -148,6 +153,12 @@ func verifyChain(ctx context.Context, dir, record string, dirs []string, full bo
 		if c.Listed, err = ReadChecksums(at(SumsFile)); err != nil {
 			return nil, broken(at(SumsFile), "%v", err)
 		}
+		if why := mendsProblem(mended, c.Listed); why != "" {
+			return nil, broken(at(PackageFile), "%s", why)
+		}
+	}
+	if c.Pending && len(mended) > 0 {
+		return nil, broken(at(PackageFile), "its checksums are pending and it is mended: a mend writes the mended file's line in them again")
 	}
 	present := map[string]bool{}
 	if _, err := os.Stat(at(record)); err == nil {
