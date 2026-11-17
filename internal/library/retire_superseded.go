@@ -601,6 +601,11 @@ func (r *Retirer) heldForAnAdmin(ctx context.Context, set Settings, rt *retireme
 	// picture, scan and record are that file's
 	facts.Master = true
 	g, err := ReadGateWith(rt.itemDir, master.ID, facts, s.ID)
+	// whether its retirement waits on its captions alone, that the captions
+	// backfill reads them first
+	if err := MarkCaptionsWaiting(ctx, r.pool, s, err == nil && g.OnlyCaptionsUnknown()); err != nil {
+		return "", false, err
+	}
 	switch {
 	case err != nil:
 		return "", false, r.fail(ctx, rt, fmt.Sprintf("the essences of the source and of version %s cannot be read: %v; nothing is "+

@@ -24,10 +24,12 @@
 // whose report, taken, leaves it not read in full; one given back unread
 // waits ReleaseWait. What was read in full, and what a read found that keeps
 // it for good, is not handed out again.
-// The originals the retire job holds for want of their captions go first,
-// then those of titles with a complete version (the deletion's next), then
-// the oldest. Everything it keeps is in the catalog, so it resumes where it
-// was after a restart of either side.
+// The originals whose retirement waits on their captions alone go first
+// (the retire job notes them, migration 059: their title has a complete
+// version and nothing else keeps them), then those of titles with a complete
+// version (the deletion's next), then the rest, the oldest first in each.
+// Everything it keeps is in the catalog, so it resumes where it was after a
+// restart of either side.
 package captions
 
 import (
@@ -242,6 +244,9 @@ func (s *Service) WithClock(now func() time.Time) *Service {
 
 func (s *Service) ready(ctx context.Context) error {
 	ok, err := s.st.SourceCaptionsReady(ctx)
+	if err == nil && ok {
+		ok, err = s.st.CaptionsWaitingReady(ctx)
+	}
 	if err != nil {
 		return err
 	}
@@ -322,7 +327,7 @@ func (s *Service) Claim(ctx context.Context, worker string, limit int) (Claim, e
 	}
 	n := min(max(limit, 1), set.Inflight-inflight, set.Rate-recent)
 
-	rows, err := tx.Query(ctx, candidatesSQL, now, n*candidates, library.CaptionsUnknown+"%")
+	rows, err := tx.Query(ctx, candidatesSQL, now, n*candidates)
 	if err != nil {
 		return Claim{}, err
 	}
@@ -413,22 +418,23 @@ func idle(why string, after time.Duration) Claim {
 
 // candidatesSQL are the originals to read, $2 of them at most, in the order
 // they are handed out: an original on disk (present or superseded, where
-// the catalog says it lies) whose captions are not read, or read with a
-// window that decoded no frame, not claimed now and not waiting out a
-// failure's or a release's backoff ($1 is now); those the retire job holds
-// for want of their captions ($3, the hold's why) first, then those of
-// titles with a complete version, then the oldest.
+// the catalog says it lies), its source record written, without a read the
+// gate takes of the file at its place (readUsable), not claimed now and not
+// waiting out a failure's or a release's backoff ($1 is now); those whose
+// retirement waits on their captions alone first (the retire job's note,
+// retirewaitingsince, which nothing but the job writes: no gate is read
+// here), then those of titles with a complete version, then the rest; of
+// each, the oldest first.
 var candidatesSQL = `
 	SELECT s.id, s.item_id, s.arrivalpath, s.sizebytes, s.qh1, s.recorddir, s.recordedat
 	FROM com_nalet_katalog_itemsources s
 	LEFT JOIN ` + store.SourceCaptionsTable + ` c ON c.source_id = s.id
+	LEFT JOIN LATERAL (SELECT EXISTS (SELECT 1 FROM com_nalet_katalog_itemversions v
+	                   WHERE v.item_id = s.item_id AND v.state = 'complete') AS packaged) p ON true
 	WHERE s.state IN ('present', 'superseded') AND COALESCE(s.arrivalpath, '') <> '' AND s.recordedat IS NOT NULL
 	  AND (c.source_id IS NULL OR (c.claimedat IS NULL AND (c.nextattemptat IS NULL OR c.nextattemptat <= $1)))
 	  AND NOT ` + readUsable("c", "s") + `
-	ORDER BY COALESCE(s.error, '') LIKE $3 DESC,
-	         EXISTS (SELECT 1 FROM com_nalet_katalog_itemversions v
-	                 WHERE v.item_id = s.item_id AND v.state = 'complete') DESC,
-	         s.createdat, s.id
+	ORDER BY c.retirewaitingsince IS NOT NULL AND p.packaged DESC, p.packaged DESC, s.createdat, s.id
 	LIMIT $2`
 
 // readUsable is the SQL condition that the row c keeps what the gate takes

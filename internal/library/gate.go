@@ -233,9 +233,12 @@ type Gate struct {
 	// language both labels (Tracks), that an admin sees what to correct, and
 	// of a language the package has fewer tracks of how many each has
 	// (TrackCounts).
-	Labels  []string
-	sources []Doc // the sources' records
-	pkg     Doc   // the package's record
+	Labels []string
+	// captionsUnknown is why the captions rule can't tell yet, "" when it
+	// can (OnlyCaptionsUnknown).
+	captionsUnknown string
+	sources         []Doc // the sources' records
+	pkg             Doc   // the package's record
 }
 
 // Dropped are the names of g.Lost the master spec drops by design
@@ -440,20 +443,19 @@ func ReadGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (
 	if other != "" && unknown == "" {
 		unknown = other
 	}
-	captions := ""
+	captions, captionsUnknown := "", ""
 	if !f.CaptionsNotAsked {
 		lost = slices.DeleteFunc(lost, func(n string) bool { return n == "closedCaptions" })
-		var why string
-		captions, why = captionsRule(records, probes, f)
-		if why == "" && framesUnknown != "" {
-			why = framesUnknown
+		captions, captionsUnknown = captionsRule(records, probes, f)
+		if captionsUnknown == "" && framesUnknown != "" {
+			captionsUnknown = framesUnknown
 		}
 		switch {
 		case captions != "":
 			lost = append(lost, "closedCaptions")
 			sort.Strings(lost)
-		case why != "" && unknown == "":
-			unknown = why
+		case captionsUnknown != "" && unknown == "":
+			unknown = captionsUnknown
 		}
 	}
 	if captions != "" && other != "" && unknown == other {
@@ -469,8 +471,22 @@ func ReadGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (
 	if off := offListOf(records, probes, f.offListSaid()); len(off) > 0 && unknown == "" && captions == "" {
 		unknown = offListWhy(off)
 	}
-	return Gate{Lost: lost, Unknown: unknown, Labels: labels, Scan: scan, Captions: captions, sources: records, pkg: pkg},
-		nil
+	return Gate{Lost: lost, Unknown: unknown, Labels: labels, Scan: scan, Captions: captions,
+		captionsUnknown: captionsUnknown, sources: records, pkg: pkg}, nil
+}
+
+// OnlyCaptionsUnknown reports whether all that keeps the original of g is
+// that a read of its frames hasn't told its closed captions (or its fields)
+// yet: the captions rule's unknown, of those a read lets go of
+// (readReleases), and nothing else unknown nor lost beyond what the spec
+// drops. A read of them may let it go; what the closing rule leaves not
+// known (closedNotKnown) no read does, nor a finding of a length that is
+// not its record's (CaptionsLengthMismatch), final for its file and record.
+func (g Gate) OnlyCaptionsUnknown() bool {
+	return g.captionsUnknown != "" && g.Unknown == g.captionsUnknown && len(g.Beyond()) == 0 &&
+		!strings.HasPrefix(g.Unknown, CaptionsLengthMismatch) && !strings.HasPrefix(g.Unknown, CaptionsNoLength) &&
+		!strings.HasPrefix(g.Unknown, CaptionsUnscanned) &&
+		slices.ContainsFunc(readReleases, func(p string) bool { return strings.HasPrefix(g.Unknown, p) })
 }
 
 // CopyUnproven begins why the gate keeps an original whose package copies

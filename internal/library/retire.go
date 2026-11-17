@@ -462,6 +462,9 @@ func (r *Retirer) originals(ctx context.Context, p Paths, set Settings, now time
 			return 0, 0, 0, fmt.Errorf("the originals that wait for what their package can't show: %w", err)
 		}
 		r.kept = append(r.kept, waiting...)
+		if err := unshownNotWaiting(ctx, r.pool); err != nil {
+			return 0, 0, 0, fmt.Errorf("the originals that wait on their captions alone: %w", err)
+		}
 	}
 	if set.DeleteOriginals() && len(todo) < budget {
 		ids, err := r.dueSources(ctx, set, now, budget-len(todo))
@@ -896,6 +899,20 @@ func (r *Retirer) prepare(ctx context.Context, p Paths, set Settings, now time.T
 			why = g.Unknown + "; the original is kept"
 		} else if beyond := g.Beyond(); len(beyond) > 0 {
 			why = SpecHeldOf(g)
+		}
+		// whether its retirement waits on its captions alone, that the
+		// captions backfill reads them first: nothing else of the gate, nor
+		// its chapters and picture area, keeps it
+		waiting := g.OnlyCaptionsUnknown()
+		if waiting {
+			unshown, err := Unshown(ctx, r.pool, rt.src.ItemID, rt.src.ID)
+			if err != nil {
+				return err
+			}
+			waiting = unshown == ""
+		}
+		if err := MarkCaptionsWaiting(ctx, r.pool, rt.src, waiting); err != nil {
+			return err
 		}
 		if why != "" {
 			s := rt.src

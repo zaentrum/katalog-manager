@@ -15,8 +15,9 @@
 // store.EnsureLibraryWriteThrough, which applies 050 after 041,
 // store.EnsureCompliance, store.EnsureRetireRuns, store.EnsureStyledSubtitles,
 // store.EnsurePictureAreas, store.EnsureChapterReads,
-// store.EnsureSupersededSources, store.EnsureSupersededDecisions and
-// store.EnsureSourceCaptions).
+// store.EnsureSupersededSources, store.EnsureSupersededDecisions,
+// store.EnsureSourceCaptions and store.EnsureCaptionsWaiting, which applies
+// 059 after 058).
 // It applies 035, which drops what is left of a retired integration, at every
 // start when any of that is there (store.DropRetiredJobTables), and 049, the
 // catalog search, in the background after startup, one statement at a time:
@@ -215,3 +216,9 @@ var SupersededDecisions string
 //
 //go:embed 058_source_captions.sql
 var SourceCaptions string
+
+// CaptionsWaiting is 059_captions_retire_waiting.sql: which originals a
+// retirement waits on for their closed captions alone.
+//
+//go:embed 059_captions_retire_waiting.sql
+var CaptionsWaiting string

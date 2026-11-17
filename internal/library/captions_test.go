@@ -3,12 +3,18 @@ package library
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/zaentrum/katalog-manager/internal/library/librarytest"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
 
@@ -605,5 +611,112 @@ func TestCaptionsOfMoreThanOnePictureStreamAreNotKnown(t *testing.T) {
 	if carried, _ := captionsRule([]Doc{film(600)}, []Doc{two}, read(600, every(0.5)...)); !strings.HasPrefix(carried,
 		CaptionsCarried+" at 50%") {
 		t.Errorf("two picture streams, captions in the one read: carried %q; want them carried", carried)
+	}
+}
+
+// waitingSince is since when the retire job notes that the original source
+// waits on its closed captions alone; nil when it doesn't.
+func waitingSince(t *testing.T, f *retireFixture, source string) *time.Time {
+	t.Helper()
+	var at *time.Time
+	err := f.st.Pool().QueryRow(context.Background(), `SELECT retirewaitingsince FROM com_nalet_katalog_sourcecaptions
+		WHERE source_id = $1`, source).Scan(&at)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatal(err)
+	}
+	return at
+}
+
+// The retire job notes an original it holds for its closed captions alone -
+// its title has a complete version, and nothing else of the gate, nor its
+// chapters and picture area, keeps it - that the captions backfill reads it
+// first; not one the gate keeps for more besides, and the note goes once
+// anything else keeps it. The note decides nothing: the original is held
+// the same, its why the same.
+func TestTheRetireJobNotesTheOriginalsThatWaitOnTheirCaptionsAlone(t *testing.T) {
+	ctx := context.Background()
+	f := newRetireFixture(t)
+	storetest.Exec(t, f.st, `DELETE FROM com_nalet_katalog_sourcecaptions WHERE source_id = $1`, rtSource)
+	if rep := f.pass(t); rep.Held != 1 {
+		t.Fatalf("the pass: %+v", rep)
+	}
+	if !strings.Contains(f.step(t, rtFilm), "error="+captionsUnknownWhy) || waitingSince(t, f, rtSource) == nil {
+		t.Fatalf("an original held for its captions alone: %s, waiting since %v", f.step(t, rtFilm),
+			waitingSince(t, f, rtSource))
+	}
+	// its chapters not known besides: once the job looks again, no note
+	storetest.Exec(t, f.st, `DELETE FROM com_nalet_katalog_chapterreads WHERE item_id = $1`, rtFilm)
+	if err := ReleaseCaptionsHold(ctx, f.st.Pool(), rtFilm, rtSource); err != nil {
+		t.Fatal(err)
+	}
+	if rep := f.pass(t); rep.Originals != 0 {
+		t.Fatalf("the pass: %+v", rep)
+	}
+	if at := waitingSince(t, f, rtSource); at != nil {
+		t.Errorf("an original whose chapters aren't known either is noted waiting on its captions alone (%v)", at)
+	}
+
+	// the gate keeps it for a lower bit depth too: held for its captions, as
+	// before, and not noted
+	full := fullEssence()
+	g := newRetireFixtureOf(t, full, full)
+	librarytest.WriteVersion(t, g.versionDir, librarytest.Version{VersionID: rtVersion, PackageID: rtPackage,
+		SourceIDs: []string{rtSource}, CreatedAt: "2026-10-06T10:00:00Z", Package: packageRecord(with2(full, "videoBitDepth", 8))})
+	storetest.Exec(t, g.st, `DELETE FROM com_nalet_katalog_sourcecaptions WHERE source_id = $1`, rtSource)
+	if rep := g.pass(t); rep.Held != 1 || !strings.Contains(g.step(t, rtFilm), "error="+captionsUnknownWhy) {
+		t.Fatalf("the pass: %+v, %s", rep, g.step(t, rtFilm))
+	}
+	if at := waitingSince(t, g, rtSource); at != nil {
+		t.Errorf("an original the gate keeps for more than its captions is noted waiting on them alone (%v)", at)
+	}
+
+	// its container off the closing rule's list (its stored probe's): held
+	// for that, which no read lets go of, and not noted
+	h := newRetireFixture(t)
+	librarytest.Write(t, filepath.Join(h.sourceDir, ProbeFile), []byte(`{"format": {"format_name": "flv"}, "streams": [{"index": 0,
+		"codec_type": "video", "codec_name": "h264", "field_order": "progressive"}]}`))
+	h.rewriteSource(t, stated(sevenOne), nil)
+	storetest.Exec(t, h.st, `DELETE FROM com_nalet_katalog_sourcecaptions WHERE source_id = $1`, rtSource)
+	if rep := h.pass(t); rep.Held != 1 || !strings.Contains(h.step(t, rtFilm), "error="+closedNotKnown+": off the closed lists: container:flv") {
+		t.Fatalf("the pass: %+v, %s", rep, h.step(t, rtFilm))
+	}
+	if at := waitingSince(t, h, rtSource); at != nil {
+		t.Errorf("an original the closing rule keeps is noted waiting on its captions alone (%v)", at)
+	}
+
+	// a read of another length than its record's: held on the finding,
+	// final for its file and record, and not noted
+	m := newRetireFixture(t)
+	storetest.Exec(t, m.st, `DELETE FROM com_nalet_katalog_sourcecaptions WHERE source_id = $1`, rtSource)
+	storetest.Exec(t, m.st, `INSERT INTO com_nalet_katalog_sourcecaptions (source_id, item_id, state, reason, finding,
+			sourcesize, sourceqh1, sourcerecordedat)
+		SELECT s.id, s.item_id, 'failed', 'a read of its original says it lasts 610 s, and its record 600 s', $2,
+			s.sizebytes, s.qh1, s.recordedat FROM com_nalet_katalog_itemsources s WHERE s.id = $1`, rtSource,
+		FindingLengthMismatch)
+	if rep := m.pass(t); rep.Held != 1 || !strings.Contains(m.step(t, rtFilm), "error="+CaptionsLengthMismatch) {
+		t.Fatalf("the pass: %+v, %s", rep, m.step(t, rtFilm))
+	}
+	if at := waitingSince(t, m, rtSource); at != nil {
+		t.Errorf("an original kept on a length mismatch is noted waiting on its captions alone (%v)", at)
+	}
+
+	// a record that says no length, and a picture of hevc whose record says
+	// no read of its every packet: held for what no read lets go of, and not
+	// noted
+	for name, change := range map[string]func(rec map[string]any){
+		"no length": func(rec map[string]any) { delete(rec, "container") },
+		"hevc": func(rec map[string]any) {
+			rec["streams"] = []any{map[string]any{"index": 0, "type": "video", "codec": "hevc", "fieldOrder": "progressive"}}
+		},
+	} {
+		n := newRetireFixture(t)
+		n.rewriteRecord(t, change, nil)
+		storetest.Exec(t, n.st, `DELETE FROM com_nalet_katalog_sourcecaptions WHERE source_id = $1`, rtSource)
+		if rep := n.pass(t); rep.Held != 1 {
+			t.Fatalf("%s: the pass: %+v, %s", name, rep, n.step(t, rtFilm))
+		}
+		if at := waitingSince(t, n, rtSource); at != nil {
+			t.Errorf("%s: an original held for what no read lets go of is noted waiting on its captions alone (%v)", name, at)
+		}
 	}
 }

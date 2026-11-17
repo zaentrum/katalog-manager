@@ -214,6 +214,12 @@ func run() error {
 	if err := st.EnsureSourceCaptions(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/058_source_captions.sql is missing and could not be applied: %v; the captions backfill hands out nothing, and no original whose captions are not read is retired, until it is", err)
 	}
+	// Which originals a retirement waits on for their captions alone
+	// (migration 059, after 058), which the captions backfill hands out
+	// first.
+	if err := st.EnsureCaptionsWaiting(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/059_captions_retire_waiting.sql is missing and could not be applied: %v; the captions backfill hands out nothing until it is", err)
+	}
 	// An item the scanner made before it wrote its own name into the row has
 	// it in its record alone: the row follows the record (bounded, in the
 	// background).

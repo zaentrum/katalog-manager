@@ -1052,6 +1052,46 @@ var readReleases = []string{CaptionsUnknown, FramesUnknown, CaptionsUnscanned}
 // says nothing of interlaced or repeated frames.
 const FramesUnknown = "its frames' fields aren't known"
 
+// MarkCaptionsWaiting notes, of the original s, whether a retirement waits on
+// its closed captions alone (Gate.OnlyCaptionsUnknown, and nothing else of
+// the retire job keeps it): since when it does, from the first pass that
+// found it so, or that it doesn't. The captions backfill hands these
+// originals out first; the note decides nothing. Without migration 059 it
+// notes nothing.
+func MarkCaptionsWaiting(ctx context.Context, q Querier, s *Source, waiting bool) error {
+	if ok, err := relationReady(ctx, q, store.CaptionsWaitingIndex); err != nil || !ok {
+		return err
+	}
+	if !waiting {
+		_, err := q.Exec(ctx, `UPDATE `+store.SourceCaptionsTable+` SET retirewaitingsince = NULL
+			WHERE source_id = $1 AND retirewaitingsince IS NOT NULL`, s.ID)
+		return err
+	}
+	_, err := q.Exec(ctx, `INSERT INTO `+store.SourceCaptionsTable+` (source_id, item_id, state, retirewaitingsince)
+		VALUES ($1, $2, 'pending', now())
+		ON CONFLICT (source_id) DO UPDATE SET retirewaitingsince = COALESCE(`+store.SourceCaptionsTable+`.retirewaitingsince,
+			EXCLUDED.retirewaitingsince)`, s.ID, s.ItemID)
+	return err
+}
+
+// unshownNotWaiting takes the note that its retirement waits on its captions
+// alone (MarkCaptionsWaiting) off an original whose chapters or picture area
+// aren't known now, which keep it too; the job, which looks at such an
+// original no more until they are, notes it again then.
+func unshownNotWaiting(ctx context.Context, q Querier) error {
+	if ok, err := relationReady(ctx, q, store.CaptionsWaitingIndex); err != nil || !ok {
+		return err
+	}
+	if ready, err := unshownReady(ctx, q); err != nil || !ready {
+		return err
+	}
+	_, err := q.Exec(ctx, `UPDATE `+store.SourceCaptionsTable+` c SET retirewaitingsince = NULL
+		FROM com_nalet_katalog_itemsources s
+		WHERE c.retirewaitingsince IS NOT NULL AND s.id = c.source_id
+		  AND NOT (`+chaptersSettled("s.item_id", "s.id")+` AND `+pictureAreaSettled("s.item_id", "s.id")+`)`)
+	return err
+}
+
 // ReleaseCaptionsHold lets go of a retirement of the original source of
 // the title item the retire job held for want of its closed captions, in q
 // (the transaction that keeps what a read of them found, the item locked):

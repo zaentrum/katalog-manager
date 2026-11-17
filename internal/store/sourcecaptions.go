@@ -50,6 +50,31 @@ func sourceCaptionsReady(ctx context.Context, q querier) (bool, error) {
 	return ok, err
 }
 
+// CaptionsWaitingIndex is the index db/migrations/059_captions_retire_waiting.sql
+// creates with its column, which says it is in place.
+const CaptionsWaitingIndex = "idx_sourcecaptions_retirewaiting"
+
+// CaptionsWaitingReady reports whether migration 059 is in place.
+func (s *Store) CaptionsWaitingReady(ctx context.Context) (bool, error) {
+	return captionsWaitingReady(ctx, s.pool)
+}
+
+func captionsWaitingReady(ctx context.Context, q querier) (bool, error) {
+	var ok bool
+	err := q.QueryRow(ctx, `SELECT to_regclass($1::text) IS NOT NULL`, CaptionsWaitingIndex).Scan(&ok)
+	return ok, err
+}
+
+// EnsureCaptionsWaiting applies db/migrations/059_captions_retire_waiting.sql,
+// after 058 (EnsureSourceCaptions), when it is missing, under the
+// migrations' lock. Without it the captions backfill hands nothing out.
+func (s *Store) EnsureCaptionsWaiting(ctx context.Context) error {
+	if err := s.EnsureSourceCaptions(ctx); err != nil {
+		return err
+	}
+	return s.applyLocked(ctx, captionsWaitingReady, migrations.CaptionsWaiting)
+}
+
 // EnsureSourceCaptions applies db/migrations/058_source_captions.sql when any
 // of it is missing, under the migrations' lock. Without it the captions
 // backfill hands nothing out, and the deletion gate keeps every original

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/library"
+	"github.com/zaentrum/katalog-manager/internal/store"
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
 
@@ -278,5 +279,114 @@ func TestTheCaptionsBackfillHandsOutAtAnyHourByDefault(t *testing.T) {
 				c.hands)
 		}
 		storetest.Exec(t, st, `UPDATE com_nalet_katalog_sourcecaptions SET claimedat = NULL, claimtoken = NULL`)
+	}
+}
+
+// orderFixture is three originals on disk, each of its own film, taken in
+// oldest first: one whose film has no complete version ("unpackaged"), one
+// whose film has ("packaged"), and one whose film has and whose retirement
+// the retire job notes waits on its captions alone ("waiting").
+func orderFixture(t *testing.T, inflight int) (*store.Store, map[string]string) {
+	t.Helper()
+	st := storetest.Open(t)
+	dir := t.TempDir()
+	ids := map[string]string{}
+	for i, name := range []string{"unpackaged", "packaged", "waiting"} {
+		item, source := "o"+strconv.Itoa(i), "o"+strconv.Itoa(i)+"-src"
+		ids[source] = name
+		media := filepath.Join(dir, name+".mkv")
+		if err := os.WriteFile(media, []byte("a film"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		storetest.AddItem(t, st, item, "movie", "Film "+item, "")
+		storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state,
+			createdat, recordedat) VALUES ($1, $2, $3, $4, 6, 'present', now() - interval '3 days' + $5 * interval '1 day',
+			now())`, source, item, name+".mkv", media, i)
+		if name != "unpackaged" {
+			storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, dir, completedat)
+				VALUES ($1 || '-ver', $1, ARRAY[$2::varchar], 'complete', $3, now())`, item, source, filepath.Join(dir, item))
+		}
+		if name == "waiting" {
+			storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_sourcecaptions (source_id, item_id, state, retirewaitingsince)
+				VALUES ($1, $2, 'pending', now())`, source, item)
+		}
+	}
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext)
+		VALUES ('i', 'captions.backfill.inflight', $1)`, strconv.Itoa(inflight))
+	return st, ids
+}
+
+// names are the originals of c by what they are.
+func names(c Claim, ids map[string]string) []string {
+	var out []string
+	for _, j := range c.Items {
+		out = append(out, ids[j.SourceID])
+	}
+	return out
+}
+
+// The backfill hands out first the originals whose retirement waits on their
+// captions alone (the retire job's note), then those of titles with a
+// complete version, then the rest, though the waiting one was taken in last
+// and the unpackaged one first.
+func TestTheCaptionsBackfillHandsOutWhatARetirementWaitsOnFirst(t *testing.T) {
+	st, ids := orderFixture(t, 3)
+	at := time.Date(2026, 11, 16, 23, 0, 0, 0, time.UTC)
+	c, err := New(st).WithClock(func() time.Time { return at }).Claim(context.Background(), "analyzer-0", 3)
+	if got := names(c, ids); err != nil || strings.Join(got, " ") != "waiting packaged unpackaged" {
+		t.Errorf("the claim: %v, %v; want waiting, packaged, unpackaged", got, err)
+	}
+}
+
+// The order is the catalog's, as the leases and the backoffs are: a
+// backfill started anew (each claim here a new one, as after a restart) goes
+// on with it, a claim's lease holds its original until it ends, and an
+// original whose lease ended waits out its backoff while those after it go;
+// once the backoff is over, the waiting one goes first again.
+func TestTheCaptionsBackfillsOrderHoldsAcrossRestartsLeasesAndBackoffs(t *testing.T) {
+	ctx := context.Background()
+	st, ids := orderFixture(t, 1)
+	t0 := time.Date(2026, 11, 16, 23, 0, 0, 0, time.UTC)
+	claim := func(at time.Time) []string {
+		t.Helper()
+		c, err := New(st).WithClock(func() time.Time { return at }).Claim(ctx, "analyzer-0", 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return names(c, ids)
+	}
+	if got := claim(t0); strings.Join(got, " ") != "waiting" {
+		t.Fatalf("the first claim: %v", got)
+	}
+	if got := claim(t0.Add(time.Minute)); len(got) != 0 {
+		t.Errorf("a claim within the lease, started anew: %v; want none (inflight 1)", got)
+	}
+	// the lease ends: the waiting one waits its backoff, the packaged one goes
+	t1 := t0.Add(DefaultLease + time.Minute)
+	if got := claim(t1); strings.Join(got, " ") != "packaged" {
+		t.Errorf("the claim after the lease: %v; want packaged", got)
+	}
+	r, err := Of(ctx, st.Pool(), "o2-src")
+	if err != nil || r.Failures != 1 || r.NextAttemptAt == nil || !r.NextAttemptAt.Equal(t1.Add(FirstBackoff)) {
+		t.Fatalf("the waiting original after its lease: %+v, %v", r, err)
+	}
+	// the packaged one given back, waiting out its release; the unpackaged
+	// one goes
+	var token string
+	if err := st.Pool().QueryRow(ctx, `SELECT claimtoken FROM com_nalet_katalog_sourcecaptions WHERE source_id = 'o1-src'`).
+		Scan(&token); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(st).WithClock(func() time.Time { return t1 }).Record(ctx, "o1-src",
+		Report{Token: token, Released: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := claim(t1.Add(time.Minute)); strings.Join(got, " ") != "unpackaged" {
+		t.Errorf("the claim with the waiting one in its backoff and the packaged one given back: %v; want unpackaged", got)
+	}
+	// past the waiting one's backoff (the unpackaged one's lease over): it
+	// goes first again
+	if got := claim(t1.Add(FirstBackoff + time.Minute)); strings.Join(got, " ") != "waiting" {
+		t.Errorf("the claim past the backoff: %v; want waiting", got)
 	}
 }

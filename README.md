@@ -474,6 +474,11 @@ the base schema in the order of their numbers, and each is idempotent:
   catalog that applied one before a release has its reads read again);
   without it the captions backfill hands out nothing, and no original whose
   captions are not read is retired.
+- `059_captions_retire_waiting.sql` adds to it which originals a retirement
+  waits on for their captions alone (`retirewaitingsince`: since when the
+  retire job found nothing else keeps them), which the captions backfill
+  hands out first. Applied at startup after 058 under the same lock when it
+  is missing; without it the captions backfill hands out nothing.
 
 ## Track languages
 
@@ -1948,12 +1953,21 @@ a hold too, so that a hold written while a read lands sees it; a failure
 keeps why, leaves a read as it is, and waits a backoff (an hour, twice as
 long after each failure in a row, a week at most).
 
-The originals the retire job holds for want of captions go first, then
-those of titles with a complete version (the deletion's next), then the
-oldest. The backfill is on by default: the deletion gate's captions rule
-ships with it, so that the deletion waves go on. The settings are read on
-every claim, so an instance stops it, slows it, speeds it up or moves its
-hours without a restart:
+The originals whose retirement waits on their captions alone go first: the
+retire job notes them when it holds one (`retirewaitingsince`, migration
+059) - its title has a complete version, and nothing else keeps it, neither
+the deletion gate's other rules nor its chapters and picture area, and what
+keeps it is what a read may tell (its captions or its frames' fields, not
+the closing rule, a record that says no length or a picture whose captions
+windows alone don't tell, which no read lets go of) - and
+clears the note once anything else decides it, so the claim orders by the
+note and reads no gate. Then those of titles with a complete version (the
+deletion's next), then the rest; the oldest first in each. So the deletion
+waves go on as soon as the originals they wait on are read, not once the
+whole library is. The backfill is on by default: the deletion gate's
+captions rule ships with it, so that the deletion waves go on. The settings
+are read on every claim, so an instance stops it, slows it, speeds it up or
+moves its hours without a restart:
 
 - `captions.backfill` (`on`): `off` stops it, and then every original whose
   captions are not read yet stays kept, the safe side;
