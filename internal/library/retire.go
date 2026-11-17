@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -254,6 +255,9 @@ type Retirer struct {
 	// lastKept what the last pass that did nothing else said of them.
 	kept     []Kept
 	lastKept string
+	// extraGate is the deletion gate of an extra's original (ExtraGate; a
+	// test's own when set).
+	extraGate func(dir string) (Gate, error)
 }
 
 // NewRetirer is the retire job of the catalog's pool, at the paths cfg
@@ -295,6 +299,7 @@ const (
 	KeptNoRecord = "no record" // a superseded original no record of which tells what it carries
 	KeptLabel    = "label"     // a package track's label is no label of its stream's language, both said
 	KeptCaptions = "captions"  // its closed captions aren't known yet
+	KeptExtra    = "extra"     // an extra's original the deletion gate keeps, Why saying why (ExtraGate)
 	// KeptSuperseded is a superseded original kept against its master (a
 	// hold, or what its records can't tell), the hold saying why
 	KeptSuperseded = "superseded"
@@ -328,6 +333,21 @@ func (r Report) String() string {
 		if c.n > 0 {
 			out = append(out, fmt.Sprintf("%d %s", c.n, c.what))
 		}
+	}
+	// the extras' originals the gate keeps, by why
+	extras := map[string]int{}
+	var whys []string
+	for _, k := range r.Kept {
+		if k.For == KeptExtra {
+			if extras[k.Why] == 0 {
+				whys = append(whys, k.Why)
+			}
+			extras[k.Why]++
+		}
+	}
+	sort.Strings(whys)
+	for _, why := range whys {
+		out = append(out, fmt.Sprintf("%d extras' originals kept: %s", extras[why], why))
 	}
 	return strings.Join(out, ", ")
 }

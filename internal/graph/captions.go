@@ -57,6 +57,11 @@ func (r *captionsProgressResolver) Idle() *string {
 	}
 	return &r.m.Idle
 }
+
+// ExtrasGated is whether the retire job's extras step goes through the
+// deletion gate (library.ExtrasGated).
+func (r *captionsProgressResolver) ExtrasGated() bool { return library.ExtrasGated }
+
 func (r *captionsProgressResolver) Problems() []string {
 	if r.m.Settings.Problems == nil {
 		return []string{}

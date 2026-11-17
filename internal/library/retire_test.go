@@ -839,27 +839,68 @@ func TestASupersededVersionIsRemovedAfterItsGrace(t *testing.T) {
 	}
 }
 
-// An extra's original is deleted once its folder has been recorded for the
-// delay and verifies, if it is the file taken in: moved to the trash, its
-// folder pruned up to EXTRAS_ROOT, the extra keeping no original. One whose
-// file changed is kept, and so are the extras of a held title. An extra's
-// original does not wait for its title's steps.
-func TestAnExtrasOriginalIsDeletedAfterPackaging(t *testing.T) {
+// anExtra is an extra of the fixture's title whose original lies in the
+// extras' arrivals, recorded an hour ago (past library.retire.delay): its
+// id's file, and the file.
+func anExtra(t *testing.T, f *retireFixture, x string) string {
+	t.Helper()
+	src := filepath.Join(f.p.Extras, "example-film-"+x[:2], "Trailer.mkv")
+	librarytest.Write(t, src, bytes.Repeat([]byte(x), 5000))
+	size, qh1, _ := QH1(src)
+	dir := ExtraDir(f.itemDir, x)
+	librarytest.WriteExtra(t, dir, librarytest.Extra{ExtraID: x, PackageID: NewID(), CreatedAt: "2026-10-06T10:00:00Z"})
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemextras (id, item_id, kind, title, registeredby, state,
+			sourcepath, sourcesize, sourceqh1, recordpath, packagepath, recordedat)
+		VALUES ($1, $2, 'trailer', 'Trailer', 'api', 'ready', $3, $4, $5, $6, $6, now() - interval '1 hour')`,
+		x, rtFilm, src, size, qh1, dir)
+	return src
+}
+
+// An extra's original goes only where the deletion gate lets it go, and an
+// extra has no record of its original the gate can read: with
+// library.originals delete-after-package and the v2 layout, one past
+// library.retire.delay is left as it is - its file where it was, the extra
+// keeping it (sourcepath, no sourcedeletedat) - and the pass names it kept,
+// by why, whatever library.trash.grace is (0 unlinks what goes).
+func TestAnExtrasOriginalIsKeptByTheDeletionGate(t *testing.T) {
+	for _, grace := range []string{"0", "24h"} {
+		t.Run("library.trash.grace "+grace, func(t *testing.T) {
+			f := newRetireFixture(t)
+			f.set(t, SettingTrashGrace, grace)
+			const extra = "e3e3e3e3-0000-4000-8000-000000000003"
+			src := anExtra(t, f, extra)
+			rep := f.pass(t)
+			if rep.Extras != 0 || keptOf(rep.Kept, KeptExtra) != 1 ||
+				!strings.Contains(rep.String(), "1 extras' originals kept: "+ExtraNoRecord) {
+				t.Fatalf("the pass: %+v (%q); want the extra's original kept, by why", rep, rep.String())
+			}
+			var path *string
+			var deleted *time.Time
+			if err := f.st.Pool().QueryRow(context.Background(), `SELECT sourcepath, sourcedeletedat
+				FROM com_nalet_katalog_itemextras WHERE id = $1`, extra).Scan(&path, &deleted); err != nil ||
+				path == nil || *path != src || deleted != nil {
+				t.Errorf("the extra: %v %v, %v; want it keeping its original", path, deleted, err)
+			}
+			if !exists(src) || exists(f.p.ExtraTrashDir(time.Now(), extra)) {
+				t.Error("the extra's original is not where it was")
+			}
+		})
+	}
+}
+
+// Where the deletion gate lets an extra's original go (a rule that reads a
+// record of it, here a gate that keeps nothing), it is deleted once its
+// folder has been recorded for the delay and verifies, if it is the file
+// taken in: moved to the trash, its folder pruned up to EXTRAS_ROOT, the
+// extra keeping no original. One whose file changed is kept, and so are the
+// extras of a held title. An extra's original does not wait for its title's
+// steps.
+func TestAnExtrasOriginalTheGateLetsGoIsDeletedAfterPackaging(t *testing.T) {
 	f := newRetireFixture(t)
+	f.r.extraGate = func(string) (Gate, error) { return Gate{}, nil }
 	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_itemprocessingsteps SET status = 'pending' WHERE step = 'subtitle'`)
 	const extra, changed = "e1e1e1e1-0000-4000-8000-000000000001", "e2e2e2e2-0000-4000-8000-000000000002"
-	src := map[string]string{}
-	for _, x := range []string{extra, changed} {
-		src[x] = filepath.Join(f.p.Extras, "example-film-"+x[:2], "Trailer.mkv")
-		librarytest.Write(t, src[x], bytes.Repeat([]byte(x), 5000))
-		size, qh1, _ := QH1(src[x])
-		dir := ExtraDir(f.itemDir, x)
-		librarytest.WriteExtra(t, dir, librarytest.Extra{ExtraID: x, PackageID: NewID(), CreatedAt: "2026-10-06T10:00:00Z"})
-		storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemextras (id, item_id, kind, title, registeredby, state,
-				sourcepath, sourcesize, sourceqh1, recordpath, packagepath, recordedat)
-			VALUES ($1, $2, 'trailer', 'Trailer', 'api', 'ready', $3, $4, $5, $6, $6, now() - interval '1 hour')`,
-			x, rtFilm, src[x], size, qh1, dir)
-	}
+	src := map[string]string{extra: anExtra(t, f, extra), changed: anExtra(t, f, changed)}
 	librarytest.Write(t, src[changed], []byte("another file"))
 	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_items SET retirehold = true`)
 	if rep := f.pass(t); rep.Extras != 0 {

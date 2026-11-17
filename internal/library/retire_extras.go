@@ -9,14 +9,60 @@ import (
 	"time"
 )
 
-// An extra's original is deleted once its folder is recorded (state ready,
-// recordedat) for library.retire.delay and verifies, its title not held: the
+// An extra's original is deleted only where the deletion gate lets it go
+// (ExtraGate), as a title's is: once its folder is recorded (state ready,
+// recordedat) for library.retire.delay and verifies, its title not held, the
 // file still of the size and quick hash it was taken in with goes to the
 // trash, .work/trash/<day>/extra-<extraId>/ (a trash grace of 0 unlinks it),
-// and the extra keeps no original (sourcepath NULL, sourcedeletedat). Extras
-// get no event: their folder never held the original, and extra.json's
-// packagedFrom says what it was. A removed extra is left to its removal.
-// What stops a deletion is said in the log, once.
+// and the extra keeps no original (sourcepath NULL, sourcedeletedat). An
+// extra has no record of its original the gate can read (its folder holds
+// its package and extra.json, which says what it was packaged from, never
+// the original's essence and streams), so the gate keeps every one today,
+// and the pass names them kept, by why; a rule that reads such a record
+// later lets them go through the gate, in ExtraGate. Extras get no event:
+// their folder never held the original. A removed extra is left to its
+// removal. What stops a deletion is said in the log, once.
+
+// ExtraNoRecord is why the deletion gate keeps an extra's original: there
+// is no record of it the gate can read.
+const ExtraNoRecord = "no record the deletion gate can read"
+
+// ExtrasGated says the retire job's extras step goes through the deletion
+// gate (ExtraGate): a client (the deploy tooling's guard) asks it of
+// captionReads before it lets originals be deleted.
+const ExtrasGated = true
+
+// ExtraGate is the deletion gate of the original of the extra whose folder
+// is dir: what keeps it (Unknown, or what it names beyond the spec), nothing
+// when it may go. An extra's folder holds no record of its original (no
+// essence, no streams), so the gate can't tell what deleting it gives up:
+// it keeps every one, Unknown ExtraNoRecord. A rule that reads a record of
+// an extra's original reads it here.
+func ExtraGate(dir string) (Gate, error) {
+	return Gate{Unknown: ExtraNoRecord}, nil
+}
+
+// extraKept is why the gate g keeps an extra's original, "" when it lets it
+// go.
+func extraKept(g Gate) string {
+	switch {
+	case g.Unknown != "":
+		return g.Unknown
+	case len(g.Beyond()) > 0:
+		return SpecHeldOf(g)
+	}
+	return ""
+}
+
+// maxExtrasLooked is how many due extras a pass looks at at most: those the
+// gate keeps take no turn of library.retire.rate, so that one kept never
+// stands before one it lets go. The bound is taken before the gate, of the
+// oldest due: where more than it are kept, a pass reaches none after them,
+// and one the gate would let go waits until fewer before it are kept. While
+// every extra is kept (ExtraNoRecord) that holds back nothing; a gate that
+// lets extras go takes the kept ones out of the query (as the retire job's
+// holds are) before it relies on the bound.
+const maxExtrasLooked = 1000
 
 // pendingExtra is an extra whose original is due.
 type pendingExtra struct {
@@ -25,7 +71,8 @@ type pendingExtra struct {
 	qh1                   *string
 }
 
-// extras deletes the originals of the extras that are due, at most n: it
+// extras deletes the originals of the extras that are due and the deletion
+// gate lets go, at most n, and names those it keeps (Kept, KeptExtra): it
 // answers how many were deleted and how many failed.
 func (r *Retirer) extras(ctx context.Context, p Paths, set Settings, now time.Time, n int) (done, failed int, err error) {
 	rows, err := r.pool.Query(ctx, `SELECT x.id, x.item_id, x.sourcepath, COALESCE(x.recordpath, ''), x.sourcesize, x.sourceqh1
@@ -34,7 +81,7 @@ func (r *Retirer) extras(ctx context.Context, p Paths, set Settings, now time.Ti
 		  AND x.recordedat + make_interval(secs => $1::float8) <= $2::timestamptz
 		  AND NOT COALESCE((SELECT i.retirehold FROM com_nalet_katalog_items i WHERE i.id = x.item_id), false)
 		ORDER BY x.recordedat, x.id
-		LIMIT $3`, set.RetireDelay.Seconds(), now, n)
+		LIMIT $3`, set.RetireDelay.Seconds(), now, maxExtrasLooked)
 	if err != nil {
 		return 0, 0, fmt.Errorf("the extras' originals due: %w", err)
 	}
@@ -52,11 +99,28 @@ func (r *Retirer) extras(ctx context.Context, p Paths, set Settings, now time.Ti
 		return 0, 0, err
 	}
 	var errs []error
+	kept := map[string]int{}
 	for _, x := range due {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || done+failed >= n {
 			break
 		}
-		if err := r.retireExtra(ctx, p, set, now, x); err != nil {
+		// the deletion gate first: what keeps it, nothing of it touched
+		gate := r.extraGate
+		if gate == nil {
+			gate = ExtraGate
+		}
+		g, err := gate(x.dir)
+		if err == nil {
+			if why := extraKept(g); why != "" {
+				r.kept = append(r.kept, Kept{SourceID: x.id, ItemID: x.itemID, Why: why, For: KeptExtra})
+				kept[why]++
+				continue
+			}
+		}
+		if err == nil {
+			err = r.retireExtra(ctx, p, set, now, x)
+		}
+		if err != nil {
 			failed++
 			r.say("extra:"+x.id, fmt.Sprintf("the original of extra %s is not deleted: %v", x.id, err))
 			errs = append(errs, fmt.Errorf("extra %s: %w", x.id, err))
@@ -64,6 +128,9 @@ func (r *Retirer) extras(ctx context.Context, p Paths, set Settings, now time.Ti
 		}
 		r.say("extra:"+x.id, "")
 		done++
+	}
+	for why, k := range kept {
+		r.say("extras:"+why, fmt.Sprintf("%d extras' originals are kept: %s", k, why))
 	}
 	return done, failed, errors.Join(errs...)
 }

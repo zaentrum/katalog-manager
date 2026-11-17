@@ -521,7 +521,8 @@ func TestARevertBringsTheRunBack(t *testing.T) {
 		('s1', 'library.layout', 'v2'), ('s2', 'library.originals', 'delete-after-package'), ('s3', 'library.retire.delay', '0')`)
 	settleAll(t, f.st)
 	r := NewRetirer(f.st.Pool(), f.cfg, processing.New(f.st.Pool()))
-	if rep, err := r.Pass(ctx); err != nil || rep.Originals != 2 || rep.Extras != 1 {
+	// the extra's original is kept: no record of it the deletion gate can read
+	if rep, err := r.Pass(ctx); err != nil || rep.Originals != 2 || rep.Extras != 0 || keptOf(rep.Kept, KeptExtra) != 1 {
 		t.Fatalf("the retire pass: %+v, %v", rep, err)
 	}
 	if statOK(filepath.Join(f.p.Arrivals, "Film (2020)", "Film.mkv")) {

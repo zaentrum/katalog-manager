@@ -2077,7 +2077,11 @@ extend type Mutation {
 # the backfill's settings, idle, why it hands out nothing now (null when it
 # may), and problems, of a setting that could not be read. packaged,
 # packagesRead and packagesWithCaptions are 0: no package is read for
-# closed captions; they stay for the clients that read them.
+# closed captions; they stay for the clients that read them. extrasGated is
+# true when the retire job deletes an extra's original only where the
+# deletion gate lets it go (it keeps every one while no record of an extra's
+# original is there for the gate to read): a client that would let
+# originals be deleted asks it first.
 type CaptionReadProgress {
   originals: Int!
   read: Int!
@@ -2105,6 +2109,7 @@ type CaptionReadProgress {
   lease: String!
   idle: String
   problems: [String!]!
+  extrasGated: Boolean!
 }
 
 extend type Query {

@@ -3042,8 +3042,14 @@ drops, until a master carries it; then
 claimed, checked, its master verified, its event recorded, moved into the
 trash, `deleted`; gone from the trash after `library.trash.grace`.
 
-The same job deletes an extra's
-original once its folder is recorded and verifies, removes a superseded
+The same job deletes an extra's original only where the deletion gate lets
+it go, as a title's: an extra's folder holds no record of its original (no
+essence, no streams), so the gate can't tell what deleting it gives up and
+keeps every one, whatever `library.trash.grace` is; the pass names them
+("N extras' originals kept: no record the deletion gate can read"), and
+`captionReads.extrasGated` says the step goes through the gate (a rule that
+reads a record of an extra's original lets those go, once its folder is
+recorded and verifies). It removes a superseded
 version after its grace (`version-removed`, its folder deleted) once its
 folder holds no original (one there is retired first, against the newest
 package of its source), moves a package folder of the store before the
