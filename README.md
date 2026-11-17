@@ -1506,9 +1506,10 @@ The backfill reads its settings on every claim, so an instance starts it,
 slows it or moves its hours without a restart:
 
 - `picture.backfill` (`off`): `on` hands titles out;
-- `picture.backfill.window` (`22:00-17:00`): when, `HH:MM-HH:MM` in UTC,
-  never from 17:00 to 22:00 by default; empty, any time; one that is no
-  window hands out nothing;
+- `picture.backfill.window` (empty: any time): when, `HH:MM-HH:MM` in UTC
+  (it may cross midnight); an installation can keep the measurements out of
+  the hours its library is watched, `02:00-07:00` say; empty, the default,
+  any time; one that is no window hands out nothing;
 - `picture.backfill.inflight` (`1`): titles handed out and not reported at
   once;
 - `picture.backfill.rate` (`240`): titles handed out an hour at most; `0`
@@ -1752,9 +1753,11 @@ The settings are read on every claim, so an instance starts it, slows it
 or moves its hours without a restart:
 
 - `chapters.backfill` (`off`): `on` reads titles;
-- `chapters.backfill.window` (`22:00-17:00`): when, `HH:MM-HH:MM` in UTC,
-  never from 17:00 to 22:00 by default (no record read either); empty, any
-  time; one that is no window reads nothing;
+- `chapters.backfill.window` (empty: any time): when, `HH:MM-HH:MM` in UTC
+  (it may cross midnight), no record read either outside it; an
+  installation can keep the reads out of the hours its library is watched,
+  `02:00-07:00` say; empty, the default, any time; one that is no window
+  reads nothing;
 - `chapters.backfill.records` (`3600`): source records the catalog reads an
   hour at most; `0` none, and every title goes to the analyzer;
 - `chapters.backfill.inflight` (`1`): titles handed out and not reported at

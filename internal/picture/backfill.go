@@ -56,8 +56,10 @@ const (
 	// SettingBackfill is on or off (the default): whether titles are handed
 	// out at all.
 	SettingBackfill = "picture.backfill"
-	// SettingWindow is when, "HH:MM-HH:MM" in UTC (22:00-17:00, which
-	// crosses midnight: never from 17:00 to 22:00); empty, any time.
+	// SettingWindow is when titles are handed out, a daily span
+	// "HH:MM-HH:MM" in UTC (it may cross midnight): an installation can keep
+	// the measurements out of the hours its library is watched. Empty, the
+	// default, is any time.
 	SettingWindow = "picture.backfill.window"
 	// SettingInflight is how many titles may be handed out and not reported
 	// at once (1).
@@ -73,7 +75,7 @@ const (
 
 // The settings' defaults.
 const (
-	DefaultWindow   = "22:00-17:00"
+	DefaultWindow   = "" // any time
 	DefaultInflight = 1
 	DefaultRate     = 240
 	DefaultLease    = 6 * time.Hour
@@ -138,7 +140,7 @@ func (s *Settings) set(key, value string) {
 		w, err := ParseWindow(v)
 		if err != nil {
 			s.Window = Window{never: true}
-			bad("a window, HH:MM-HH:MM in UTC, as 22:00-17:00; no title is handed out until it is one")
+			bad("a window, HH:MM-HH:MM in UTC, as 02:00-07:00; no title is handed out until it is one")
 			return
 		}
 		s.Window = w
@@ -181,7 +183,7 @@ func ParseWindow(v string) (Window, error) {
 	}
 	m := windowRE.FindStringSubmatch(v)
 	if m == nil {
-		return Window{}, fmt.Errorf("%q is no window: HH:MM-HH:MM in UTC, as 22:00-17:00", v)
+		return Window{}, fmt.Errorf("%q is no window: HH:MM-HH:MM in UTC, as 02:00-07:00", v)
 	}
 	at := func(h, mm string) int {
 		hh, _ := strconv.Atoi(h)
@@ -191,7 +193,7 @@ func ParseWindow(v string) (Window, error) {
 	return Window{set: true, start: at(m[1], m[2]), end: at(m[3], m[4])}, nil
 }
 
-// String writes the window as it is set ("22:00-17:00 UTC"), "any time".
+// String writes the window as it is set ("02:00-07:00 UTC"), "any time".
 func (w Window) String() string {
 	switch {
 	case w.never:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +16,8 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
 
-// night is inside the backfill's default window (22:00-17:00 UTC).
+// night is a time inside the windows the tests set (and any time, the
+// backfill's default).
 var night = time.Date(2026, 11, 3, 3, 0, 0, 0, time.UTC)
 
 // lib is a library on disk: files the tests write, under one root.
@@ -289,9 +291,10 @@ func TestTheBackfillHandsOutTitlesAtItsPace(t *testing.T) {
 	// a lease of 30 minutes, so the lost claim lapses within the night
 	lease := 30 * time.Minute
 	setting(t, st, SettingLease, "30m")
+	setting(t, st, SettingWindow, "02:00-07:00")
 	now = time.Date(2026, 11, 3, 18, 0, 0, 0, time.UTC)
-	if c := claim(); !strings.HasPrefix(c.Idle, "outside picture.backfill.window") || c.RetryAfterSeconds != 4*3600 {
-		t.Errorf("in the quiet hours: %+v", c)
+	if c := claim(); !strings.HasPrefix(c.Idle, "outside picture.backfill.window") || c.RetryAfterSeconds != 8*3600 {
+		t.Errorf("outside its window: %+v", c)
 	}
 	now = night
 	// m2's original is nowhere and it has no package: it fails, and m3's
@@ -900,13 +903,17 @@ func TestTheNewestPackagesGoFirst(t *testing.T) {
 func TestATitleTooCostlyToMeasureIsSaidSo(t *testing.T) {
 	st := storetest.Open(t)
 	ctx := context.Background()
-	now := night
+	// its runs start at 23:00, 00:00, 06:00 and 12:00, inside a window of
+	// 23:00-13:00 that cuts the last of them short
+	start := time.Date(2026, 11, 3, 23, 0, 0, 0, time.UTC)
+	now := start
 	l := lib{t, t.TempDir()}
 	s := service(t, st, l.root, &now)
 	storetest.AddItem(t, st, "m1", "movie", "A Long Film", "")
 	orig := l.original(st, "m1", "s1")
 	setting(t, st, SettingBackfill, "on")
 	setting(t, st, SettingLease, "6h")
+	setting(t, st, SettingWindow, "23:00-13:00")
 	release := func(j Job, after time.Duration) *Area {
 		t.Helper()
 		now = now.Add(after)
@@ -937,14 +944,14 @@ func TestATitleTooCostlyToMeasureIsSaidSo(t *testing.T) {
 			t.Errorf("given back at its lease's end: %+v", a)
 		}
 	}
-	// 16:00 UTC: the window closes at 17:00, before the lease ends
+	// 12:00 UTC: the window closes at 13:00, before the lease ends
 	if j = next(); j.Last || j.CostlyRuns != CostlyRuns-1 {
 		t.Fatalf("a run the window cuts short: %+v", j)
 	}
 	if a := release(j, time.Hour); a.CostlyRuns != CostlyRuns-1 {
 		t.Errorf("given back at the window's end: %+v", a)
 	}
-	now = night.Add(24 * time.Hour)
+	now = start.Add(24 * time.Hour)
 	if j = next(); !j.Last || j.CostlyRuns != CostlyRuns-1 {
 		t.Fatalf("the last run: %+v", j)
 	}
@@ -965,5 +972,44 @@ func TestATitleTooCostlyToMeasureIsSaidSo(t *testing.T) {
 	now = now.Add(UnknownAgain + 2*24*time.Hour)
 	if c, err := s.Claim(ctx, "analyzer-0", 1, "picture/2"); err != nil || len(c.Items) != 0 {
 		t.Errorf("handed out again a month later: %+v, %v", c, err)
+	}
+}
+
+// With no setting of its window, the backfill hands out at any hour of the
+// day; once a window is set, it hands out inside it alone, as before.
+func TestTheBackfillHandsOutAtAnyHourByDefault(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	now := night
+	l := lib{t, t.TempDir()}
+	s := service(t, st, l.root, &now)
+	setting(t, st, SettingBackfill, "on")
+	setting(t, st, SettingInflight, "100")
+	setting(t, st, SettingRate, "1000")
+	for i := 0; i < 29; i++ {
+		id := fmt.Sprintf("m%02d", i)
+		storetest.AddItem(t, st, id, "movie", "Film "+id, "")
+		l.original(st, id, "s-"+id)
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_settings WHERE key = $1`,
+		SettingWindow); n != 0 {
+		t.Fatalf("%d window settings", n)
+	}
+	for h := 0; h < 24; h++ {
+		now = time.Date(2026, 11, 3, h, 30, 0, 0, time.UTC)
+		if c, err := s.Claim(ctx, "analyzer-0", 1, "picture/2"); err != nil || len(c.Items) != 1 {
+			t.Errorf("a claim at %02d:30 UTC with no window set: %+v, %v", h, c, err)
+		}
+	}
+	setting(t, st, SettingWindow, "02:00-07:00")
+	for _, at := range []struct {
+		hour  int
+		hands bool
+	}{{1, false}, {3, true}, {7, false}, {12, false}, {6, true}} {
+		now = time.Date(2026, 11, 4, at.hour, 30, 0, 0, time.UTC)
+		if c, err := s.Claim(ctx, "analyzer-0", 1, "picture/2"); err != nil || (len(c.Items) == 1) != at.hands {
+			t.Errorf("a claim at %02d:30 UTC in a window of 02:00-07:00: %+v, %v; want it handed out %v", at.hour, c, err,
+				at.hands)
+		}
 	}
 }

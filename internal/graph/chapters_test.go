@@ -48,7 +48,7 @@ func TestChapterReadsSaysHowFarTheChaptersAre(t *testing.T) {
 	want := `{"chapterReads":{"missing":3,"missingPackaged":1,"read":0,"fromRecord":0,"none":1,"unconfirmed":1,` +
 		`"unreadable":0,"accepted":0,"failed":0,"held":0,"replaced":0,"inFlight":0,"handedOutLastHour":0,` +
 		`"recordsReadLastHour":0,` +
-		`"lastReadAt":"2026-11-04T03:00:00Z","backfill":false,"window":"22:00-17:00 UTC","maxInFlight":1,` +
+		`"lastReadAt":"2026-11-04T03:00:00Z","backfill":false,"window":"any time","maxInFlight":1,` +
 		`"maxPerHour":120,"maxRecordsPerHour":3600,"lease":"30m","idle":"chapters.backfill is off","problems":[]}}`
 	if got := string(resp.Data); got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)

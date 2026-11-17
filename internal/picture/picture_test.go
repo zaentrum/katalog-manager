@@ -50,10 +50,10 @@ func TestAFailureWaitsItsBackoff(t *testing.T) {
 	}
 }
 
-// The window is UTC, across midnight too: 22:00-17:00 never holds from
-// 17:00 to 22:00, closes at 17:00 and opens again at 22:00.
+// The window is UTC, across midnight too: 23:00-05:00 never holds from
+// 05:00 to 23:00, closes at 05:00 and opens again at 23:00.
 func TestTheWindowIsUTC(t *testing.T) {
-	w, err := ParseWindow("22:00-17:00")
+	w, err := ParseWindow("23:00-05:00")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,31 +64,31 @@ func TestTheWindowIsUTC(t *testing.T) {
 		}
 		return v
 	}
-	for when, in := range map[string]bool{"2026-11-03T16:59:00Z": true, "2026-11-03T17:00:00Z": false,
-		"2026-11-03T21:59:00Z": false, "2026-11-03T22:00:00Z": true, "2026-11-03T03:00:00Z": true,
-		// a time of another zone is read in UTC: 17:30+01:00 is 16:30 UTC
-		"2026-11-03T17:30:00+01:00": true, "2026-11-03T18:30:00+01:00": false} {
+	for when, in := range map[string]bool{"2026-11-03T04:59:00Z": true, "2026-11-03T05:00:00Z": false,
+		"2026-11-03T12:00:00Z": false, "2026-11-03T23:00:00Z": true, "2026-11-03T03:00:00Z": true,
+		// a time of another zone is read in UTC: 05:30+01:00 is 04:30 UTC
+		"2026-11-03T05:30:00+01:00": true, "2026-11-03T06:30:00+01:00": false} {
 		if got := w.Contains(at(when)); got != in {
 			t.Errorf("%s: in the window %v, want %v", when, got, in)
 		}
 	}
-	if got := w.Closes(at("2026-11-03T03:00:00Z")); !got.Equal(at("2026-11-03T17:00:00Z")) {
-		t.Errorf("closes %s, want 17:00 the same day", got)
+	if got := w.Closes(at("2026-11-03T03:00:00Z")); !got.Equal(at("2026-11-03T05:00:00Z")) {
+		t.Errorf("closes %s, want 05:00 the same day", got)
 	}
-	if got := w.Closes(at("2026-11-03T23:00:00Z")); !got.Equal(at("2026-11-04T17:00:00Z")) {
-		t.Errorf("closes %s, want 17:00 the next day", got)
+	if got := w.Closes(at("2026-11-03T23:30:00Z")); !got.Equal(at("2026-11-04T05:00:00Z")) {
+		t.Errorf("closes %s, want 05:00 the next day", got)
 	}
-	if got := w.Opens(at("2026-11-03T18:00:00Z")); !got.Equal(at("2026-11-03T22:00:00Z")) {
-		t.Errorf("opens %s, want 22:00", got)
+	if got := w.Opens(at("2026-11-03T06:00:00Z")); !got.Equal(at("2026-11-03T23:00:00Z")) {
+		t.Errorf("opens %s, want 23:00", got)
 	}
-	if w.String() != "22:00-17:00 UTC" {
+	if w.String() != "23:00-05:00 UTC" {
 		t.Errorf("%q", w.String())
 	}
 	if any, _ := ParseWindow(""); !any.Contains(at("2026-11-03T19:00:00Z")) || !any.Closes(at("2026-11-03T19:00:00Z")).IsZero() {
 		t.Error("no window is any time, and never closes")
 	}
-	if _, err := ParseWindow("10pm-5pm"); err == nil {
-		t.Error("10pm-5pm read as a window")
+	if _, err := ParseWindow("2am-7am"); err == nil {
+		t.Error("2am-7am read as a window")
 	}
 }
 
@@ -96,8 +96,13 @@ func TestTheWindowIsUTC(t *testing.T) {
 // default and says so, a window that can't be read hands out nothing.
 func TestTheBackfillsSettings(t *testing.T) {
 	s := DefaultSettings()
-	if s.On || s.Inflight != 1 || s.Rate != 240 || s.Lease != 6*time.Hour || s.Window.String() != "22:00-17:00 UTC" {
+	if s.On || s.Inflight != 1 || s.Rate != 240 || s.Lease != 6*time.Hour || s.Window.String() != "any time" {
 		t.Fatalf("defaults %+v", s)
+	}
+	for h := 0; h < 24; h++ {
+		if !s.Window.Contains(time.Date(2026, 11, 3, h, 30, 0, 0, time.UTC)) {
+			t.Errorf("the default window holds not at %02d:30 UTC", h)
+		}
 	}
 	s.set(SettingBackfill, " on ")
 	s.set(SettingInflight, "2")

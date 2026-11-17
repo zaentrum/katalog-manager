@@ -102,21 +102,29 @@ func TestAFailureWaitsItsBackoff(t *testing.T) {
 	}
 }
 
-// The backfill's settings: off, 22:00-17:00 UTC, one at a time, 120 an hour
-// and a lease of 30 minutes unless set; a value that can't be read is its
-// default and said so, and a window that can't be read hands out nothing.
+// The backfill's settings: off, any time, one at a time, 120 an hour and a
+// lease of 30 minutes unless set; a window set holds as set; a value that
+// can't be read is its default and said so, and a window that can't be read
+// hands out nothing.
 func TestTheBackfillsSettings(t *testing.T) {
 	s := DefaultSettings()
-	if s.On || s.Window.String() != "22:00-17:00 UTC" || s.Inflight != 1 || s.Rate != 120 || s.Records != 3600 ||
+	if s.On || s.Window.String() != "any time" || s.Inflight != 1 || s.Rate != 120 || s.Records != 3600 ||
 		s.Lease != 30*time.Minute {
 		t.Fatalf("defaults: %+v", s)
 	}
+	for h := 0; h < 24; h++ {
+		if !s.Window.Contains(time.Date(2026, 11, 4, h, 30, 0, 0, time.UTC)) {
+			t.Errorf("the default window holds not at %02d:30 UTC", h)
+		}
+	}
+	set := DefaultSettings()
+	set.set(SettingWindow, "02:00-07:00")
 	for _, at := range []struct {
 		hour int
 		in   bool
-	}{{16, true}, {17, false}, {21, false}, {22, true}, {3, true}} {
-		if got := s.Window.Contains(time.Date(2026, 11, 4, at.hour, 30, 0, 0, time.UTC)); got != at.in {
-			t.Errorf("%02d:30 UTC in the window: %v, want %v", at.hour, got, at.in)
+	}{{1, false}, {2, true}, {6, true}, {7, false}, {12, false}} {
+		if got := set.Window.Contains(time.Date(2026, 11, 4, at.hour, 30, 0, 0, time.UTC)); got != at.in {
+			t.Errorf("%02d:30 UTC in a window of 02:00-07:00: %v, want %v", at.hour, got, at.in)
 		}
 	}
 	s.set(SettingBackfill, " ON ")
@@ -133,7 +141,7 @@ func TestTheBackfillsSettings(t *testing.T) {
 	s.set(SettingRate, "-1")
 	s.set(SettingRecords, "many")
 	s.set(SettingLease, "10s")
-	s.set(SettingWindow, "evenings")
+	s.set(SettingWindow, "later")
 	if s.On || s.Inflight != 1 || s.Rate != 120 || s.Records != 3600 || s.Lease != 30*time.Minute || len(s.Problems) != 6 {
 		t.Errorf("unreadable: %+v", s)
 	}

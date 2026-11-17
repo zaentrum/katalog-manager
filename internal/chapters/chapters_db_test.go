@@ -19,7 +19,8 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/store/storetest"
 )
 
-// night is inside the backfill's default window (22:00-17:00 UTC).
+// night is a time inside the windows the tests set (and any time, the
+// backfill's default).
 var night = time.Date(2026, 11, 4, 3, 0, 0, 0, time.UTC)
 
 // uid is a title's or an original's id, a lower-case UUID as the library
@@ -618,13 +619,14 @@ func TestTheBackfillsPace(t *testing.T) {
 		t.Fatalf("off: %+v, %v", c, err)
 	}
 	setting(t, l.st, SettingBackfill, "on")
+	setting(t, l.st, SettingWindow, "02:00-07:00")
 	now = time.Date(2026, 11, 4, 18, 0, 0, 0, time.UTC)
-	if c, err := s.Claim(ctx, "analyzer-0", 1); err != nil || c.Idle != "outside chapters.backfill.window (22:00-17:00 UTC)" ||
-		c.RetryAfterSeconds != 4*3600 || c.Settled != 0 {
-		t.Fatalf("in the quiet hours: %+v, %v", c, err)
+	if c, err := s.Claim(ctx, "analyzer-0", 1); err != nil || c.Idle != "outside chapters.backfill.window (02:00-07:00 UTC)" ||
+		c.RetryAfterSeconds != 8*3600 || c.Settled != 0 {
+		t.Fatalf("outside its window: %+v, %v", c, err)
 	}
 	if n := storetest.Count(t, l.st, `SELECT count(*) FROM com_nalet_katalog_chapterreads WHERE recordat IS NOT NULL`); n != 0 {
-		t.Fatalf("%d records read in the quiet hours", n)
+		t.Fatalf("%d records read outside its window", n)
 	}
 	now = night
 	c, err := s.Claim(ctx, "analyzer-0", 1)
@@ -652,15 +654,51 @@ func TestTheBackfillsPace(t *testing.T) {
 		deref(r.Reason) != "killed" {
 		t.Errorf("a late failure of a lapsed claim: %+v, %v", r, err)
 	}
-	// at 16:50 a claim's deadline is the window's end
-	now = time.Date(2026, 11, 4, 16, 50, 0, 0, time.UTC)
+	// at 06:50 a claim's deadline is the window's end
+	now = time.Date(2026, 11, 4, 6, 50, 0, 0, time.UTC)
 	if c, err = s.Claim(ctx, "analyzer-0", 1); err != nil || len(c.Items) != 1 ||
-		!c.Deadline.Equal(time.Date(2026, 11, 4, 17, 0, 0, 0, time.UTC)) {
+		!c.Deadline.Equal(time.Date(2026, 11, 4, 7, 0, 0, 0, time.UTC)) {
 		t.Fatalf("near the window's end: %+v, %v", c, err)
 	}
 	setting(t, l.st, SettingWindow, "after dinner")
 	if c, err = s.Claim(ctx, "analyzer-0", 1); err != nil || c.Idle != "chapters.backfill.window is no window" {
 		t.Errorf("no window: %+v, %v", c, err)
+	}
+}
+
+// With no setting of its window, the backfill reads at any hour of the day;
+// once a window is set, it reads inside it alone, as before.
+func TestTheBackfillReadsAtAnyHourByDefault(t *testing.T) {
+	l := newLib(t)
+	ctx := context.Background()
+	now := night
+	s := service(l, &now)
+	setting(t, l.st, SettingBackfill, "on")
+	setting(t, l.st, SettingInflight, "100")
+	setting(t, l.st, SettingRate, "1000")
+	for i := 1; i <= 29; i++ {
+		l.title(uid('a', i), uid('b', i), opts{chapters: true})
+	}
+	if n := storetest.Count(t, l.st, `SELECT count(*) FROM com_nalet_katalog_settings WHERE key = $1`,
+		SettingWindow); n != 0 {
+		t.Fatalf("%d window settings", n)
+	}
+	for h := 0; h < 24; h++ {
+		now = time.Date(2026, 11, 4, h, 30, 0, 0, time.UTC)
+		if c, err := s.Claim(ctx, "analyzer-0", 1); err != nil || len(c.Items) != 1 {
+			t.Errorf("a claim at %02d:30 UTC with no window set: %+v, %v", h, c, err)
+		}
+	}
+	setting(t, l.st, SettingWindow, "02:00-07:00")
+	for _, at := range []struct {
+		hour  int
+		reads bool
+	}{{1, false}, {3, true}, {7, false}, {12, false}, {6, true}} {
+		now = time.Date(2026, 11, 5, at.hour, 30, 0, 0, time.UTC)
+		if c, err := s.Claim(ctx, "analyzer-0", 1); err != nil || (len(c.Items) == 1) != at.reads {
+			t.Errorf("a claim at %02d:30 UTC in a window of 02:00-07:00: %+v, %v; want it read %v", at.hour, c, err,
+				at.reads)
+		}
 	}
 }
 

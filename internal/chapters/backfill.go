@@ -46,8 +46,9 @@ const (
 	// SettingBackfill is on or off (the default): whether titles are read
 	// at all.
 	SettingBackfill = "chapters.backfill"
-	// SettingWindow is when, "HH:MM-HH:MM" in UTC (22:00-17:00, which
-	// crosses midnight: never from 17:00 to 22:00); empty, any time.
+	// SettingWindow is when titles are read, a daily span "HH:MM-HH:MM" in
+	// UTC (it may cross midnight): an installation can keep the reads out of
+	// the hours its library is watched. Empty, the default, is any time.
 	SettingWindow = "chapters.backfill.window"
 	// SettingInflight is how many titles may be handed out and not reported
 	// at once (1).
@@ -66,7 +67,7 @@ const (
 
 // The settings' defaults.
 const (
-	DefaultWindow   = "22:00-17:00"
+	DefaultWindow   = "" // any time
 	DefaultInflight = 1
 	DefaultRate     = 120
 	DefaultRecords  = 3600
@@ -103,7 +104,7 @@ type Window struct {
 // Contains reports whether t lies in the window.
 func (w Window) Contains(t time.Time) bool { return !w.Never && w.Window.Contains(t) }
 
-// String writes the window as it is set ("22:00-17:00 UTC", "any time").
+// String writes the window as it is set ("02:00-07:00 UTC", "any time").
 func (w Window) String() string {
 	if w.Never {
 		return "never (no window that could be read)"
@@ -168,7 +169,7 @@ func (s *Settings) set(key, value string) {
 		w, err := picture.ParseWindow(v)
 		if err != nil {
 			s.Window = Window{Never: true}
-			bad("a window, HH:MM-HH:MM in UTC, as 22:00-17:00; no title is read until it is one")
+			bad("a window, HH:MM-HH:MM in UTC, as 02:00-07:00; no title is read until it is one")
 			return
 		}
 		s.Window = Window{Window: w}
