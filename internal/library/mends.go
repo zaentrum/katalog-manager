@@ -261,7 +261,10 @@ func initEdit(buf []byte) (initEditField, string) {
 	if len(buf) > initMax {
 		return out, fmt.Sprintf("it is larger than an init segment (%d bytes)", initMax)
 	}
-	top := mp4Boxes(buf, 0, len(buf))
+	top, why := mp4Boxes(buf, 0, len(buf))
+	if why != "" {
+		return out, why
+	}
 	moovs := 0
 	for i, b := range top {
 		switch {
@@ -283,7 +286,11 @@ func initEdit(buf []byte) (initEditField, string) {
 		}
 	}
 	var traks []mp4Box
-	for _, b := range mp4Boxes(buf, moov.start, moov.end) {
+	inMoov, why := mp4Boxes(buf, moov.start, moov.end)
+	if why != "" {
+		return out, why
+	}
+	for _, b := range inMoov {
 		if b.kind == "trak" {
 			traks = append(traks, b)
 		}
@@ -291,12 +298,19 @@ func initEdit(buf []byte) (initEditField, string) {
 	if len(traks) != 1 {
 		return out, fmt.Sprintf("it has %d tracks, one expected", len(traks))
 	}
-	inTrak := mp4Boxes(buf, traks[0].start, traks[0].end)
+	inTrak, why := mp4Boxes(buf, traks[0].start, traks[0].end)
+	if why != "" {
+		return out, why
+	}
 	for _, b := range inTrak {
 		if b.kind != "mdia" {
 			continue
 		}
-		for _, h := range mp4Boxes(buf, b.start, b.end) {
+		inMdia, why := mp4Boxes(buf, b.start, b.end)
+		if why != "" {
+			return out, why
+		}
+		for _, h := range inMdia {
 			if h.kind == "hdlr" && h.start+12 <= h.end {
 				out.handler = string(buf[h.start+8 : h.start+12])
 			}
@@ -306,7 +320,11 @@ func initEdit(buf []byte) (initEditField, string) {
 		if b.kind != "edts" {
 			continue
 		}
-		for _, l := range mp4Boxes(buf, b.start, b.end) {
+		inEdts, why := mp4Boxes(buf, b.start, b.end)
+		if why != "" {
+			return out, why
+		}
+		for _, l := range inEdts {
 			if l.kind != "elst" || out.off >= 0 {
 				continue
 			}
@@ -359,34 +377,71 @@ type mp4Box struct {
 	start, end int // its payload
 }
 
-// mp4Boxes is the ISO BMFF boxes of buf[off:end], up to one that runs past
-// its parent.
-func mp4Boxes(buf []byte, off, end int) []mp4Box {
+// mp4Boxes is the ISO BMFF boxes of buf[off:end], or why they are none: a
+// box that runs past its parent, or bytes after the last box that are no
+// box, as the schemas' validator and library-v2-mend.py refuse them.
+func mp4Boxes(buf []byte, off, end int) ([]mp4Box, string) {
 	var out []mp4Box
 	for off+8 <= end {
 		size, hdr := int64(binary.BigEndian.Uint32(buf[off:])), 8
 		kind := string(buf[off+4 : off+8])
 		if size == 1 {
 			if off+16 > end {
-				return out
+				return nil, fmt.Sprintf("it has a box %q at %d that runs past its parent", kind, off)
 			}
 			size, hdr = int64(binary.BigEndian.Uint64(buf[off+8:])), 16
 		} else if size == 0 {
 			size = int64(end - off)
 		}
 		if size < int64(hdr) || int64(off)+size > int64(end) {
-			return out
+			return nil, fmt.Sprintf("it has a box %q at %d that runs past its parent", kind, off)
 		}
 		out = append(out, mp4Box{kind, off + hdr, off + int(size)})
 		off += int(size)
 	}
-	return out
+	if off != end {
+		return nil, fmt.Sprintf("it has %d bytes at %d that are no box", end-off, off)
+	}
+	return out, ""
 }
 
-// mendSettle is how long the retire job waits before it reads a version
-// whose chain did not hold again: more than a mend of one version takes to
-// write its files (a few small ones, each written through).
-var mendSettle = 5 * time.Second
+// MendUnderWay says a version's chain does not hold while a run of the
+// schemas' library-v2-mend.py has a step of it open in its journal: a mend
+// (or an undo) under way, or one that stopped mid-way, which the run's next
+// call finishes. It is no fault of the version.
+type MendUnderWay struct {
+	Run, Op, Dir string
+}
+
+func (e *MendUnderWay) Error() string {
+	return fmt.Sprintf("run %s of the mend has a %s of its folder (%s) open: under way, or stopped mid-way and "+
+		"finished by the run's next call; the original is looked at again once it is", e.Run, e.Op, e.Dir)
+}
+
+// openMend is the open step a mends journal of the library at root has of
+// the version folder dir, nil when none has one: the journals of every run,
+// .work/migration/<run>/mends.jsonl, as readMended reads them.
+func openMend(root, dir string) *MendUnderWay {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil {
+		return nil
+	}
+	rel = filepath.ToSlash(rel)
+	journals, _ := filepath.Glob(filepath.Join(root, ".work", "migration", "*", MendsJournal))
+	sort.Strings(journals)
+	for _, j := range journals {
+		lines, err := readMended(j)
+		if err != nil {
+			continue
+		}
+		for _, l := range lines {
+			if filepath.ToSlash(filepath.Clean(l.Dir)) == rel && (l.Op == "mend" || l.Op == "undo") {
+				return &MendUnderWay{Run: filepath.Base(filepath.Dir(j)), Op: l.Op, Dir: rel}
+			}
+		}
+	}
+	return nil
+}
 
 // mendMayBeUnderWay is whether err, a version's chain not holding, is what a
 // mend under way leaves for a moment: a file a mend writes (the chain's

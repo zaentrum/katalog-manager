@@ -2671,11 +2671,20 @@ last line a `mend` or an `undo`) and one whose full verification fails are
 skipped and lose the verification noted for them (`verifiedat` and
 `verifiedlevel` cleared), so the retire job verifies them in full before an
 original goes. It takes `{"items": [...]}` and answers as the checksums call
-does, and calling it again changes nothing. The tool writes a version's files
+does, and calling it again changes nothing: it keeps, in the run's folder
+(`mends-noted.json`), the `.complete` each verification it noted held and the
+`verifiedat` it wrote, and counts a version unchanged only while it is still
+those bytes and nothing wrote its row since — decided on the bytes, not on the
+clocks of the tool's host and the database. The tool writes a version's files
 one after the other and takes a lock of its own, which the retire job does not:
 a chain the job finds broken in a file a mend writes (`.complete`,
-`package.json`, `checksums.sha256`, an init segment, a `*.mending`) it reads once
-more five seconds later, and refuses the version when it is still broken.
+`package.json`, `checksums.sha256`, an init segment, a `*.mending`) it holds
+against the runs' journals (`.work/migration/<run>/mends.jsonl`): while a run
+has a step of the version open — under way, or stopped mid-way — the
+retirement is called off for the pass, the source present and the title's
+retire step waiting (not failed), naming the run, and the next pass looks at
+it again; with no step open it reads the version once more at once, and
+refuses it when it is still broken.
 Where the library record holds subtitles the catalog
 has no rows for — the migration's subtitles phase finds them with the
 schemas' `library-v2-rebuild.py --compare --differences` and plans them in

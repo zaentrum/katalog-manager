@@ -710,7 +710,14 @@ func (r *Retirer) prepare(ctx context.Context, p Paths, set Settings, now time.T
 	if rt.sidecars, err = r.sidecarsOf(ctx, rt, true); err != nil {
 		return r.fail(ctx, rt, err.Error())
 	}
-	level, err := r.verify(ctx, set, now, rt.ver)
+	level, err := r.verify(ctx, p, set, now, rt.ver)
+	if mw := (*MendUnderWay)(nil); errors.As(err, &mw) {
+		// not the version's fault: it waits, its step not failed, for the
+		// run to finish (a mend stopped mid-way waits for its run likewise)
+		err := r.callOff(ctx, rt, fmt.Sprintf("version %s: %v", rt.ver.ID, mw))
+		rt.src = nil
+		return err
+	}
 	if err != nil {
 		return r.fail(ctx, rt, fmt.Sprintf("version %s does not verify (%s): %v; the original is kept", rt.ver.ID, level, err))
 	}
@@ -926,7 +933,7 @@ func (r *Retirer) claim(ctx context.Context, p Paths, now time.Time, rt *retirem
 // verify checks the version's chain at the level the settings ask for, and
 // notes it: full, unless a full verification within library.verify.maxAge
 // did that (the migration hashed every byte), when the chain does.
-func (r *Retirer) verify(ctx context.Context, set Settings, now time.Time, v *Version) (string, error) {
+func (r *Retirer) verify(ctx context.Context, p Paths, set Settings, now time.Time, v *Version) (string, error) {
 	level := set.Verify
 	if level == VerifyFull && v.VerifiedLevel != nil && *v.VerifiedLevel == VerifyFull && v.VerifiedAt != nil &&
 		!v.VerifiedAt.Before(now.Add(-set.VerifyMaxAge)) {
@@ -936,7 +943,7 @@ func (r *Retirer) verify(ctx context.Context, set Settings, now time.Time, v *Ve
 	if dir == "" {
 		return level, errors.New("the catalog does not say where its folder is")
 	}
-	c, err := verifySettled(ctx, dir, level == VerifyFull)
+	c, err := verifyOrMend(p.Root, dir, level == VerifyFull)
 	if err != nil {
 		return level, err
 	}
@@ -954,23 +961,30 @@ func (r *Retirer) verify(ctx context.Context, set Settings, now time.Time, v *Ve
 	return level, err
 }
 
-// verifySettled is VerifyVersion, read once more where the chain does not
-// hold in a file a mend writes: library-v2-mend.py writes a mended
-// version's files one after the other, the chain's heads last, under a lock
-// of its own this job does not take, and while it writes the chain does not
-// hold. The second read comes a mend's time later (mendSettle); a version
-// still broken then is broken.
-func verifySettled(ctx context.Context, dir string, full bool) (*Chain, error) {
+// verifyOrMend is VerifyVersion of the version folder dir in the library at
+// root, told apart from a mend: library-v2-mend.py writes a mended version's
+// files one after the other, the chain's heads last, under a lock of its own
+// this job does not take, and while it writes — or after a run stopped
+// mid-way — the chain does not hold. Where it does not hold in a file a mend
+// writes, the runs' journals say whether a step of the version is open: then
+// the answer is a *MendUnderWay, which is no fault of the version; else the
+// folder is read once more at once (a mend that ended between the two reads
+// has its last line written), and a version still broken is broken.
+func verifyOrMend(root, dir string, full bool) (*Chain, error) {
 	c, err := VerifyVersion(dir, full)
 	if err == nil || !mendMayBeUnderWay(err) {
 		return c, err
 	}
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-time.After(mendSettle):
+	if mw := openMend(root, dir); mw != nil {
+		return nil, mw
 	}
-	return VerifyVersion(dir, full)
+	c, err = VerifyVersion(dir, full)
+	if err != nil && mendMayBeUnderWay(err) {
+		if mw := openMend(root, dir); mw != nil {
+			return nil, mw
+		}
+	}
+	return c, err
 }
 
 // isRecordedOriginal checks that the file at path is the original as it

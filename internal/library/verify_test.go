@@ -266,6 +266,19 @@ func TestAMendedVersionIsHeldToItsMends(t *testing.T) {
 			mendInit(t, dir, true, once)
 			librarytest.Write(t, filepath.Join(dir, "package.json.mending"), []byte("{"))
 		}, "package.json.mending", "a mend of the package stopped mid-way", false},
+		"a mended init with a box after its moov that runs past its end": {func(dir string) {
+			trailing := append([]byte{0, 0, 0x10, 0, 'f', 'r', 'e', 'e'}, make([]byte, 8)...)
+			p := filepath.Join(dir, "hls/v0/init.mp4")
+			librarytest.Write(t, p, append(librarytest.InitSegment(1328, "vide"), trailing...))
+			librarytest.Fill(t, dir)
+			mendInit(t, dir, true, [][]byte{append(librarytest.InitSegment(0, "vide"), trailing...)})
+		}, "hls/v0/init.mp4", "that runs past its parent", false},
+		"a mended init with bytes after its last box": {func(dir string) {
+			p := filepath.Join(dir, "hls/v0/init.mp4")
+			librarytest.Write(t, p, append(librarytest.InitSegment(1328, "vide"), 1, 2, 3))
+			librarytest.Fill(t, dir)
+			mendInit(t, dir, true, [][]byte{append(librarytest.InitSegment(0, "vide"), 1, 2, 3)})
+		}, "hls/v0/init.mp4", "that are no box", false},
 		"a mend's file in a rendition": {func(dir string) {
 			librarytest.Write(t, filepath.Join(dir, "hls/v0/init.mp4.mending"), zero)
 		}, "hls/v0/init.mp4.mending", "a mend of the package stopped mid-way", false},

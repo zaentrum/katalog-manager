@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -24,6 +25,42 @@ const MendsJournal = "mends.jsonl"
 // file's new bytes to beside it before it renames it into place: one in a
 // package's folder is a mend stopped mid-way, or one under way.
 const MendingSuffix = ".mending"
+
+// MendsNoted is the catalog's own record, in the run's folder beside its
+// journal, of the versions it noted from it: by folder, the .complete the
+// full verification it noted held and the verifiedat it wrote then (the
+// database's clock). It decides "noted already" on the bytes, not on the
+// moments two clocks gave.
+const MendsNoted = "mends-noted.json"
+
+// mendNote is one version's entry in MendsNoted.
+type mendNote struct {
+	Complete   string    `json:"complete"`
+	VerifiedAt time.Time `json:"verifiedAt"`
+}
+
+// readNotes reads the run's MendsNoted; none is no notes.
+func (m *Migration) readNotes() map[string]mendNote {
+	out := map[string]mendNote{}
+	if b, err := os.ReadFile(filepath.Join(m.Dir, MendsNoted)); err == nil {
+		_ = json.Unmarshal(b, &out)
+	}
+	return out
+}
+
+// writeNotes writes the run's MendsNoted whole, in one step.
+func (m *Migration) writeNotes(notes map[string]mendNote) error {
+	b, err := json.MarshalIndent(notes, "", "  ")
+	if err != nil {
+		return err
+	}
+	p := filepath.Join(m.Dir, MendsNoted)
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p)
+}
 
 // mendedLine is a line of the mends journal.
 type mendedLine struct {
@@ -88,9 +125,12 @@ func readMended(path string) ([]mendedLine, error) {
 // verifiedlevel cleared), as it stood for bytes the version no longer has
 // — the retire job then verifies it in full before an original goes, and
 // refuses it while it does not hold. Calling it again changes nothing: a
-// version verified in full since the step is counted unchanged. only
-// narrows it to those items. A run whose folder holds no such journal notes
-// nothing.
+// version this call's run noted already, whose .complete is still the one
+// the noted verification held and whose row nothing wrote since, is counted
+// unchanged (MendsNoted) — decided on the bytes, so no verification of the
+// bytes from before the step counts, whatever the clocks of the tool's host
+// and the database. only narrows it to those items. A run whose folder
+// holds no such journal notes nothing.
 func (m *Migration) Mended(ctx context.Context, only []string) (FilledReport, error) {
 	rep := FilledReport{Run: m.Run, Skipped: []FilledSkip{}}
 	release, err := m.lock(ctx)
@@ -105,6 +145,7 @@ func (m *Migration) Mended(ctx context.Context, only []string) (FilledReport, er
 	if err != nil {
 		return rep, err
 	}
+	notes := m.readNotes()
 	for _, l := range lines {
 		if len(only) > 0 && !slices.Contains(only, l.ItemID) {
 			continue
@@ -113,7 +154,7 @@ func (m *Migration) Mended(ctx context.Context, only []string) (FilledReport, er
 			rep.Stopped = "the caller went away: the versions left are not noted"
 			return rep, nil
 		}
-		noted, why, err := m.noteMended(context.WithoutCancel(ctx), l)
+		noted, why, err := m.noteMended(context.WithoutCancel(ctx), l, notes)
 		switch {
 		case err != nil:
 			rep.Skipped = append(rep.Skipped, FilledSkip{ItemID: l.ItemID, VersionID: l.VersionID, Reason: "failed: " + err.Error()})
@@ -130,12 +171,11 @@ func (m *Migration) Mended(ctx context.Context, only []string) (FilledReport, er
 
 // noteMended verifies and notes one version the journal says was mended or
 // put back: whether its row changed, or why it was left.
-func (m *Migration) noteMended(ctx context.Context, l mendedLine) (bool, string, error) {
+func (m *Migration) noteMended(ctx context.Context, l mendedLine, notes map[string]mendNote) (bool, string, error) {
 	if !ValidID(l.ItemID) || !ValidID(l.VersionID) {
 		return false, "the journal names no item and version by their ids", nil
 	}
-	at, err := time.Parse(time.RFC3339, l.At)
-	if err != nil {
+	if _, err := time.Parse(time.RFC3339, l.At); err != nil {
 		return false, "the journal does not say when it was " + l.Op, nil
 	}
 	dir := m.inRoot(l.Dir)
@@ -145,7 +185,7 @@ func (m *Migration) noteMended(ctx context.Context, l mendedLine) (bool, string,
 	var state string
 	var keptIn, pkg, level *string
 	var verified *time.Time
-	err = m.pool.QueryRow(ctx, `SELECT state, dir, packageid, verifiedlevel, verifiedat FROM com_nalet_katalog_itemversions
+	err := m.pool.QueryRow(ctx, `SELECT state, dir, packageid, verifiedlevel, verifiedat FROM com_nalet_katalog_itemversions
 		WHERE id = $1 AND item_id = $2`, l.VersionID, l.ItemID).Scan(&state, &keptIn, &pkg, &level, &verified)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -161,8 +201,12 @@ func (m *Migration) noteMended(ctx context.Context, l mendedLine) (bool, string,
 	case l.Op == "mend" || l.Op == "undo":
 		why := "the run stopped mid-way through a " + l.Op + " of it: the tool finishes it on its next run of the same name"
 		return m.unverified(ctx, l, why)
-	case deref(level) == VerifyFull && verified != nil && !verified.Before(at):
-		return false, "", nil // verified in full since the step: nothing to note
+	}
+	if n, ok := notes[l.Dir]; ok && n.Complete == l.Complete && deref(level) == VerifyFull && verified != nil &&
+		verified.Equal(n.VerifiedAt) {
+		if mark, err := os.ReadFile(filepath.Join(dir, CompleteFile)); err == nil && strings.TrimSpace(string(mark)) == l.Complete {
+			return false, "", nil // noted already, of these bytes, and nothing wrote the row since
+		}
 	}
 	c, err := VerifyVersion(dir, true)
 	switch {
@@ -173,13 +217,21 @@ func (m *Migration) noteMended(ctx context.Context, l mendedLine) (bool, string,
 	case l.Complete == "" || c.Complete != l.Complete:
 		return false, "its package.json is not the one the run left: it changed since it was " + l.Op, nil
 	}
-	tag, err := m.pool.Exec(ctx, `UPDATE com_nalet_katalog_itemversions SET verifiedat = now(), verifiedlevel = $3,
+	var at time.Time
+	err = m.pool.QueryRow(ctx, `UPDATE com_nalet_katalog_itemversions SET verifiedat = now(), verifiedlevel = $3,
 			modifiedat = now()
-		WHERE id = $1 AND item_id = $2 AND state = 'complete'`, l.VersionID, l.ItemID, VerifyFull)
+		WHERE id = $1 AND item_id = $2 AND state = 'complete' RETURNING verifiedat`, l.VersionID, l.ItemID, VerifyFull).Scan(&at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, "", nil
+	}
 	if err != nil {
 		return false, "", err
 	}
-	return tag.RowsAffected() == 1, "", nil
+	notes[l.Dir] = mendNote{Complete: c.Complete, VerifiedAt: at}
+	if err := m.writeNotes(notes); err != nil {
+		return true, "", fmt.Errorf("noted, and its note could not be written (%v): the next call verifies it again", err)
+	}
+	return true, "", nil
 }
 
 // unverified takes away the verification the catalog noted for the version

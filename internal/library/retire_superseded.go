@@ -417,7 +417,12 @@ func (r *Retirer) prepareSuperseded(ctx context.Context, p Paths, set Settings, 
 			return r.fail(ctx, rt, fmt.Sprintf("the source's record does not verify: %v; the original is kept", err))
 		}
 	}
-	level, err := r.verify(ctx, set, now, master)
+	level, err := r.verify(ctx, p, set, now, master)
+	if mw := (*MendUnderWay)(nil); errors.As(err, &mw) {
+		err := r.callOff(ctx, rt, fmt.Sprintf("the title's master, version %s: %v", master.ID, mw))
+		rt.src = nil
+		return err
+	}
 	if err != nil {
 		return r.fail(ctx, rt, fmt.Sprintf("the title's master, version %s, does not verify (%s): %v; the original is kept",
 			master.ID, level, err))

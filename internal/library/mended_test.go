@@ -139,3 +139,65 @@ func TestAMendedVersionIsVerifiedAgainAndNoted(t *testing.T) {
 		t.Errorf("the version a mend left mid-way is still verified: %q %v", level, at)
 	}
 }
+
+// A full verification of the bytes from before a mend, noted a moment before
+// it by the database's clock and after the journal's line by the tool host's
+// (a host whose clock is behind), does not stand for the mended bytes: the
+// note is decided on what was verified, so the mended version is verified
+// and noted again.
+func TestAVerificationFromBeforeAMendDoesNotStandForItWhateverTheClocks(t *testing.T) {
+	f := newBesideFixture(t)
+	ctx := context.Background()
+	if rep, err := f.migration(t).Adopt(ctx, []string{mgBeside}); err != nil || rep.Adopted != 1 {
+		t.Fatalf("Adopt: %+v, %v", rep, err)
+	}
+	vid := IDOf(mgBeside + ":version")
+	vdir := VersionDir(f.itemDir(mgBeside), vid)
+	init := filepath.Join(vdir, "hls/v0/init.mp4")
+	librarytest.Write(t, init, librarytest.InitSegment(1328, "vide"))
+	librarytest.Fill(t, vdir)
+	m := f.migration(t)
+	var t0 time.Time
+	if err := f.st.Pool().QueryRow(ctx, `UPDATE com_nalet_katalog_itemversions SET verifiedat = now(), verifiedlevel = 'full'
+		WHERE id = $1 RETURNING verifiedat`, vid).Scan(&t0); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(init)
+	after := librarytest.InitSegment(0, "vide")
+	librarytest.Write(t, init, after)
+	pj := filepath.Join(vdir, PackageFile)
+	var pkg map[string]any
+	b, _ := os.ReadFile(pj)
+	if err := json.Unmarshal(b, &pkg); err != nil {
+		t.Fatal(err)
+	}
+	sums := filepath.Join(vdir, SumsFile)
+	listing, _ := os.ReadFile(sums)
+	listing = []byte(strings.Replace(string(listing), SHA256(before)+"  hls/v0/init.mp4\n", SHA256(after)+"  hls/v0/init.mp4\n", 1))
+	librarytest.Write(t, sums, listing)
+	pkg["checksums"].(map[string]any)["sha256"] = "sha256:" + SHA256(listing)
+	pkg["mends"] = []any{map[string]any{"kind": "avsync-editlist", "file": "hls/v0/init.mp4", "box": "moov/trak/edts/elst",
+		"old": 1328, "new": 0, "sha256Before": "sha256:" + SHA256(before), "sha256After": "sha256:" + SHA256(after),
+		"at": "2026-10-09T02:00:00Z", "by": "an operator"}}
+	b = librarytest.JSON(t, pkg)
+	librarytest.Write(t, pj, b)
+	complete := "sha256:" + SHA256(b)
+	librarytest.Write(t, filepath.Join(vdir, CompleteFile), []byte(complete+"\n"))
+	skewed := t0.Add(-time.Millisecond).UTC().Format("2006-01-02T15:04:05.000000Z")
+	rel := m.relOf(vdir)
+	librarytest.Write(t, filepath.Join(f.runDir, MendsJournal), []byte(
+		`{"at": "`+skewed+`", "op": "mend", "dir": "`+rel+`", "itemId": "`+mgBeside+`", "versionId": "`+vid+`"}`+"\n"+
+			`{"at": "`+skewed+`", "op": "mended", "dir": "`+rel+`", "itemId": "`+mgBeside+`", "versionId": "`+vid+
+			`", "packageId": "`+IDOf(mgBeside+":package")+`", "complete": "`+complete+`"}`+"\n"))
+	rep, err := m.Mended(ctx, nil)
+	var at time.Time
+	if err := f.st.Pool().QueryRow(ctx, `SELECT verifiedat FROM com_nalet_katalog_itemversions WHERE id = $1`, vid).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	if err != nil || rep.Versions != 1 || rep.Unchanged != 0 || !at.After(t0) {
+		t.Errorf("Mended over a verification of the bytes from before the mend: %+v, %v; verifiedat %s, before %s", rep, err, at, t0)
+	}
+	if rep, err := m.Mended(ctx, nil); err != nil || rep.Versions != 0 || rep.Unchanged != 1 {
+		t.Errorf("Mended again: %+v, %v", rep, err)
+	}
+}
