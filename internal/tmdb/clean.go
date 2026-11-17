@@ -44,8 +44,8 @@ var (
 	camelRE      = regexp.MustCompile(`([\p{Ll}\d])(\p{Lu})`)    // Big|Buck|Bunny boundaries
 )
 
-// cleanTitle strips Sonarr/Radarr-style release-group / quality / codec tokens
-// from a filename title before TMDB search. Ported from
+// cleanTitle strips release-group, quality and codec tokens from a filename
+// title before TMDB search. Ported from
 // EnrichmentService.cleanTitle (public static, shared with the scanner). Returns
 // the original string if the cleaned result is empty.
 func cleanTitle(raw string) string {
