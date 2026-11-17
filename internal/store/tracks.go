@@ -130,7 +130,8 @@ func (s *Store) TrackLanguages(ctx context.Context, itemID string) ([]model.Trac
 // report is refused, as a package carries every audio stream of its source; a
 // subtitle's is not, as an encode leaves out the subtitle streams it cannot
 // copy (mov_text) and its package then reports fewer than the source has.
-// Clearing one is never refused. A change modifies the item, as by. A catalog
+// Clearing one is never refused. A change modifies the item, as by; the same
+// language again modifies only who set it and when. A catalog
 // without migration 037 has nowhere to keep it: an error.
 func (s *Store) SetTrackLanguage(ctx context.Context, itemID, kind string, ordinal int32, language *string, by string) (bool, error) {
 	if !ValidTrackKind(kind) {
@@ -189,18 +190,28 @@ func (s *Store) SetTrackLanguage(ctx context.Context, itemID, kind string, ordin
 			return true, fmt.Errorf("the source of %s has no audio track %d: its package reported %d, ordinals 0 to %d",
 				itemID, ordinal, reported, reported-1)
 		}
-		tag, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_itemtracklanguages AS l
-			(item_id, kind, ordinal, language, modifiedat, modifiedby) VALUES ($1, $2, $3, $4, now(), $5)
-			ON CONFLICT (item_id, kind, ordinal) DO UPDATE SET language = EXCLUDED.language,
-				modifiedat = EXCLUDED.modifiedat, modifiedby = EXCLUDED.modifiedby
-			WHERE l.language IS DISTINCT FROM EXCLUDED.language`, itemID, kind, ordinal, *language, by)
-		if undefinedTable(err) {
+		// the same language again changes nothing of the title, but says
+		// again who set it and when: the deletion gate takes a correction
+		// made since the original was recorded (library.TrackCorrections)
+		var prior *string
+		if err := tx.QueryRow(ctx, `SELECT language FROM com_nalet_katalog_itemtracklanguages
+			WHERE item_id = $1 AND kind = $2 AND ordinal = $3`, itemID, kind, ordinal).Scan(&prior); undefinedTable(err) {
 			return true, errNoTrackLanguages
-		}
-		if err != nil {
+		} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return true, err
 		}
-		changed = tag.RowsAffected()
+		if _, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_itemtracklanguages
+			(item_id, kind, ordinal, language, modifiedat, modifiedby) VALUES ($1, $2, $3, $4, now(), $5)
+			ON CONFLICT (item_id, kind, ordinal) DO UPDATE SET language = EXCLUDED.language,
+				modifiedat = EXCLUDED.modifiedat, modifiedby = EXCLUDED.modifiedby`, itemID, kind, ordinal, *language,
+			by); undefinedTable(err) {
+			return true, errNoTrackLanguages
+		} else if err != nil {
+			return true, err
+		}
+		if prior == nil || *prior != *language {
+			changed = 1
+		}
 	}
 	if changed > 0 {
 		if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_items SET modifiedat = now(), modifiedby = $2

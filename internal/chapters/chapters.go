@@ -361,16 +361,10 @@ func ReadOf(ctx context.Context, q library.Querier, itemID string) (*Read, error
 // the original while it does. A catalog without migration 055 is
 // ErrNotReady, and keeps it.
 func NeedsOriginal(ctx context.Context, q library.Querier, itemID, sourceID string) (bool, error) {
-	var ready bool
-	if err := q.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, store.ChaptersMissingView).Scan(&ready); err != nil {
-		return true, err
+	missing, ready, err := library.ChaptersNeedOriginal(ctx, q, itemID, sourceID)
+	if err == nil && !ready {
+		err = ErrNotReady
 	}
-	if !ready {
-		return true, ErrNotReady
-	}
-	var missing bool
-	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM `+store.ChaptersMissingView+` m
-		WHERE m.item_id = $1 AND ($2 = '' OR m.sourceid = $2))`, itemID, sourceID).Scan(&missing)
 	return missing, err
 }
 

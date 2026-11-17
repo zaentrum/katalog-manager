@@ -57,6 +57,8 @@ var mgPackage = map[string]any{
 	"subtitles":        []any{map[string]any{"id": "s0", "path": "subs/0.vtt"}, map[string]any{"id": "s1", "path": "subs/1.vtt"}},
 	"peakBandwidthBps": 4000000, "durationMs": 600000,
 	"essence": map[string]any{"surround": false, "maxAudioChannels": 2},
+	// the packager read the original's fields and found none
+	"scan": verifiedProgressive(),
 }
 
 func newMigrationFixture(t *testing.T) *migrationFixture {
@@ -192,8 +194,13 @@ func (f *migrationFixture) packaged(t *testing.T, id, media string, withExtra bo
 		VALUES ('sp-' || left($1::varchar, 4), $1::varchar, $2, 'webvtt', 'de', true)`, id, filepath.Join(old, "subs/0.vtt"))
 	db.Assets = append(db.Assets, UnitAsset{ID: "pk-" + id[:4], Path: filepath.Join(fdir, PackageFile), VersionID: &vid})
 	db.Subtitles = append(db.Subtitles, UnitSubtitle{ID: "sp-" + id[:4], Path: filepath.Join(fdir, "subs/0.vtt")})
+	// probed: a picture and an English stereo track, as the package's, no
+	// subtitle stream
 	record := map[string]any{"sourceId": sid, "file": map[string]any{"name": "x.mkv", "sizeBytes": 1},
-		"essence": map[string]any{"surround": false, "maxAudioChannels": 2}}
+		"essence":   stated(map[string]any{"surround": false, "maxAudioChannels": 2}),
+		"container": map[string]any{"format": "matroska,webm", "durationMs": 600000},
+		"streams": []any{map[string]any{"index": 0, "type": "video", "codec": "h264", "fieldOrder": "progressive"},
+			map[string]any{"index": 1, "type": "audio", "channels": 2, "language": "en"}}}
 	copies := map[string]string{}
 	var originals []Move
 	src := UnitSource{SourceID: sid, Filename: "x.mkv", RecordDir: ptr(filepath.Join(final, "sources", sid))}
@@ -243,7 +250,7 @@ func (f *migrationFixture) packaged(t *testing.T, id, media string, withExtra bo
 			}
 		}
 	}
-	librarytest.WriteSource(t, filepath.Join(staged, "sources", sid), record, copies)
+	librarytest.WriteSource(t, filepath.Join(staged, "sources", sid), record, statedProbe(copies))
 	db.Sources = []UnitSource{src}
 	listing, err := ListingSHA256(froms(packages))
 	if err != nil {
@@ -512,6 +519,7 @@ func TestARevertBringsTheRunBack(t *testing.T) {
 	}
 	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES
 		('s1', 'library.layout', 'v2'), ('s2', 'library.originals', 'delete-after-package'), ('s3', 'library.retire.delay', '0')`)
+	settleAll(t, f.st)
 	r := NewRetirer(f.st.Pool(), f.cfg, processing.New(f.st.Pool()))
 	if rep, err := r.Pass(ctx); err != nil || rep.Originals != 2 || rep.Extras != 1 {
 		t.Fatalf("the retire pass: %+v, %v", rep, err)

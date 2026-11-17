@@ -933,6 +933,12 @@ func (m *Migration) apply(ctx context.Context, tx pgx.Tx, u *Unit, gone []goneEv
 			sidecars, retireID, retireAt, deletedAt, deletedBy, lost); err != nil {
 			return fmt.Errorf("source %s: %w", s.SourceID, err)
 		}
+		// a read of the closed captions of another file than the one it is
+		// now is no read of it
+		size := s.SizeBytes
+		if err := forgetCaptions(ctx, tx, s.SourceID, &size, s.QH1); err != nil {
+			return fmt.Errorf("source %s: %w", s.SourceID, err)
+		}
 	}
 	for _, v := range u.DB.Versions {
 		if v.PackageID == "" {

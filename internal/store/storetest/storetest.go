@@ -119,6 +119,9 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	if err := st.EnsureSupersededDecisions(ctx); err != nil {
 		t.Fatalf("apply the superseded decisions migration: %v", err)
 	}
+	if err := st.EnsureSourceCaptions(ctx); err != nil {
+		t.Fatalf("apply the source captions migration: %v", err)
+	}
 	return st
 }
 

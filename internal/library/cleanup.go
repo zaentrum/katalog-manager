@@ -45,7 +45,10 @@ var errHoldsOriginal = errors.New("its folder holds an original, which is retire
 // were removed and how many failed. A version whose folder holds an
 // original the catalog has there waits, unread, and so does one whose
 // folder holds any other file that may be an original (MayBeOriginals),
-// said in the log, while others are removed past it.
+// said in the log, while others are removed past it. A version made of an
+// original that is still there (present, retiring or superseded) waits as
+// well: its package's scan is what the deletion gate reads of that
+// original's fields, which goes with its folder.
 func (r *Retirer) removeVersions(ctx context.Context, p Paths, set Settings, now time.Time, n int) (done, failed int, err error) {
 	rows, err := r.pool.Query(ctx, `SELECT `+versionCols+` FROM com_nalet_katalog_itemversions v
 		WHERE state = 'superseded'
@@ -53,6 +56,8 @@ func (r *Retirer) removeVersions(ctx context.Context, p Paths, set Settings, now
 		  AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemsources s
 			WHERE s.item_id = v.item_id AND s.state IN ('present', 'retiring', 'superseded') AND v.dir IS NOT NULL
 			  AND left(s.arrivalpath, length(v.dir) + 1) = v.dir || '/')
+		  AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemsources s
+			WHERE s.item_id = v.item_id AND s.id = ANY(v.sourceids) AND s.state IN ('present', 'retiring', 'superseded'))
 		ORDER BY removedat NULLS LAST, supersededat, id
 		LIMIT $3`, set.SupersededGrace.Seconds(), now, 4*n)
 	if err != nil {

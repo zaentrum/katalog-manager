@@ -51,6 +51,7 @@ var fieldAccess = map[string]auth.Access{
 	"Query.retireRun":             auth.Admin,
 	"Query.pictureAreas":          auth.Admin,
 	"Query.chapterReads":          auth.Admin,
+	"Query.captionReads":          auth.Admin,
 	"Query.supersededOriginals":   auth.Admin,
 	"Query.replaceSourceDone":     auth.Ingest, // whom replaceSource is for (ReplaceSourceDone)
 

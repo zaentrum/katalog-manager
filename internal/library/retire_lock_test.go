@@ -54,7 +54,7 @@ func TestAPassRunsOnlyWithBothLocksOfTheRetireJob(t *testing.T) {
 			f := newRetireFixture(t)
 			f.r.lockWait = 100 * time.Millisecond
 			release := f.holdRetireLock(t, key)
-			if rep := f.pass(t); rep != (Report{}) {
+			if rep := f.pass(t); rep.String() != "" {
 				t.Errorf("a pass while %s is held: %+v", key, rep)
 			}
 			f.kept(t)
@@ -119,7 +119,7 @@ func TestAListWaitsForBothLocksOfTheRetireJob(t *testing.T) {
 			defer unlock()
 			// it holds both: a pass does nothing meanwhile
 			f.r.lockWait = 100 * time.Millisecond
-			if rep := f.pass(t); rep != (Report{}) {
+			if rep := f.pass(t); rep.String() != "" {
 				t.Errorf("a pass while a list holds the locks: %+v", rep)
 			}
 			unlock()

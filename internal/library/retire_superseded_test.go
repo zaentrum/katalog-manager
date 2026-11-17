@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -58,9 +59,15 @@ func (f *retireFixture) supersede(t *testing.T, complete bool, pkg map[string]an
 // package whose essence is pkg, and the old version superseded by it.
 func (f *retireFixture) complete(t *testing.T, pkg map[string]any) {
 	t.Helper()
+	f.completeRecord(t, packageRecord(pkg))
+}
+
+// completeRecord is complete of a package whose record holds record.
+func (f *retireFixture) completeRecord(t *testing.T, record map[string]any) {
+	t.Helper()
 	dir := VersionDir(f.itemDir, rtNewVersion)
 	librarytest.WriteVersion(t, dir, librarytest.Version{VersionID: rtNewVersion, PackageID: rtNewPackage,
-		SourceIDs: []string{rtNewSource}, CreatedAt: "2026-11-04T10:00:00Z", Package: map[string]any{"essence": pkg}})
+		SourceIDs: []string{rtNewSource}, CreatedAt: "2026-11-04T10:00:00Z", Package: record})
 	f.execSQL(t, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2, supersededat = now()
 		WHERE id = $1`, rtVersion, rtNewVersion)
 	f.execSQL(t, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
@@ -125,7 +132,7 @@ func (f *retireFixture) originalDeletedEvents(t *testing.T) []Doc {
 func TestASupersededOriginalIsRetiredOnceItsTitlesMasterIsVerified(t *testing.T) {
 	f := newRetireFixture(t)
 	cur := f.supersede(t, false, withFiveOne)
-	if rep := f.pass(t); rep != (Report{}) {
+	if rep := f.pass(t); rep.String() != "" {
 		t.Errorf("a pass while the master is made of the old original: %+v", rep)
 	}
 	f.superseded(t, "the master made of it")
@@ -404,11 +411,11 @@ func TestASupersededOriginalsRetirementResumes(t *testing.T) {
 }
 
 // An original replaced before any version was made of it has no record, which
-// would tell what deleting it gives up: it waits for an admin, and once an
-// admin accepts it, it is retired with no event — nothing in the title's
-// folder names it —, checked against what its row recorded, and its row says
-// it is deleted. One stopped once its file left its place is finished with no
-// check, its row deleted.
+// would tell what deleting it gives up: it is kept, and an admin's word
+// doesn't let it go either (what it gives up can't be told to be nothing but
+// what the master spec drops). One whose retirement was claimed before, and
+// stopped once its file left its place, is finished with no event — nothing
+// in the title's folder names it —, its row saying it is deleted.
 func TestASupersededOriginalWithNoRecordIsRetiredWithoutAnEvent(t *testing.T) {
 	for _, stopped := range []bool{false, true} {
 		f := newRetireFixture(t)
@@ -431,8 +438,15 @@ func TestASupersededOriginalWithNoRecordIsRetiredWithoutAnEvent(t *testing.T) {
 			}
 		}
 		if !stopped {
-			if rep := f.pass(t); rep.ForAnAdmin != 1 || rep.Superseded != 0 {
+			rep := f.pass(t)
+			if rep.ForAnAdmin != 1 || rep.Superseded != 0 {
 				t.Fatalf("the pass: %+v; want it kept for an admin", rep)
+			}
+			// the pass names it, saying why
+			if len(rep.Kept) != 1 || rep.Kept[0].SourceID != rtSource || rep.Kept[0].For != KeptNoRecord ||
+				!strings.Contains(rep.Kept[0].Why, "no record of it tells what it carries") ||
+				!strings.Contains(rep.String(), "1 superseded originals kept for want of a record") {
+				t.Errorf("the pass's report: %+v, %s", rep.Kept, rep.String())
 			}
 			x := f.supersededInfo(t)
 			if x.Hold == nil || !strings.Contains(*x.Hold, "no record of it tells what it carries") || x.Losses != nil ||
@@ -442,6 +456,11 @@ func TestASupersededOriginalWithNoRecordIsRetiredWithoutAnEvent(t *testing.T) {
 			if _, err := DecideSuperseded(context.Background(), f.st.Pool(), rtSource, DecisionAccept, "admin-1"); err != nil {
 				t.Fatal(err)
 			}
+			if rep := f.pass(t); rep.Originals+rep.Superseded != 0 {
+				t.Fatalf("the pass once an admin accepted it: %+v; want it kept", rep)
+			}
+			f.superseded(t, "no record, accepted by an admin")
+			continue
 		}
 		if rep := f.pass(t); rep.Originals+rep.Superseded != 1 || rep.Failed != 0 {
 			t.Fatalf("stopped %v: the pass: %+v", stopped, rep)
@@ -675,7 +694,7 @@ func TestTheMasterIsMadeOfTheLatestFileThatTookItsPlace(t *testing.T) {
 		}
 		dir := VersionDir(f.itemDir, rtThirdVersion)
 		librarytest.WriteVersion(t, dir, librarytest.Version{VersionID: rtThirdVersion, PackageID: rtThirdPackage,
-			SourceIDs: []string{rtThirdSource}, CreatedAt: "2026-11-04T12:00:00Z", Package: map[string]any{"essence": withFiveOne}})
+			SourceIDs: []string{rtThirdSource}, CreatedAt: "2026-11-04T12:00:00Z", Package: packageRecord(withFiveOne)})
 		f.execSQL(t, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2, supersededat = now()
 			WHERE id = $1`, rtVersion, rtThirdVersion)
 		f.execSQL(t, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
@@ -723,14 +742,16 @@ func (f *retireFixture) supersededInfo(t *testing.T) *Superseded {
 }
 
 // The owner's rules: a superseded original goes on its own only when what
-// deleting it gives up against its master lies within
-// library.superseded.accept — by default maxAudioChannels (while the master
-// keeps a stereo track), surround, losslessAudio, objectAudio and stereo3d.
-// Anything else — Dolby Vision, a subtitle language, the channels of a
-// master that keeps no stereo, whatever the setting leaves out — holds it for
+// deleting it gives up against its master is nothing but what the master spec
+// drops by design (ADR-0015) and lies within library.superseded.accept — by
+// default all of that: maxAudioChannels (while the master keeps a stereo
+// track), surround, losslessAudio, objectAudio, dolbyVision (while the master
+// keeps the HDR) and stereo3d. What the setting leaves out of it holds it for
 // an admin, superseded, its row saying what it gives up and against which
-// master, not looked at again until a new master or an admin's decision:
-// accepted, it is retired, its event saying on whose word; kept, never.
+// master: accepted, it is retired, its event saying on whose word; kept,
+// never. Anything beyond the spec — Dolby Vision of a master that keeps no
+// HDR, a subtitle language, the channels of a master that keeps no stereo,
+// interlacing — keeps it, whatever an admin says, until a master carries it.
 func TestTheOwnersRulesForASupersededOriginal(t *testing.T) {
 	with := func(base map[string]any, kv ...any) map[string]any {
 		out := map[string]any{}
@@ -743,27 +764,67 @@ func TestTheOwnersRulesForASupersededOriginal(t *testing.T) {
 		return out
 	}
 	dolby := with(sevenOne, "dolbyVision", true, "losslessAudio", true, "objectAudio", true, "stereo3d", true)
+	hdr10 := packageRecord(stereo)
+	hdr10["renditions"] = map[string]any{"video": []any{map[string]any{"id": "v0", "codec": "hvc1.2.4.L150", "videoRange": "PQ"}}}
+	// what a read of the superseded original's frames found of its closed
+	// captions: every planned window read, captions at 10 % or none
+	captionsAt10 := func(captions bool) func(t *testing.T, f *retireFixture) {
+		return func(t *testing.T, f *retireFixture) {
+			ws := strings.Replace(noCaptionsWindows, `"start": 60, "end": 61.88, "frames": 48, "captions": false`,
+				`"start": 60, "end": 61.88, "frames": 48, "captions": `+strconv.FormatBool(captions), 1)
+			storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_sourcecaptions SET captions = $2, captionwindows = $3
+				WHERE source_id = $1`, rtSource, captions, ws)
+		}
+	}
 	for _, c := range []struct {
 		name        string
 		src, master map[string]any
-		accept      string // library.superseded.accept; "" its default
-		held        string // what the hold says is not accepted; "" retired
+		record      map[string]any // the master's package record; packageRecord(master) when nil
+		accept      string         // library.superseded.accept; "" its default
+		held        string         // what the hold says is not accepted; "" retired
+		final       bool           // no admin's word lets it go
+		change      func(t *testing.T, f *retireFixture)
 	}{
 		{name: "surround, channels, lossless and object audio, 3D", src: with(sevenOne, "losslessAudio", true, "objectAudio", true,
 			"stereo3d", true), master: stereo},
-		{name: "Dolby Vision", src: dolby, master: stereo, held: "dolbyVision is not within library.superseded.accept"},
-		{name: "a subtitle language", src: sevenOne, master: with(withFiveOne, "subtitleLanguages", []string{"en"}),
-			held: "subLanguages"},
-		{name: "the channels, the master keeping no stereo", src: sevenOne, master: with(stereo, "maxAudioChannels", 1),
+		{name: "Dolby Vision, the master keeping HDR10", src: dolby, record: hdr10},
+		{name: "Dolby Vision, the master keeping no HDR", src: dolby, master: stereo, final: true,
+			held: "dolbyVision is more than the master spec drops by design; dolbyVision is given up only while the master keeps the HDR"},
+		{name: "a subtitle language", src: sevenOne, master: with(withFiveOne, "subtitleLanguages", []string{"en"}), final: true,
+			held: "subtitleLanguages:de is more than the master spec drops by design"},
+		{name: "the channels, the master keeping no stereo", src: sevenOne, master: with(stereo, "maxAudioChannels", 1), final: true,
 			held: "maxAudioChannels is given up only while the master keeps a stereo track"},
+		{name: "interlacing, the master progressive", src: with(sevenOne, "interlaced", true), master: with(stereo, "interlaced", false),
+			final: true, held: "(" + FieldsKept + ": its record says interlaced); interlaced is more than the master spec " +
+				"drops by design"},
+		{name: "interlacing, the master's scan deinterlaced-frame", src: with(sevenOne, "interlaced", true),
+			record: scannedAs(packageRecord(stereo), "deinterlaced-frame"), final: true,
+			held: FieldsKept + ": its record says interlaced"},
+		{name: "interlacing, the master's scan inverse-telecine", src: with(sevenOne, "interlaced", true),
+			record: scannedAs(packageRecord(stereo), "inverse-telecine"), final: true,
+			held: FieldsKept + ": its record says interlaced"},
+		{name: "closed captions in no window of the original", src: sevenOne, master: stereo, change: captionsAt10(false)},
+		{name: "closed captions in a window of the original", src: sevenOne, master: stereo, change: captionsAt10(true),
+			final: true, held: "(its original carries closed captions at 10%; an original that carries closed captions is " +
+				"not retired); closedCaptions is more than the master spec drops by design"},
 		{name: "what the setting leaves out", src: sevenOne, master: stereo, accept: "maxAudioChannels",
 			held: "surround is not within library.superseded.accept (maxAudioChannels)"},
+		{name: "Dolby Vision the setting leaves out", src: dolby, record: hdr10,
+			accept: "maxAudioChannels surround losslessAudio objectAudio stereo3d",
+			held:   "dolbyVision is not within library.superseded.accept"},
 		{name: "nothing accepted", src: sevenOne, master: withFiveOne, accept: "none",
 			held: "maxAudioChannels is not within library.superseded.accept (none)"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newRetireFixtureOf(t, c.src, withFiveOne)
-			f.supersede(t, true, c.master)
+			f.supersede(t, false, nil)
+			if c.record == nil {
+				c.record = packageRecord(c.master)
+			}
+			f.completeRecord(t, c.record)
+			if c.change != nil {
+				c.change(t, f)
+			}
 			if c.accept != "" {
 				f.set(t, SettingSupersededAccept, c.accept)
 			}
@@ -795,14 +856,15 @@ func TestTheOwnersRulesForASupersededOriginal(t *testing.T) {
 				return
 			}
 			if rep.ForAnAdmin != 1 || rep.Superseded != 0 {
-				t.Fatalf("the pass: %+v; want it kept for an admin", rep)
+				t.Fatalf("the pass: %+v; want it kept", rep)
 			}
 			f.superseded(t, c.name)
 			x := f.supersededInfo(t)
-			if c.held == "subLanguages" {
-				c.held = "subtitleLanguages:de is not within"
+			prefix := "kept for an admin: "
+			if c.final {
+				prefix = "kept: "
 			}
-			if x.Hold == nil || !strings.Contains(*x.Hold, c.held) || !strings.HasPrefix(*x.Hold, "kept for an admin: deleting it gives up, "+
+			if x.Hold == nil || !strings.Contains(*x.Hold, c.held) || !strings.HasPrefix(*x.Hold, prefix+"deleting it gives up, "+
 				"against version "+rtNewVersion+": ") || deref(x.HoldFor) != rtNewVersion || len(x.Losses) == 0 {
 				t.Fatalf("the hold: %v %+v; want it saying %q", deref(x.Hold), x, c.held)
 			}
@@ -812,7 +874,15 @@ func TestTheOwnersRulesForASupersededOriginal(t *testing.T) {
 			if _, err := DecideSuperseded(context.Background(), f.st.Pool(), rtSource, DecisionAccept, "admin-1"); err != nil {
 				t.Fatal(err)
 			}
-			if rep := f.pass(t); rep.Superseded != 1 {
+			rep = f.pass(t)
+			if c.final {
+				if rep.Superseded != 0 {
+					t.Fatalf("the pass once an admin accepted what the spec keeps: %+v; want it kept", rep)
+				}
+				f.superseded(t, c.name+", accepted by an admin")
+				return
+			}
+			if rep.Superseded != 1 {
 				t.Fatalf("the pass once an admin accepted it: %+v", rep)
 			}
 			evs := f.originalDeletedEvents(t)
@@ -882,7 +952,7 @@ func (f *retireFixture) complete2(t *testing.T, pkg map[string]any) {
 	const id, pid = "7a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d", "8b2c3d4e-5f6a-4b7c-8d8e-9f0a1b2c3d4e"
 	dir := VersionDir(f.itemDir, id)
 	librarytest.WriteVersion(t, dir, librarytest.Version{VersionID: id, PackageID: pid, SourceIDs: []string{rtNewSource},
-		CreatedAt: "2026-11-04T14:00:00Z", Package: map[string]any{"essence": pkg}})
+		CreatedAt: "2026-11-04T14:00:00Z", Package: packageRecord(pkg)})
 	f.execSQL(t, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2, supersededat = now()
 		WHERE item_id = $1 AND state = 'complete'`, rtFilm, id)
 	f.execSQL(t, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
@@ -898,8 +968,10 @@ func TestVersionsHoldingASupersededOriginalTakeNoOthersTurn(t *testing.T) {
 	f.supersede(t, true, withFiveOne)
 	f.set(t, SettingSupersededGrace, "0")
 	f.set(t, SettingRetireRate, "1")
-	// the superseded originals stay where they lie
+	// the superseded originals stay where they lie; the fixture's own was
+	// retired before (a version made of one still there waits)
 	f.execSQL(t, `UPDATE com_nalet_katalog_items SET retirehold = true WHERE id = $1`, rtFilm)
+	f.execSQL(t, `UPDATE com_nalet_katalog_itemsources SET state = 'deleted' WHERE id = $1`, rtSource)
 	var holding []string
 	for i := range 4 {
 		vid, sid := fmt.Sprintf("9d%06d-0000-4000-8000-00000000000%d", i, i), fmt.Sprintf("9e%06d-0000-4000-8000-00000000000%d", i, i)
@@ -954,4 +1026,54 @@ func TestASupersededRetirementIsCalledOffWhenItsMasterChanged(t *testing.T) {
 	if err != nil || !strings.Contains(why, "the title's master changed meanwhile, to version "+now.ID) {
 		t.Errorf("with its master changed: %q, %v", why, err)
 	}
+}
+
+// A superseded original whose master's package record says nothing about its
+// subtitles is kept: what deleting it gives up is not known, so neither
+// library.superseded.accept nor an admin accepts anything of it. Its
+// retirement fails, its row saying why, and once the master's record lists
+// them it is retired as before.
+func TestASupersededOriginalIsKeptWhileItsMastersRecordSaysNothingOfItsSubtitles(t *testing.T) {
+	ctx := context.Background()
+	f := newRetireFixture(t)
+	f.supersede(t, true, withFiveOne)
+	write := func(record map[string]any) {
+		librarytest.WriteVersion(t, VersionDir(f.itemDir, rtNewVersion), librarytest.Version{VersionID: rtNewVersion,
+			PackageID: rtNewPackage, SourceIDs: []string{rtNewSource}, CreatedAt: "2026-11-04T10:00:00Z", Package: record})
+	}
+	write(map[string]any{"essence": withFiveOne})
+	const want = "what deleting it gives up against version " + rtNewVersion + " is not known: its package's record says " +
+		"nothing about its subtitles (its original has subtitles): what its package carries of them can't be told; " +
+		"nothing is deleted"
+	if rep := f.passKeeping(t); rep.Superseded != 0 || rep.Failed != 1 {
+		t.Fatalf("the pass: %+v", rep)
+	}
+	if s := f.superseded(t, "its master's record silent"); deref(s.Error) != want {
+		t.Errorf("the row's error: %q\nwant %q", deref(s.Error), want)
+	}
+	// an admin's word accepts no more than the hold names: nothing it can't tell
+	if _, err := DecideSuperseded(ctx, f.st.Pool(), rtSource, DecisionAccept, "an-admin"); err != nil {
+		t.Fatal(err)
+	}
+	f.r.now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	if rep := f.passKeeping(t); rep.Superseded != 0 || rep.Failed != 1 {
+		t.Fatalf("the pass on an admin's word: %+v", rep)
+	}
+	f.superseded(t, "accepted by an admin, its master's record silent")
+
+	write(packageRecord(withFiveOne))
+	f.r.now = func() time.Time { return time.Now().Add(4 * time.Hour) }
+	if rep := f.pass(t); rep.Superseded != 1 {
+		t.Fatalf("the pass once the master's record lists its subtitles: %+v", rep)
+	}
+	if s := f.source(t, rtSource); s.State != SourceDeleted || string(s.Lost) != `["maxAudioChannels"]` {
+		t.Errorf("the old source: %s, lost %s", s.State, s.Lost)
+	}
+}
+
+// scannedAs is the package record rec with the scan kind, as the packager
+// copies it from the transcoder's renditions contract.
+func scannedAs(rec map[string]any, done string) map[string]any {
+	rec["scan"] = map[string]any{"done": done, "frameRate": "25"}
+	return rec
 }

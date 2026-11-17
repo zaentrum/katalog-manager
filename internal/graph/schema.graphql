@@ -217,9 +217,11 @@ type SupersededOriginal {
 }
 
 # What an admin decides of a superseded original that waits for one: ACCEPT
-# has the retire job retire it, giving up what its hold says (anything, when
-# no record tells), once its other conditions hold; KEEP keeps it, the retire
-# job never retiring it.
+# has the retire job retire it, giving up what its hold says, once its other
+# conditions hold — only what the master spec drops by design and
+# library.superseded.accept leaves out: an original that gives up more, or
+# whose record doesn't tell, stays whatever an admin says; KEEP keeps it, the
+# retire job never retiring it.
 enum SupersededDecision {
   ACCEPT
   KEEP
@@ -2057,4 +2059,56 @@ extend type Mutation {
   # original; those it replaces are kept to undo in turn. A title no read
   # replaced the chapters of is refused, saying why.
   revertChapterReplacement(items: [ID!]!): ChapterReadsAccepted!
+}
+
+# Closed captions (migration 058). A source record's closedCaptions comes
+# from a probe that decodes no frame; an original that carries closed
+# captions, or whose captions are not known, is not retired. The captions
+# backfill (captions.backfill, README "Closed captions") hands each original
+# on disk to the analyzer, and keeps what its read of the original's frames
+# found, window by window.
+#
+# How far the closed captions are: the originals on disk (present or
+# superseded), those whose captions are read in full (withCaptions of them
+# with closed captions) and the rest (toRead); those whose last read failed
+# or had a window that decoded no frame (each waits its backoff), those
+# handed out now, the hand-outs of the last hour (an original handed out
+# again counts again), when the last read was reported; and
+# the backfill's settings, idle, why it hands out nothing now (null when it
+# may), and problems, of a setting that could not be read. packaged,
+# packagesRead and packagesWithCaptions are 0: no package is read for
+# closed captions; they stay for the clients that read them.
+type CaptionReadProgress {
+  originals: Int!
+  read: Int!
+  withCaptions: Int!
+  # Originals a read found of another length than their record's: a finding
+  # about the record or the file, kept for good until either is another;
+  # none of read, nor of toRead.
+  lengthMismatch: Int!
+  # Their source ids.
+  lengthMismatches: [String!]!
+  # The rest; one whose record said no length is among them until its
+  # record is written again.
+  toRead: Int!
+  packaged: Int!
+  packagesRead: Int!
+  packagesWithCaptions: Int!
+  failed: Int!
+  inFlight: Int!
+  handedOutLastHour: Int!
+  lastReadAt: Time
+  backfill: Boolean!
+  window: String!
+  maxInFlight: Int!
+  maxPerHour: Int!
+  lease: String!
+  idle: String
+  problems: [String!]!
+}
+
+extend type Query {
+  # How far the closed captions are, and the backfill; an error on a catalog
+  # older than migration 058.
+  captionReads: CaptionReadProgress!
 }

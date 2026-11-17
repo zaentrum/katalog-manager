@@ -176,12 +176,20 @@ func TestSetTrackLanguage(t *testing.T) {
 		t.Error("a track's language does not say who set it, and when")
 	}
 
-	// The same language again changes nothing, another replaces it.
+	// The same language again changes nothing of the title, but says again
+	// who set it and when; another replaces it.
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemtracklanguages SET modifiedat = now() - interval '1 year'
+		WHERE item_id = $1 AND kind = 'audio' AND ordinal = 0`, movieA)
 	if _, err := set("audio", 0, str("zxx"), "admin-2"); err != nil {
 		t.Fatal(err)
 	}
 	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_items WHERE id = $1 AND modifiedby = 'admin-1'`, movieA); n != 1 {
 		t.Error("setting the language a track has modified the title")
+	}
+	if n := storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_itemtracklanguages WHERE item_id = $1
+		AND kind = 'audio' AND ordinal = 0 AND language = 'zxx' AND modifiedby = 'admin-2'
+		AND modifiedat > now() - interval '1 minute'`, movieA); n != 1 {
+		t.Error("setting the language a track has again does not say who set it, and when")
 	}
 	if _, err := set("audio", 0, str("eng"), "admin-2"); err != nil {
 		t.Fatal(err)

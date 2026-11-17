@@ -51,7 +51,8 @@ func (f *migrationFixture) unpackaged(t *testing.T, id, media string) {
 	}
 	name := OriginalName(path, 0)
 	librarytest.WriteSource(t, filepath.Join(staged, "sources", sid), map[string]any{"sourceId": sid,
-		"file": map[string]any{"name": name, "sizeBytes": size, "fixity": map[string]any{"qh1": qh1}}}, nil)
+		"file": map[string]any{"name": name, "sizeBytes": size, "fixity": map[string]any{"qh1": qh1}}, "essence": stated(nil),
+		"container": map[string]any{"format": "matroska,webm", "durationMs": 600000}, "streams": filmStreams()}, statedProbe(nil))
 	librarytest.Write(t, filepath.Join(staged, "versions", vid, VersionFile), librarytest.JSON(t, map[string]any{
 		"schema": "zaentrum.library.version/2", "versionId": vid, "sourceIds": []string{sid}, "originalFiles": []string{name}}))
 	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary, kind, sizebytes)
@@ -127,6 +128,7 @@ func TestTheAdoptTakesOriginalsIntoTheirVersions(t *testing.T) {
 
 	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES
 		('s1', 'library.layout', 'v2'), ('s2', 'library.originals', 'delete-after-package'), ('s3', 'library.retire.delay', '0')`)
+	settleAll(t, f.st)
 	r := NewRetirer(f.st.Pool(), f.cfg, processing.New(f.st.Pool()))
 	if rep, err := r.Pass(ctx); err != nil || rep.Originals != 1 {
 		t.Fatalf("the retire pass: %+v, %v", rep, err)
@@ -149,6 +151,7 @@ func TestARevertBringsOriginalsBackFromTheirVersions(t *testing.T) {
 	}
 	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES
 		('s1', 'library.layout', 'v2'), ('s2', 'library.originals', 'delete-after-package'), ('s3', 'library.retire.delay', '0')`)
+	settleAll(t, f.st)
 	r := NewRetirer(f.st.Pool(), f.cfg, processing.New(f.st.Pool()))
 	if rep, err := r.Pass(ctx); err != nil || rep.Originals != 1 {
 		t.Fatalf("the retire pass: %+v, %v", rep, err)

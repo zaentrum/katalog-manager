@@ -330,3 +330,28 @@ func TestTheLayoutDoesNotChangeUnderAHandoff(t *testing.T) {
 		t.Errorf("a take-in waiting: %s", got)
 	}
 }
+
+// library.superseded.accept narrows what the master spec drops by design and
+// never widens it: a value with a name the list doesn't hold is refused when
+// it is created or updated, the row as it was; one within it is written.
+func TestTheSupersededAcceptIsRefusedBeyondTheSpec(t *testing.T) {
+	st := storetest.Open(t)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('a1', 'library.superseded.accept', 'surround')`)
+	for _, q := range []string{
+		`mutation { createSetting(key: "library.superseded.accept", valueText: "surroud") { id } }`,
+		`mutation { createSetting(key: "library.superseded.accept", valueText: "surround, subtitleLanguages:de") { id } }`,
+		`mutation { updateSetting(id: "a1", valueText: "surround interlaced") { id } }`,
+	} {
+		if got := exec(t, st, q, true); !strings.Contains(got, "library.superseded.accept can't be") ||
+			!strings.Contains(got, "it narrows that, never widens it") {
+			t.Errorf("%s: %s, want it refused", q, got)
+		}
+	}
+	if v := storedValue(t, st, "library.superseded.accept"); len(v) != 1 || v[0] != "surround" {
+		t.Errorf("library.superseded.accept holds %q after refused writes", v)
+	}
+	if got := exec(t, st, `mutation { updateSetting(id: "a1", valueText: "surround, dolbyVision") { valueText } }`, false); got !=
+		`{"updateSetting":{"valueText":"surround, dolbyVision"}}` {
+		t.Errorf("an update within the spec: %s", got)
+	}
+}

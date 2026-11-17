@@ -1,0 +1,649 @@
+{
+ "2997-cc__2398-enc-cc": {
+  "body": {
+   "original": {
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 1.568,
+      "frames": 48,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 11.578,
+      "frames": 48,
+      "start": 10.01
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 35.603,
+      "frames": 48,
+      "start": 34.034
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 59.627,
+      "frames": 48,
+      "start": 58.059
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 83.651,
+      "frames": 48,
+      "start": 82.083
+     },
+     {
+      "at": 0.7500437423450896,
+      "captions": true,
+      "end": 89.657,
+      "frames": 48,
+      "start": 88.089
+     }
+    ],
+    "duration": 120.021,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)"
+   },
+   "token": "tok-1"
+  }
+ },
+ "2997-cc__decimate-enc-cc": {
+  "body": {
+   "original": {
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 1.568,
+      "frames": 48,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 11.578,
+      "frames": 48,
+      "start": 10.01
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 35.603,
+      "frames": 48,
+      "start": 34.034
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 59.627,
+      "frames": 48,
+      "start": 58.059
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 83.651,
+      "frames": 48,
+      "start": 82.083
+     },
+     {
+      "at": 0.7500437423450896,
+      "captions": true,
+      "end": 89.657,
+      "frames": 48,
+      "start": 88.089
+     }
+    ],
+    "duration": 120.021,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)"
+   },
+   "token": "tok-1"
+  }
+ },
+ "back-jump-ts__failed-windows": {
+  "body": {
+   "original": {
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": false,
+      "end": 203.28,
+      "frames": 48,
+      "start": 201.4
+     },
+     {
+      "at": 0.1,
+      "captions": false,
+      "end": 213.28,
+      "frames": 48,
+      "start": 211.4
+     },
+     {
+      "at": 0.3,
+      "captions": null,
+      "end": null,
+      "error": "its first frame is at 95445.118 s, 95213.7 s from where it was placed (231.400 s): it landed elsewhere",
+      "frames": 0,
+      "start": null
+     },
+     {
+      "at": 0.5,
+      "captions": null,
+      "end": null,
+      "error": "its first frame is at 95445.118 s, 95193.7 s from where it was placed (251.400 s): it landed elsewhere",
+      "frames": 0,
+      "start": null
+     },
+     {
+      "at": 0.7,
+      "captions": false,
+      "end": 273.28,
+      "frames": 48,
+      "start": 271.4
+     }
+    ],
+    "duration": 100.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)"
+   }
+  }
+ },
+ "clockreset-ts__enc-nocc": {
+  "body": {
+   "original": {
+    "error": "its file says it lasts 94744 s, more than 10 times the 439 s its 14736004 bytes last at the bitrate of its first frames",
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)"
+   },
+   "token": "tok-1"
+  }
+ },
+ "mkv-cc__broken-50pct": {
+  "body": {
+   "original": {
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 1.88,
+      "frames": 48,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 31.88,
+      "frames": 48,
+      "start": 30.0
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 91.88,
+      "frames": 48,
+      "start": 90.0
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 151.88,
+      "frames": 48,
+      "start": 150.0
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 211.88,
+      "frames": 48,
+      "start": 210.0
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 271.88,
+      "frames": 48,
+      "start": 270.0
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)"
+   },
+   "token": "tok-1"
+  }
+ },
+ "mkv-cc__copy-cc": {
+  "body": {
+   "original": {
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 1.88,
+      "frames": 48,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 31.88,
+      "frames": 48,
+      "start": 30.0
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 91.88,
+      "frames": 48,
+      "start": 90.0
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 151.88,
+      "frames": 48,
+      "start": 150.0
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 211.88,
+      "frames": 48,
+      "start": 210.0
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 271.88,
+      "frames": 48,
+      "start": 270.0
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)"
+   },
+   "token": "tok-1"
+  }
+ },
+ "mkv-cc__enc-cc": {
+  "body": {
+   "original": {
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 1.88,
+      "frames": 48,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 31.88,
+      "frames": 48,
+      "start": 30.0
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 91.88,
+      "frames": 48,
+      "start": 90.0
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 151.88,
+      "frames": 48,
+      "start": 150.0
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 211.88,
+      "frames": 48,
+      "start": 210.0
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 271.88,
+      "frames": 48,
+      "start": 270.0
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)"
+   },
+   "token": "tok-1"
+  }
+ },
+ "mkv-cc__enc-nocc": {
+  "body": {
+   "original": {
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 1.88,
+      "frames": 48,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 31.88,
+      "frames": 48,
+      "start": 30.0
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 91.88,
+      "frames": 48,
+      "start": 90.0
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 151.88,
+      "frames": 48,
+      "start": 150.0
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 211.88,
+      "frames": 48,
+      "start": 210.0
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 271.88,
+      "frames": 48,
+      "start": 270.0
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)"
+   },
+   "token": "tok-1"
+  }
+ },
+ "mkv-cc__lost-after-40pct": {
+  "body": {
+   "original": {
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 1.88,
+      "frames": 48,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 31.88,
+      "frames": 48,
+      "start": 30.0
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 91.88,
+      "frames": 48,
+      "start": 90.0
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 151.88,
+      "frames": 48,
+      "start": 150.0
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 211.88,
+      "frames": 48,
+      "start": 210.0
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 271.88,
+      "frames": 48,
+      "start": 270.0
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)"
+   },
+   "token": "tok-1"
+  }
+ },
+ "plain-mkv__none": {
+  "body": {
+   "original": {
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": false,
+      "end": 1.88,
+      "frames": 48,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": false,
+      "end": 31.88,
+      "frames": 48,
+      "start": 30.0
+     },
+     {
+      "at": 0.3,
+      "captions": false,
+      "end": 91.88,
+      "frames": 48,
+      "start": 90.0
+     },
+     {
+      "at": 0.5,
+      "captions": false,
+      "end": 151.88,
+      "frames": 48,
+      "start": 150.0
+     },
+     {
+      "at": 0.7,
+      "captions": false,
+      "end": 211.88,
+      "frames": 48,
+      "start": 210.0
+     },
+     {
+      "at": 0.9,
+      "captions": false,
+      "end": 271.88,
+      "frames": 48,
+      "start": 270.0
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)"
+   }
+  }
+ },
+ "raw-cc__lost-after-40pct": {
+  "body": {
+   "original": {
+    "error": "its frames have no presentation times (a raw stream)",
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)"
+   },
+   "token": "tok-1"
+  }
+ },
+ "ts-cc__copy-cc": {
+  "body": {
+   "original": {
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 3.28,
+      "frames": 48,
+      "start": 1.4
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 33.28,
+      "frames": 48,
+      "start": 31.4
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 93.28,
+      "frames": 48,
+      "start": 91.4
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 153.28,
+      "frames": 48,
+      "start": 151.4
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 213.28,
+      "frames": 48,
+      "start": 211.4
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 273.28,
+      "frames": 48,
+      "start": 271.4
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)"
+   },
+   "token": "tok-1"
+  }
+ },
+ "ts3600-cc__copy-cc-at0": {
+  "body": {
+   "original": {
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 3603.28,
+      "frames": 48,
+      "start": 3601.4
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 3633.28,
+      "frames": 48,
+      "start": 3631.4
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 3693.28,
+      "frames": 48,
+      "start": 3691.4
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 3753.28,
+      "frames": 48,
+      "start": 3751.4
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 3813.28,
+      "frames": 48,
+      "start": 3811.4
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 3873.28,
+      "frames": 48,
+      "start": 3871.4
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)"
+   },
+   "token": "tok-1"
+  }
+ },
+ "ts3600-cc__copy-cc-copyts": {
+  "body": {
+   "original": {
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 3603.28,
+      "frames": 48,
+      "start": 3601.4
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 3633.28,
+      "frames": 48,
+      "start": 3631.4
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 3693.28,
+      "frames": 48,
+      "start": 3691.4
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 3753.28,
+      "frames": 48,
+      "start": 3751.4
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 3813.28,
+      "frames": 48,
+      "start": 3811.4
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 3873.28,
+      "frames": 48,
+      "start": 3871.4
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)"
+   },
+   "token": "tok-1"
+  }
+ }
+}

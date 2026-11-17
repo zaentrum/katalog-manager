@@ -284,22 +284,22 @@ func TestTheSupersededDelayIsRead(t *testing.T) {
 	}
 }
 
-// What the retire job gives up of a superseded original on its own is the
-// owner's rules unless library.superseded.accept says otherwise: the
-// deletion gate's names, by commas or spaces, each once; none nothing; one
-// that is no name of the gate keeps what was.
+// What the retire job gives up of a superseded original on its own is what
+// the master spec drops by design unless library.superseded.accept narrows
+// it: the deletion gate's names, by commas or spaces, each once; none
+// nothing; one that is no name of the gate keeps what was; one beyond the
+// spec is left out.
 func TestTheSupersededAcceptIsRead(t *testing.T) {
-	want := []string{"maxAudioChannels", "surround", "losslessAudio", "objectAudio", "stereo3d"}
+	want := []string{"surround", "maxAudioChannels", "losslessAudio", "objectAudio", "dolbyVision", "stereo3d"}
 	if d := Defaults(); !slices.Equal(d.SupersededAccept, want) {
 		t.Errorf("the default: %v, want %v", d.SupersededAccept, want)
 	}
 	for v, want := range map[string][]string{
-		"surround, dolbyVision":             {"surround", "dolbyVision"},
-		"surround surround,objectAudio":     {"surround", "objectAudio"},
-		"audioLanguages:de, subtitleTracks": {"audioLanguages:de", "subtitleTracks"},
-		"none":                              {},
-		"None":                              {},
-		"  ":                                want,
+		"surround, dolbyVision":         {"surround", "dolbyVision"},
+		"surround surround,objectAudio": {"surround", "objectAudio"},
+		"none":                          {},
+		"None":                          {},
+		"  ":                            want,
 	} {
 		s := Defaults()
 		s.set(SettingSupersededAccept, v)
@@ -307,12 +307,29 @@ func TestTheSupersededAcceptIsRead(t *testing.T) {
 			t.Errorf("%q: %v, %v; want %v", v, s.SupersededAccept, s.Problems, want)
 		}
 	}
-	for _, v := range []string{"surround, all of it", "surround,audioLanguages", "surroud", "audioLanguages:", "surround:de"} {
+	// it narrows what the master spec drops by design, never widens it: a
+	// value with a name the list doesn't hold, of the gate or of none, is
+	// never read as everything: it accepts nothing, a problem of the settings
+	for _, v := range []string{"surround, all of it", "surround,audioLanguages", "surroud", "audioLanguages:", "surround:de",
+		"audioLanguages:de, subtitleTracks", "surround, subtitleLanguages:de", "videoBitDepth hdr10Metadata fonts", "interlaced"} {
 		s := Defaults()
 		s.set(SettingSupersededAccept, v)
-		if !slices.Equal(s.SupersededAccept, want) || len(s.Problems) != 1 {
-			t.Errorf("%q, which cannot be read: %v, %v", v, s.SupersededAccept, s.Problems)
+		if s.SupersededAccept == nil || len(s.SupersededAccept) != 0 || len(s.Problems) != 1 ||
+			!strings.Contains(s.Problems[0], "it narrows that, never widens it") ||
+			!strings.HasSuffix(s.Problems[0], "it accepts nothing until it is set again") {
+			t.Errorf("%q, which cannot be read: %v, %v; want nothing accepted", v, s.SupersededAccept, s.Problems)
 		}
+		if err := CheckSetting(SettingSupersededAccept, v); err == nil {
+			t.Errorf("%q is refused when it is set: %v", v, err)
+		}
+	}
+	for _, v := range []string{"surround, dolbyVision", "none", "maxAudioChannels surround losslessAudio objectAudio stereo3d"} {
+		if err := CheckSetting(SettingSupersededAccept, v); err != nil {
+			t.Errorf("%q is a value it may be set to: %v", v, err)
+		}
+	}
+	if err := CheckSetting(SettingRetireRate, "subtitleLanguages:de"); err != nil {
+		t.Errorf("another setting: %v", err)
 	}
 	s := Defaults()
 	s.set(SettingSupersededAccept, "surround")

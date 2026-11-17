@@ -73,9 +73,14 @@ const (
 	// SettingSupersededAccept is what the retire job may give up of a
 	// superseded original against its title's master (the deletion gate's
 	// names, by commas or spaces) before it retires it on its own:
-	// DefaultSupersededAccept unless it says otherwise, "none" nothing. Any
-	// other loss holds the original for an admin (decideSupersededOriginal).
-	// maxAudioChannels is given up only while the master keeps a stereo track.
+	// DefaultSupersededAccept unless it says otherwise, "none" nothing. It
+	// narrows what the master spec drops by design (SpecDropped), never
+	// widens it: a value with a name beyond that is refused when it is set
+	// (CheckSetting), and one stored accepts nothing, a problem of the
+	// settings. A loss of the spec's the setting leaves out holds the original for
+	// an admin (decideSupersededOriginal); any other keeps it until a master
+	// carries it. maxAudioChannels is given up only while the master keeps a
+	// stereo track, dolbyVision only while it keeps the HDR.
 	SettingSupersededAccept = "library.superseded.accept"
 	// SettingReplaceClients names the addons that may give a title another
 	// file (replaceSource), and have its old original go: the OIDC clients
@@ -102,10 +107,50 @@ const (
 	defaultReencode  = 4
 )
 
+// ParseSupersededAccept reads a value of library.superseded.accept: the
+// names it accepts (none for "none"), or why it can't be one, "" when it
+// can. It narrows what the master spec drops by design (SpecDropped), never
+// widens it: a name the list doesn't hold, a name of the gate beyond it or
+// one of no gate at all, makes the value one it can't be.
+func ParseSupersededAccept(v string) ([]string, string) {
+	v = strings.TrimSpace(v)
+	if strings.EqualFold(v, "none") {
+		return []string{}, ""
+	}
+	var names, beyond []string
+	for _, n := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) {
+		switch {
+		case !slices.Contains(SpecDropped, n):
+			beyond = append(beyond, n)
+		case !slices.Contains(names, n):
+			names = append(names, n)
+		}
+	}
+	if len(beyond) > 0 {
+		return nil, fmt.Sprintf("names of what the master spec drops by design (%s), by commas, or none: it narrows "+
+			"that, never widens it, and %s is none of them", strings.Join(SpecDropped, ", "), strings.Join(beyond, ", "))
+	}
+	return names, ""
+}
+
+// CheckSetting says why value can't be the value of the setting key, nil when
+// it can: a setting a reader would read as other than it is meant is refused
+// when it is set (library.superseded.accept).
+func CheckSetting(key, value string) error {
+	if strings.TrimSpace(key) != SettingSupersededAccept || strings.TrimSpace(value) == "" {
+		return nil
+	}
+	if _, why := ParseSupersededAccept(value); why != "" {
+		return fmt.Errorf("%s can't be %q: it holds %s", SettingSupersededAccept, value, why)
+	}
+	return nil
+}
+
 // DefaultSupersededAccept is what the retire job gives up of a superseded
-// original on its own unless library.superseded.accept says otherwise: the
-// owner's rules for retiring an original, the losses that are accepted.
-var DefaultSupersededAccept = []string{"maxAudioChannels", "surround", "losslessAudio", "objectAudio", "stereo3d"}
+// original on its own unless library.superseded.accept says otherwise: what
+// the master spec drops by design (ADR-0015, SpecDropped), the losses that are
+// accepted of any original.
+var DefaultSupersededAccept = slices.Clone(SpecDropped)
 
 // Settings are the library's settings as they are read.
 type Settings struct {
@@ -279,20 +324,12 @@ func (s *Settings) set(key, value string) {
 			bad("a duration above 0, as 24h or 2d; it is 24h")
 		}
 	case SettingSupersededAccept:
-		if lower == "none" {
+		names, why := ParseSupersededAccept(v)
+		if why != "" {
+			// never read as everything: a value that can't be read accepts nothing
 			s.SupersededAccept = []string{}
+			bad(why + "; it accepts nothing until it is set again")
 			return
-		}
-		var names []string
-		for _, n := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) {
-			if !IsGateName(n) {
-				bad(fmt.Sprintf("the deletion gate's names, by commas, or none (%s is none of them; a language list's is "+
-					"named with a language, as subtitleLanguages:de); it is %s", n, orNone(s.SupersededAccept)))
-				return
-			}
-			if !slices.Contains(names, n) {
-				names = append(names, n)
-			}
 		}
 		s.SupersededAccept = names
 	case SettingReplaceClients:

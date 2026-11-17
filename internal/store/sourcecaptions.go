@@ -1,0 +1,59 @@
+package store
+
+import (
+	"context"
+
+	"github.com/zaentrum/katalog-manager/db/migrations"
+)
+
+// SourceCaptionsTable is the table db/migrations/058_source_captions.sql
+// creates: what a read of an original's frames, in windows across its
+// picture, found of its closed captions and of its fields.
+const SourceCaptionsTable = "com_nalet_katalog_sourcecaptions"
+
+// CaptionHandoutsTable is the table 058 keeps each hand-out of an original
+// to be read in, for the captions backfill's hourly rate.
+const CaptionHandoutsTable = "com_nalet_katalog_captionhandouts"
+
+// SourceCaptionsReady reports whether migration 058 is in place.
+func (s *Store) SourceCaptionsReady(ctx context.Context) (bool, error) {
+	return sourceCaptionsReady(ctx, s.pool)
+}
+
+// sourceCaptionsColumns are the columns of 058's final shape, and
+// sourceCaptionsGone those of an earlier one it drops: the migration is in
+// place when the table has every one of the first and none of the second.
+var (
+	sourceCaptionsColumns = []string{"source_id", "item_id", "state", "captionwindows", "captions", "ffprobeversion",
+		"framesdecoded", "duration", "captionstreams", "offlist", "sourcesize", "sourceqh1", "claimsize", "claimqh1", "claimdurationms",
+		"claimspanstart", "claimspanend",
+		"claimrecordedat", "sourcerecordedat", "finding",
+		"reason", "readat", "failures", "nextattemptat", "claimedat", "claimedby",
+		"claimtoken", "lapsedtoken", "lastclaimedat", "attempts", "createdat", "modifiedat"}
+	sourceCaptionsGone = []string{"probe", "packets", "packageversionid", "packagestate", "packagecaptionwindows",
+		"packagecaptions", "packageffprobeversion", "packageframesdecoded", "packagereason", "packagereadat"}
+)
+
+// sourceCaptionsReady is SourceCaptionsReady read by q: the pool, or the
+// transaction that holds the migrations' lock. It looks at the columns, so
+// that a catalog that applied an earlier shape of 058 has it applied again.
+func sourceCaptionsReady(ctx context.Context, q querier) (bool, error) {
+	var ok bool
+	err := q.QueryRow(ctx, `SELECT to_regclass('idx_sourcecaptions_item') IS NOT NULL
+			AND to_regclass('idx_captionhandouts_at') IS NOT NULL
+			AND to_regclass('idx_sourcecaptions_claimed') IS NOT NULL
+			AND (SELECT count(*) FROM information_schema.columns
+			     WHERE table_schema = current_schema() AND table_name = $1 AND column_name = ANY($2)) = cardinality($2::text[])
+			AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+			     WHERE table_schema = current_schema() AND table_name = $1 AND column_name = ANY($3))`,
+		SourceCaptionsTable, sourceCaptionsColumns, sourceCaptionsGone).Scan(&ok)
+	return ok, err
+}
+
+// EnsureSourceCaptions applies db/migrations/058_source_captions.sql when any
+// of it is missing, under the migrations' lock. Without it the captions
+// backfill hands nothing out, and the deletion gate keeps every original
+// whose captions are not read.
+func (s *Store) EnsureSourceCaptions(ctx context.Context) error {
+	return s.applyLocked(ctx, sourceCaptionsReady, migrations.SourceCaptions)
+}

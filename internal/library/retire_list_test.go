@@ -447,7 +447,7 @@ func TestAListChecksEveryCondition(t *testing.T) {
 				t.Fatal(err)
 			}
 			librarytest.WriteVersion(t, f.versionDir, librarytest.Version{VersionID: rtVersion, PackageID: rtPackage,
-				SourceIDs: []string{rtSource}, CreatedAt: "2026-10-06T10:00:00Z", Package: map[string]any{"essence": f.pkg},
+				SourceIDs: []string{rtSource}, CreatedAt: "2026-10-06T10:00:00Z", Package: packageRecord(f.pkg),
 				Pending: true})
 			return rtFilm
 		}, "skipped: its version’s checksums are pending: no file of its package was hashed yet, so nothing proves it",
@@ -1343,7 +1343,7 @@ func TestTheRetirePathAsksTheListAgain(t *testing.T) {
 		{"a step at work before the claim", 1, atWork, "skipped: the title's pipeline reads its original again"},
 		{"its package lacking its surround before the claim", 1, func(t *testing.T, f *listFixture) {
 			librarytest.WriteVersion(t, f.versionDir, librarytest.Version{VersionID: rtVersion, PackageID: rtPackage,
-				SourceIDs: []string{rtSource}, CreatedAt: "2026-10-06T10:00:00Z", Package: map[string]any{"essence": stereo}})
+				SourceIDs: []string{rtSource}, CreatedAt: "2026-10-06T10:00:00Z", Package: packageRecord(stereo)})
 		}, "skipped: " + SurroundHeld},
 		{"queued before the claim", 1, queued, "skipped: it is in the re-encode queue (queued)"},
 		{"a second original before the claim", 1, second, twoOriginals},
@@ -1656,7 +1656,7 @@ func TestAListWaitsForTheRetireJobsPass(t *testing.T) {
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(`+retireLockKey+`)`); err != nil {
 		t.Fatal(err)
 	}
-	if rep := f.pass(t); rep != (Report{}) {
+	if rep := f.pass(t); rep.String() != "" {
 		t.Fatalf("a pass while another holds its lock: %+v", rep)
 	}
 	waited := 0
@@ -1703,9 +1703,10 @@ func TestARunRetiresOnlyWhatItsDryRunReviewed(t *testing.T) {
 				now() - interval '1 hour', $6)`, s2, rtFilm, original, size, qh1, sourceDir)
 		versionDir := VersionDir(f.itemDir, v2)
 		librarytest.WriteVersion(t, versionDir, librarytest.Version{VersionID: v2, PackageID: p2, SourceIDs: []string{s2},
-			CreatedAt: "2026-10-27T06:00:00Z", Package: map[string]any{"essence": f.pkg}})
+			CreatedAt: "2026-10-27T06:00:00Z", Package: packageRecord(f.pkg)})
 		librarytest.WriteSource(t, sourceDir, map[string]any{"sourceId": s2, "file": map[string]any{"name": "Example Film.mkv",
-			"sizeBytes": size, "fixity": map[string]any{"qh1": qh1}}, "sidecars": []any{}, "essence": f.src}, nil)
+			"sizeBytes": size, "fixity": map[string]any{"qh1": qh1}}, "sidecars": []any{}, "essence": stated(f.src),
+			"container": map[string]any{"format": "matroska,webm", "durationMs": 600000}, "streams": filmStreams()}, statedProbe(nil))
 		storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2,
 			supersededat = now() WHERE id = $1`, rtVersion, v2)
 		storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir,
@@ -1725,8 +1726,8 @@ func TestARunRetiresOnlyWhatItsDryRunReviewed(t *testing.T) {
 	// subtitles since
 	lessCarried := func(t *testing.T, f *listFixture) {
 		librarytest.WriteVersion(t, f.versionDir, librarytest.Version{VersionID: rtVersion, PackageID: rtPackage,
-			SourceIDs: []string{rtSource}, CreatedAt: "2026-10-06T10:00:00Z", Package: map[string]any{"essence": map[string]any{
-				"surround": true, "maxAudioChannels": 6, "audioLanguages": []string{"en"}, "subtitleLanguages": []string{"en"}}}})
+			SourceIDs: []string{rtSource}, CreatedAt: "2026-10-06T10:00:00Z", Package: packageRecord(map[string]any{
+				"surround": true, "maxAudioChannels": 6, "audioLanguages": []string{"en"}, "subtitleLanguages": []string{"en"}})})
 	}
 	// another title's row names the German subtitle file since: it stays
 	otherFiles := func(t *testing.T, f *listFixture) {
@@ -1744,13 +1745,12 @@ func TestARunRetiresOnlyWhatItsDryRunReviewed(t *testing.T) {
 	}{
 		{"another original and version", 0, anotherOriginal, original},
 		{"a newer version of the original", 0, newerVersion, version},
-		{"its package carrying less", 0, lessCarried, loss + "what its package doesn’t carry of it: maxAudioChannels, " +
-			"subtitleLanguages:de; the files that go with it: {de}, {en}, {nfo}"},
+		// what the spec keeps, a subtitle language: no run gives it up
+		{"its package carrying less", 0, lessCarried, "skipped: " + SpecHeld([]string{"subtitleLanguages:de"})},
 		{"other files going with it", 0, otherFiles, loss + "what its package doesn’t carry of it: maxAudioChannels; " +
 			"the files that go with it: {en}, {nfo}"},
 		{"a newer version of the original at the last", 2, newerVersion, version},
-		{"its package carrying less at the last", 2, lessCarried, loss + "what its package doesn’t carry of it: " +
-			"maxAudioChannels, subtitleLanguages:de; the files that go with it: {de}, {en}, {nfo}"},
+		{"its package carrying less at the last", 2, lessCarried, "skipped: " + SpecHeld([]string{"subtitleLanguages:de"})},
 		{"other files going with it at the last", 2, otherFiles, loss + "what its package doesn’t carry of it: " +
 			"maxAudioChannels; the files that go with it: {en}, {nfo}"},
 	} {
@@ -1866,5 +1866,60 @@ func TestAListRetiresTheSurroundOriginalOfAStereoPackager(t *testing.T) {
 	if run.WouldRetire != 1 || len(items) != 1 || !strings.HasPrefix(said(items[0]), "would-retire: ") ||
 		!strings.Contains(said(items[0]), "surround") {
 		t.Fatalf("%+v: %s", run, said(items[0]))
+	}
+}
+
+// A dry run doesn't let an original go whose package's record says nothing
+// about its subtitles: a 5.1 original with 12 image subtitle tracks, packaged
+// by a packager that makes stereo alone, is skipped, saying why, where before
+// it would retire, the gate naming its surround alone (an essence that claims
+// the subtitles its record doesn't list) or the subtitles as a loss it accepts
+// (a record with no subtitle field at all). A package that lists the
+// original's subtitles would retire as before, and one whose record says it
+// carries none is skipped too: the subtitles it lacks are no loss the master
+// spec drops by design.
+func TestADryRunKeepsAnOriginalWhoseSubtitlesItsPackagesRecordLeavesUnknown(t *testing.T) {
+	ctx := context.Background()
+	src, _ := pgsOriginal(12)
+	none := map[string]any{"subtitleTracks": 0, "commentarySubtitles": 0, "imageSubtitles": false, "styledSubtitles": false,
+		"subtitleLanguages": []string{}, "sdhSubtitleLanguages": []string{}, "forcedSubtitleLanguages": []string{}}
+	const unknown = "skipped: its package's record says nothing about its subtitles (its original has 12 subtitle tracks): " +
+		"what its package carries of them can't be told"
+	for _, c := range []struct {
+		name string
+		pkg  map[string]any // package.json's fields besides those WriteVersion sets
+		want string         // the result and why, {de}, {en} and {nfo} its sidecars
+	}{
+		{"a package record with no subtitle field at all", map[string]any{"essence": stereoCarrying(nil)}, unknown},
+		{"an essence that claims the subtitles its record doesn't list", map[string]any{"essence": stereoCarrying(src)}, unknown},
+		{"an essence that says more tracks than its record lists",
+			map[string]any{"essence": stereoCarrying(src), "subtitles": []any{}},
+			"skipped: its package's essence says 12 subtitle tracks, and its record lists 0 (its original has 12 subtitle " +
+				"tracks): what its package carries of them can't be told"},
+		{"a package that lists the original's subtitles",
+			map[string]any{"essence": stereoCarrying(src), "subtitles": pgsListed(12)},
+			"would-retire: what its package doesn’t carry of it: maxAudioChannels, surround; the files that go with it: " +
+				"{de}, {en}, {nfo}"},
+		{"a package whose record says it carries none",
+			map[string]any{"essence": stereoCarrying(none), "subtitles": []any{}},
+			"skipped: " + SpecHeld([]string{"imageSubtitles", "subtitleLanguages:de", "subtitleLanguages:en",
+				"subtitleLanguages:fr", "subtitleTracks"})},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := listFixtureOf(t, newRetireFixtureOf(t, src, stereo))
+			if err := f.st.EnsureCompliance(ctx); err != nil {
+				t.Fatal(err)
+			}
+			storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_workerrules (worker, version, rules, ruleshash, reportedat, changedat)
+				VALUES ('packager', 'test', '{"surroundAudio": "off"}', 'test', now(), now())`)
+			librarytest.WriteVersion(t, f.versionDir, librarytest.Version{VersionID: rtVersion, PackageID: rtPackage,
+				SourceIDs: []string{rtSource}, CreatedAt: "2026-10-06T10:00:00Z", Files: pgsFiles(12), Package: c.pkg})
+			_, items := f.dry(t, rtFilm)
+			if want := strings.NewReplacer("{de}", f.de, "{en}", f.en, "{nfo}", f.nfo).Replace(c.want); len(items) != 1 ||
+				said(items[0]) != want {
+				t.Errorf("%s\nwant %s", said(items[0]), want)
+			}
+			f.kept(t)
+		})
 	}
 }

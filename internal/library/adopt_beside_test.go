@@ -127,6 +127,7 @@ func TestAPendingVersionKeepsItsOriginalUntilItsChecksumsAreFilled(t *testing.T)
 	into := filepath.Join(vdir, "original.mkv")
 	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES
 		('s1', 'library.layout', 'v2'), ('s2', 'library.originals', 'delete-after-package'), ('s3', 'library.retire.delay', '0')`)
+	settleAll(t, f.st)
 	r := NewRetirer(f.st.Pool(), f.cfg, processing.New(f.st.Pool()))
 	rep, err := r.Pass(ctx)
 	if rep.Originals != 0 || rep.Failed != 1 || !one(old, into) {

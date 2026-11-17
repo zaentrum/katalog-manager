@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/zaentrum/katalog-manager/internal/auth"
+	"github.com/zaentrum/katalog-manager/internal/captions"
 	"github.com/zaentrum/katalog-manager/internal/chapters"
 	"github.com/zaentrum/katalog-manager/internal/chaptersdb"
 	"github.com/zaentrum/katalog-manager/internal/compliance"
@@ -206,6 +207,12 @@ func run() error {
 	// decides of it (migration 057, after 056).
 	if err := st.EnsureSupersededDecisions(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/057_superseded_decisions.sql is missing and could not be applied: %v; the retire job retires no superseded original until it is", err)
+	}
+	// What the analyzer's reads of each original's frames found of its
+	// closed captions and its fields, window by window (migration 058),
+	// which the deletion gate reads; a package is not read.
+	if err := st.EnsureSourceCaptions(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/058_source_captions.sql is missing and could not be applied: %v; the captions backfill hands out nothing, and no original whose captions are not read is retired, until it is", err)
 	}
 	// An item the scanner made before it wrote its own name into the row has
 	// it in its record alone: the row follows the record (bounded, in the
@@ -416,11 +423,16 @@ func wire(ctx context.Context, cfg config.Config, st *store.Store) (*service, er
 	// with the chapters it found, and the backfill hands it the titles that
 	// miss theirs, at the pace of the settings chapters.backfill*.
 	chapterReads := chapters.New(st, cfg)
+	// The originals' closed captions: the backfill hands the analyzer the
+	// originals to read, at the pace of the settings captions.backfill*, and
+	// keeps what it read; nothing here reads media.
+	closedCaptions := captions.New(st)
 
 	// Authenticated surface.
 	routes(r, authMW.Handler, cfg.Policy(), schema, broker.Handler,
 		rest.New(rest.Deps{Store: st, Cfg: cfg, Steps: steps, Events: eventProducer, Packager: actions, Extras: extrasSvc,
-			Reencode: retries, TakeIn: retries, Compliance: check, Picture: pictures, Chapters: chapterReads}))
+			Reencode: retries, TakeIn: retries, Compliance: check, Picture: pictures, Chapters: chapterReads,
+			Captions: closedCaptions}))
 
 	start := func(ctx context.Context) {
 		// A scan runs in the process that started it, so one a previous process

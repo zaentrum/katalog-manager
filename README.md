@@ -460,6 +460,20 @@ the base schema in the order of their numbers, and each is idempotent:
   `supersededdecidedat`); see [The library](#the-library). Applied at startup
   under the same lock when any of it is missing; without it the retire job
   retires no superseded original, and `supersededOriginals` lists none.
+- `058_source_captions.sql` keeps what the analyzer's reads found of the
+  closed captions of each original (`com_nalet_katalog_sourcecaptions`: read
+  or failed, its windows, whether one shows captions, the ffprobe that read
+  it, the frames it decoded and the length it placed them by, the streams of
+  captions of their own it found and what of the file is off the closing
+  rule's lists; the size and quick hash of the file the read is of and of
+  the one the claim handed out, the length and the time of the record the
+  claim handed out, and a finding of that file and record, `lengthMismatch`;
+  the claim, the failures in a row and when it is handed out again); see [Closed
+  captions](#closed-captions). Applied at startup under the same lock when
+  any column of it is missing or one of an earlier shape is there (a
+  catalog that applied one before a release has its reads read again);
+  without it the captions backfill hands out nothing, and no original whose
+  captions are not read is retired.
 
 ## Track languages
 
@@ -617,8 +631,10 @@ mutation {
   once the title's master — its complete version made of the latest file
   that took its place — has been complete for `library.superseded.delay` (a
   week) and verifies, and only while what deleting it gives up against the
-  master lies within `library.superseded.accept`, else it waits for an
-  admin's `decideSupersededOriginal` (see [The library](#the-library)):
+  master is what the master spec drops by design and lies within
+  `library.superseded.accept`, else it waits for an admin's
+  `decideSupersededOriginal` (see [The library](#the-library)) — or, when it
+  gives up more than the spec drops, for a master that carries it:
   moved into the library's trash,
   `.work/trash/<day>/<sourceId>/`, for `library.trash.grace`, its
   `original-deleted` event recorded when it has a record, its source
@@ -1757,6 +1773,228 @@ handed out now and in the last hour, the records read in the last hour,
 when the last read was reported, the settings as read and why it reads
 nothing now.
 
+## Closed captions
+
+Closed captions (EIA/CEA-608/708) ride in the video stream itself, an A53
+cc_data SEI with each picture: no container says they are there, the
+decoder's side data does, and a source record's `closedCaptions` comes from
+a probe that decodes no frame, so its false says nothing. An original that
+carries closed captions, or whose captions are not known, is not retired
+(see [The library](#the-library)): a few windows of a package can show that
+it has captions, never that it has all of them, so the deletion gate asks
+the original alone. The catalog's captions backfill has the analyzer read
+each original on disk (present or superseded) while its captions are not
+read, in windows across its picture (the window plan, below), up to 48
+video packets each from a keyframe, with ffprobe 7.1;
+katalog-manager reads no media, it hands out where an original lies (a
+stat) and keeps the reads (`com_nalet_katalog_sourcecaptions`, migration
+058). It hands out an original only once its source record is written
+(`recordedat`), and notes the size and quick hash the catalog's row has of
+it then (`claimsize`, `claimqh1`: the row's `sizebytes` and `qh1`, not a stat
+of the file), the length its record says (`claimdurationms`), the span of
+its picture its records give (`claimspanstart`, `claimspanend`) and when its
+record was written (`claimrecordedat`): a read is of that file, held to that
+record. What was read in full of
+the file at the original's place is not handed out again; once another file
+is there (another size or quick hash: the scanner's Refix of a source not
+recorded yet, or an adoption that upserts it, forget the read), it is.
+
+The analyzer asks with `POST /api/captions/claim` (the workers' service
+account and admins), `{"worker": "<its name>", "limit": n}`, and is handed
+at most what the pace allows:
+
+```json
+{"items": [{"sourceId": "…", "itemId": "…", "path": "/…/film.mkv", "packets": 48, "token": "…",
+            "durationMs": 600000}],
+ "deadline": "2026-11-16T23:10:00Z"}
+```
+
+`durationMs` is the length the original's source record says
+(`container.durationMs`; none where it says none), which the analyzer holds
+the length it reads to, and the catalog holds its read to as well.
+
+The window plan is one, for every place that reads or checks a read's
+windows: a window at the picture's start, and one at 10, 30, 50, 70 and 90 %
+of the picture's own presentation span (`start + at × (end − start)`), each
+at most 30 s short of its end - six windows, every one of which a read has
+before it says "none" (a picture shorter than a minute has them at most half
+its span in, those that fall on one another one). A window decodes 48
+packets and is one of at least 24 frames. The span is the picture's own: a
+picture that starts late, or ends before its file does, is read where it is.
+The catalog takes it from the records, as the part of the record logic's
+`picture_span` (schemas, `libv2_records.py`) it can tell without opening the
+file: the start is the stored probe's picture's `start_time`, else the
+probe's format's, else 0; the length the probe's picture's `duration`, else
+the record's `container.durationMs`; the end the start plus the length (the
+record logic reads the end of the picture's last packet from the file too,
+which no record keeps). The read's own length places nothing: it is held to
+the record's (a window the tail short of the end, which a read places by the
+length it reads, is the plan's window all the same where that length lies
+within 2 s or 1 % of the record's). A record that says no length has no span, and the original
+is kept ("its closed captions aren't known: its record says no length"); a
+read of it is kept as the finding `noRecordLength`, final for that file and
+that record. A read of five windows and none at the start (one made before
+the plan was one) is not complete under the plan: it is not known until the
+original is read again. A short picture read whole (every packet decoded,
+where its six windows wouldn't lie apart) is kept until the gate knows such
+a read: the gate takes six windows alone. The plan's numbers are constants
+of the code (`internal/library/captions.go`); a test holds them to the plan.
+
+With no item, `items` is empty and `idle` says why (`"captions.backfill is
+off"`, …) and `retryAfterSeconds` when to ask again. It reports each with
+`PUT /api/captions/sources/{sourceId}`:
+
+```json
+{"token": "…",
+ "original": {"ffprobe": "7.1.5", "duration": 600.0, "sizeBytes": 7340032000,
+   "captionStreams": 0, "offList": [], "captionWindows": [
+   {"at": 0, "start": 0.0, "end": 1.88, "frames": 48, "captions": false,
+    "interlacedFrames": 0, "repeatFrames": 0},
+   {"at": 0.1, "start": 60.0, "end": 61.88, "frames": 48, "captions": true,
+    "interlacedFrames": 0, "repeatFrames": 0, "keyframeBefore": true},
+   {"at": 0.3, "start": null, "end": null, "frames": 0, "captions": null,
+    "interlacedFrames": null, "repeatFrames": null, "keyframeBefore": null},
+   …]}}
+```
+
+Each window is where in the picture it was read (`at`, a fraction of its
+span: 0 its start, 0.1 to 0.9), the presentation seconds of the frames
+it decoded (`start` to `end`; none of a window that failed), how many
+(`frames`; 0, a window that failed) and whether one of them showed captions
+(`captions`), and of the frames it decoded how many were coded as fields
+(`interlacedFrames`) and how many repeat a field (`repeatFrames`), and,
+where its packet listing showed no keyframe between the window's first
+picture and its place, that it starts at the keyframe at or before its
+place (`keyframeBefore: true`).
+`duration` is the video's length the read says (seconds), which its
+record's is held to; how many windows a short picture has, and where they
+lie, is the plan's, of the span the claim handed out. `sizeBytes` is the size of the file it read, as it found it (a read
+says it; a read of no frame and a failure need not). `captionStreams` is
+how many streams of closed captions of their own the read found (codec
+`eia_608`, or tagged `c608` or `c708`: a QuickTime or MP4 track of them),
+and `offList` what of the file it found off the closed lists, by the
+analyzer's names (`container:<format_name>`, `stream:<codec_type>:<codec,
+else tag, else none>`, `video-streams:<n>`, `codec:<codec_name>`,
+`picture:vbi-lines`; see [The library](#the-library)). A file it could not
+read is `{"error": "<why>", "ffprobe": "…"}`, with `sizeBytes` where it
+found the file and `captionStreams` and `offList` where it listed its
+streams (a file off the closed lists is not read further: `"error": "off
+the closed lists: codec:vc1"`), and a claim given back unread `{"token":
+"…", "released": true}`. A report's `package` part, of an older analyzer,
+is taken no notice of.
+
+A report names its claim (`token`): the one the original is handed out
+under, which it ends, or the one whose lease ended last; any other is
+refused (409) and changes nothing. Every report but a release names its
+ffprobe (`ffprobe`, as `ffprobe -version` names it: `7.1.5`, `n7.1.1`,
+`7.1.1-static`, `n7.1.5-12-g…`, or its first line, `ffprobe version 7.1.1
+…`): 7.1, the release the reads were tested with, alone, until another is.
+One without it, one of another release (`9.0.2`, which says no stream's
+`closed_captions`), one that names no release (a build of the development
+branch, `N-…`), a read without windows, a report that gives one of its
+own keys twice and a report of no read are refused (400) and change
+nothing, as is a read that says no `sizeBytes`. A window that is no window
+(`at` outside 0 to 1, `end` before `start`, captions in a window of no
+frame, a value of another type, a key given twice) is no 400: it is kept as
+a failed window and said, and what it found where it decoded frames stays
+(below). A read none of whose windows decoded a frame is kept as a failed
+one: it can't say there are none. So is a read the catalog can't take as
+one of the video: its windows not in the order of the video, none said for
+a planned place (the start among them), a window that lies more than 15 s
+from its place (the plan's, of the span the claim handed out; a window at
+the keyframe at or before its place, `keyframeBefore`, up to 30 s before it,
+as a long group of pictures puts it: a window is in place by where it
+starts, not by its distance), one that decoded fewer than 24 frames, no
+length said; and a read of a file of
+another size than the one handed out (another file, or one still being
+copied). Each is handed out again after its backoff. A read of the file
+handed out of another length than its record's (`durationMs`, by more than
+2 s or 1 % of it, the more), and one of an original whose record said no
+length, is a finding about the record or the file, of its own (`finding`
+`lengthMismatch`, `noRecordLength`): the original is kept for good on it,
+with the standing of captions not known ("its closed captions aren't known:
+its length is not its record's: a read of its original says it lasts 610 s,
+and its record 600 s (within 6 s)"), and it is not handed out again - for
+that file and that record: once the file is another (its size or quick
+hash) or the record is (written again), it is to read again, once. A
+failure that found what keeps the original anyway, of the file handed out
+(its `sizeBytes` the claim's) - something off the closed lists, or a stream
+of captions of its own - is kept as found: no read again of the same file
+changes it, so it is not handed out again, counts as read, and the gate
+keeps the original on it (not known for good, or carried). One with a window
+that decoded none is kept, that window said (`reason`), and handed out again
+after its backoff. Any report that leaves the original not read in full - a
+window that decoded no frame, windows that say nothing of interlaced or
+repeated frames, a read refused, a failure - counts as a failure and waits
+its backoff, so no original is handed out again a second later. The answer is what the
+catalog keeps now: `{"sourceId", "itemId", "original": {"state",
+"captionWindows", "captions", "ffprobe", "framesDecoded", "duration",
+"reason", "readAt"}, "attempts", "failures", "nextAttemptAt",
+"claimedAt"}`; 404 for no such original, 503 without migration 058. A read
+keeps what it found and lets go of a retirement of that original the retire
+job held for want of it. The worst a read says decides: a window of the
+file handed out that decoded frames and showed captions, or counted frames
+coded as fields or repeating a field, is kept as found, whatever else of
+the read failed or was refused (a window far from its place, a malformed
+count, a key given twice: captions true in any value of it), from a claim
+whose lease ended too; once kept, no later read of the same file replaces
+it, and it is not handed out again. Otherwise a late report of a claim whose
+lease ended replaces no read made since. A read that found nothing is of
+its record as it was: once the record is written again (`recordedat`: a
+record that carries a caption signature, a length), the original is read
+again, and the read lets go of the hold. It does so in the same
+transaction and under the title's lock, which the retire job takes to write
+a hold too, so that a hold written while a read lands sees it; a failure
+keeps why, leaves a read as it is, and waits a backoff (an hour, twice as
+long after each failure in a row, a week at most).
+
+The originals the retire job holds for want of captions go first, then
+those of titles with a complete version (the deletion's next), then the
+oldest. The backfill is on by default: the deletion gate's captions rule
+ships with it, so that the deletion waves go on. The settings are read on
+every claim, so an instance stops it, slows it, speeds it up or moves its
+hours without a restart:
+
+- `captions.backfill` (`on`): `off` stops it, and then every original whose
+  captions are not read yet stays kept, the safe side;
+- `captions.backfill.window` (empty: any time): when, `HH:MM-HH:MM` in UTC
+  (it may cross midnight); an installation can keep the reads out of the
+  hours its library is watched, `02:00-07:00` say; empty, the default, any
+  time; one that is no window hands out nothing;
+- `captions.backfill.inflight` (`2`): originals handed out and not reported
+  at once;
+- `captions.backfill.rate` (`600`): hand-outs an hour at most, an original
+  handed out again counting again (`com_nalet_katalog_captionhandouts`
+  keeps the hour's); `0` none;
+- `captions.backfill.lease` (`10m`): how long an original handed out is its
+  worker's. A claim's `deadline` is the window's end or the lease's,
+  whichever comes first. An original whose run never reported back counts a
+  failure once its lease ends, one not on disk when it comes up too; one
+  given back waits 15 minutes.
+
+The first pass over a library takes as long as the rate and the in-flight
+limit allow: raising both (`captions.backfill.rate`,
+`captions.backfill.inflight`) shortens it roughly in proportion, at the
+cost of the reads the storage serves at once; whoever knows the storage
+decides.
+
+Every claim, its lease and each failure are rows of the table, so the
+backfill resumes where it was after a restart of either side, and one
+instance hands out originals at a time (an advisory lock). `captionReads`
+(GraphQL, admins) says how far it is: the originals on disk, those read in
+full of the file at their place (`withCaptions` of them with captions),
+those a read found of another length than their record's (`lengthMismatch`,
+their source ids `lengthMismatches`: a finding about the record or the
+file, none of read nor of to read) and to read (`toRead`, those read with a
+window that decoded no frame, one that says nothing of interlaced or
+repeated frames, a read refused or of another file among them, and one
+whose record said no length, until its record is written again; a read
+that found captions counts as read), the failed ones,
+those handed out now and the hand-outs of the last hour, when the last read
+was reported,
+the settings as read and why it hands out nothing now. Its `packaged`,
+`packagesRead` and `packagesWithCaptions` are 0: no package is read.
+
 ## Scanning
 
 `triggerScan` walks the scan root (`SCANNER_NFS_ROOT`, default `/var/lib/katalog/media`; with
@@ -2363,14 +2601,21 @@ The library's settings are read on every use, as `extras.scan` is:
   in its place can be taken back meanwhile; `0` none. The trash's grace
   follows as for any retired original.
 - `library.superseded.accept`
-  (`maxAudioChannels,surround,losslessAudio,objectAudio,stereo3d`): what the
-  retire job may give up of a superseded original against its title's master
-  on its own — the deletion gate's names, by commas or spaces (a flag or a
-  count it compares, or a language list's name with a language,
-  `subtitleLanguages:de`), or `none` —; `maxAudioChannels` only while the
-  master keeps a stereo track. Any other loss, Dolby Vision's among them,
-  holds the original for an admin. A value with any other name is a problem
-  of the settings, and the default holds.
+  (`surround,maxAudioChannels,losslessAudio,objectAudio,dolbyVision,stereo3d`):
+  what the retire job may give up of a superseded original against its
+  title's master on its own — the deletion gate's names, by commas or spaces,
+  or `none` —; `maxAudioChannels` only while the master keeps a stereo track,
+  `dolbyVision` only while it keeps the HDR. It narrows what the master spec
+  drops by design (the default, all of it: ADR-0015's decision 2 lists Dolby
+  Vision, where the package keeps the HDR, among what is dropped, so a
+  superseded original that gives up only that goes without an admin) and
+  never widens it: a value with
+  a name beyond that — another of the gate's (`subtitleLanguages:de`,
+  `videoBitDepth`, …) or none of them (`surroud`) — is refused when it is
+  set (`createSetting`, `updateSetting`), and one stored so accepts nothing,
+  a problem of the settings logged at start and by the retire job when it
+  changes. A loss of the spec's it leaves out holds the original for an
+  admin; any other keeps it until a master carries it.
 - `library.verify.new` (`on`): whether the verifier verifies each new
   version in full once (see below); `off` leaves new versions unverified
   until the retire job verifies one.
@@ -2441,7 +2686,9 @@ The retire job runs once a minute in the sweep, in one instance at a time.
 With `delete-after-package` it deletes a title's original once a complete
 version of it is as old as the delay, the title is not held, and every step
 that reads the original is over: claimed (the step `retire` runs), the
-original checked against its size and quick hash, the version verified (in
+original checked against its size and quick hash (and again right before
+it is moved or unlinked, on every path: a retirement resumed from its event,
+a superseded original's), the version verified (in
 full, unless a full verification — the migration's stage, the fill run of
 its checksums or the verifier — is within `library.verify.maxAge`, when its
 chain alone is checked;
@@ -2474,6 +2721,251 @@ then no original is kept for its surround: what it gives up is in what its
 source lost (`surround`, `maxAudioChannels`), as a list's dry run says it. A
 packager that reported no rules yet is taken to make 5.1 companions.
 
+What a retirement may give up is what the master spec drops by design (the
+platform's ADR-0015, decision 2), and nothing else: `surround` and
+`maxAudioChannels` (the channels above the package's, while it keeps a stereo
+track), `losslessAudio`, `objectAudio`, `dolbyVision` (while the package keeps
+the HDR: its top video rendition HDR10, `PQ`, or `HLG` where the original's
+base layer is HLG) and `stereo3d` — one list (`SpecDropped`), and a name
+added to it is dropped on every path. Any other loss the gate names — a
+language, a subtitle track, a forced or SDH subtitle, a style or a font,
+closed captions, a lower bit depth or height, the HDR10 metadata, a
+commentary or an audio description, and `interlaced` (the gate compares it
+beside the validator's, which leaves it out, and the list doesn't name it) —
+keeps the original until the title is packaged again. An original in fields
+is not retired for now, whatever was done to make its package progressive:
+reviews found originals whose package was called whole and wasn't, so no
+word of a package's scan lets one go. In fields is read the widest way, of
+its picture, its one video stream that is no attachment (a stream with the
+container marks as an attached file, the attached picture flag or a
+Matroska attachment's `filename` and `mimetype` tags, that is an image, its
+mimetype `image/*`, or, an MP4's cover, which has none, of codec `mjpeg`,
+`png` or `bmp`, and has no length of its own, no more than one frame
+counted, `nb_frames` or `NUMBER_OF_FRAMES`, and no `DURATION` tag, as the
+analyzer counts one; a file's name decides nothing, and a picture track not
+so marked, or one with a length, is a video stream): its
+record or its stored probe lists more than one such ("its record lists 2
+picture streams, so which is its picture can't be told"); its record says
+`interlaced`, or its picture a `fieldOrder` other than `progressive` (`tt`,
+`bb`, `tb`, `bt`, `unknown`, …); its stored probe
+(`sources/<id>/ffprobe.json`) gives its picture such a `field_order`, or
+can't be read, or is no probe of a file (no object, no list of streams, a
+format that is no object); the `scan` of the package of the version it is
+retired from, read whatever that version's `version.json` says, or of a
+package version made of it (one whose `version.json` names it in
+`sourceIds`; `versions/*/package.json`, the transcoder's renditions
+contract the packager copies, every folder of `versions/` listed, one that
+can't be listed holding it; a version whose `version.json` says no list of
+`sourceIds` holds it, and one without a `version.json` whose package's scan
+holds) is no object (`null` among them), or
+`found` anything but exactly `progressive` (`fields`, `film`, `telecine`,
+`mixed`, `field-pictures`, `unknown`, a word the gate doesn't know, a blank,
+another type, none), or did something to the picture or doesn't say (a
+`done` other than `progressive` or `none`, or none), or did not verify it
+whole (`verified.ok` and
+`verified.complete` true), or such a version's or package's record can't be
+read (one not there says nothing); its record's `interlaced` is no boolean;
+a read of its frames (see [Closed captions](#closed-captions)) found frames
+coded as fields (`interlacedFrames`) or ones that repeat a field
+(`repeatFrames`) in a window, or gave a count of them that can't be read; or
+neither its record nor its probe states a field order for its
+picture, whatever any package's scan says, which counts as not known ("its
+field order is not stated and it was never examined"; a policy by the
+picture's codec and the record's container, `container.format`,
+`AbsentFieldOrder`, may later let a group go, and reads no scan). No word of
+the transcoder's lets an original go, neither what its scan says was done
+nor that it `found` `progressive`: a package called whole has been found not
+to be, and the record is informational. What may let such an original go
+later is an examination of the whole original itself, or a proof that its
+package copies it; the catalog reads neither yet. A read of its frames that says nothing of interlaced or repeated frames
+(an older analyzer's) leaves its fields not known, until it is read again.
+`interlacedFrames` and `repeatFrames` see pictures CODED as fields (field
+pictures, PAFF/MBAFF, MPEG-2 frames flagged interlaced), not pictures woven
+into frames; only an examination of the pictures (idet) sees those. A reader
+must not take the flag for the examination. What the scan says was `done`
+(`inverse-telecine`, `progressive`, `deinterlaced-field`, …) is not read. An
+original neither marked nor found to hold fields, with a field order
+stated, goes the ordinary way. The hold says
+why ("an original in fields is not retired for now: its record's field order
+is tt").
+So does an HDR picture (HDR10, with or without its
+static metadata, HLG, Dolby Vision) whose package is SDR (`hdr`). The master
+carries every track of its original: of a version made of one original,
+every audio and subtitle stream needs a package track that says it was made
+from it (`sourceStreamIndex`), whatever the other tracks are labelled — a
+stream with none is lost (`audioTrack:2`, `subtitleTrack:5`), and its
+language where no other stream of it is carried. A track's label is no
+difference where it is its stream's own, the stream's was `und` (the catalog
+learned it), or it is `zxx` or `mul`; any other — one language for another,
+a language for `und` — loses the stream's language, and a subtitle no longer
+for the hard of hearing, or forced, loses that. Where a stream has no track
+that says it, and a package track says no stream, the records can't tell,
+which keeps the original as any unknown does. A stream's language is
+an admin's correction of it where the catalog records one for that stream of
+the title's source with who set it (`setTrackLanguage`), set since the
+original was recorded (one older was of the file the title had before), else
+its label; the
+retire job's report names an original it holds for a track labelled
+otherwise than its stream, with both labels ("its audio track 1 (stream 2)
+is en in its original and de in its package"), that an admin sees what to
+correct. A package none of whose tracks of a kind says its stream (a record
+written before they said them) is held by its tracks' languages counted: of
+each language the original's streams against the package's tracks of the
+kind (its stereo renditions; of its subtitles only one whose path, `subs/<n>`,
+names the original's n-th subtitle stream of a kind it can be made of — a
+picture of the same form, or text of a text stream an encode keeps, not
+`mov_text`, which Matroska doesn't carry —: one made of a file beside the
+original, which says so, `fromSidecar`, is numbered after the packaged
+file's subtitles, or is named otherwise, `subs/legacy_0.vtt`, counts for
+none), a language it has fewer of losing a track of it (`audioTrack:de`,
+said with how many each has), and where a track it has more of could be one
+of them under a label it may take, the records can't tell. A version made of
+several originals keeps them (a track says its stream, not of which
+original); a superseded original is held against its master, made of
+another file, by the essences and its tracks counted so. Such
+an original is held: the retire job holds it before it claims it, its retire step
+failed saying "its package lacks what the master spec keeps: …; it is kept
+until the title is packaged again", its details `held for version
+<versionId>`, looked at again once another version is complete (the re-encode
+queue's `held` takes only those held for their surround), and a list's dry
+run skips it, saying the same. What a package can't show keeps it too, until
+it is known: an original whose chapters the catalog lacks (the view
+`com_nalet_katalog_chaptersmissing`), or whose picture area is not measured
+on the original itself (a package's keyframes can't tell a letterbox from
+picture), is not due — each pass names it kept, with the reason, the first
+100 of them ("N originals kept until their chapters and picture area are
+known", said once until that changes, each by its id in the log) — and a
+list skips it ("the catalog lacks its chapters: …", "its picture area is not
+measured on its original: …"); a catalog without migrations 054 and 055
+retires none.
+
+Closed captions (EIA/CEA-608/708) ride in a video stream itself, an A53
+cc_data SEI with each picture, so a source record's `closedCaptions` (of a
+probe that decodes no frame) can't tell them, and a read of a few windows of
+a package can show that it has captions, never that it has all of them. So
+an original that carries closed captions, or whose captions are not known,
+is not retired, whatever its package carries, a copy's too: the gate asks
+the original alone, of what a read of its frames found (see [Closed
+captions](#closed-captions)). One a window of whose read shows captions,
+one with a stream of closed captions of its own (an EIA-608 stream, or one
+tagged `c608` or `c708`, in its record or its stored probe, or as the read
+found them, `captionStreams`), or whose record says it has them (its
+essence's `closedCaptions`, its picture's `closedCaptions`, its stored
+probe's `closed_captions` of its picture, 1 or true, or a read of every
+packet of its picture that found a caption signature, `captionSignature`
+true), is kept for good ("its
+original carries closed captions at start, 10%; an original that carries
+closed captions is not retired"). The captions of a picture of a codec
+whose captions a read of windows may not see (`hevc`, its suffix SEI) are
+known as none only where its record says a read of every packet of its
+picture found no caption signature (`captionSignature` false); without it,
+it is kept ("its closed captions can't be told by windows alone"), whatever
+its windows found, and so is a picture whose codec neither its record nor
+its stored probe states (it may be one of them). A read lets go of such a
+hold, once a record written again carries the signature. One whose captions can't be told is kept until a read
+tells, failing closed: no read, a read of another file than the one at its
+place now (its size and quick hash), a failed read, a window that decoded
+no frame, a window the read reports that is no window (a value of another
+type, one out of its range, an entry that is no object: a failed window,
+never left out), an essence's `closedCaptions` that is no boolean, a
+record that says no length (`container.durationMs` none, a string, 0),
+more than one picture stream (a read reads one), a read whose length lies more than 2 s, or 1 % of it, whichever is
+more, from its record's (`container.durationMs`), one whose window lies more
+than 15 s from its place (the plan's, of the span its records give; up to
+30 s before it at the keyframe at or before it, `keyframeBefore`) or decoded
+fewer than 24 frames, a read whose
+windows don't lie in the order of the video (each after
+the one before it, none on another: a read that landed elsewhere, as on a
+clock that starts again, reads the same frames over; one whose windows
+overlap because its picture is too short for them to lie apart, of its
+span, is said as that: "windows overlap: the video is too short for
+five"), and a read without every planned window (the start and 10 to 90 %
+of its picture's span, or as many as the span allows: one of five windows
+and none at the start is not complete). Only an original a read of every
+planned window found no captions in goes on them.
+
+A record the gate reads holds the original where it says a thing twice (an
+object of it gives a key twice: which one a reader takes is its choice),
+where it lists no streams of its file (none, null, an empty list), and
+where its essence doesn't state a fact the gate compares (`surround`,
+`maxAudioChannels`, `videoBitDepth`, `subtitleLanguages`, …: a fact it
+doesn't state is no "nothing to lose"). The copy rule: an original whose
+package copies its picture (its top video rendition's `encoder` `copy`) is
+kept, as no record proves the copy carries it whole, and so is one whose
+package states no encoder of its top video rendition, or lists none. A
+superseded version made of an original that is still there (present,
+retiring or superseded) is not removed: its package's scan is what the gate
+reads of that original's fields. A superseded original's retirement asks
+the gate again right before its event is written, after its master is
+verified.
+
+The closing rule: the reads were made for, and tested with, some ways
+closed captions and fields are carried, and the gate takes a read of no
+other. An original whose record or stored probe has a container, a stream,
+a film's codec or a picture off the closed lists, or more than one film,
+or whose read names what is off them (`offList`), has its closed captions
+and fields not known, whether its captions are read or not, and is kept,
+saying which by the analyzer's names ("closed captions and fields not
+known: off the closed lists: codec:vc1"). The lists are the analyzer's (its
+README, "The closed lists", and `pipelines/captions.py`), by the same names,
+and the deletion waves' check holds the same; they are in one place here
+(`internal/library/closing.go`), and a name added to one side is added to
+the others in the same release:
+
+- containers (ffprobe's `format_name`, a record's `container.format`):
+  `matroska,webm`, `mov,mp4,m4a,3gp,3g2,mj2`, `mpegts`, `mpeg`, `avi`;
+- video codecs (the film's `codec_name`), those whose decoders in ffprobe
+  7.1 export the captions a picture carries: `h264`, `hevc`, `mpeg1video`,
+  `mpeg2video`, `av1`;
+- streams of captions of their own, of any kind: codec `eia_608`, tags
+  `c608`, `c708` (the original carries them);
+- video streams: one film; attached pictures (above) are passed over
+  (`video-streams:<n>` for more than one);
+- audio and attachment streams: any;
+- subtitle streams: `subrip`, `srt`, `ass`, `ssa`, `webvtt`, `mov_text`,
+  `text`, `microdvd`, `hdmv_pgs_subtitle`, `dvd_subtitle`, `dvb_subtitle`,
+  `dvb_teletext`;
+- data streams: codecs `scte_35`, `timed_id3`, `epg`, and tag `tmcd` (an
+  MP4's timecode track, of no codec ffprobe names; a record's data stream
+  is told by its probe's stream of the same index);
+- a film of 486, 512 or 608 lines keeps an analog capture's blanking lines,
+  line 21's captions among them, in its picture: off the list
+  (`picture:vbi-lines`).
+
+A record or a probe that says nothing of an axis (no container, no codec)
+has nothing off it there: the analyzer's read lists the file itself, and
+says what is off the lists. A source record that is no record of a file
+(no essence object, streams that are no list of objects) can't be read,
+and keeps its original, as a gate asked of no original lets nothing go.
+
+The retire job holds one not known, its report
+naming it ("originals kept until their closed captions are read"), a list
+skips it, a superseded one waits, and a read of that original lets the
+hold go; a hold the job would write once a read has landed is not written
+(it reads them again under the title's lock).
+
+What the records leave unknown is no loss to accept. The gate reads a fact an
+essence lacks as nothing (of the original: nothing to lose; of the package:
+nothing kept), and it reads the package's essence alone, which its writer
+derives from the subtitles its record lists. So an original is held as for
+its surround — before it is claimed, its retire step failed saying why, its
+details `held for version <versionId>`, looked at again once another version
+is complete — when its record lists no stream and its essence says nothing of
+its subtitles (it was never probed), or lists subtitle streams its essence
+says nothing of; and, for an original with subtitles (its essence says it has
+some, or its record lists a subtitle stream), when its package's
+`package.json` lists no subtitles at all (no `subtitles` array: "its
+package's record says nothing about its subtitles"), whatever its essence
+claims; when the package's essence claims of what the original has more than
+the subtitles its record lists, of those whose files are in the version's
+folder, back (more tracks or commentaries, a language, a picture or a styled
+subtitle, a forced or an SDH language none of them is); or when it lists some
+and its essence lacks a subtitle fact the original has (`subtitleLanguages`,
+`imageSubtitles`, …). A package whose record lists none (`"subtitles": []`)
+and whose essence claims none of them carries none: the gate names what the
+original loses of them (`subtitleTracks`, `subtitleLanguages:de`, …), which
+keeps it as any loss beyond the spec does.
+
 The same job retires an original another file took the place of as its
 title's (superseded, by `replaceSource` with `deleteOldFile`) once the
 title's master no longer needs it, whatever `library.originals` says — it is
@@ -2488,19 +2980,35 @@ has been complete for `library.superseded.delay` (a week), while the title
 does not hold its originals and no step that reads an original runs.
 
 What deleting it gives up is the deletion gate of the master's package for
-its record. It is retired on its own only while every loss lies within
-`library.superseded.accept` — by default `maxAudioChannels` (while the
-master keeps a stereo track), `surround`, `losslessAudio`, `objectAudio` and
-`stereo3d`, the owner's rules for retiring an original. Any other loss —
-Dolby Vision, a language, a track — and an original whose record does not
-tell what it carries hold it for an admin: superseded still, its row saying
-what it gives up, against which master, and what of that the setting does
-not name (`supersededHold`, migration 057), looked at again once another
-version is its master. `supersededOriginals(held: true)` lists them (a
-title's `library.sources` say the same), and
-`decideSupersededOriginal(sourceId, decision)` decides one: `ACCEPT` has the
-job retire it at its next turn, giving up what its hold names (anything,
-when no record tells), `KEEP` keeps it, never retired by the job.
+its record. It is retired on its own only while every loss is what the master
+spec drops by design (as above) and lies within `library.superseded.accept`,
+which narrows that and never widens it — by default all of it:
+`maxAudioChannels` (while the master keeps a stereo track), `surround`,
+`losslessAudio`, `objectAudio`, `dolbyVision` (while the master keeps the HDR)
+and `stereo3d`; a name beyond the spec in the setting is a problem of the
+settings, and left out. A loss of the spec's that the setting leaves out
+holds it for an admin: superseded still, its row saying what it gives up,
+against which master, and what of that the setting does not name
+(`supersededHold`, migration 057), looked at again once another version is
+its master. `supersededOriginals(held: true)` lists them (a title's
+`library.sources` say the same), and `decideSupersededOriginal(sourceId,
+decision)` decides one: `ACCEPT` has the job retire it at its next turn,
+giving up what its hold names, `KEEP` keeps it, never retired by the job. A
+loss beyond the spec — a language, a subtitle, Dolby Vision of a master that
+keeps no HDR, the channels of one that keeps no stereo — and an original
+whose record does not tell what it carries keep it whatever an admin says
+(its hold "kept: …", naming what keeps it: a language's tracks with how many
+each file has, as "audioTrack:de (its original has 2 audio tracks in de, and
+its package 1)"), until a master carries it; each pass that holds one names
+it in its report, with that reason ("superseded originals kept for want of a
+record" of one with no record). A replace that asks for the old file to go
+says it is kept until a version made of the new file carries everything of
+it the spec keeps, and asked about again by its key (`replaceSourceDone`)
+says what keeps it ("the old file is kept: …"). Where the records leave
+unknown what the master carries of the original's subtitles (as the retire
+job tells it, above), neither the setting nor an admin accepts anything: its
+retirement fails, its row saying why, and it is looked at again an hour
+later.
 
 Then it is claimed under the title's lock, its chain read again; checked to
 be the file recorded (its size and quick hash), where the catalog says,
@@ -2528,7 +3036,9 @@ A superseded original's life, then: superseded by the replace, where it
 lies (the arrivals, or its version's folder); kept while the latest file has
 no complete version, then for `library.superseded.delay` after that version
 completed; held for an admin when it gives up more than
-`library.superseded.accept`, until an admin accepts or keeps it; then
+`library.superseded.accept` leaves to it, until an admin accepts or keeps it,
+and kept, whatever an admin says, when it gives up more than the master spec
+drops, until a master carries it; then
 claimed, checked, its master verified, its event recorded, moved into the
 trash, `deleted`; gone from the trash after `library.trash.grace`.
 
@@ -2814,13 +3324,20 @@ when, in this order:
   codec or a size), it breaks none, and processing it again can help;
 - its version's folder is there, and its package has the surround of its
   original, as the retire job holds an original for it;
+- what its package can't show is known: the catalog holds its chapters, and
+  its picture area is measured;
 - its original is a file of its own (no link) where the catalog says, under
   a root the retire path deletes under, of the size it recorded, and the
   trash is on its filesystem (a rename across filesystems would fail once its
   event is recorded), unless `library.trash.grace` is `0`;
 - its version's checksums are not pending (nothing would prove its package
-  yet), the source's record verifies, and no file beside the original would
-  be lost with it (a subtitle paired after packaging);
+  yet), the source's record verifies, no file beside the original would
+  be lost with it (a subtitle paired after packaging), and the records tell
+  what its package carries of the original's subtitles (as the retire job
+  holds an original for it: a dry run skips it, "its package's record says
+  nothing about its subtitles …"), and what its package lacks of it is
+  nothing but what the master spec drops by design ("its package lacks what
+  the master spec keeps: …");
 - the episodes its file covers, of a file of several, are not held, and none
   has a step at work or is in the re-encode queue.
 

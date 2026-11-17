@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -33,7 +34,12 @@ import (
 //     source's record, which keeps the copies of its sidecars.
 //  3. Record the original-deleted event in the item's folder, unless it is:
 //     what the package does not carry of the original (the deletion gate)
-//     is what the deletion accepts.
+//     is what the deletion accepts: nothing but what the master spec drops
+//     by design (ADR-0015, SpecDropped). What the records leave unknown is no
+//     loss to accept (SubtitlesUnknown): such an original, and one whose
+//     package lacks more than the spec drops, is held before it is claimed,
+//     as for its surround, until another version is complete; one whose
+//     chapters or picture area the catalog lacks (Unshown) is not due.
 //  4. Move the original and its sidecars into the trash, .work/trash/<day>/
 //     <sourceId>/ (a trash grace of 0 unlinks them), and prune the arrival
 //     folders left empty. An original lies in its version's folder
@@ -159,27 +165,74 @@ func unlockRetire(ctx context.Context, conn *pgxpool.Conn, n int) {
 // owner's choice 2026-11-02, holds none).
 const SurroundHeld = "its package has no 5.1 of the source's surround; re-encode it first"
 
-// heldFor marks, in the details of a retire step held for its surround, the
-// version whose package lacked it: the job looks at the original again once
-// another version is complete.
+// SpecHeld is why an original is kept whose package lacks more of it than
+// the master spec drops by design (ADR-0015, decision 2: SpecDropped), the
+// names of the deletion gate beyond that: it is kept until the title is
+// packaged again.
+func SpecHeld(beyond []string) string {
+	return "its package lacks what the master spec keeps: " + strings.Join(beyond, ", ") +
+		"; it is kept until the title is packaged again"
+}
+
+// SpecHeldOf is SpecHeld of what the gate g names beyond the spec, but an
+// original in fields (Gate.Scan) and one that carries closed captions
+// (Gate.Captions), said in words of their own: no package lets them go.
+func SpecHeldOf(g Gate) string {
+	beyond := g.Beyond()
+	var own []string
+	for _, c := range []struct{ name, why string }{{"interlaced", g.Scan}, {"closedCaptions", g.Captions}} {
+		if c.why != "" && slices.Contains(beyond, c.name) {
+			beyond = slices.DeleteFunc(slices.Clone(beyond), func(n string) bool { return n == c.name })
+			own = append(own, c.why)
+		}
+	}
+	var says []string
+	if len(beyond) > 0 {
+		says = append(says, SpecHeld(beyond))
+	}
+	return strings.Join(append(says, own...), "; ")
+}
+
+// heldFor marks, in the details of a retire step held for what its package
+// lacks (its surround, or more than the spec drops), the version whose
+// package lacked it: the job looks at the original again once another
+// version is complete.
 const heldFor = "held for version "
 
-// HeldDetails are the details of a retire step held for the surround of the
-// package of the version versionID.
+// gateOf is the deletion gate of the version versionID of the item folder
+// itemDir for the original s, its title's admins' corrections of its track
+// languages read (TrackCorrections).
+func (r *Retirer) gateOf(ctx context.Context, itemDir, versionID string, s *Source) (Gate, error) {
+	facts, err := FactsOf(ctx, r.pool, s)
+	if err != nil {
+		return Gate{}, err
+	}
+	return ReadGateWith(itemDir, versionID, facts, s.ID)
+}
+
+// HeldDetails are the details of a retire step held for what the package of
+// the version versionID lacks.
 func HeldDetails(versionID string) string { return heldFor + versionID }
 
 // HeldForSurround is the SQL condition that the title item's retire is held
 // for its surround (its current package has no 5.1 of it): its retire step
-// held for the version complete now, as the retire job holds one.
+// held for the version complete now, as the retire job holds one, saying so
+// (one held for more than the spec drops is not).
 func HeldForSurround(item string) string {
 	return `EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps hr
 		JOIN com_nalet_katalog_itemversions hv ON hv.item_id = hr.item_id AND hv.state = 'complete'
 		WHERE hr.item_id = ` + item + ` AND hr.step = 'retire' AND hr.status = 'failed'
-		  AND hr.details = '` + heldFor + `' || hv.id)`
+		  AND hr.details = '` + heldFor + `' || hv.id AND hr.error = '` + strings.ReplaceAll(SurroundHeld, "'", "''") + `')`
 }
 
-// errHeld says an original is kept for its surround.
-var errHeld = errors.New(SurroundHeld)
+// errHeld says an original is kept for what its package lacks, its
+// retirement's why saying what.
+var errHeld = errors.New("kept for what its package lacks")
+
+// errCalledOff says a hold for want of an original's closed captions was
+// not written: a read of them landed since the gate was read. The next pass
+// looks at the original again.
+var errCalledOff = errors.New("a read of its closed captions landed meanwhile")
 
 // Retirer runs the retire job.
 type Retirer struct {
@@ -197,6 +250,10 @@ type Retirer struct {
 	legacyAt time.Time
 	legacyID string
 	said     map[string]string
+	// kept are the originals a pass names as kept (Report.Kept), and
+	// lastKept what the last pass that did nothing else said of them.
+	kept     []Kept
+	lastKept string
 }
 
 // NewRetirer is the retire job of the catalog's pool, at the paths cfg
@@ -213,13 +270,45 @@ type Report struct {
 	Versions  int // superseded versions removed
 	Legacy    int // legacy package folders moved aside
 	Purged    int // days of the trash and of the legacy folder deleted
-	Held      int // originals kept: their package has no 5.1 of their surround
+	Held      int // originals kept: their package lacks their surround, or more than the spec drops
 	Failed    int // originals, extras and versions that could not be
 	// Superseded is how many superseded originals were deleted
 	// (retire_superseded.go), and ForAnAdmin how many were held for an
 	// admin's decision.
 	Superseded int
 	ForAnAdmin int
+	// Kept are the originals the pass named as kept, each saying why: one
+	// not due as what its package can't show isn't known (KeptUnshown), a
+	// superseded one with no record to tell what it carries (KeptNoRecord),
+	// one held for a track whose label differs from its stream's, with both
+	// (KeptLabel).
+	Kept []Kept
+}
+
+// Kept is an original a pass named as kept: its source, its title, why, and
+// for what (KeptUnshown, KeptNoRecord).
+type Kept struct{ SourceID, ItemID, Why, For string }
+
+// What an original a pass names is kept for.
+const (
+	KeptUnshown  = "unshown"   // its chapters or its picture area are not known (Unshown)
+	KeptNoRecord = "no record" // a superseded original no record of which tells what it carries
+	KeptLabel    = "label"     // a package track's label is no label of its stream's language, both said
+	KeptCaptions = "captions"  // its closed captions aren't known yet
+	// KeptSuperseded is a superseded original kept against its master (a
+	// hold, or what its records can't tell), the hold saying why
+	KeptSuperseded = "superseded"
+)
+
+// keptOf is how many of kept are kept for what.
+func keptOf(kept []Kept, what string) int {
+	n := 0
+	for _, k := range kept {
+		if k.For == what {
+			n++
+		}
+	}
+	return n
 }
 
 // String says what the pass did; "" when it did nothing.
@@ -230,8 +319,12 @@ func (r Report) String() string {
 		what string
 	}{{r.Originals, "originals deleted"}, {r.Extras, "extras' originals deleted"}, {r.Versions, "superseded versions removed"},
 		{r.Legacy, "legacy package folders moved aside"}, {r.Purged, "days of the trash and the legacy folder deleted"},
-		{r.Superseded, "superseded originals deleted"}, {r.Held, "originals kept for their surround"},
-		{r.ForAnAdmin, "superseded originals kept for an admin"}, {r.Failed, "failed"}} {
+		{r.Superseded, "superseded originals deleted"}, {r.Held, "originals kept for what their package lacks"},
+		{r.ForAnAdmin, "superseded originals kept for an admin"}, {r.Failed, "failed"},
+		{keptOf(r.Kept, KeptUnshown), "originals kept until their chapters and picture area are known"},
+		{keptOf(r.Kept, KeptNoRecord), "superseded originals kept for want of a record"},
+		{keptOf(r.Kept, KeptLabel), "originals kept for a track labelled otherwise than its original's"},
+		{keptOf(r.Kept, KeptCaptions), "originals kept until their closed captions are read"}} {
 		if c.n > 0 {
 			out = append(out, fmt.Sprintf("%d %s", c.n, c.what))
 		}
@@ -248,7 +341,15 @@ func (r *Retirer) Sweep(ctx context.Context) (string, error) {
 	}
 	r.last = now
 	rep, err := r.Pass(ctx)
-	return rep.String(), err
+	said := rep.String()
+	// what it keeps, and nothing else, it says once until that changes
+	if kept := (Report{Kept: rep.Kept}); said == kept.String() && said != "" {
+		if said == r.lastKept {
+			return "", err
+		}
+		r.lastKept = said
+	}
+	return said, err
 }
 
 // Pass runs the job once, with library.layout=v2, in one instance at a time,
@@ -264,6 +365,16 @@ func (r *Retirer) Pass(ctx context.Context) (Report, error) {
 	if !set.V2() {
 		return rep, nil
 	}
+	// a setting the job can't read is said once, until it changes
+	problem := ""
+	for _, p := range set.Problems {
+		if strings.HasPrefix(p, SettingSupersededAccept+" ") {
+			problem = "the retire job: " + p
+		}
+	}
+	r.say("setting:"+SettingSupersededAccept, problem)
+	r.kept = nil
+	defer func() { r.kept = nil }()
 	conn, err := r.pool.Acquire(ctx)
 	if err != nil {
 		return rep, err
@@ -298,6 +409,7 @@ func (r *Retirer) Pass(ctx context.Context) (Report, error) {
 	errs = append(errs, err)
 	rep.Purged, err = r.purge(p, set, now)
 	errs = append(errs, err)
+	rep.Kept = r.kept
 	return rep, errors.Join(errs...)
 }
 
@@ -323,6 +435,13 @@ func (r *Retirer) originals(ctx context.Context, p Paths, set Settings, now time
 		WHERE state = 'retiring' ORDER BY retireeventat, id LIMIT $1`, budget)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("the originals being retired: %w", err)
+	}
+	if set.DeleteOriginals() {
+		waiting, err := r.waiting(ctx, set, now)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("the originals that wait for what their package can't show: %w", err)
+		}
+		r.kept = append(r.kept, waiting...)
 	}
 	if set.DeleteOriginals() && len(todo) < budget {
 		ids, err := r.dueSources(ctx, set, now, budget-len(todo))
@@ -370,19 +489,22 @@ func originalStepsOver(item, steps string) string {
 // dueSources are the present originals whose retirement is due, the ones of
 // the versions completed first first: of a complete version for the delay,
 // the title not held, its steps that read the original over, and its retire
-// step not failed (unless its retry is due, or it was kept for its surround
-// in another version than the one complete now).
+// step not failed (unless its retry is due, or it was kept for what its
+// package lacked in another version than the one complete now), and what its
+// package can't show known (Unshown): its chapters in the catalog, its
+// picture area measured. A catalog that can't tell the last has none due.
 func (r *Retirer) dueSources(ctx context.Context, set Settings, now time.Time, n int) ([]string, error) {
-	rows, err := r.pool.Query(ctx, `SELECT s.id FROM com_nalet_katalog_itemsources s
-		JOIN com_nalet_katalog_items i ON i.id = s.item_id
-		JOIN com_nalet_katalog_itemversions v ON v.item_id = s.item_id AND v.state = 'complete' AND s.id = ANY(v.sourceids)
-		WHERE s.state = 'present' AND NOT i.retirehold
-		  AND v.completedat + make_interval(secs => $1::float8) <= $2::timestamptz
-		  AND `+originalStepsOver("s.item_id", "$3")+`
-		  AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps r
-			WHERE r.item_id = s.item_id AND r.step = 'retire' AND r.status = 'failed'
-			  AND (r.nextretryat IS NULL OR r.nextretryat > $2::timestamptz)
-			  AND NOT (COALESCE(r.details, '') LIKE '`+heldFor+`%' AND r.details <> '`+heldFor+`' || v.id))
+	if ready, err := unshownReady(ctx, r.pool); err != nil {
+		return nil, err
+	} else if !ready {
+		r.say("unshown", "no original is retired: the catalog can't tell their chapters and picture areas (migrations 054 "+
+			"and 055 are not applied)")
+		return nil, nil
+	}
+	r.say("unshown", "")
+	rows, err := r.pool.Query(ctx, `SELECT s.id FROM com_nalet_katalog_itemsources s `+dueFrom+`
+		  AND `+chaptersSettled("s.item_id", "s.id")+`
+		  AND `+pictureAreaSettled("s.item_id", "s.id")+`
 		ORDER BY v.completedat, s.id
 		LIMIT $4`, set.RetireDelay.Seconds(), now, processing.OriginalSteps, n)
 	if err != nil {
@@ -396,6 +518,59 @@ func (r *Retirer) dueSources(ctx context.Context, set Settings, now time.Time, n
 			return nil, err
 		}
 		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// dueFrom is what makes a present original due but what its package can't
+// show (dueSources): $1 the delay in seconds, $2 now, $3 the steps that read
+// an original.
+const dueFrom = `JOIN com_nalet_katalog_items i ON i.id = s.item_id
+		JOIN com_nalet_katalog_itemversions v ON v.item_id = s.item_id AND v.state = 'complete' AND s.id = ANY(v.sourceids)
+		WHERE s.state = 'present' AND NOT i.retirehold
+		  AND v.completedat + make_interval(secs => $1::float8) <= $2::timestamptz
+		  AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps p
+			WHERE p.item_id = s.item_id AND p.step = ANY($3::text[])
+			  AND (p.status IN ('pending', 'in_progress') OR (p.status = 'failed' AND p.nextretryat IS NOT NULL)))
+		  AND NOT EXISTS (SELECT 1 FROM com_nalet_katalog_itemprocessingsteps r
+			WHERE r.item_id = s.item_id AND r.step = 'retire' AND r.status = 'failed'
+			  AND (r.nextretryat IS NULL OR r.nextretryat > $2::timestamptz)
+			  AND NOT (COALESCE(r.details, '') LIKE '` + heldFor + `%' AND r.details <> '` + heldFor + `' || v.id))`
+
+// maxWaiting is the most originals a pass names as waiting for what their
+// package can't show.
+const maxWaiting = 100
+
+// waiting are the originals that would be due but that what their package
+// can't show isn't known (Unshown), the first maxWaiting of them in the
+// order they would be retired, each saying why, as a pass names them kept:
+// none on a catalog that can't tell (dueSources says so).
+func (r *Retirer) waiting(ctx context.Context, set Settings, now time.Time) ([]Kept, error) {
+	if ready, err := unshownReady(ctx, r.pool); err != nil || !ready {
+		return nil, err
+	}
+	rows, err := r.pool.Query(ctx, `SELECT s.id, s.item_id, NOT `+chaptersSettled("s.item_id", "s.id")+`
+		FROM com_nalet_katalog_itemsources s `+dueFrom+`
+		  AND NOT (`+chaptersSettled("s.item_id", "s.id")+` AND `+pictureAreaSettled("s.item_id", "s.id")+`)
+		ORDER BY v.completedat, s.id
+		LIMIT $4`, set.RetireDelay.Seconds(), now, processing.OriginalSteps, maxWaiting)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Kept
+	for rows.Next() {
+		var k Kept
+		var chapters bool
+		if err := rows.Scan(&k.SourceID, &k.ItemID, &chapters); err != nil {
+			return nil, err
+		}
+		k.Why, k.For = unshownPicture, KeptUnshown
+		if chapters {
+			k.Why = unshownChapters
+		}
+		r.say("source:"+k.SourceID, fmt.Sprintf("original %s of item %s is kept: %s", k.SourceID, k.ItemID, k.Why))
+		out = append(out, k)
 	}
 	return out, rows.Err()
 }
@@ -422,6 +597,9 @@ type retirement struct {
 	superseded string
 	lost       []string
 	word       string
+	// noRecord says a superseded original is held for want of a record, and
+	// unknown one whose records can't tell what its master carries of it.
+	noRecord, unknown bool
 }
 
 // back is the state the source of rt is in again when its retirement is
@@ -676,11 +854,61 @@ func (r *Retirer) prepare(ctx context.Context, p Paths, set Settings, now time.T
 		}
 	}
 	if lacks {
-		if err := r.hold(ctx, rt); err != nil {
+		if err := r.hold(ctx, rt, SurroundHeld); err != nil {
 			return err
 		}
 		rt.src = nil
 		return errHeld
+	}
+	// what its records leave unknown keeps it, and so does what its package
+	// lacks beyond what the spec drops, before anything is claimed or
+	// verified: held for the version, as for its surround, looked at again
+	// once another version is complete (no retry of its own: what the
+	// version's records say doesn't change); the gate is read again right
+	// before the event
+	facts, err := FactsOf(ctx, r.pool, rt.src)
+	if err != nil {
+		return err
+	}
+	if g, err := ReadGateWith(rt.itemDir, ver.ID, facts, rt.src.ID); err == nil {
+		why := ""
+		if g.Unknown != "" {
+			why = g.Unknown + "; the original is kept"
+		} else if beyond := g.Beyond(); len(beyond) > 0 {
+			why = SpecHeldOf(g)
+		}
+		if why != "" {
+			s := rt.src
+			if err := r.hold(ctx, rt, why); errors.Is(err, errCalledOff) {
+				rt.src = nil
+				return nil
+			} else if err != nil {
+				return err
+			}
+			if len(g.Labels) > 0 {
+				// that an admin sees what to correct, if a label is right
+				r.kept = append(r.kept, Kept{SourceID: s.ID, ItemID: s.ItemID, For: KeptLabel,
+					Why: strings.Join(g.Labels, "; ")})
+			}
+			if strings.HasPrefix(why, CaptionsUnknown) {
+				// a read of them, the captions backfill's, releases it
+				r.kept = append(r.kept, Kept{SourceID: s.ID, ItemID: s.ItemID, For: KeptCaptions, Why: why})
+			}
+			rt.src = nil
+			return errHeld
+		}
+	}
+	// what a package can't show keeps it until it is known
+	if why, err := Unshown(ctx, r.pool, rt.src.ItemID, rt.src.ID); err != nil {
+		return err
+	} else if why != "" {
+		if rt.src.State == SourceRetiring {
+			err := r.callOff(ctx, rt, why)
+			rt.src = nil
+			return err
+		}
+		rt.why, rt.src = why, nil
+		return nil
 	}
 	if rt.src.State == SourcePresent {
 		claimed, err := r.claim(ctx, p, now, rt)
@@ -721,9 +949,16 @@ func (r *Retirer) prepare(ctx context.Context, p Paths, set Settings, now time.T
 		rt.src = nil
 		return err
 	}
-	if rt.accepted, err = GateOf(rt.itemDir, rt.ver.ID, s.ID); err != nil {
+	g, err := r.gateOf(ctx, rt.itemDir, rt.ver.ID, s)
+	switch {
+	case err != nil:
 		return r.fail(ctx, rt, fmt.Sprintf("the deletion gate cannot be read: %v; the original is kept", err))
+	case g.Unknown != "":
+		return r.fail(ctx, rt, g.Unknown+"; the original is kept")
+	case len(g.Beyond()) > 0:
+		return r.fail(ctx, rt, SpecHeldOf(g)+"; the original is kept")
 	}
+	rt.accepted = g.Lost
 	if err := r.claimedStill(ctx, rt); err != nil {
 		return err
 	}
@@ -826,14 +1061,18 @@ func SurroundLost(src, pkg Doc) bool {
 	return ok && n > 2 && k < min(n, 6)
 }
 
-// hold keeps the original of rt, whose version's package has no 5.1 of its
-// surround: the source stays present (a claimed one is present again, an
+// hold keeps the original of rt, whose version's package lacks what it must
+// carry before the original goes (why: its surround, SurroundHeld, or more
+// than the spec drops, SpecHeld): the source stays present (a claimed one is present again, an
 // event folder begun goes), saying why, and the retire step waits: failed,
 // with no retry of its own, held for the version (heldFor). The job looks at
 // the original again once another version of the title is complete, and an
-// admin's retry of the step has it look now.
-func (r *Retirer) hold(ctx context.Context, rt *retirement) error {
+// admin's retry of the step has it look now. A hold for want of the
+// original's closed captions is not written where a read of them landed
+// since the gate was read (errCalledOff): the next pass looks again.
+func (r *Retirer) hold(ctx context.Context, rt *retirement, why string) error {
 	s := rt.src
+	rt.why = why
 	_, begun, _ := r.eventOf(rt)
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -843,12 +1082,25 @@ func (r *Retirer) hold(ctx context.Context, rt *retirement) error {
 	if err := LockItem(ctx, tx, s.ItemID); err != nil {
 		return err
 	}
+	if strings.HasPrefix(why, CaptionsUnknown) {
+		// a read of them may have landed since the gate was read, its
+		// release finding no hold to let go: read them again, under the
+		// item's lock the read's report takes too (captions.Record)
+		facts, err := FactsOf(ctx, tx, s)
+		if err != nil {
+			return err
+		}
+		if g, err := ReadGateWith(rt.itemDir, rt.ver.ID, facts, s.ID); err == nil &&
+			!strings.HasPrefix(g.Unknown, CaptionsUnknown) {
+			return errCalledOff
+		}
+	}
 	if _, err := tx.Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET state = 'present', retireeventid = NULL,
 			retireeventat = NULL, trashpath = NULL, error = $2, modifiedat = now()
-		WHERE id = $1 AND state IN ('present', 'retiring')`, s.ID, SurroundHeld); err != nil {
+		WHERE id = $1 AND state IN ('present', 'retiring')`, s.ID, clip(why, 500)); err != nil {
 		return err
 	}
-	reason := processing.CleanError(SurroundHeld)
+	reason := processing.CleanError(why)
 	if _, err := tx.Exec(ctx, `INSERT INTO com_nalet_katalog_itemprocessingsteps
 			(id, createdat, modifiedat, item_id, step, status, finishedat, attempts, error, details, failures, lasterror,
 			 nextretryat, dispatchedat)
@@ -867,7 +1119,7 @@ func (r *Retirer) hold(ctx context.Context, rt *retirement) error {
 		_ = os.RemoveAll(begun)
 	}
 	r.say("source:"+s.ID, fmt.Sprintf("original %s of item %s is kept: %s (version %s); it is retired once a version "+
-		"whose package carries it is complete", s.ID, s.ItemID, SurroundHeld, rt.ver.ID))
+		"whose package carries it is complete", s.ID, s.ItemID, why, rt.ver.ID))
 	return nil
 }
 
@@ -1328,6 +1580,15 @@ func (r *Retirer) deleteFiles(p Paths, set Settings, rt *retirement) error {
 				return fmt.Errorf("the original %s is no file of its own (a link, a folder): it is not deleted", f)
 			}
 			continue
+		}
+		if f == original {
+			// its identity again, right before it is moved or unlinked, on
+			// every path that comes here (a retirement resumed from its
+			// event, a superseded original's): a file put in its place since
+			// it was checked is not the original
+			if err := isRecordedOriginal(f, s.SizeBytes, s.QH1); err != nil {
+				return err
+			}
 		}
 		if set.TrashGrace == 0 {
 			if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {

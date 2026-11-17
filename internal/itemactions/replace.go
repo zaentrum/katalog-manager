@@ -737,6 +737,21 @@ func repeatedOf(ctx context.Context, tx pgx.Tx, itemID, key string) (*graph.Repl
 	}
 	res.Message = fmt.Sprintf("a replace asked with the key %q gave the title its file %s at %s already (source %s, %s): "+
 		"nothing changed", key, filename, library.Timestamp(at), sourceID, where)
+	// what keeps the old original it superseded, where it is kept
+	var hold, why *string
+	switch err := tx.QueryRow(ctx, `SELECT to_jsonb(s)->>'supersededhold', s.error FROM com_nalet_katalog_itemsources s
+		WHERE s.item_id = $1 AND s.supersededby = $2 AND s.state = 'superseded' ORDER BY s.supersededat DESC, s.id LIMIT 1`,
+		itemID, sourceID).Scan(&hold, &why); {
+	case err == nil && hold != nil && *hold != "":
+		res.Message += "; the old file is " + *hold
+	case err == nil && why != nil && *why != "":
+		res.Message += "; the old file is kept: " + *why
+	case err == nil:
+		res.Message += "; the old file is kept, superseded, until a version made of the new file is complete, verified " +
+			"and carries everything of it the master spec keeps"
+	case !errors.Is(err, pgx.ErrNoRows):
+		return nil, err
+	}
 	return res, nil
 }
 
@@ -1149,7 +1164,10 @@ func (s *Service) keptOld(ctx context.Context, src source, old *library.Source, 
 		said = "the old file was gone already"
 	case superseded:
 		said = "the old file stays where it lies, superseded: the retire job moves it into the library's trash once a version " +
-			"of the title made of the new file is complete and verified"
+			"of the title made of the new file is complete and verified, and only while that version carries everything of " +
+			"it the master spec keeps (each language's tracks, the subtitles, the HDR): until it does, the old file is kept, " +
+			"and what keeps it is said in the retire job's report, in the title's library sources (supersededHold) and when " +
+			"this replace is asked about again by its key (replaceSourceDone)"
 		var held bool
 		if err := s.st.Pool().QueryRow(ctx, `SELECT retirehold FROM com_nalet_katalog_items WHERE id = $1`, src.itemID).
 			Scan(&held); err == nil && held {

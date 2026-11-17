@@ -937,7 +937,11 @@ func (l *RetireList) retire(ctx context.Context, auth Authority, set Settings, s
 	var refused *retireFailed
 	switch {
 	case errors.Is(err, errHeld):
-		return outcome{result: ListSkipped, reason: SurroundHeld, source: &src}, nil
+		why := rt.why
+		if why == "" {
+			why = SurroundHeld
+		}
+		return outcome{result: ListSkipped, reason: why, source: &src}, nil
 	case err != nil && ctx.Err() != nil:
 		return outcome{}, nil
 	case err != nil && !errors.As(err, &refused):
@@ -990,13 +994,18 @@ type found struct {
 //   - its version's folder is there, and its package has the surround of
 //     its original (the retire job's own condition, held to before it
 //     claims);
+//   - what its package can't show is known (Unshown): the catalog holds its
+//     chapters, and its picture area is measured;
 //   - its original is a file where the catalog says, under a root the
 //     retire path deletes under, of the size it recorded, and the trash is
 //     on its filesystem (unless library.trash.grace is 0);
 //   - what the retire path reads before it records the event holds, of the
 //     small files: its version's checksums are not pending, the source's
-//     record verifies, and no file beside the original would be lost with it
-//     (a sidecar paired after packaging); of a run's title, retiring it gives
+//     record verifies, no file beside the original would be lost with it
+//     (a sidecar paired after packaging), the records tell what its
+//     package carries of the original's subtitles (SubtitlesUnknown), and
+//     what its package lacks of it is nothing but what the master spec drops
+//     by design (ADR-0015: SpecDropped); of a run's title, retiring it gives
 //     up what its dry run showed, no more and no other;
 //   - the episodes its file covers are not held, and none has a step at work
 //     or is in the re-encode queue.
@@ -1049,6 +1058,9 @@ func (l *RetireList) check(ctx context.Context, id string, rv *review, set Setti
 		} else if expected {
 			return f, SurroundHeld, nil
 		}
+	}
+	if why, err := Unshown(ctx, l.pool, id, s.ID); err != nil || why != "" {
+		return f, why, err
 	}
 	if why := l.fileOf(s, itemDir, set); why != "" {
 		return f, why, nil
@@ -1332,10 +1344,13 @@ func (l *RetireList) fileOf(s *Source, itemDir string, set Settings) string {
 // reads small files alone (not the original's bytes, not the package's), and
 // answers what retiring it gives up, as a dry run says it (preview) and its
 // digest (reviewDigest), or why the retirement would be refused: the
-// version's checksums are not pending, the source's record verifies, and no
-// file beside the original would be lost with it. What it gives up is what
-// the package doesn't carry of the original (the deletion gate) and the files
-// that go with it into the trash.
+// version's checksums are not pending, the source's record verifies, no file
+// beside the original would be lost with it, the records tell what the
+// package carries of the original's subtitles, and what the package lacks of
+// it is nothing but what the master spec drops by design (SpecHeld says what
+// else).
+// What it gives up is what the package doesn't carry of the original (the
+// deletion gate) and the files that go with it into the trash.
 func (l *RetireList) preflight(ctx context.Context, itemDir, dir string, v *Version, s *Source) (preview, digest, why string,
 	err error) {
 	if pending, err := checksumsPending(dir); err != nil {
@@ -1355,10 +1370,20 @@ func (l *RetireList) preflight(ctx context.Context, itemDir, dir string, v *Vers
 	} else if err != nil {
 		return "", "", "", err
 	}
-	accepted, err := GateOf(itemDir, v.ID, s.ID)
+	facts, err := FactsOf(ctx, l.pool, s)
 	if err != nil {
-		return "", "", fmt.Sprintf("the deletion gate can’t be read: %v", err), nil
+		return "", "", "", err
 	}
+	g, err := ReadGateWith(itemDir, v.ID, facts, s.ID)
+	switch {
+	case err != nil:
+		return "", "", fmt.Sprintf("the deletion gate can’t be read: %v", err), nil
+	case g.Unknown != "":
+		return "", "", g.Unknown, nil
+	case len(g.Beyond()) > 0:
+		return "", "", SpecHeldOf(g), nil
+	}
+	accepted := g.Lost
 	lacks := "nothing"
 	if len(accepted) > 0 {
 		lacks = strings.Join(accepted, ", ")

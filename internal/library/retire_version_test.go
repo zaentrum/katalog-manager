@@ -48,7 +48,8 @@ func (f *retireFixture) intoVersion(t *testing.T, vid string) string {
 		t.Fatal(err)
 	}
 	librarytest.WriteSource(t, f.sourceDir, map[string]any{"sourceId": rtSource, "file": map[string]any{"name": "original.mkv",
-		"sizeBytes": size, "fixity": map[string]any{"qh1": qh1}}, "sidecars": listed, "essence": f.src}, copies)
+		"sizeBytes": size, "fixity": map[string]any{"qh1": qh1}}, "sidecars": listed, "essence": stated(f.src),
+		"container": map[string]any{"format": "matroska,webm", "durationMs": 600000}, "streams": filmStreams()}, statedProbe(copies))
 	return to
 }
 
@@ -59,11 +60,12 @@ func (f *retireFixture) newer(t *testing.T, vid, pid string, pkg map[string]any)
 	t.Helper()
 	dir := VersionDir(f.itemDir, vid)
 	librarytest.WriteVersion(t, dir, librarytest.Version{VersionID: vid, PackageID: pid, SourceIDs: []string{rtSource},
-		CreatedAt: "2026-10-07T10:00:00Z", Package: map[string]any{"essence": pkg}})
+		CreatedAt: "2026-10-07T10:00:00Z", Package: packageRecord(pkg)})
 	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2,
 		supersededat = now() - interval '2 days' WHERE id = $1`, rtVersion, vid)
 	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
 		VALUES ($1, $2, ARRAY[$3::varchar], 'complete', $4, $5, now() - interval '1 hour')`, vid, rtFilm, rtSource, pid, dir)
+	f.settle(t, rtFilm, rtSource, vid)
 }
 
 // An original in its version's folder is retired from there: moved to the

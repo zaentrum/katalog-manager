@@ -153,8 +153,25 @@ func (p Paths) MoveSource(ctx context.Context, q Querier, s *Source, path string
 // record is not written yet: the file at its place changed before it was
 // recorded.
 func Refix(ctx context.Context, q Querier, sourceID string, size int64, qh1 string) error {
-	_, err := q.Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET sizebytes = $2, qh1 = $3, modifiedat = now()
+	tag, err := q.Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET sizebytes = $2, qh1 = $3, modifiedat = now()
 		WHERE id = $1 AND recordedat IS NULL AND (sizebytes <> $2 OR qh1 IS DISTINCT FROM $3)`, sourceID, size, qh1)
+	if err != nil || tag.RowsAffected() == 0 {
+		return err
+	}
+	// what a read of its frames found was of the file before: none now
+	return forgetCaptions(ctx, q, sourceID, nil, nil)
+}
+
+// forgetCaptions takes away what a read found of the closed captions of
+// the source sourceID where it was of another file than the one of the size
+// size and quick hash qh1 (nil size: whatever file it was of), and its
+// claim: the source is read again.
+func forgetCaptions(ctx context.Context, q Querier, sourceID string, size *int64, qh1 *string) error {
+	if ok, err := relationReady(ctx, q, sourceCaptionsTable); err != nil || !ok {
+		return err
+	}
+	_, err := q.Exec(ctx, `DELETE FROM `+sourceCaptionsTable+` WHERE source_id = $1
+		AND ($2::bigint IS NULL OR sourcesize IS DISTINCT FROM $2 OR sourceqh1 IS DISTINCT FROM $3)`, sourceID, size, qh1)
 	return err
 }
 
@@ -239,3 +256,7 @@ func statOK(path string) bool {
 	fi, err := os.Stat(path)
 	return err == nil && fi.Mode().IsRegular()
 }
+
+// sourceCaptionsTable is migration 058's table (store.SourceCaptionsTable),
+// named here where the store is not imported.
+const sourceCaptionsTable = "com_nalet_katalog_sourcecaptions"

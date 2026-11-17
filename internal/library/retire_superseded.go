@@ -44,7 +44,10 @@ import (
 //     (decideSupersededOriginal), superseded, its row saying what it gives
 //     up (supersededhold, against which master); a new master looks at it
 //     again, and an admin keeps it or has it go. One an admin keeps is never
-//     retired by the job.
+//     retired by the job. Where the records can't tell what the master
+//     carries of the original's subtitles (SubtitlesUnknown) nothing is
+//     accepted, by the setting or an admin: its retirement fails, saying
+//     why, and it is looked at again an hour later.
 //  3. Claim (tx A, under the title's lock): retiring, its event's id and
 //     moment and its trash noted; supersededby stays, which tells this
 //     retirement from another's.
@@ -116,13 +119,23 @@ func (r *Retirer) supersededOriginals(ctx context.Context, p Paths, set Settings
 		if err != nil {
 			return done, held, failed, err
 		}
-		deleted, err := r.retireOf(ctx, p, set, now, &retirement{src: s, superseded: by})
+		rt := &retirement{src: s, superseded: by}
+		deleted, err := r.retireOf(ctx, p, set, now, rt)
 		switch {
 		case errors.Is(err, errHeld):
 			held++
+			// named each time it is held, saying why
+			kind := KeptSuperseded
+			if rt.noRecord {
+				kind = KeptNoRecord
+			}
+			r.kept = append(r.kept, Kept{SourceID: s.ID, ItemID: s.ItemID, Why: rt.why, For: kind})
 		case err != nil:
 			failed++
 			errs = append(errs, err)
+			if rt.unknown {
+				r.kept = append(r.kept, Kept{SourceID: s.ID, ItemID: s.ItemID, Why: rt.why, For: KeptSuperseded})
+			}
 		case deleted:
 			done++
 		}
@@ -362,7 +375,7 @@ func (r *Retirer) prepareSuperseded(ctx context.Context, p Paths, set Settings, 
 	}
 	rt.ver = master
 	recorded := Recorded(rt.itemDir, s)
-	held, err := r.heldForAnAdmin(ctx, set, rt, master, recorded)
+	held, final, err := r.heldForAnAdmin(ctx, set, rt, master, recorded)
 	if err != nil {
 		return err
 	}
@@ -374,9 +387,10 @@ func (r *Retirer) prepareSuperseded(ctx context.Context, p Paths, set Settings, 
 			rt.src = nil
 			return err
 		}
-		if err := r.holdSuperseded(ctx, rt, held); err != nil {
+		if err := r.holdSuperseded(ctx, rt, held, final); err != nil {
 			return err
 		}
+		rt.noRecord = !recorded
 		rt.src = nil
 		return errHeld
 	}
@@ -429,6 +443,19 @@ func (r *Retirer) prepareSuperseded(ctx context.Context, p Paths, set Settings, 
 		rt.src = nil
 		return err
 	}
+	// the gate asked again, after the master's verification and right before
+	// the event is written and the file goes: what a read or a record changed
+	// since it was asked first keeps it
+	if beforeSupersededGateAgain != nil {
+		beforeSupersededGateAgain()
+	}
+	if held, _, err := r.heldForAnAdmin(ctx, set, rt, master, recorded); err != nil {
+		return err
+	} else if held != "" {
+		err := r.callOff(ctx, rt, held)
+		rt.src = nil
+		return err
+	}
 	if recorded {
 		vid, err := r.versionMadeOf(ctx, rt)
 		if err != nil {
@@ -438,11 +465,13 @@ func (r *Retirer) prepareSuperseded(ctx context.Context, p Paths, set Settings, 
 			// accepted names no more than the gate of the version it names
 			rt.accepted = slices.Clone(rt.lost)
 			if _, err := os.Stat(VersionDir(rt.itemDir, vid)); err == nil {
-				old, err := GateOf(rt.itemDir, vid, s.ID)
+				// what the event may name, no more than that version's gate:
+				// the master's records told what it gives up
+				old, err := ReadGate(rt.itemDir, vid, s.ID)
 				if err != nil {
 					return r.fail(ctx, rt, fmt.Sprintf("the deletion gate cannot be read: %v; the original is kept", err))
 				}
-				rt.accepted = intersect(rt.lost, old)
+				rt.accepted = intersect(rt.lost, old.Lost)
 			}
 			if err := r.claimedStill(ctx, rt); err != nil {
 				return err
@@ -457,6 +486,10 @@ func (r *Retirer) prepareSuperseded(ctx context.Context, p Paths, set Settings, 
 	rt.by = rt.auth.By
 	return nil
 }
+
+// beforeSupersededGateAgain is a test's seam: called right before a
+// superseded original's retirement asks the gate again; nil in the service.
+var beforeSupersededGateAgain func()
 
 // versionMadeOf is the version of the title made of the superseded original
 // of rt, which its event names: the one whose folder keeps it, else the
@@ -537,50 +570,72 @@ func (r *Retirer) claimSuperseded(ctx context.Context, p Paths, now time.Time, r
 	return true, nil
 }
 
-// heldForAnAdmin says why the superseded original of rt waits for an admin,
-// against its master, "" when the owner's rules let it go (step 2): what
-// deleting it gives up against the master lies within
-// library.superseded.accept and what an admin accepted of it. It notes, on
-// rt, what that is (lost) and on whose word (word).
-func (r *Retirer) heldForAnAdmin(ctx context.Context, set Settings, rt *retirement, master *Version, recorded bool) (string,
-	error) {
+// heldForAnAdmin says why the superseded original of rt is kept against its
+// master, "" when the owner's rules let it go (step 2): what deleting it
+// gives up against the master is nothing but what the master spec drops by
+// design (ADR-0015: SpecDrops), and of that, lies within
+// library.superseded.accept and what an admin accepted of it. final says no
+// admin's word lets it go: it gives up more than the spec drops, or no record
+// tells what it carries; a master that carries it does. It notes, on rt, what
+// it gives up (lost) and on whose word (word).
+func (r *Retirer) heldForAnAdmin(ctx context.Context, set Settings, rt *retirement, master *Version, recorded bool) (why string,
+	final bool, err error) {
 	s := rt.src
 	var decision, decidedBy *string
 	var accepted []byte
-	err := r.pool.QueryRow(ctx, `SELECT supersededdecision, supersededaccepted, supersededdecidedby
+	err = r.pool.QueryRow(ctx, `SELECT supersededdecision, supersededaccepted, supersededdecidedby
 		FROM com_nalet_katalog_itemsources WHERE id = $1`, s.ID).Scan(&decision, &accepted, &decidedBy)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	admin := deref(decision) == DecisionAccept
 	if !recorded {
-		if !admin {
-			return "no record of it tells what it carries, so what deleting it gives up against version " + master.ID +
-				" can't be told", nil
+		return "no record of it tells what it carries, so what deleting it gives up against version " + master.ID +
+			" can't be told", true, nil
+	}
+	facts, err := FactsOf(ctx, r.pool, s)
+	if err != nil {
+		return "", false, err
+	}
+	// the master is made of the file that took its place: its package's
+	// picture, scan and record are that file's
+	facts.Master = true
+	g, err := ReadGateWith(rt.itemDir, master.ID, facts, s.ID)
+	switch {
+	case err != nil:
+		return "", false, r.fail(ctx, rt, fmt.Sprintf("the essences of the source and of version %s cannot be read: %v; nothing is "+
+			"deleted", master.ID, err))
+	case g.Unknown != "":
+		// no loss an admin or the setting accepts: kept until a master whose
+		// records tell
+		rt.unknown = true
+		return "", false, r.fail(ctx, rt, fmt.Sprintf("what deleting it gives up against version %s is not known: %s; nothing is "+
+			"deleted", master.ID, g.Unknown))
+	}
+	losses := g.Lost
+	rt.lost = losses
+	gives := orNothing(losses)
+	if beyond := g.Beyond(); len(beyond) > 0 {
+		// how many tracks of a language each has, that whoever asked for it to
+		// go sees what keeps it
+		detail := ""
+		if notes := append(slices.Clone(g.Labels), g.Scan, g.Captions); len(notes) > 2 || g.Scan != "" || g.Captions != "" {
+			detail = " (" + strings.Join(slices.DeleteFunc(notes, func(n string) bool { return n == "" }), "; ") + ")"
 		}
-		rt.lost, rt.word = []string{}, "accepted, with no record to tell what it carries, by "+deref(decidedBy)
-		return "", nil
+		return fmt.Sprintf("deleting it gives up, against version %s: %s%s; %s is more than the master spec drops by design%s",
+			master.ID, gives, detail, strings.Join(beyond, ", "), specNote(beyond)), true, nil
 	}
-	losses, err := GateOf(rt.itemDir, master.ID, s.ID)
-	if err != nil {
-		return "", r.fail(ctx, rt, fmt.Sprintf("the essences of the source and of version %s cannot be read: %v; nothing is deleted",
-			master.ID, err))
-	}
-	pkg, err := Essence(filepath.Join(VersionDir(rt.itemDir, master.ID), PackageFile))
-	if err != nil {
-		return "", r.fail(ctx, rt, fmt.Sprintf("the essence of version %s cannot be read: %v; nothing is deleted", master.ID, err))
-	}
+	// the setting narrows what the spec drops, and an admin's word what the
+	// setting leaves out of it; neither widens it
+	dropped := g.Dropped()
 	ok := map[string]bool{}
 	for _, n := range set.SupersededAccept {
-		ok[n] = true
-	}
-	if ok["maxAudioChannels"] && !keepsStereo(pkg) {
-		delete(ok, "maxAudioChannels")
+		ok[n] = dropped[n]
 	}
 	byAdmin := map[string]bool{}
 	if admin {
 		for _, n := range namesOf(accepted) {
-			byAdmin[n] = true
+			byAdmin[n] = dropped[n]
 		}
 	}
 	var over []string
@@ -589,20 +644,15 @@ func (r *Retirer) heldForAnAdmin(ctx context.Context, set Settings, rt *retireme
 			over = append(over, l)
 		}
 	}
-	rt.lost = losses
 	if len(over) > 0 {
-		gives := "nothing"
-		if len(losses) > 0 {
-			gives = strings.Join(losses, ", ")
-		}
-		return fmt.Sprintf("deleting it gives up, against version %s: %s; %s is not within library.superseded.accept (%s)%s",
-			master.ID, gives, strings.Join(over, ", "), orNone(set.SupersededAccept), stereoNote(ok, set, pkg)), nil
+		return fmt.Sprintf("deleting it gives up, against version %s: %s; %s is not within library.superseded.accept (%s)",
+			master.ID, gives, strings.Join(over, ", "), orNone(set.SupersededAccept)), false, nil
 	}
-	rt.word = "what it gives up, " + orNothing(losses) + ", within library.superseded.accept"
+	rt.word = "what it gives up, " + gives + ", within library.superseded.accept"
 	if admin && len(byAdmin) > 0 {
-		rt.word = "what it gives up, " + orNothing(losses) + ", accepted by library.superseded.accept and by " + deref(decidedBy)
+		rt.word = "what it gives up, " + gives + ", accepted by library.superseded.accept and by " + deref(decidedBy)
 	}
-	return "", nil
+	return "", false, nil
 }
 
 // keepsStereo reports whether a package whose essence is pkg keeps a stereo
@@ -613,13 +663,18 @@ func keepsStereo(pkg Doc) bool {
 	return ok && n >= 2
 }
 
-// stereoNote says why maxAudioChannels is not accepted when the setting
-// accepts it: the master keeps no stereo track.
-func stereoNote(ok map[string]bool, set Settings, pkg Doc) string {
-	if slices.Contains(set.SupersededAccept, "maxAudioChannels") && !ok["maxAudioChannels"] {
-		return "; maxAudioChannels is given up only while the master keeps a stereo track, and it keeps none"
+// specNote says why a name of what the spec drops is beyond it here: the
+// channels while the master keeps no stereo track, Dolby Vision while it
+// keeps no HDR of it.
+func specNote(beyond []string) string {
+	var out string
+	if slices.Contains(beyond, "maxAudioChannels") {
+		out += "; maxAudioChannels is given up only while the master keeps a stereo track, and it keeps none"
 	}
-	return ""
+	if slices.Contains(beyond, "dolbyVision") {
+		out += "; dolbyVision is given up only while the master keeps the HDR (HDR10, or HLG of an HLG base), and it keeps none"
+	}
+	return out
 }
 
 func orNone(names []string) string {
@@ -649,16 +704,22 @@ func intersect(a, b []string) []string {
 
 // holdSuperseded holds the superseded original of rt for an admin, against
 // its master rt.ver, saying why (why) and what deleting it gives up
-// (rt.lost; none when no record tells): it stays superseded, a decision to
+// (rt.lost; none when no record tells), or, final, keeps it, no admin's word
+// letting it go: it stays superseded, a decision to
 // accept it that no longer covers what it gives up is undone, and a new
 // master looks at it again (supersededDue).
-func (r *Retirer) holdSuperseded(ctx context.Context, rt *retirement, why string) error {
+func (r *Retirer) holdSuperseded(ctx context.Context, rt *retirement, why string, final bool) error {
 	s := rt.src
 	var losses any
 	if rt.lost != nil {
 		losses = nonNil(rt.lost)
 	}
-	why = "kept for an admin: " + why + "; decideSupersededOriginal accepts it (it is retired) or keeps it"
+	if final {
+		why = "kept: " + why + "; no admin's word lets it go (decideSupersededOriginal keeps it for good)"
+	} else {
+		why = "kept for an admin: " + why + "; decideSupersededOriginal accepts it (it is retired) or keeps it"
+	}
+	rt.why = why
 	if _, err := r.pool.Exec(ctx, `UPDATE com_nalet_katalog_itemsources SET supersededhold = left($2, 1000), supersededholdfor = $3,
 			supersededlosses = $4, supersededdecision = CASE WHEN supersededdecision = 'accept' THEN NULL ELSE supersededdecision END,
 			supersededaccepted = CASE WHEN supersededdecision = 'accept' THEN NULL ELSE supersededaccepted END,

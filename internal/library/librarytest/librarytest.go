@@ -81,10 +81,53 @@ func checksums(digests map[string]string) []byte {
 	return []byte(b.String())
 }
 
+// VideoEncoder, where a test package sets it, is the encoder WriteVersion
+// gives the top video rendition of a package whose record states none, as
+// the packager writes one: a package record without renditions, or without
+// a video rendition, gets one of it, and a first video rendition without an
+// encoder key gets it. A test that writes a package that says no encoder
+// gives the key, null, or an empty list of video renditions.
+var VideoEncoder string
+
+// encoded is the package record fields pkg with VideoEncoder given its top
+// video rendition where it says none.
+func encoded(pkg map[string]any) map[string]any {
+	if VideoEncoder == "" {
+		return pkg
+	}
+	out := map[string]any{}
+	for k, v := range pkg {
+		out[k] = v
+	}
+	ren, _ := out["renditions"].(map[string]any)
+	r := map[string]any{}
+	for k, v := range ren {
+		r[k] = v
+	}
+	video, has := r["video"].([]any)
+	switch {
+	case !has && r["video"] == nil:
+		r["video"] = []any{map[string]any{"id": "v0", "encoder": VideoEncoder}}
+	case len(video) > 0:
+		if v0, ok := video[0].(map[string]any); ok {
+			if _, said := v0["encoder"]; !said {
+				c := map[string]any{"encoder": VideoEncoder}
+				for k, v := range v0 {
+					c[k] = v
+				}
+				r["video"] = append([]any{c}, video[1:]...)
+			}
+		}
+	}
+	out["renditions"] = r
+	return out
+}
+
 // WriteVersion writes the version v into dir as the packager does: the
 // package's files, version.json, the checksums over both, package.json with
 // their hash and size (its sizeBytes the package's files'), and .complete
-// with package.json's hash, which it answers.
+// with package.json's hash, which it answers. Its package says no scan
+// unless v.Package gives one.
 func WriteVersion(t testing.TB, dir string, v Version) string {
 	t.Helper()
 	files := v.Files
@@ -118,7 +161,7 @@ func WriteVersion(t testing.TB, dir string, v Version) string {
 	}
 	pkg := map[string]any{"schema": "zaentrum.library.package/2", "packageId": v.PackageID, "createdAt": v.CreatedAt,
 		"packagedBy": "packager", "state": "complete", "role": "canonical", "sizeBytes": size, "checksums": sums}
-	for k, x := range v.Package {
+	for k, x := range encoded(v.Package) {
 		pkg[k] = x
 	}
 	pb := JSON(t, pkg)

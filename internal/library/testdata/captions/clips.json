@@ -1,0 +1,2185 @@
+{
+ "back-jump-ts": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": false,
+      "end": 203.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 201.4
+     },
+     {
+      "at": 0.1,
+      "captions": false,
+      "end": 213.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 211.4
+     },
+     {
+      "at": 0.3,
+      "captions": null,
+      "end": null,
+      "error": "its first frame is at 95445.118 s, 95213.7 s from where it was placed (231.400 s): it landed elsewhere",
+      "frames": 0,
+      "interlacedFrames": null,
+      "keyframeBefore": null,
+      "repeatFrames": null,
+      "start": null
+     },
+     {
+      "at": 0.5,
+      "captions": null,
+      "end": null,
+      "error": "its first frame is at 95445.118 s, 95193.7 s from where it was placed (251.400 s): it landed elsewhere",
+      "frames": 0,
+      "interlacedFrames": null,
+      "keyframeBefore": null,
+      "repeatFrames": null,
+      "start": null
+     },
+     {
+      "at": 0.7,
+      "captions": false,
+      "end": 273.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 271.4
+     }
+    ],
+    "duration": 100.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 14645576
+   }
+  },
+  "carries": true,
+  "note": "its clock goes back 230 s where two recordings were joined",
+  "probe": {
+   "format": {
+    "duration": "100.000000",
+    "format_name": "mpegts"
+   },
+   "streams": [
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[27][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0
+    }
+   ]
+  }
+ },
+ "c608-mov": {
+  "body": {
+   "original": {
+    "captionStreams": 1,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": false,
+      "end": 1.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": false,
+      "end": 31.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 30.0
+     },
+     {
+      "at": 0.3,
+      "captions": false,
+      "end": 91.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 90.0
+     },
+     {
+      "at": 0.5,
+      "captions": false,
+      "end": 151.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 150.0
+     },
+     {
+      "at": 0.7,
+      "captions": false,
+      "end": 211.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 210.0
+     },
+     {
+      "at": 0.9,
+      "captions": false,
+      "end": 271.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 270.0
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 11219212
+   }
+  },
+  "carries": true,
+  "note": "its captions only in a track of their own (c608)",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "mov,mp4,m4a,3gp,3g2,mj2"
+   },
+   "streams": [
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "avc1",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0,
+     "nb_frames": "7500"
+    },
+    {
+     "codec_name": "eia_608",
+     "codec_tag_string": "c608",
+     "codec_type": "subtitle",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "index": 1,
+     "nb_frames": "7499"
+    }
+   ]
+  }
+ },
+ "clock-reset-ts": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "error": "its file says it lasts 94744 s, more than 10 times the 439 s its 14736004 bytes last at the bitrate of its first frames",
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 14736004
+   }
+  },
+  "carries": true,
+  "note": "a transport stream whose clock starts again",
+  "probe": {
+   "format": {
+    "duration": "94743.717689",
+    "format_name": "mpegts"
+   },
+   "streams": [
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[27][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0
+    }
+   ]
+  }
+ },
+ "cover-first-mkv": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "error": "off the closed lists: video-streams:2, codec:mjpeg",
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [
+     "video-streams:2",
+     "codec:mjpeg"
+    ],
+    "sizeBytes": 11292780
+   }
+  },
+  "carries": true,
+  "note": "a picture track before the film, not marked as an attachment",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "matroska,webm"
+   },
+   "streams": [
+    {
+     "codec_name": "mjpeg",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "height": 240,
+     "index": 0,
+     "tags": {
+      "DURATION": "00:00:00.040000000"
+     }
+    },
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 1,
+     "tags": {
+      "DURATION": "00:05:00.000000000"
+     }
+    }
+   ]
+  }
+ },
+ "cover-first-mp4": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 1.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 31.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 30.0
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 91.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 90.0
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 151.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 150.0
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 211.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 210.0
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 271.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 270.0
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 11265537
+   }
+  },
+  "carries": true,
+  "note": "cover art as an attached picture, after the film",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "mov,mp4,m4a,3gp,3g2,mj2"
+   },
+   "streams": [
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "avc1",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0,
+     "nb_frames": "7500"
+    },
+    {
+     "codec_name": "mjpeg",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 1
+     },
+     "height": 240,
+     "index": 1
+    }
+   ]
+  }
+ },
+ "fwd-jump-ts": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": false,
+      "end": 3.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 1.4
+     },
+     {
+      "at": 0.1,
+      "captions": false,
+      "end": 69.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 67.4
+     },
+     {
+      "at": 0.3,
+      "captions": null,
+      "end": null,
+      "error": "its first frame is at 501.400 s, 305.0 s from where it was placed (196.400 s): it landed elsewhere",
+      "frames": 0,
+      "interlacedFrames": null,
+      "keyframeBefore": null,
+      "repeatFrames": null,
+      "start": null
+     },
+     {
+      "at": 0.5,
+      "captions": null,
+      "end": null,
+      "error": "its first frame is at 501.400 s, 175.0 s from where it was placed (326.400 s): it landed elsewhere",
+      "frames": 0,
+      "interlacedFrames": null,
+      "keyframeBefore": null,
+      "repeatFrames": null,
+      "start": null
+     },
+     {
+      "at": 0.7,
+      "captions": null,
+      "end": null,
+      "error": "its first frame is at 501.400 s, 45.0 s from where it was placed (456.400 s): it landed elsewhere",
+      "frames": 0,
+      "interlacedFrames": null,
+      "keyframeBefore": null,
+      "repeatFrames": null,
+      "start": null
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 589.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 587.4
+     }
+    ],
+    "duration": 650.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 13325064
+   }
+  },
+  "carries": true,
+  "note": "its clock jumps forward at 150 s",
+  "probe": {
+   "format": {
+    "duration": "650.000000",
+    "format_name": "mpegts"
+   },
+   "streams": [
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[27][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0
+    }
+   ]
+  }
+ },
+ "hevc-prefix-sei-mkv": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 1.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 31.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 30.0
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 91.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 90.0
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 151.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 150.0
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 211.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 210.0
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 271.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 270.0
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 8875743
+   }
+  },
+  "carries": true,
+  "note": "HEVC, its captions in prefix SEI",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "matroska,webm"
+   },
+   "streams": [
+    {
+     "codec_name": "hevc",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "height": 120,
+     "index": 0,
+     "tags": {
+      "DURATION": "00:05:00.000000000"
+     }
+    }
+   ]
+  }
+ },
+ "hevc-suffix-sei-mkv": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 1.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 31.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 30.0
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 91.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 90.0
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 151.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 150.0
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 211.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 210.0
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 271.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 270.0
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 8875744
+   }
+  },
+  "carries": true,
+  "note": "HEVC, its captions in suffix SEI",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "matroska,webm"
+   },
+   "streams": [
+    {
+     "codec_name": "hevc",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "height": 120,
+     "index": 0,
+     "tags": {
+      "DURATION": "00:05:00.000000000"
+     }
+    }
+   ]
+  }
+ },
+ "hevc-suffix-sei-ts": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 3.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 1.4
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 33.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 31.4
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 93.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 91.4
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 153.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 151.4
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 213.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 211.4
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 273.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 271.4
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 10961340
+   }
+  },
+  "carries": true,
+  "note": "HEVC, its captions in suffix SEI, in a transport stream",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "mpegts"
+   },
+   "streams": [
+    {
+     "codec_name": "hevc",
+     "codec_tag_string": "HEVC",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "height": 120,
+     "index": 0
+    }
+   ]
+  }
+ },
+ "joined-recordings-ts": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": false,
+      "end": 3.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 1.4
+     },
+     {
+      "at": 0.1,
+      "captions": false,
+      "end": 305.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 303.4
+     },
+     {
+      "at": 0.3,
+      "captions": false,
+      "end": 907.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 905.4
+     },
+     {
+      "at": 0.5,
+      "captions": false,
+      "end": 1509.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 1507.4
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 2111.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 2109.4
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 2713.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 2711.4
+     }
+    ],
+    "duration": 3010.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 398770372
+   }
+  },
+  "carries": true,
+  "note": "two recordings joined, the second's clock starting at 10 s",
+  "probe": {
+   "format": {
+    "duration": "3010.000000",
+    "format_name": "mpegts"
+   },
+   "streams": [
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[27][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0
+    }
+   ]
+  }
+ },
+ "mpeg2-a53-mpg": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 2.46,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 0.54
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 32.46,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 30.78
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 92.46,
+      "frames": 42,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 90.78
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 152.46,
+      "frames": 42,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 150.78
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 212.46,
+      "frames": 42,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 210.78
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 272.46,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 270.78
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 28000256
+   }
+  },
+  "carries": true,
+  "note": "MPEG-2, A53 captions, program stream",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "mpeg"
+   },
+   "streams": [
+    {
+     "codec_name": "mpeg2video",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0
+    }
+   ]
+  }
+ },
+ "mpeg2-a53-ts": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 3.36,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 1.44
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 33.36,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 31.68
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 93.36,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 91.68
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 153.36,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 151.68
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 213.36,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 211.68
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 273.36,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 271.68
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 30117600
+   }
+  },
+  "carries": true,
+  "note": "MPEG-2, A53 captions, transport stream",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "mpegts"
+   },
+   "streams": [
+    {
+     "codec_name": "mpeg2video",
+     "codec_tag_string": "[2][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0
+    }
+   ]
+  }
+ },
+ "mpeg2-dvd-mpg": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 2.46,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 0.54
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 32.46,
+      "frames": 42,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 30.78
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 92.46,
+      "frames": 42,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 90.78
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 152.46,
+      "frames": 42,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 150.78
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 212.46,
+      "frames": 42,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 210.78
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 272.46,
+      "frames": 42,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 270.78
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 27926528
+   }
+  },
+  "carries": true,
+  "note": "MPEG-2, DVD captions, program stream",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "mpeg"
+   },
+   "streams": [
+    {
+     "codec_name": "mpeg2video",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0
+    }
+   ]
+  }
+ },
+ "mpeg2-dvd-ts": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 3.36,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 1.44
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 33.36,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 31.68
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 93.36,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 91.68
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 153.36,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 151.68
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 213.36,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 211.68
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 273.36,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 271.68
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 30045972
+   }
+  },
+  "carries": true,
+  "note": "MPEG-2, DVD captions, transport stream",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "mpegts"
+   },
+   "streams": [
+    {
+     "codec_name": "mpeg2video",
+     "codec_tag_string": "[2][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0
+    }
+   ]
+  }
+ },
+ "mpeg2-scte20-mpg": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 2.46,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 0.54
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 32.46,
+      "frames": 42,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 30.78
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 92.46,
+      "frames": 42,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 90.78
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 152.46,
+      "frames": 42,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 150.78
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 212.46,
+      "frames": 42,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 210.78
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 272.46,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 270.78
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 27977728
+   }
+  },
+  "carries": true,
+  "note": "MPEG-2, SCTE-20 captions, program stream",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "mpeg"
+   },
+   "streams": [
+    {
+     "codec_name": "mpeg2video",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0
+    }
+   ]
+  }
+ },
+ "mpeg2-scte20-ts": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 3.36,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 1.44
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 33.36,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 31.68
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 93.36,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 91.68
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 153.36,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 151.68
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 213.36,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 211.68
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 273.36,
+      "frames": 43,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 271.68
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 30093348
+   }
+  },
+  "carries": true,
+  "note": "MPEG-2, SCTE-20 captions, transport stream",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "mpegts"
+   },
+   "streams": [
+    {
+     "codec_name": "mpeg2video",
+     "codec_tag_string": "[2][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0
+    }
+   ]
+  }
+ },
+ "open-gop-h264": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 1.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 31.92,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 30.0
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 91.92,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 90.0
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 151.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 150.0
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 211.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 210.0
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 272.0,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 270.0
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 5601297
+   }
+  },
+  "carries": true,
+  "note": "H.264, open groups of pictures",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "matroska,webm"
+   },
+   "streams": [
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0,
+     "tags": {
+      "DURATION": "00:05:00.000000000"
+     }
+    }
+   ]
+  }
+ },
+ "open-gop-hevc": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 2.0,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 31.8,
+      "frames": 44,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 30.0
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 91.8,
+      "frames": 44,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 90.0
+     },
+     {
+      "at": 0.5,
+      "captions": true,
+      "end": 151.8,
+      "frames": 44,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 150.0
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 211.8,
+      "frames": 44,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 210.0
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 271.8,
+      "frames": 44,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 270.0
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 4975634
+   }
+  },
+  "carries": true,
+  "note": "HEVC, open groups of pictures",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "matroska,webm"
+   },
+   "streams": [
+    {
+     "codec_name": "hevc",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0,
+     "tags": {
+      "DURATION": "00:05:00.000000000"
+     }
+    }
+   ]
+  }
+ },
+ "partial-arrival-ts": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": false,
+      "end": 3.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 1.4
+     },
+     {
+      "at": 0.1,
+      "captions": false,
+      "end": 17.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 15.4
+     },
+     {
+      "at": 0.3,
+      "captions": false,
+      "end": 41.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 39.4
+     },
+     {
+      "at": 0.5,
+      "captions": false,
+      "end": 65.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 63.4
+     },
+     {
+      "at": 0.7,
+      "captions": false,
+      "end": 89.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 87.4
+     },
+     {
+      "at": 0.7512437810945274,
+      "captions": false,
+      "end": 95.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 93.4
+     }
+    ],
+    "duration": 120.6,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 5323784
+   }
+  },
+  "carries": false,
+  "note": "the first 40 % of a file whose captions start at 60 %",
+  "probe": {
+   "format": {
+    "duration": "120.600000",
+    "format_name": "mpegts"
+   },
+   "streams": [
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[27][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0
+    }
+   ]
+  }
+ },
+ "partial-arrival-ts-complete": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": false,
+      "end": 3.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 1.4
+     },
+     {
+      "at": 0.1,
+      "captions": false,
+      "end": 33.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 31.4
+     },
+     {
+      "at": 0.3,
+      "captions": false,
+      "end": 93.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 91.4
+     },
+     {
+      "at": 0.5,
+      "captions": false,
+      "end": 153.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 151.4
+     },
+     {
+      "at": 0.7,
+      "captions": true,
+      "end": 213.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 211.4
+     },
+     {
+      "at": 0.9,
+      "captions": true,
+      "end": 273.28,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": false,
+      "repeatFrames": 0,
+      "start": 271.4
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 13309460
+   }
+  },
+  "carries": true,
+  "note": "the same file whole",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "mpegts"
+   },
+   "streams": [
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[27][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0
+    }
+   ]
+  }
+ },
+ "plain-mkv": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": false,
+      "end": 1.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": false,
+      "end": 31.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 30.0
+     },
+     {
+      "at": 0.3,
+      "captions": false,
+      "end": 91.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 90.0
+     },
+     {
+      "at": 0.5,
+      "captions": false,
+      "end": 151.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 150.0
+     },
+     {
+      "at": 0.7,
+      "captions": false,
+      "end": 211.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 210.0
+     },
+     {
+      "at": 0.9,
+      "captions": false,
+      "end": 271.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 270.0
+     }
+    ],
+    "duration": 300.0,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 11096048
+   }
+  },
+  "carries": false,
+  "note": "no captions",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "matroska,webm"
+   },
+   "streams": [
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0,
+     "tags": {
+      "DURATION": "00:05:00.000000000"
+     }
+    }
+   ]
+  }
+ },
+ "second-video-5fps-mkv": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "error": "off the closed lists: video-streams:2",
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [
+     "video-streams:2"
+    ],
+    "sizeBytes": 13732518
+   }
+  },
+  "carries": true,
+  "note": "a 5 fps video track before the film, which has captions",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "matroska,webm"
+   },
+   "streams": [
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0,
+     "tags": {
+      "DURATION": "00:05:00.000000000"
+     }
+    },
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 1,
+     "tags": {
+      "DURATION": "00:05:00.000000000"
+     }
+    }
+   ]
+  }
+ },
+ "second-video-has-captions-mkv": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "error": "off the closed lists: video-streams:2",
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [
+     "video-streams:2"
+    ],
+    "sizeBytes": 12318374
+   }
+  },
+  "carries": true,
+  "note": "a 1 fps video track before the film, which has captions",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "matroska,webm"
+   },
+   "streams": [
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0,
+     "tags": {
+      "DURATION": "00:05:00.000000000"
+     }
+    },
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 1,
+     "tags": {
+      "DURATION": "00:05:00.000000000"
+     }
+    }
+   ]
+  }
+ },
+ "short-duration-mkv": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "error": "its file says it ends at 30.000 s, its last video packet read there is at 44.960 s",
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 11246048
+   }
+  },
+  "carries": true,
+  "note": "its container says it is shorter than it is",
+  "probe": {
+   "format": {
+    "duration": "30.000000",
+    "format_name": "matroska,webm"
+   },
+   "streams": [
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0,
+     "tags": {
+      "DURATION": "00:05:00.000000000"
+     }
+    }
+   ]
+  }
+ },
+ "still-first-mkv": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "error": "off the closed lists: video-streams:2, codec:mjpeg",
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [
+     "video-streams:2",
+     "codec:mjpeg"
+    ],
+    "sizeBytes": 11292777
+   }
+  },
+  "carries": true,
+  "note": "a one-picture track before the film, not marked as an attachment",
+  "probe": {
+   "format": {
+    "duration": "300.000000",
+    "format_name": "matroska,webm"
+   },
+   "streams": [
+    {
+     "codec_name": "mjpeg",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "height": 240,
+     "index": 0,
+     "tags": {
+      "DURATION": "00:00:00.040000000"
+     }
+    },
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 1,
+     "tags": {
+      "DURATION": "00:05:00.000000000"
+     }
+    }
+   ]
+  }
+ },
+ "vfr-mkv": {
+  "body": {
+   "original": {
+    "captionStreams": 0,
+    "captionWindows": [
+     {
+      "at": 0.0,
+      "captions": true,
+      "end": 1.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 0.0
+     },
+     {
+      "at": 0.1,
+      "captions": true,
+      "end": 31.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 30.0
+     },
+     {
+      "at": 0.3,
+      "captions": true,
+      "end": 91.88,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 90.0
+     },
+     {
+      "at": 0.5,
+      "captions": false,
+      "end": 150.783,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 150.0
+     },
+     {
+      "at": 0.7,
+      "captions": false,
+      "end": 209.95,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 209.167
+     },
+     {
+      "at": 0.8999996666655555,
+      "captions": false,
+      "end": 269.95,
+      "frames": 48,
+      "interlacedFrames": 0,
+      "keyframeBefore": true,
+      "repeatFrames": 0,
+      "start": 269.167
+     }
+    ],
+    "duration": 299.999,
+    "ffprobe": "7.1 by its libraries (ffprobe version 1fdbca8: libavutil 59.39.100, libavcodec 61.19.101, libavformat 61.7.103)",
+    "offList": [],
+    "sizeBytes": 18091309
+   }
+  },
+  "carries": true,
+  "note": "captions in its first half only, its frame rate changing",
+  "probe": {
+   "format": {
+    "duration": "299.999000",
+    "format_name": "matroska,webm"
+   },
+   "streams": [
+    {
+     "codec_name": "h264",
+     "codec_tag_string": "[0][0][0][0]",
+     "codec_type": "video",
+     "disposition": {
+      "attached_pic": 0
+     },
+     "field_order": "progressive",
+     "height": 120,
+     "index": 0,
+     "tags": {
+      "DURATION": "00:04:59.999000000"
+     }
+    }
+   ]
+  }
+ }
+}

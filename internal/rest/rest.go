@@ -25,6 +25,7 @@ type Deps struct {
 	Compliance Compliance       // nil: PUT /api/analyze/rules/{worker} and GET /api/manage/compliance.csv answer 503, and only the nightly pass checks a title packaged again
 	Picture    PictureAreas     // nil: /api/picture/* answers 503
 	Chapters   ChapterReads     // nil: a chapters PUT keeps no read, GET /api/chapters/items/{id} and /api/chapters/claim answer 503
+	Captions   ClosedCaptions   // nil: /api/captions/* answers 503
 }
 
 // Handlers groups the REST handlers.
@@ -49,7 +50,8 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 //   - workers (an admin, or the platform's service account the analyzer,
 //     transcoder and packager mint tokens with): the worker protocol, which
 //     hands out paths on disk and writes the pipeline's results (the titles'
-//     picture areas and chapters, and their backfills, among them), and the
+//     picture areas, chapters and closed captions, and their backfills,
+//     among them), and the
 //     settings that are no secret;
 //   - ingest (a worker, or an addon's service account): POST /api/ingest,
 //     POST /api/extras, which takes a file in as a title's extra, and the
@@ -67,7 +69,7 @@ func New(d Deps) *Handlers { return &Handlers{d: d} }
 // files (artwork.go, play.go, subtitles.go, analyzer.go, segments.go,
 // chapters.go, packaging.go, package.go, settings.go, ingest.go, extras.go,
 // migrations.go, reencode.go, takein.go, rules.go, compliance.go,
-// picture.go).
+// picture.go, captions.go).
 func (h *Handlers) Register(r chi.Router) {
 	pol := h.d.Cfg.Policy()
 
@@ -163,6 +165,12 @@ func (h *Handlers) Register(r chi.Router) {
 		r.Get("/api/picture/extras/{id}", h.getPictureArea)
 		r.Put("/api/picture/extras/{id}", h.putPictureArea)
 		r.Post("/api/picture/claim", h.postPictureClaim)
+
+		// The originals' closed captions (captions.go): the analyzer asks
+		// the backfill for the originals to read, and reports what it read
+		// of each.
+		r.Post("/api/captions/claim", h.postCaptionsClaim)
+		r.Put("/api/captions/sources/{sourceId}", h.putCaptions)
 	})
 
 	// An admin's packaging action, as chino-api's admin route forwards it with

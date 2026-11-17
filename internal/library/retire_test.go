@@ -3,9 +3,11 @@ package library
 import (
 	"bytes"
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -124,7 +126,7 @@ func (f *retireFixture) addMovie(t *testing.T, item, source, version, pkg, title
 		}
 	}
 	librarytest.WriteVersion(t, versionDir, librarytest.Version{VersionID: version, PackageID: pkg, SourceIDs: []string{source},
-		CreatedAt: "2026-10-06T10:00:00Z", Package: map[string]any{"essence": f.pkg}})
+		CreatedAt: "2026-10-06T10:00:00Z", Package: packageRecord(f.pkg)})
 	copies := map[string]string{}
 	var listed []any
 	for _, name := range []string{title + ".de.srt", title + ".en.srt", title + ".nfo"} {
@@ -135,8 +137,142 @@ func (f *retireFixture) addMovie(t *testing.T, item, source, version, pkg, title
 		}
 		listed = append(listed, map[string]any{"file": "sources/" + source + "/" + name, "originalName": name, "kind": kind})
 	}
+	// a record as the record logic writes one: its container and its
+	// length, its streams, every fact of its essence the gate compares
 	librarytest.WriteSource(t, sourceDir, map[string]any{"sourceId": source, "file": map[string]any{"name": title + ".mkv",
-		"sizeBytes": size, "fixity": map[string]any{"qh1": qh1}}, "sidecars": listed, "essence": f.src}, copies)
+		"sizeBytes": size, "fixity": map[string]any{"qh1": qh1}}, "sidecars": listed, "essence": stated(f.src),
+		"container": map[string]any{"format": "matroska,webm", "durationMs": 600000}, "streams": filmStreams()},
+		statedProbe(copies))
+	f.settle(t, item, source, version)
+}
+
+// settleAll settles, as settle does, what the package of every complete
+// version can't show, of its first original.
+func settleAll(t *testing.T, st *store.Store) {
+	t.Helper()
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_chapterreads (item_id, state, confirmed, sourceid, readfrom)
+		SELECT v.item_id, 'none', true, v.sourceids[1], 'header' FROM com_nalet_katalog_itemversions v WHERE v.state = 'complete'
+		ON CONFLICT (item_id) DO UPDATE SET state = 'none', confirmed = true, sourceid = EXCLUDED.sourceid`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_pictureareas (id, kind, item_id, state, framewidth, frameheight,
+			areax, areay, areawidth, areaheight, sourceid, versionid, measuredon, measuredat)
+		SELECT v.item_id, 'item', v.item_id, 'measured', 1920, 1080, 0, 0, 1920, 1080, v.sourceids[1], v.id, 'original', now()
+		FROM com_nalet_katalog_itemversions v WHERE v.state = 'complete'
+		ON CONFLICT (id) DO UPDATE SET state = 'measured', sourceid = EXCLUDED.sourceid, versionid = EXCLUDED.versionid`)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_sourcecaptions (source_id, item_id, state, captionwindows, captions,
+			ffprobeversion, framesdecoded, duration, sourcesize, sourceqh1, readat)
+		SELECT v.sourceids[1], v.item_id, 'read', '`+noCaptionsWindows+`', false, '7.1.1', 288, 600, s.sizebytes, s.qh1, now()
+		FROM com_nalet_katalog_itemversions v JOIN com_nalet_katalog_itemsources s ON s.id = v.sourceids[1]
+		WHERE v.state = 'complete' ON CONFLICT (source_id) DO NOTHING`)
+}
+
+// noCaptionsWindows are the windows of a read of an original that found no
+// closed captions in any: its start, and 10 to 90 % of a ten-minute video,
+// no frame of them interlaced or repeating a field.
+const noCaptionsWindows = `[{"at": 0, "start": 0, "end": 1.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0},
+	{"at": 0.1, "start": 60, "end": 61.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0},
+	{"at": 0.3, "start": 180, "end": 181.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0},
+	{"at": 0.5, "start": 300, "end": 301.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0},
+	{"at": 0.7, "start": 420, "end": 421.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0},
+	{"at": 0.9, "start": 540, "end": 541.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}]`
+
+// settle has the catalog know what the package of the version of the item's
+// original source can't show: its chapters read (none, its record agreeing)
+// and its picture area measured of the original, for that version; and its
+// closed captions read by a probe that decoded its frames (none).
+func (f *retireFixture) settle(t *testing.T, item, source, version string) {
+	t.Helper()
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_chapterreads (item_id, state, confirmed, sourceid, readfrom)
+		VALUES ($1, 'none', true, $2, 'header')
+		ON CONFLICT (item_id) DO UPDATE SET state = 'none', confirmed = true, sourceid = $2`, item, source)
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_pictureareas (id, kind, item_id, state, framewidth, frameheight,
+			areax, areay, areawidth, areaheight, sourceid, versionid, measuredon, measuredat)
+		VALUES ($1, 'item', $1, 'measured', 1920, 1080, 0, 0, 1920, 1080, $2, $3, 'original', now())
+		ON CONFLICT (id) DO UPDATE SET state = 'measured', sourceid = $2, versionid = $3`, item, source, version)
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_sourcecaptions (source_id, item_id, state, captionwindows, captions,
+			ffprobeversion, framesdecoded, duration, sourcesize, sourceqh1, readat)
+		SELECT $1::varchar, $2::varchar, 'read', '`+noCaptionsWindows+`', false, '7.1.1', 288, 600, s.sizebytes, s.qh1, now()
+		FROM com_nalet_katalog_itemsources s WHERE s.id = $1::varchar ON CONFLICT (source_id) DO NOTHING`, source, item)
+}
+
+// packageRecord is what a package.json the fixtures write holds besides what
+// WriteVersion sets, as the packager writes it: its essence, and the
+// subtitles it lists, a WebVTT rendition of each language its essence names
+// (subs/<n>.vtt).
+func packageRecord(essence map[string]any) map[string]any {
+	subs := []any{}
+	langs, _ := essence["subtitleLanguages"].([]string)
+	for i, l := range langs {
+		n := strconv.Itoa(i)
+		subs = append(subs, map[string]any{"id": "sub" + n, "path": "subs/" + n + ".vtt", "format": "webvtt", "language": l})
+	}
+	// the packager read the original's fields and found none (scan.found
+	// progressive), of the version's own original: what it says, which lets
+	// nothing go; and it encoded the picture (an encoder that is not copy)
+	return map[string]any{"essence": essence, "subtitles": subs, "scan": verifiedProgressive(),
+		"renditions": map[string]any{"video": []any{encodedVideo()}}}
+}
+
+// encodedVideo is a package's top video rendition as an encode makes it: its
+// encoder stated, not copy.
+func encodedVideo() map[string]any {
+	return map[string]any{"id": "v0", "encoder": "libx264", "codec": "avc1.640028", "height": 1080}
+}
+
+// filmStreams are the streams a source record lists of a file of one
+// picture, h264, progressive.
+func filmStreams() []any {
+	return []any{map[string]any{"index": 0, "type": "video", "codec": "h264", "fieldOrder": "progressive"}}
+}
+
+// stated is the essence e with each fact the gate compares that e doesn't
+// state stated as nothing (false, null, none), as the record logic writes
+// every one of them.
+func stated(e map[string]any) map[string]any {
+	out := maps.Clone(e)
+	if out == nil {
+		out = map[string]any{}
+	}
+	for _, k := range lossFlags {
+		if _, ok := out[k]; !ok {
+			out[k] = false
+		}
+	}
+	for _, k := range lossCounts {
+		if _, ok := out[k]; !ok {
+			out[k] = nil
+		}
+	}
+	for _, k := range lossLanguages {
+		if _, ok := out[k]; !ok {
+			out[k] = []string{}
+		}
+	}
+	return out
+}
+
+// verifiedProgressive is a package's scan that found its original's picture
+// progressive, did nothing to it and verified it whole: the one scan that
+// holds nothing (it lets nothing go either).
+func verifiedProgressive() map[string]any {
+	return map[string]any{"found": NothingFound, "done": NothingFound,
+		"verified": map[string]any{"ok": true, "complete": true}}
+}
+
+// progressiveProbe is a stored probe (ffprobe.json) that states its
+// picture's field order progressive.
+const progressiveProbe = `{"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "field_order": "progressive"}]}`
+
+// statedProbe is the files files of a source folder and its stored probe
+// progressiveProbe: an original whose field order is stated, what of the
+// fields rule a test of another rule leaves aside. No package's scan states
+// it: none lets an original go.
+func statedProbe(files map[string]string) map[string]string {
+	out := maps.Clone(files)
+	if out == nil {
+		out = map[string]string{}
+	}
+	out[ProbeFile] = progressiveProbe
+	return out
 }
 
 // set sets a library setting.
@@ -304,7 +440,7 @@ func TestTheRetireJobDeletesAnOriginalAfterPackaging(t *testing.T) {
 		t.Errorf("the version's verification: %+v", v)
 	}
 	// Done: a pass again does nothing.
-	if rep := f.pass(t); rep != (Report{}) {
+	if rep := f.pass(t); rep.String() != "" {
 		t.Errorf("a pass again: %+v", rep)
 	}
 }
@@ -638,16 +774,21 @@ func TestASupersededVersionIsRemovedAfterItsGrace(t *testing.T) {
 	f.set(t, SettingOriginals, "keep")
 	ctx := context.Background()
 	const old, recent = "11111111-2222-4333-8444-555555555555", "66666666-7777-4888-8999-aaaaaaaaaaaa"
+	// made of an original retired before: a version made of one that is
+	// still there waits (TestASupersededVersionWaitsWhileItsOriginalIsThere)
+	const gone = "77777777-8888-4999-8aaa-bbbbbbbbbbbb"
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state)
+		VALUES ($1, $2, 'older.mkv', 1, 'deleted')`, gone, rtFilm)
 	for _, c := range []struct {
 		id, ago string
 	}{{old, "2 days"}, {recent, "1 hour"}} {
 		dir := VersionDir(f.itemDir, c.id)
-		librarytest.WriteVersion(t, dir, librarytest.Version{VersionID: c.id, PackageID: NewID(), SourceIDs: []string{rtSource},
+		librarytest.WriteVersion(t, dir, librarytest.Version{VersionID: c.id, PackageID: NewID(), SourceIDs: []string{gone},
 			CreatedAt: "2026-10-01T10:00:00Z"})
 		storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir,
 				completedat, supersededby, supersededat)
 			VALUES ($1, $2, ARRAY[$3::varchar], 'superseded', $7, $4, now() - interval '3 days', $5,
-				now() - $6::interval)`, c.id, rtFilm, rtSource, dir, rtVersion, c.ago, "p-"+c.id[:8])
+				now() - $6::interval)`, c.id, rtFilm, gone, dir, rtVersion, c.ago, "p-"+c.id[:8])
 	}
 	legacy := LegacyPackageDir(f.cfg.PackagesRoot, "movie", rtFilm)
 	librarytest.Write(t, filepath.Join(legacy, "manifest.json"), []byte("{}\n"))
@@ -763,7 +904,7 @@ func TestOnePassAtATimeAndItsRate(t *testing.T) {
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(`+retireLockKey+`)`); err != nil {
 		t.Fatal(err)
 	}
-	if rep := f.pass(t); rep != (Report{}) {
+	if rep := f.pass(t); rep.String() != "" {
 		t.Errorf("a pass while another runs: %+v", rep)
 	}
 	_, _ = conn.Exec(ctx, `SELECT pg_advisory_unlock(`+retireLockKey+`)`)
@@ -817,7 +958,7 @@ func TestAnOriginalIsKeptUntilItsPackageCarriesItsSurround(t *testing.T) {
 		WHERE item_id = $1 AND step = 'retire'`, rtFilm).Scan(&retry, &last); err != nil || retry != nil || last != SurroundHeld {
 		t.Errorf("the held step's retry %v and last error %q, %v; want none and the reason", retry, last, err)
 	}
-	if rep := f.pass(t); rep != (Report{}) {
+	if rep := f.pass(t); rep.String() != "" {
 		t.Errorf("a pass again, the same version: %+v", rep)
 	}
 	if got := f.step(t, rtFilm); got != want {
@@ -832,11 +973,12 @@ func TestAnOriginalIsKeptUntilItsPackageCarriesItsSurround(t *testing.T) {
 	const again, againPkg = "9b2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5b", "4e1d2e3f-4a5b-4c6d-8e7f-8a9b0c1d2e3e"
 	dir := VersionDir(f.itemDir, again)
 	librarytest.WriteVersion(t, dir, librarytest.Version{VersionID: again, PackageID: againPkg, SourceIDs: []string{rtSource},
-		CreatedAt: "2026-10-07T10:00:00Z", Package: map[string]any{"essence": withFiveOne}})
+		CreatedAt: "2026-10-07T10:00:00Z", Package: packageRecord(withFiveOne)})
 	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2, supersededat = now()
 		WHERE id = $1`, rtVersion, again)
 	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
 		VALUES ($1, $2, ARRAY[$3::varchar], 'complete', $4, $5, now() - interval '1 hour')`, again, rtFilm, rtSource, againPkg, dir)
+	f.settle(t, rtFilm, rtSource, again)
 	// the job looks at it again: it is no longer held
 	if got := heldTitles(t, f.st); got != "" {
 		t.Errorf("held once a newer version is complete: %q", got)
@@ -967,4 +1109,59 @@ func heldTitles(t *testing.T, st *store.Store) string {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// The retire job keeps an original whose package's record says nothing about
+// its subtitles, as it lists none of the 12 image subtitle tracks its essence
+// claims: before it claims it, it is held for the version as for its surround
+// (its step failed saying why, held for the version, no retry of its own),
+// the original where it lies, and passes after look at it no more. Once a
+// version whose record lists them is complete, the original goes.
+func TestTheRetireJobKeepsAnOriginalWhoseSubtitlesItsPackagesRecordLeavesUnknown(t *testing.T) {
+	ctx := context.Background()
+	src, _ := pgsOriginal(12)
+	src["surround"], src["maxAudioChannels"] = false, 2
+	pkg := stereoCarrying(src)
+	f := newRetireFixtureOf(t, src, pkg)
+	librarytest.WriteVersion(t, f.versionDir, librarytest.Version{VersionID: rtVersion, PackageID: rtPackage,
+		SourceIDs: []string{rtSource}, CreatedAt: "2026-10-06T10:00:00Z", Package: map[string]any{"essence": pkg,
+			"scan": verifiedProgressive()}})
+	const want = "its package's record says nothing about its subtitles (its original has 12 subtitle tracks): what its " +
+		"package carries of them can't be told; the original is kept"
+	rep, err := f.r.Pass(ctx)
+	if rep.Originals != 0 || rep.Held != 1 || rep.Failed != 0 || err != nil {
+		t.Fatalf("the pass: %+v, %v", rep, err)
+	}
+	f.kept(t)
+	if got := f.step(t, rtFilm); got != "failed 1 error="+want+" details="+HeldDetails(rtVersion) {
+		t.Errorf("the retire step: %s", got)
+	}
+	if s := f.source(t, rtSource); deref(s.Error) != want {
+		t.Errorf("the source's error: %q", deref(s.Error))
+	}
+	if got := heldTitles(t, f.st); got != "" {
+		t.Errorf("the titles the re-encode queue takes as held for their surround: %q, want none", got)
+	}
+	f.r.now = func() time.Time { return time.Now().Add(time.Hour) }
+	if rep := f.pass(t); rep.String() != "" {
+		t.Errorf("a pass an hour later: %+v; want the original left held", rep)
+	}
+
+	// packaged again, its record listing them
+	const again, againPkg = "9b2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5b", "4e1d2e3f-4a5b-4c6d-8e7f-8a9b0c1d2e3e"
+	dir := VersionDir(f.itemDir, again)
+	librarytest.WriteVersion(t, dir, librarytest.Version{VersionID: again, PackageID: againPkg, SourceIDs: []string{rtSource},
+		CreatedAt: "2026-10-07T10:00:00Z", Files: pgsFiles(12), Package: map[string]any{"essence": pkg, "subtitles": pgsListed(12),
+			"scan": verifiedProgressive()}})
+	storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2, supersededat = now()
+		WHERE id = $1`, rtVersion, again)
+	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
+		VALUES ($1, $2, ARRAY[$3::varchar], 'complete', $4, $5, now() - interval '1 hour')`, again, rtFilm, rtSource, againPkg, dir)
+	f.settle(t, rtFilm, rtSource, again)
+	if rep := f.pass(t); rep.Originals != 1 {
+		t.Fatalf("the pass once a version whose record lists the subtitles is complete: %+v", rep)
+	}
+	if s := f.source(t, rtSource); s.State != SourceDeleted || string(s.Lost) != `[]` {
+		t.Errorf("the source: %s, lost %s", s.State, s.Lost)
+	}
 }

@@ -506,6 +506,8 @@ var operations = []struct{ doc, calls string }{
 	{`{ pictureAreas { titles letterboxed toMeasure backfill window idle } }`, ""},
 	{`{ chapterReads { missing missingPackaged read fromRecord none unconfirmed unreadable accepted failed held replaced
 		backfill window maxRecordsPerHour idle } }`, ""},
+	{`{ captionReads { originals read withCaptions toRead packaged packagesRead packagesWithCaptions failed inFlight
+		handedOutLastHour lastReadAt backfill window maxInFlight maxPerHour lease idle problems } }`, ""},
 	{`mutation { acceptChapterReads(items: ["m1"]) { accepted refused } }`, ""},
 	{`mutation { acceptChapterReads(items: ["m1"], take: RECORD) { accepted refused } }`, ""},
 	{`mutation { revertChapterReplacement(items: ["m1"]) { accepted refused } }`, ""},

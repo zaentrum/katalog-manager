@@ -271,9 +271,10 @@ func (e *ErrNotSuperseded) Error() string {
 
 // DecideSuperseded notes an admin's decision of the superseded original
 // sourceID, by: accept has the retire job retire it, giving up what its hold
-// says deleting it gives up against its master (or anything, when no record
-// tells), once its other conditions hold; keep keeps it, never retired by the
-// job until an admin accepts it. A source that is not superseded is
+// says deleting it gives up against its master, once its other conditions
+// hold, as far as that is what the master spec drops by design (an original
+// that gives up more, or whose record doesn't tell, stays); keep keeps it,
+// never retired by the job until an admin accepts it. A source that is not superseded is
 // ErrNotSuperseded. It answers the source as it is then.
 func DecideSuperseded(ctx context.Context, q Querier, sourceID, decision, by string) (*Superseded, error) {
 	if decision != DecisionAccept && decision != DecisionKeep {

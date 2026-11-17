@@ -854,6 +854,9 @@ func (r *Resolver) CreateSetting(ctx context.Context, args struct {
 	if err := r.checkLayout(ctx, args.Key, func([]*model.Setting) string { return args.ValueText }); err != nil {
 		return nil, err
 	}
+	if err := library.CheckSetting(args.Key, args.ValueText); err != nil {
+		return nil, err
+	}
 	valueType := "string"
 	if args.ValueType != nil && *args.ValueType != "" {
 		valueType = *args.ValueType
@@ -880,6 +883,9 @@ func (r *Resolver) UpdateSetting(ctx context.Context, args struct {
 		return nil, errSecretSetting(cur.Key)
 	} else if cur != nil && args.ValueText != nil {
 		if err := r.checkLayout(ctx, cur.Key, layoutWith(cur.ID, args.ValueText)); err != nil {
+			return nil, err
+		}
+		if err := library.CheckSetting(cur.Key, *args.ValueText); err != nil {
 			return nil, err
 		}
 	}

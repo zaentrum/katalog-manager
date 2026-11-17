@@ -285,15 +285,24 @@ func newInVersion(t *testing.T) *inVersion {
 	p := library.PathsOf(cfg)
 	iv.itemDir = p.MovieDir(bunny)
 	vdir := library.VersionDir(iv.itemDir, ivVersion)
+	// its package read the original's fields and found none (which lets
+	// nothing go: the original's record states its field order)
 	librarytest.WriteVersion(t, vdir, librarytest.Version{VersionID: ivVersion, PackageID: ivPackage, SourceIDs: []string{ivSource},
-		CreatedAt: "2026-10-06T10:00:00Z"})
+		CreatedAt: "2026-10-06T10:00:00Z", Package: map[string]any{"scan": map[string]any{"found": "progressive", "done": "progressive",
+			"verified": map[string]any{"ok": true, "complete": true}}}})
 	iv.old = filepath.Join(vdir, "original.mkv")
 	librarytest.Write(t, iv.old, make([]byte, 100))
+	// probed: a progressive picture and a stereo track, no subtitle
 	librarytest.WriteSource(t, library.SourceDir(iv.itemDir, ivSource), map[string]any{"sourceId": ivSource,
-		"file": map[string]any{"name": "original.mkv", "sizeBytes": 100}}, nil)
+		"file": map[string]any{"name": "original.mkv", "sizeBytes": 100}, "essence": statedEssence(map[string]any{"maxAudioChannels": 2}),
+		"container": tenMinutes, "streams": []any{map[string]any{"index": 0, "type": "video", "codec": "h264", "fieldOrder": "progressive"},
+			map[string]any{"index": 1, "type": "audio", "channels": 2, "language": "en"}}}, nil)
 	storetest.AddItem(t, st, bunny, "movie", "Big Buck Bunny", "")
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state, recordedat)
 		VALUES ($3, $1, 'original.mkv', $2, 100, 'present', now())`, bunny, iv.old, ivSource)
+	// its closed captions read by a probe that decoded its frames: none
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_sourcecaptions (source_id, item_id, state, captionwindows, captions, ffprobeversion, framesdecoded, duration, sourcesize, readat)
+		VALUES ($1, $2, 'read', '[{"at": 0, "start": 0, "end": 1.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.1, "start": 60, "end": 61.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.3, "start": 180, "end": 181.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.5, "start": 300, "end": 301.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.7, "start": 420, "end": 421.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.9, "start": 540, "end": 541.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}]', false, '7.1.1', 288, 600, 100, now())`, ivSource, bunny)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
 		VALUES ($1, $2, ARRAY[$5::varchar], 'complete', $3, $4, now() - interval '1 day')`, ivVersion, bunny, ivPackage, vdir, ivSource)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, sizebytes, isprimary, kind, sourceid)
@@ -351,7 +360,8 @@ func TestAnOldOriginalAskedToGoIsSuperseded(t *testing.T) {
 		t.Errorf("the note: %v", evs[0])
 	}
 	if !strings.Contains(res.Message, "the old file stays where it lies, superseded: the retire job moves it into the library's trash "+
-		"once a version of the title made of the new file is complete and verified; the title's folder records it (note ") {
+		"once a version of the title made of the new file is complete and verified, and only while that version carries "+
+		"everything of it the master spec keeps") || !strings.Contains(res.Message, "; the title's folder records it (note ") {
 		t.Errorf("the message: %s", res.Message)
 	}
 }
@@ -386,7 +396,10 @@ func TestAReplacedTitlesOldOriginalIsRetiredOnceItsNewVersionIsVerified(t *testi
 	const newVersion = "9d0b0b0b-0000-4000-8000-00000000000d"
 	vdir := library.VersionDir(iv.itemDir, newVersion)
 	librarytest.WriteVersion(t, vdir, librarytest.Version{VersionID: newVersion, PackageID: "4d0b0b0b-0000-4000-8000-00000000000d",
-		SourceIDs: []string{newSource}, CreatedAt: "2026-11-04T10:00:00Z"})
+		SourceIDs: []string{newSource}, CreatedAt: "2026-11-04T10:00:00Z",
+		Package: map[string]any{"essence": map[string]any{"maxAudioChannels": 2}, "subtitles": []any{},
+			"renditions": map[string]any{"audio": []any{map[string]any{"id": "a0", "channels": 2, "language": "en",
+				"sourceStreamIndex": 1}}}}})
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2, supersededat = now()
 		WHERE id = $1`, ivVersion, newVersion)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
@@ -412,6 +425,67 @@ func TestAReplacedTitlesOldOriginalIsRetiredOnceItsNewVersionIsVerified(t *testi
 	}
 	if _, err := os.Stat(iv.arrive); err != nil {
 		t.Errorf("the new file is gone: %v", err)
+	}
+}
+
+// A replace that asks for the old file to go is told it is kept, and why:
+// its answer says the old file stays until a version made of the new file
+// carries everything of it the master spec keeps, and once the new file's
+// version is complete and carries one German track of the old file's two,
+// the retire job keeps the old file, its report naming it, and the replace
+// asked about by its key (replaceSourceDone) says what keeps it: the
+// language, and how many tracks of it each file has.
+func TestAReplaceIsToldWhyItsOldFileIsKept(t *testing.T) {
+	iv := newInVersion(t)
+	ctx := context.Background()
+	st := iv.f.st
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_settings (id, key, valuetext) VALUES ('g', 'library.superseded.grace', '0'),
+		('d', 'library.superseded.delay', '1h')`)
+	// the old file: two German tracks and an English one
+	streams := []any{map[string]any{"index": 0, "type": "video", "codec": "h264", "fieldOrder": "progressive"},
+		map[string]any{"index": 1, "type": "audio", "channels": 2, "language": "de"},
+		map[string]any{"index": 2, "type": "audio", "channels": 2, "language": "de"},
+		map[string]any{"index": 3, "type": "audio", "channels": 2, "language": "en"}}
+	ess := map[string]any{"maxAudioChannels": 2, "audioLanguages": []string{"de", "en"}}
+	librarytest.WriteSource(t, library.SourceDir(iv.itemDir, ivSource), map[string]any{"sourceId": ivSource,
+		"file": map[string]any{"name": "original.mkv", "sizeBytes": 100}, "essence": statedEssence(ess), "container": tenMinutes,
+		"streams": streams}, nil)
+	res, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true,
+		Key: "handed-1"})
+	if err != nil || res.OldFileDeleted || !res.OldFileSuperseded ||
+		!strings.Contains(res.Message, "until it does, the old file is kept, and what keeps it is said") {
+		t.Fatalf("the replace: %+v %v", res, err)
+	}
+	newSource, err := library.SupersededBy(ctx, st.Pool(), ivSource)
+	if err != nil || newSource == "" {
+		t.Fatalf("superseded by: %q %v", newSource, err)
+	}
+	// the new file's version: one German track and the English one
+	const newVersion = "9d0b0b0b-0000-4000-8000-00000000000d"
+	vdir := library.VersionDir(iv.itemDir, newVersion)
+	librarytest.WriteVersion(t, vdir, librarytest.Version{VersionID: newVersion, PackageID: "4d0b0b0b-0000-4000-8000-00000000000d",
+		SourceIDs: []string{newSource}, CreatedAt: "2026-11-04T10:00:00Z",
+		Package: map[string]any{"essence": ess, "subtitles": []any{}, "renditions": map[string]any{"audio": []any{
+			map[string]any{"id": "a0", "channels": 2, "language": "de", "sourceStreamIndex": 1},
+			map[string]any{"id": "a1", "channels": 2, "language": "en", "sourceStreamIndex": 2}}}}})
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2, supersededat = now()
+		WHERE id = $1`, ivVersion, newVersion)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
+		VALUES ($1, $2, ARRAY[$3::varchar], 'complete', '4d0b0b0b-0000-4000-8000-00000000000d', $4, now() - interval '61 minutes')`,
+		newVersion, bunny, newSource, vdir)
+	const why = "audioTrack:de (its original has 2 audio tracks in de, and its package 1)"
+	rep, err := library.NewRetirer(st.Pool(), iv.f.cfg, processing.New(st.Pool())).Pass(ctx)
+	if err != nil || rep.Superseded != 0 || len(rep.Kept) != 1 || rep.Kept[0].SourceID != ivSource ||
+		rep.Kept[0].For != library.KeptSuperseded || !strings.Contains(rep.Kept[0].Why, why) {
+		t.Fatalf("the pass once the new version is complete: %+v %v", rep, err)
+	}
+	if _, err := os.Stat(iv.old); err != nil {
+		t.Fatalf("the old original is gone: %v", err)
+	}
+	done, err := iv.svc.ReplaceSourceDone(asAddon, bunny, "handed-1")
+	if err != nil || done == nil || done.OldFileDeleted || !strings.Contains(done.Message, "; the old file is kept: ") ||
+		!strings.Contains(done.Message, why) {
+		t.Fatalf("the replace asked about again: %+v %v", done, err)
 	}
 }
 
@@ -908,4 +982,30 @@ func derefTest(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// tenMinutes is a source record's container of a ten-minute film, the
+// length its read's windows are placed by.
+var tenMinutes = map[string]any{"format": "matroska,webm", "durationMs": 600000}
+
+// statedEssence is the essence e with each fact the deletion gate compares
+// that e doesn't state stated as nothing (false, null, none), as the record
+// logic writes every one of them.
+func statedEssence(e map[string]any) map[string]any {
+	out := map[string]any{}
+	for _, k := range []string{"surround", "losslessAudio", "objectAudio", "hdr10Metadata", "dolbyVision", "stereo3d",
+		"imageSubtitles", "styledSubtitles", "fonts", "closedCaptions"} {
+		out[k] = false
+	}
+	for _, k := range []string{"maxAudioChannels", "maxVideoHeight", "videoBitDepth", "subtitleTracks", "commentaryTracks",
+		"commentarySubtitles", "audioDescriptionTracks"} {
+		out[k] = nil
+	}
+	for _, k := range []string{"audioLanguages", "subtitleLanguages", "sdhSubtitleLanguages", "forcedSubtitleLanguages"} {
+		out[k] = []string{}
+	}
+	for k, v := range e {
+		out[k] = v
+	}
+	return out
 }

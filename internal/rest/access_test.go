@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +87,9 @@ var routes = []route{
 		"reason": "too few frames show a picture"}`, "worker"},
 	{http.MethodGet, "/api/picture/extras/" + extraX1, "", "worker"},
 	{http.MethodPost, "/api/picture/claim", `{"worker": "analyzer-0"}`, "worker"},
+	{http.MethodPost, "/api/captions/claim", `{"worker": "analyzer-0"}`, "worker"},
+	{http.MethodPut, "/api/captions/sources/src-m1", `{"token": "CAPTIONTOKEN", "original": {"captionWindows": [{"at": 0,
+		"start": 0, "end": 1.88, "frames": 48, "captions": false}], "sizeBytes": 6, "ffprobe": "7.1.1"}}`, "worker"},
 
 	{http.MethodPost, "/api/ingest", `{"path": "MEDIA/new.mkv", "type": "movie", "title": "New"}`, "ingest"},
 	{http.MethodPost, "/api/extras", `{"itemId": "m1", "path": "MEDIA/m1-trailer.mkv", "kind": "trailer"}`, "ingest"},
@@ -133,6 +137,8 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 		dir+"/movies/m2/versions/v2")
 	storetest.AddItem(t, st, "s1", "series", "A Show", "")
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, isprimary) VALUES ('a1', 'm1', $1, true)`, media)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, sizebytes, state)
+		VALUES ('src-m1', 'm1', 'm1.mkv', 6, 'present')`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_subtitleassets (id, item_id, path, format) VALUES ('sub1', 'm1', $1, 'vtt')`, sub)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemartworkdata (id, item_id, kind, contenttype, bytes)
 		VALUES ('d1', 'm1', 'poster', 'image/jpeg', '\xffd8')`)
@@ -194,6 +200,8 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 		"a worker's rules":                   storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_workerrules`),
 		"a subtitle attached": storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_subtitleassets
 			WHERE origin IS NOT NULL`),
+		"a read of closed captions": storetest.Count(t, st, `SELECT count(*) FROM com_nalet_katalog_sourcecaptions
+			WHERE state <> 'pending'`),
 	} {
 		if n != 0 {
 			t.Errorf("a refused caller left %s behind (%d rows)", what, n)
@@ -204,11 +212,21 @@ func TestEveryRouteIsForWhomItIsFor(t *testing.T) {
 	// route, as a later route changes what an earlier one reads: the
 	// packager's manifest replaces the package's subtitles).
 	for _, rt := range routes {
-		for _, c := range callers {
+		for i, c := range callers {
 			if !c.may[rt.who] {
 				continue
 			}
-			w := do(h, rt.method, rt.path, strings.ReplaceAll(rt.body, "MEDIA", cfg.NFSRoot), c.token)
+			body := strings.ReplaceAll(rt.body, "MEDIA", cfg.NFSRoot)
+			if strings.Contains(body, "CAPTIONTOKEN") {
+				// a captions report names the claim it is of: the original
+				// handed out again, to each caller
+				token := "claim-" + strconv.Itoa(i)
+				storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_sourcecaptions (source_id, item_id, state, claimedat,
+						claimtoken) VALUES ('src-m1', 'm1', 'pending', now(), $1)
+					ON CONFLICT (source_id) DO UPDATE SET claimedat = now(), claimtoken = $1`, token)
+				body = strings.ReplaceAll(body, "CAPTIONTOKEN", token)
+			}
+			w := do(h, rt.method, rt.path, body, c.token)
 			if w.Code < 200 || w.Code > 299 {
 				t.Errorf("%s: %s %s: %d %s, want it done", c.name, rt.method, rt.path, w.Code, w.Body.String())
 			}
