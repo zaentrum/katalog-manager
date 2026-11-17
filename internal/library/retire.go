@@ -936,7 +936,7 @@ func (r *Retirer) verify(ctx context.Context, set Settings, now time.Time, v *Ve
 	if dir == "" {
 		return level, errors.New("the catalog does not say where its folder is")
 	}
-	c, err := VerifyVersion(dir, level == VerifyFull)
+	c, err := verifySettled(ctx, dir, level == VerifyFull)
 	if err != nil {
 		return level, err
 	}
@@ -952,6 +952,25 @@ func (r *Retirer) verify(ctx context.Context, set Settings, now time.Time, v *Ve
 			AND verifiedat >= $2::timestamptz - make_interval(secs => $4::float8))`,
 		v.ID, now, level, set.VerifyMaxAge.Seconds())
 	return level, err
+}
+
+// verifySettled is VerifyVersion, read once more where the chain does not
+// hold in a file a mend writes: library-v2-mend.py writes a mended
+// version's files one after the other, the chain's heads last, under a lock
+// of its own this job does not take, and while it writes the chain does not
+// hold. The second read comes a mend's time later (mendSettle); a version
+// still broken then is broken.
+func verifySettled(ctx context.Context, dir string, full bool) (*Chain, error) {
+	c, err := VerifyVersion(dir, full)
+	if err == nil || !mendMayBeUnderWay(err) {
+		return c, err
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(mendSettle):
+	}
+	return VerifyVersion(dir, full)
 }
 
 // isRecordedOriginal checks that the file at path is the original as it

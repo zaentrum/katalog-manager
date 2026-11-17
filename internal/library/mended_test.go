@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zaentrum/katalog-manager/internal/library/librarytest"
 )
@@ -14,7 +15,8 @@ import (
 // A version the schemas' library-v2-mend.py mended is verified again in full
 // by the run's mends journal and noted verified then: while it is what the
 // tool left. A journal of another package.json notes nothing; a second call
-// changes nothing; a version put back is verified and noted again.
+// changes nothing. A version whose full verification fails, and one the run
+// left mid-way, have the verification noted for them taken away.
 func TestAMendedVersionIsVerifiedAgainAndNoted(t *testing.T) {
 	f := newBesideFixture(t)
 	ctx := context.Background()
@@ -23,6 +25,10 @@ func TestAMendedVersionIsVerifiedAgainAndNoted(t *testing.T) {
 	}
 	vid := IDOf(mgBeside + ":version")
 	vdir := VersionDir(f.itemDir(mgBeside), vid)
+	// its video rendition's init segment as the packager wrote it, its edit
+	// list cutting 1328
+	init := filepath.Join(vdir, "hls/v0/init.mp4")
+	librarytest.Write(t, init, librarytest.InitSegment(1328, "vide"))
 	librarytest.Fill(t, vdir)
 	m := f.migration(t)
 	if rep, err := m.Mended(ctx, nil); err != nil || rep.Versions+rep.Unchanged+len(rep.Skipped) != 0 {
@@ -30,12 +36,11 @@ func TestAMendedVersionIsVerifiedAgainAndNoted(t *testing.T) {
 	}
 	// the mend: the init segment changed in place, its line in the checksums,
 	// its entry in package.json
-	init := filepath.Join(vdir, "hls/v0/init.mp4")
 	before, err := os.ReadFile(init)
 	if err != nil {
 		t.Fatal(err)
 	}
-	after := []byte(strings.ToUpper(string(before)))
+	after := librarytest.InitSegment(0, "vide")
 	librarytest.Write(t, init, after)
 	pj := filepath.Join(vdir, PackageFile)
 	var pkg map[string]any
@@ -92,14 +97,45 @@ func TestAMendedVersionIsVerifiedAgainAndNoted(t *testing.T) {
 	if c, err := VerifyVersion(vdir, true); err != nil || c.Pending {
 		t.Errorf("the mended chain, in full: %+v, %v", c, err)
 	}
-	// changed since, with no entry: the file fails its line, nothing is noted
+	// changed since, with no entry: the file fails its line, nothing is
+	// noted, and the full verification from before the mend is taken away
 	librarytest.Write(t, init, before)
-	reset := `UPDATE com_nalet_katalog_itemversions SET verifiedat = NULL, verifiedlevel = NULL WHERE id = $1`
-	if _, err := f.st.Pool().Exec(ctx, reset, vid); err != nil {
+	row := func() (string, bool) {
+		t.Helper()
+		var level *string
+		var at *time.Time
+		if err := f.st.Pool().QueryRow(ctx, `SELECT verifiedlevel, verifiedat FROM com_nalet_katalog_itemversions
+			WHERE id = $1`, vid).Scan(&level, &at); err != nil {
+			t.Fatal(err)
+		}
+		return deref(level), at != nil
+	}
+	verified := `UPDATE com_nalet_katalog_itemversions SET verifiedat = '2026-10-09T01:00:00Z', verifiedlevel = 'full' WHERE id = $1`
+	if _, err := f.st.Pool().Exec(ctx, verified, vid); err != nil {
 		t.Fatal(err)
 	}
 	if rep, err := m.Mended(ctx, nil); err != nil || rep.Versions != 0 || len(rep.Skipped) != 1 ||
-		!strings.Contains(rep.Skipped[0].Reason, "its chain does not hold") {
+		!strings.Contains(rep.Skipped[0].Reason, "its chain does not hold") ||
+		!strings.Contains(rep.Skipped[0].Reason, "taken away") {
 		t.Errorf("Mended over a file changed since: %+v, %v", rep, err)
+	}
+	if level, at := row(); level != "" || at {
+		t.Errorf("the version Mended found broken is still verified: %q %v", level, at)
+	}
+	// a mend the run left mid-way: skipped, its verification taken away,
+	// whatever its bytes
+	librarytest.Write(t, init, after)
+	if _, err := f.st.Pool().Exec(ctx, verified, vid); err != nil {
+		t.Fatal(err)
+	}
+	librarytest.Write(t, filepath.Join(f.runDir, MendsJournal), []byte(
+		`{"at": "2026-10-09T02:00:00.250000Z", "op": "mend", "dir": "`+rel+`", "itemId": "`+mgBeside+`", "versionId": "`+vid+
+			`", "packageId": "`+IDOf(mgBeside+":package")+`"}`+"\n"))
+	if rep, err := m.Mended(ctx, nil); err != nil || rep.Versions != 0 || len(rep.Skipped) != 1 ||
+		!strings.Contains(rep.Skipped[0].Reason, "stopped mid-way") || !strings.Contains(rep.Skipped[0].Reason, "taken away") {
+		t.Errorf("Mended over a mend left mid-way: %+v, %v", rep, err)
+	}
+	if level, at := row(); level != "" || at {
+		t.Errorf("the version a mend left mid-way is still verified: %q %v", level, at)
 	}
 }

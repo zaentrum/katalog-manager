@@ -2653,14 +2653,29 @@ boxes of a version's init segments in place after its package completed — an
 closes the chain again as a fill does: the file's line in `checksums.sha256`,
 `package.json` with the checksums' new hash and the change in its `mends`, and
 `.complete`. A verification holds a mended file to its line as any other, and
-its entries to the checksums: they run with no gap (each made to the bytes the
-one before left) and the last ends at the digest the checksums list; a file
-changed with no entry fails its line. After
+its entries to the checksums and the file, at every level, as the schemas'
+validator does: each entry of the fields the format lists, of a kind it lists,
+an `avsync-editlist` the init segment (`hls/<rendition>/init.mp4`) of one of the
+package's video renditions whose track is a video track, its box the edit list
+and its new value 0, the entries in the order they were made; they run with no
+gap (each made to the bytes the one before left), the last ends at the digest
+the checksums list and at the file's bytes, and each, newest first, changed the
+one field it names and nothing else — its `old` written back gives its
+`sha256Before`. A file changed with no entry fails its line, and a mend's
+temporary file (`*.mending`) in the folder breaks the chain. After
 each `--apply` or `--undo` of it, `POST /api/library/migrations/<run>/mends`
 (the service account and admins) verifies every version the run's
 `mends.jsonl` says it mended or put back again, in full, and notes it
-verified then, while it is what the tool left; it takes `{"items": [...]}` and
-answers as the checksums call does, and calling it again changes nothing.
+verified then, while it is what the tool left; one the run left mid-way (its
+last line a `mend` or an `undo`) and one whose full verification fails are
+skipped and lose the verification noted for them (`verifiedat` and
+`verifiedlevel` cleared), so the retire job verifies them in full before an
+original goes. It takes `{"items": [...]}` and answers as the checksums call
+does, and calling it again changes nothing. The tool writes a version's files
+one after the other and takes a lock of its own, which the retire job does not:
+a chain the job finds broken in a file a mend writes (`.complete`,
+`package.json`, `checksums.sha256`, an init segment, a `*.mending`) it reads once
+more five seconds later, and refuses the version when it is still broken.
 Where the library record holds subtitles the catalog
 has no rows for — the migration's subtitles phase finds them with the
 schemas' `library-v2-rebuild.py --compare --differences` and plans them in

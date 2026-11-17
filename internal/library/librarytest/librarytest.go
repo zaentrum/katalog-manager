@@ -239,3 +239,34 @@ func WriteExtra(t testing.TB, dir string, x Extra) string {
 	Write(t, filepath.Join(dir, ".complete"), []byte(complete+"\n"))
 	return complete
 }
+
+// InitSegment is an init segment of one track as a packager writes one,
+// with no media: an ftyp and a moov whose track's handler is handler
+// ("vide", "soun") and whose edit list holds one media edit at mediaTime,
+// the boxes a mend reads and changes.
+func InitSegment(mediaTime int32, handler string) []byte {
+	box := func(kind string, payload ...[]byte) []byte {
+		var b []byte
+		for _, p := range payload {
+			b = append(b, p...)
+		}
+		n := uint32(8 + len(b))
+		return append([]byte{byte(n >> 24), byte(n >> 16), byte(n >> 8), byte(n), kind[0], kind[1], kind[2], kind[3]}, b...)
+	}
+	u32 := func(v uint32) []byte { return []byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)} }
+	elst := box("elst", u32(0), u32(1), u32(0), u32(uint32(mediaTime)), []byte{0, 1, 0, 0})
+	mdhd := box("mdhd", u32(0), make([]byte, 8), u32(16000), make([]byte, 8))
+	hdlr := box("hdlr", u32(0), u32(0), []byte(handler), make([]byte, 13))
+	trak := box("trak", box("tkhd", u32(3), make([]byte, 80)), box("edts", elst),
+		box("mdia", mdhd, hdlr, box("minf", box("stbl"))))
+	return append(box("ftyp", []byte("iso6"), u32(0), []byte("iso6cmfc")), box("moov", box("mvhd", u32(0), make([]byte, 96)), trak)...)
+}
+
+// Renditions is package.json's renditions for DefaultFiles: v0 the video,
+// a0 the stereo sound.
+func Renditions() map[string]any {
+	return map[string]any{
+		"video": []any{map[string]any{"id": "v0", "dir": "hls/v0"}},
+		"audio": []any{map[string]any{"id": "a0", "dir": "hls/a0"}},
+	}
+}

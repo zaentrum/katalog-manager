@@ -20,6 +20,11 @@ import (
 // replaced, a mended (undone) line once they are, with the .complete it left.
 const MendsJournal = "mends.jsonl"
 
+// MendingSuffix ends the name of the file library-v2-mend.py writes a
+// file's new bytes to beside it before it renames it into place: one in a
+// package's folder is a mend stopped mid-way, or one under way.
+const MendingSuffix = ".mending"
+
 // mendedLine is a line of the mends journal.
 type mendedLine struct {
 	At        string `json:"at"`
@@ -31,10 +36,10 @@ type mendedLine struct {
 	Complete  string `json:"complete"` // "sha256:<hex>" of the package.json the step left
 }
 
-// readMended reads the versions a mends journal says were mended or put
-// back, each once, as its last line has it; a version whose last line is a
-// mend or an undo the run did not finish is left out (the tool finishes it
-// first). A line a crash cut short is not one.
+// readMended reads the versions a mends journal names, each once, as its
+// last line has it: mended or undone where the run finished the step, mend
+// or undo where it stopped mid-way (the tool finishes it on its next run of
+// the same name). A line a crash cut short is not one.
 func readMended(path string) ([]mendedLine, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -59,9 +64,7 @@ func readMended(path string) ([]mendedLine, error) {
 	}
 	out := make([]mendedLine, 0, len(last))
 	for _, l := range last {
-		if l.Op == "mended" || l.Op == "undone" {
-			out = append(out, l)
-		}
+		out = append(out, l)
 	}
 	sort.Slice(out, func(i, k int) bool { return out[i].Dir < out[k].Dir })
 	return out, nil
@@ -79,8 +82,13 @@ func readMended(path string) ([]mendedLine, error) {
 // A version is noted only while it is what the tool left: the catalog keeps
 // it, complete and of that package, in the folder the journal names, its
 // chain holds from the package.json the tool wrote, and a full verification
-// passes. Any other is skipped, with why. Calling it again changes nothing:
-// a version verified in full since the step is counted unchanged. only
+// passes. Any other is skipped, with why; one the run left mid-way (its last
+// line a mend or an undo), and one whose full verification fails, has the
+// verification the catalog noted for it taken away too (verifiedat and
+// verifiedlevel cleared), as it stood for bytes the version no longer has
+// — the retire job then verifies it in full before an original goes, and
+// refuses it while it does not hold. Calling it again changes nothing: a
+// version verified in full since the step is counted unchanged. only
 // narrows it to those items. A run whose folder holds no such journal notes
 // nothing.
 func (m *Migration) Mended(ctx context.Context, only []string) (FilledReport, error) {
@@ -150,13 +158,16 @@ func (m *Migration) noteMended(ctx context.Context, l mendedLine) (bool, string,
 		return false, fmt.Sprintf("the catalog keeps the version in %s, not in %s", m.relOf(deref(keptIn)), l.Dir), nil
 	case deref(pkg) != l.PackageID:
 		return false, "the catalog holds another package of the version than the one that was " + l.Op, nil
+	case l.Op == "mend" || l.Op == "undo":
+		why := "the run stopped mid-way through a " + l.Op + " of it: the tool finishes it on its next run of the same name"
+		return m.unverified(ctx, l, why)
 	case deref(level) == VerifyFull && verified != nil && !verified.Before(at):
 		return false, "", nil // verified in full since the step: nothing to note
 	}
 	c, err := VerifyVersion(dir, true)
 	switch {
 	case err != nil:
-		return false, "its chain does not hold: " + err.Error(), nil
+		return m.unverified(ctx, l, "its chain does not hold: "+err.Error())
 	case c.Pending:
 		return false, "its checksums are pending", nil
 	case l.Complete == "" || c.Complete != l.Complete:
@@ -169,4 +180,20 @@ func (m *Migration) noteMended(ctx context.Context, l mendedLine) (bool, string,
 		return false, "", err
 	}
 	return tag.RowsAffected() == 1, "", nil
+}
+
+// unverified takes away the verification the catalog noted for the version
+// of l, which a mend left mid-way or whose bytes no longer hold: why it was
+// skipped, said so.
+func (m *Migration) unverified(ctx context.Context, l mendedLine, why string) (bool, string, error) {
+	tag, err := m.pool.Exec(ctx, `UPDATE com_nalet_katalog_itemversions SET verifiedat = NULL, verifiedlevel = NULL,
+			modifiedat = now()
+		WHERE id = $1 AND item_id = $2 AND (verifiedat IS NOT NULL OR verifiedlevel IS NOT NULL)`, l.VersionID, l.ItemID)
+	if err != nil {
+		return false, "", err
+	}
+	if tag.RowsAffected() == 1 {
+		why += "; the verification noted for it is taken away"
+	}
+	return false, why, nil
 }
