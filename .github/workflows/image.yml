@@ -1,7 +1,7 @@
 name: image
 
 # Build the container and publish it to the GitHub Container Registry
-# (ghcr.io/zaentrum/<repo>). The OKD demo pulls images from here.
+# (ghcr.io/zaentrum/<repo>).
 on:
   push:
     branches: [main]

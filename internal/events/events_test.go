@@ -103,9 +103,9 @@ func TestPublishWithoutABus(t *testing.T) {
 // The extras' topics are the tenant's, beside the items'.
 func TestConfigureNamesTheExtrasTopics(t *testing.T) {
 	t.Cleanup(func() { Configure("stube.") })
-	Configure("zaentrum-beta")
-	if TopicExtraQueued != "zaentrum-beta.catalog.extra.queued" || TopicExtraTranscoded != "zaentrum-beta.catalog.extra.transcoded" ||
-		TopicExtraPackaged != "zaentrum-beta.catalog.extra.packaged" || TopicPackaged != "zaentrum-beta.catalog.item.packaged" {
+	Configure("media")
+	if TopicExtraQueued != "media.catalog.extra.queued" || TopicExtraTranscoded != "media.catalog.extra.transcoded" ||
+		TopicExtraPackaged != "media.catalog.extra.packaged" || TopicPackaged != "media.catalog.item.packaged" {
 		t.Errorf("topics: %s %s %s %s", TopicExtraQueued, TopicExtraTranscoded, TopicExtraPackaged, TopicPackaged)
 	}
 }
