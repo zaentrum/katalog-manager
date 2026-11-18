@@ -41,8 +41,15 @@ func ccFixture(t *testing.T) (h http.Handler, token, media string, s *store.Stor
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(record, "source.json"), []byte(`{"schema": "zaentrum.library.source/2",
-		"container": {"format": "matroska,webm", "durationMs": 600000}, "streams": [{"index": 0, "type": "video",
+		"essence": {}, "container": {"format": "matroska,webm", "durationMs": 600000}, "streams": [{"index": 0, "type": "video",
 		"codec": "h264", "fieldOrder": "progressive"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// and its stored probe, which gives the plan of its picture: its start
+	// and frame rate
+	if err := os.WriteFile(filepath.Join(record, library.ProbeFile), []byte(`{"format": {"start_time": "0.000000"},
+		"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "field_order": "progressive",
+		"avg_frame_rate": "24/1"}]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	storetest.AddItem(t, s, ccFilm, "movie", "A Film", "")
@@ -97,7 +104,7 @@ func windowsOf(captions string) string {
 		{"at": 0.3, "start": 180, "end": 181.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0},
 		{"at": 0.5, "start": 300, "end": 301.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0},
 		{"at": 0.7, "start": 420, "end": 421.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0},
-		{"at": 0.9, "start": 540, "end": 541.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}], "duration": 600, "sizeBytes": 6`
+		{"at": 0.9, "start": 540, "end": 541.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}], "duration": 600, "span": {"start": 0, "end": 600}, "sizeBytes": 6`
 }
 
 // The analyzer's captions backfill asks for the originals to read and is
@@ -208,6 +215,11 @@ func TestTheAnalyzerReadsTheClosedCaptionsTheBackfillHandsOut(t *testing.T) {
 				t.Fatalf("the claim after the backoff: %+v", c)
 			}
 			tok = `"token": "` + c.Items[0].Token + `"`
+			// a span of one number, not {start, end}, is no report of a read
+			if code, body := put(`{` + tok + `, "original": {` + strings.Replace(read, `"span": {"start": 0, "end": 600}`,
+				`"span": 600`, 1) + `, "ffprobe": "7.1.1"}}`); code != http.StatusBadRequest {
+				t.Fatalf("a span of one number: %d %s; want it refused", code, body)
+			}
 			code, body = put(`{` + tok + `, "original": {"captionWindows": [
 				{"at": 0, "start": 0, "end": 1.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0},
 				{"at": 0.1, "start": 60, "end": 61.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0},
@@ -215,7 +227,7 @@ func TestTheAnalyzerReadsTheClosedCaptionsTheBackfillHandsOut(t *testing.T) {
 				{"at": 0.5, "start": null, "end": null, "frames": 0, "captions": null},
 				{"at": 0.7, "start": 420, "end": 421.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0},
 				{"at": 0.9, "start": 540, "end": 541.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}],
-				"duration": 600, "sizeBytes": 6, "ffprobe": "7.1.1"}}`)
+				"duration": 600, "span": {"start": 0, "end": 600}, "sizeBytes": 6, "ffprobe": "7.1.1"}}`)
 			if code != http.StatusOK || json.Unmarshal([]byte(body), &got) != nil || got.Original.State != "read" ||
 				len(got.Original.CaptionWindows) != 6 || got.Original.Reason == nil ||
 				*got.Original.Reason != "its windows at 50% decoded no frame" || got.Failures != 2 {

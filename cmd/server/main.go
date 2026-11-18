@@ -220,6 +220,12 @@ func run() error {
 	if err := st.EnsureCaptionsWaiting(bgCtx); err != nil {
 		log.Printf("catalog: migration db/migrations/059_captions_retire_waiting.sql is missing and could not be applied: %v; the captions backfill hands out nothing until it is", err)
 	}
+	// The span of the picture a read says, which the gate holds it to, and
+	// the finding of a picture whose captions windows alone don't tell
+	// (migration 060, after 058).
+	if err := st.EnsureCaptionsSpan(bgCtx); err != nil {
+		log.Printf("catalog: migration db/migrations/060_captions_read_span.sql is missing and could not be applied: %v; the captions backfill hands out nothing until it is", err)
+	}
 	// An item the scanner made before it wrote its own name into the row has
 	// it in its record alone: the row follows the record (bounded, in the
 	// background).

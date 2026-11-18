@@ -137,6 +137,11 @@ func (r *Retirer) extras(ctx context.Context, p Paths, set Settings, now time.Ti
 
 // retireExtra deletes the original of the extra x: verified first, unless
 // it is in the trash already (a pass before stopped short of noting it).
+// beforeExtraMove is a test's seam: called right before an extra's original
+// is checked against its record the second time and moved; nil in the
+// service.
+var beforeExtraMove func()
+
 func (r *Retirer) retireExtra(ctx context.Context, p Paths, set Settings, now time.Time, x pendingExtra) error {
 	root, err := r.rootOf(p, x.path)
 	if err != nil {
@@ -164,6 +169,14 @@ func (r *Retirer) retireExtra(ctx context.Context, p Paths, set Settings, now ti
 		}
 		if _, err := VerifyExtra(x.dir, set.Verify == VerifyFull); err != nil {
 			return fmt.Errorf("its folder does not verify (%s): %v; the original is kept", set.Verify, err)
+		}
+		// its identity again, right before it is moved or unlinked: a file
+		// put in its place while its folder was verified is not the original
+		if beforeExtraMove != nil {
+			beforeExtraMove()
+		}
+		if err := isRecordedOriginal(x.path, *x.size, x.qh1); err != nil {
+			return err
 		}
 		if set.TrashGrace == 0 {
 			if err := os.Remove(x.path); err != nil && !errors.Is(err, os.ErrNotExist) {

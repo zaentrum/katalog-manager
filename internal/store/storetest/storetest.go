@@ -125,6 +125,9 @@ func OpenInTimeZone(t testing.TB, tz string) *store.Store {
 	if err := st.EnsureCaptionsWaiting(ctx); err != nil {
 		t.Fatalf("apply the captions waiting migration: %v", err)
 	}
+	if err := st.EnsureCaptionsSpan(ctx); err != nil {
+		t.Fatalf("apply the captions span migration: %v", err)
+	}
 	return st
 }
 

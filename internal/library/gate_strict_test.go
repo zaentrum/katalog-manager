@@ -34,14 +34,15 @@ func TestAnHEVCOriginalsCaptionsNeedEveryPacketRead(t *testing.T) {
 		{"hevc, windows alone", `{"container": {"format": "matroska,webm", "durationMs": 600000}, "streams": [{"index": 0, "type": "video", "codec": "hevc"}]}`, "",
 			"", CaptionsUnscanned},
 		{"hevc by its probe alone", `{"container": {"format": "matroska,webm", "durationMs": 600000}, "streams": [{"index": 0, "type": "video"}]}`,
-			`{"streams": [{"index": 0, "codec_type": "video", "codec_name": "hevc"}]}`, "", CaptionsUnscanned},
+			`{"streams": [{"index": 0, "codec_type": "video", "codec_name": "hevc", "start_time": "0.000000",
+				"avg_frame_rate": "24/1"}]}`, "", CaptionsUnscanned},
 		{"hevc, its packets read whole, no signature", `{"container": {"format": "matroska,webm", "durationMs": 600000}, "streams": [{"index": 0, "type": "video", "codec": "hevc",
 			"captionSignature": false}]}`, "", "", ""},
 		{"hevc, a signature found", `{"container": {"format": "matroska,webm", "durationMs": 600000}, "streams": [{"index": 0, "type": "video", "codec": "hevc",
 			"captionSignature": true}]}`, "", CaptionsCarried, ""},
 		{"h264, windows alone", `{"container": {"format": "matroska,webm", "durationMs": 600000}, "streams": [{"index": 0, "type": "video", "codec": "h264"}]}`, "", "", ""},
 	} {
-		var probes []Doc
+		probes := planProbes
 		if c.probe != "" {
 			probes = []Doc{doc(t, c.probe)}
 		}
@@ -83,7 +84,7 @@ func TestTheWindowsTellNoneOnlyWhenEveryPlannedOneIsRead(t *testing.T) {
 			}
 		}),
 	} {
-		carried, unknown := captionsRule([]Doc{film(600)}, nil, read(600, ws...))
+		carried, unknown := captionsRule([]Doc{film(600)}, planProbes, read(600, ws...))
 		if carried != "" || !strings.HasPrefix(unknown, CaptionsUnknown) {
 			t.Errorf("%s: carried %q, unknown %q; want captions not known", name, carried, unknown)
 		}
@@ -138,7 +139,7 @@ func TestAWindowThatIsNoWindowIsAFailedOne(t *testing.T) {
 				c.showed)
 			continue
 		}
-		carried, unknown := captionsRule([]Doc{film(600)}, nil, read(600, ws...))
+		carried, unknown := captionsRule([]Doc{film(600)}, planProbes, read(600, ws...))
 		switch {
 		case c.showed && (!strings.HasPrefix(carried, CaptionsCarried+" at ") || unknown != ""):
 			t.Errorf("%s: carried %q, unknown %q; want the captions it showed carried", c.name, carried, unknown)
@@ -213,12 +214,15 @@ func TestARecordOrProbeThatIsNoneHolds(t *testing.T) {
 	}
 }
 
-// A package's scan holds its original in fields unless it found exactly
-// NothingFound, did nothing to the picture (ScanDone) and verified it whole
-// (verified.ok and verified.complete true): a word found, a blank, another
-// type, none, a done of something, a verification not ok or not complete or
-// none, a scan that is no object - each holds, and none of them breaks the
-// gate. A scan that found nothing lets nothing go either.
+// The scan of the package of the version an original is retired from holds
+// it in fields unless it found exactly NothingFound, did nothing to the
+// picture (ScanDone) and verified it whole (verified.ok and
+// verified.complete true): a word found, a blank, another type, none, a done
+// of something, a verification not ok or not complete or none, a scan that
+// is no object - each holds, and none of them breaks the gate. A scan that
+// found nothing lets nothing go either. Of another version made of it, only
+// a found other than NothingFound holds, or NothingFound its own counts say
+// otherwise of (chunks in fields, more fields than frames: scanCountsHold).
 func TestAPackagesScanHoldsUnlessItVerifiedThePictureProgressive(t *testing.T) {
 	ok := map[string]any{"ok": true, "complete": true}
 	for name, scan := range map[string]any{
@@ -250,9 +254,26 @@ func TestAPackagesScanHoldsUnlessItVerifiedThePictureProgressive(t *testing.T) {
 		pkg["scan"] = scan
 		librarytest.WriteVersion(t, VersionDir(d, "v-a"), librarytest.Version{VersionID: "v-a", PackageID: "p-v-a",
 			SourceIDs: []string{"a"}, CreatedAt: "2026-10-01T10:00:00Z", Package: pkg})
-		if why, _ := inFields(d, "", nil, []string{"a"}, []Doc{rec}, nil, nil); !strings.HasPrefix(why,
+		own, err := readRecordDoc(filepath.Join(VersionDir(d, "v-a"), PackageFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if why, _ := inFields(d, "v-a", own, []string{"a"}, []Doc{rec}, nil, nil); !strings.HasPrefix(why,
 			"the scan of its package of version v-a ") {
 			t.Errorf("%s: %q; want it held by the scan", name, why)
+		}
+		// of another version made of it: a found other than NothingFound,
+		// or one its counts say otherwise of
+		var found any
+		hasFound := false
+		if x, ok := scan.(map[string]any); ok {
+			found, hasFound = x["found"]
+		}
+		countsSay := name == "found progressive, not ok" || name == "found progressive, no verification"
+		other := hasFound && found != nil && (found != NothingFound || countsSay)
+		if why, _ := inFields(d, "", nil, []string{"a"}, []Doc{rec}, nil, nil); other != strings.HasPrefix(why,
+			"the scan of its package of version v-a found") {
+			t.Errorf("%s, of another version: %q; want it held %v", name, why, other)
 		}
 	}
 	d := t.TempDir()
@@ -271,7 +292,7 @@ func TestAPackagesScanHoldsUnlessItVerifiedThePictureProgressive(t *testing.T) {
 func TestTheGateHoldsWhatItIsNotTold(t *testing.T) {
 	d := t.TempDir()
 	sourceRecord(t, d, "a", "matroska,webm", []any{map[string]any{"index": 0, "type": "video", "codec": "h264",
-		"fieldOrder": "progressive"}}, "")
+		"fieldOrder": "progressive"}}, progressiveProbe)
 	packageOf(t, d, "v-a", verifiedProgressive(), "a")
 	if g, err := ReadGateWith(d, "v-a", GateFacts{}, "a"); err != nil || !strings.HasPrefix(g.Unknown, CaptionsUnknown) {
 		t.Errorf("facts that set nothing: %+v, %v; want captions not known", g, err)
@@ -284,7 +305,7 @@ func TestTheGateHoldsWhatItIsNotTold(t *testing.T) {
 	}
 	for _, v := range []any{"false", 1, []any{0}, "true"} {
 		e := Doc{{Key: "essence", Value: Doc{{Key: "closedCaptions", Value: v}}}}
-		if carried, unknown := captionsRule([]Doc{e}, nil, read(600, every()...)); carried == "" &&
+		if carried, unknown := captionsRule([]Doc{e}, planProbes, read(600, every()...)); carried == "" &&
 			!strings.HasPrefix(unknown, CaptionsUnknown) {
 			t.Errorf("closedCaptions %v: carried %q, unknown %q; want it held", v, carried, unknown)
 		}

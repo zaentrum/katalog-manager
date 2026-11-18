@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -344,8 +346,6 @@ func ReadGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (
 		}
 		if why := recordShape(rec); why != "" && recordUnread == "" {
 			recordUnread = "its source record can't be read: " + why
-		} else if why := recordGaps(rec); why != "" && recordGap == "" {
-			recordGap = "its source record doesn't tell what the gate compares: " + why
 		}
 		records = append(records, rec)
 		essences = append(essences, essenceOf(rec))
@@ -356,6 +356,16 @@ func ReadGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (
 		if err == nil {
 			if why := probeShape(probe); why != "" {
 				err = errors.New(why)
+			} else if list, _ := listOf(probe, "streams"); len(probeFilms(list)) == 0 {
+				// a probe that gives no film (film_of) gives no plan and no
+				// field order of one, whatever the policy for an absent field
+				// order says; one whose record lists a picture is of another
+				// file, or cut short
+				if len(filmsOf(rec, false, nil)) > 0 {
+					err = errors.New("it lists no picture, and its record lists one")
+				} else {
+					err = errors.New("it lists no picture (a video stream that is no cover): it gives no film")
+				}
 			}
 		}
 		switch {
@@ -367,6 +377,17 @@ func ReadGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (
 		default:
 			probes = append(probes, nil)
 		}
+	}
+	for i, rec := range records {
+		if recordShape(rec) != "" {
+			continue
+		}
+		if why := recordGaps(rec, probes[i]); why != "" && recordGap == "" {
+			recordGap = "its source record doesn't tell what the gate compares: " + why
+		}
+	}
+	if why := packageFlags(essenceOf(pkg)); why != "" && recordGap == "" {
+		recordGap = why
 	}
 	lost := DeletionGate(essences, essenceOf(pkg))
 	// the version the catalog says is made of the original: its record says
@@ -481,10 +502,13 @@ func ReadGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (
 // (readReleases), and nothing else unknown nor lost beyond what the spec
 // drops. A read of them may let it go; what the closing rule leaves not
 // known (closedNotKnown) no read does, nor a finding of a length that is
-// not its record's (CaptionsLengthMismatch), final for its file and record.
+// not its record's (CaptionsLengthMismatch), final for its file and record,
+// nor records that give no length or no plan of its picture.
 func (g Gate) OnlyCaptionsUnknown() bool {
 	return g.captionsUnknown != "" && g.Unknown == g.captionsUnknown && len(g.Beyond()) == 0 &&
 		!strings.HasPrefix(g.Unknown, CaptionsLengthMismatch) && !strings.HasPrefix(g.Unknown, CaptionsNoLength) &&
+		!strings.HasPrefix(g.Unknown, CaptionsNoPlan) &&
+		!strings.HasPrefix(g.Unknown, CaptionsUnknown+": "+PictureNotFilm) &&
 		!strings.HasPrefix(g.Unknown, CaptionsUnscanned) &&
 		slices.ContainsFunc(readReleases, func(p string) bool { return strings.HasPrefix(g.Unknown, p) })
 }
@@ -497,8 +521,9 @@ const CopyUnproven = "its package's picture is its original's own stream, copied
 
 // copyHolds says why the package record pkg holds its original by the copy
 // rule: its top video rendition's encoder is copy (CopyUnproven), or it says
-// none (no rendition, no encoder, one that is no word), so whether it
-// copies can't be told; "" when it states an encoder that is not copy.
+// none (no rendition, no encoder, one that is no word) or a word that is no
+// encoder the transcoder writes (TranscoderEncoders), so whether it copies
+// can't be told; "" when it states one of the transcoder's encoders.
 func copyHolds(pkg Doc) string {
 	v0 := topVideo(pkg)
 	if v0 == nil {
@@ -510,11 +535,28 @@ func copyHolds(pkg Doc) string {
 	case !ok || strings.TrimSpace(w) == "":
 		return "its package's top video rendition states no encoder, so whether it copies its original's picture " +
 			"can't be told"
-	case strings.EqualFold(strings.TrimSpace(w), "copy"):
+	case strings.TrimSpace(w) == "copy":
 		return CopyUnproven + " (encoder copy), and no record that proves the copy is read yet"
+	case !slices.Contains(TranscoderEncoders, w):
+		return fmt.Sprintf("its package's top video rendition says encoder %q, no word the transcoder writes of an "+
+			"encode (%s) nor copy: whether it copies its original's picture can't be told", w,
+			strings.Join(TranscoderEncoders, ", "))
 	}
 	return ""
 }
+
+// TranscoderEncoders are the words the transcoder writes of a rendition it
+// encoded (and copy of one it copied): an encoder word of no other kind, or
+// one the gate doesn't know, holds the original as one whose copy can't be
+// told.
+//
+// They are the transcoder's own, as its RungPlan.encoder says them at
+// src/transcoder/decision.py:825 of zaentrum/transcoder at cf2c15f
+// (Encoders and CPU_ENCODERS just above it name the four). A word the
+// transcoder adds or renames holds its originals here until this list
+// takes it; TestTheTranscodersEncoderWordsAreTheGates pins the list, so a
+// change of it is made on purpose, against that file.
+var TranscoderEncoders = []string{"hevc_nvenc", "h264_nvenc", "libx265", "libx264"}
 
 // versionSourceList is what the record of the version versionID of the item
 // folder itemDir says it was made of (version.json's sourceIds), and whether
@@ -648,6 +690,9 @@ func inFields(itemDir, versionID string, ownPkg Doc, sourceIDs []string, records
 				}
 			}
 		}
+		if why := pictureNotFilm(rec, probe); why != "" {
+			return why, ""
+		}
 		if i < len(probes) && probes[i] != nil {
 			pp := filmsOf(probes[i], true, nil)
 			if len(pp) > 1 {
@@ -739,7 +784,8 @@ func scansOf(itemDir, sourceID string) string {
 	for _, e := range entries {
 		id := e.Name()
 		if !e.IsDir() {
-			continue
+			// a link, a file: what it holds can't be told from where it lies
+			return "the versions of its title hold " + id + ", which is no folder of its own (a link, a file)"
 		}
 		dir := filepath.Join(itemDir, "versions", id)
 		ver, err := readRecordDoc(filepath.Join(dir, VersionFile))
@@ -764,13 +810,108 @@ func scansOf(itemDir, sourceID string) string {
 		if err != nil {
 			return "its package of version " + id + " can't be read: " + err.Error()
 		}
-		if why := scanHolds(pkg); why != "" {
+		if why := scanFoundHolds(pkg); why != "" {
 			if unnamed {
 				return "the scan of the package of version " + id + ", whose record (version.json) is not there to say " +
 					"which original it was made of, " + why
 			}
 			return "the scan of its package of version " + id + " " + why
 		}
+	}
+	return ""
+}
+
+// scanFoundHolds says why the scan of the package record pkg of a version of
+// the original holds it in fields - it found anything but NothingFound, or
+// found NothingFound with counts of its own that say fields or can't be
+// read (scanCountsHold) -, "" when it found NothingFound or says nothing
+// found (no scan, a scan of null, no found): what an older version's scan
+// lacks is for the version the original is retired from to state
+// (scanHolds), not a hold for good.
+func scanFoundHolds(pkg Doc) string {
+	for _, d := range []Doc{pkg, essenceOf(pkg)} {
+		v, _ := d.Get("scan")
+		x, ok := v.(Doc)
+		if !ok {
+			continue
+		}
+		found, has := x.Get("found")
+		if !has || found == nil {
+			continue
+		}
+		if found == NothingFound {
+			if why := scanCountsHold(x); why != "" {
+				return why
+			}
+			continue
+		}
+		if f, ok := found.(string); ok {
+			return "found " + f
+		}
+		return fmt.Sprintf("found %v, no word", found)
+	}
+	return ""
+}
+
+// gateCount is v where it is a whole JSON number from 0, as the record
+// logic's gate_count takes a count (no boolean, no float, no text), and
+// whether it is one.
+func gateCount(v any) (*big.Int, bool) {
+	switch x := v.(type) {
+	case json.Number:
+		// a float's text ("5.0", "1e3") is no whole number's
+		n, ok := new(big.Int).SetString(x.String(), 10)
+		return n, ok && n.Sign() >= 0
+	case int:
+		return big.NewInt(int64(x)), x >= 0
+	case int64:
+		return big.NewInt(x), x >= 0
+	}
+	return nil, false
+}
+
+// scanCountsHold says why the scan scan, which found NothingFound, holds its
+// title's originals in fields by its own counts, as the record logic's
+// scan_holds reads them: its read-through (verified) counted chunks in
+// fields (chunksInFields, 0 where it gives none), or gives a count of them
+// that can't be read (gateCount); its examination (idet), where it gives
+// one, is no object, gives a count of top-field, bottom-field or
+// progressive pictures that can't be read (each 0 where it gives none), or
+// counted more top- and bottom-field pictures together than progressive
+// ones. "" when its counts don't say otherwise.
+func scanCountsHold(scan Doc) string {
+	if ver, _ := scan.Get("verified"); ver != nil {
+		if vd, ok := ver.(Doc); ok {
+			if v, has := vd.Get("chunksInFields"); has {
+				if n, ok := gateCount(v); !ok || n.Sign() > 0 {
+					return "found " + NothingFound + ", but its read-through counted chunks in fields (chunksInFields " +
+						pyStr(v) + ")"
+				}
+			}
+		}
+	}
+	idet, has := scan.Get("idet")
+	if !has || idet == nil {
+		return ""
+	}
+	id, ok := idet.(Doc)
+	if !ok {
+		return "found " + NothingFound + ", but its examination (idet) is no object"
+	}
+	counts := map[string]*big.Int{}
+	for _, k := range []string{"tff", "bff", "progressive"} {
+		counts[k] = new(big.Int)
+		if v, has := id.Get(k); has {
+			n, ok := gateCount(v)
+			if !ok {
+				return "found " + NothingFound + ", but its examination's " + k + " is no count (" + pyStr(v) + ")"
+			}
+			counts[k] = n
+		}
+	}
+	if new(big.Int).Add(counts["tff"], counts["bff"]).Cmp(counts["progressive"]) > 0 {
+		return fmt.Sprintf("found %s, but its examination counted more fields than frames (tff %s, bff %s, "+
+			"progressive %s)", NothingFound, counts["tff"], counts["bff"], counts["progressive"])
 	}
 	return ""
 }
@@ -786,7 +927,8 @@ var ScanDone = []string{NothingFound, "none"}
 // scan that is no object (null among them); a found that is not exactly
 // NothingFound (a word, one the gate doesn't know, blank, of another type);
 // a done that is not one of ScanDone's (none, null among them); a
-// verification (verified) that is not ok and complete, or none. A scan that
+// verification (verified) that is not ok and complete, or none; counts of
+// its own that say fields or can't be read (scanCountsHold). A scan that
 // found NothingFound lets nothing go.
 func scanHolds(pkg Doc) string {
 	for _, d := range []Doc{pkg, essenceOf(pkg)} {
@@ -824,6 +966,9 @@ func scanHolds(pkg Doc) string {
 		if ok1 != true || complete != true {
 			return "found " + NothingFound + " with no verification that is ok and complete"
 		}
+		if why := scanCountsHold(x); why != "" {
+			return why
+		}
 	}
 	return ""
 }
@@ -857,29 +1002,95 @@ func recordShape(rec Doc) string {
 	return ""
 }
 
-// recordGaps says what the source record rec, one the gate can read
-// (recordShape), doesn't tell that the gate compares, "" when it tells it
-// all: a list of its file's streams (absent, null or empty: it lists
-// none), and each fact of its essence the gate compares (lossFlags,
-// lossCounts, lossLanguages: a fact it doesn't state is no "nothing to
-// lose").
-func recordGaps(rec Doc) string {
+// recordGaps says what the source record rec (its stored probe probe, nil:
+// none), one the gate can read (recordShape), doesn't tell that the gate
+// compares, "" when it tells it all: a list of its file's streams (absent,
+// null or empty: it lists none), and each fact of its essence the gate
+// compares, of its type as the record logic writes it (libv2_records'
+// source_essence): a flag a boolean (lossFlags), a count a whole number, 0
+// or more (lossCounts), a language list a list of strings (lossLanguages).
+// A fact it doesn't state, or states of another type or null, is no
+// "nothing to lose". The record logic writes null for maxVideoHeight and
+// videoBitDepth alone, of a picture it couldn't measure or of a file with
+// no picture: null says none only of a record that lists no picture.
+func recordGaps(rec, probe Doc) string {
 	ed := essenceOf(rec)
-	var lacks []string
-	for _, keys := range [][]string{lossFlags, lossCounts, lossLanguages} {
-		for _, k := range keys {
-			if _, has := ed.Get(k); !has {
-				lacks = append(lacks, k)
+	films := len(filmsOf(rec, false, probe))
+	var lacks, typed []string
+	for _, k := range lossFlags {
+		switch v, has := ed.Get(k); {
+		case !has:
+			lacks = append(lacks, k)
+		case v != true && v != false:
+			typed = append(typed, k)
+		}
+	}
+	for _, k := range lossCounts {
+		v, has := ed.Get(k)
+		switch {
+		case !has:
+			lacks = append(lacks, k)
+		case v == nil && films == 0 && (k == "maxVideoHeight" || k == "videoBitDepth"):
+		case !wholeCount(v):
+			typed = append(typed, k)
+		}
+	}
+	for _, k := range lossLanguages {
+		v, has := ed.Get(k)
+		list, ok := v.([]any)
+		switch {
+		case !has:
+			lacks = append(lacks, k)
+		case !ok:
+			typed = append(typed, k)
+		default:
+			for _, e := range list {
+				if s, ok := e.(string); !ok || strings.TrimSpace(s) == "" {
+					typed = append(typed, k)
+					break
+				}
 			}
 		}
 	}
-	if len(lacks) > 0 {
+	switch {
+	case len(lacks) > 0:
 		return "its essence doesn't state " + strings.Join(lacks, ", ")
+	case len(typed) > 0:
+		return "its essence states " + strings.Join(typed, ", ") + " as no value of its kind (a flag a boolean, a " +
+			"count a whole number, a language list a list of languages; null a picture's height or bit depth of a " +
+			"file with no picture alone)"
 	}
 	if list, _ := listOf(rec, "streams"); len(list) == 0 {
 		return "it lists no streams of its file"
 	}
 	return ""
+}
+
+// wholeCount reports whether v is a count as a record writes one: a whole
+// JSON number, 0 or more.
+func wholeCount(v any) bool {
+	if _, isBool := v.(bool); isBool {
+		return false
+	}
+	n, ok := toFloat(v)
+	return ok && n >= 0 && n == math.Trunc(n) && !math.IsInf(n, 0)
+}
+
+// packageFlags says why the package essence pkg can't be read for what it
+// carries: a flag the gate compares that it states as no boolean (a string,
+// a number, null), which would be taken for carried or not as it happens;
+// "" when it states none so.
+func packageFlags(pkg Doc) string {
+	var typed []string
+	for _, k := range lossFlags {
+		if v, has := pkg.Get(k); has && v != true && v != false {
+			typed = append(typed, k)
+		}
+	}
+	if len(typed) == 0 {
+		return ""
+	}
+	return "its package's essence states " + strings.Join(typed, ", ") + " as no boolean"
 }
 
 // probeShape says why the stored probe probe is no probe of a file (no
@@ -1514,7 +1725,9 @@ func hlgBase(rec Doc) bool {
 
 // readRecordDoc is the record at path, decoded, as the gate reads one: a
 // record an object of which gives a key twice is none it can read (which of
-// the two a reader takes is a reader's choice, and the gate's would be one).
+// the two a reader takes is a reader's choice, and the gate's would be one);
+// nor is one that gives a number no reader holds (unheldNumber), as the
+// schemas' loaders refuse it.
 func readRecordDoc(path string) (Doc, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -1527,7 +1740,46 @@ func readRecordDoc(path string) (Doc, error) {
 	if k := repeatedKey(d); k != "" {
 		return nil, fmt.Errorf("%s: its key %q is given twice in one object", path, k)
 	}
+	if n := unheldNumber(d); n != "" {
+		return nil, fmt.Errorf("%s: %s", path, n)
+	}
 	return d, nil
+}
+
+// unheldNumber says of a number of the decoded value v that no reader holds,
+// "" when none: one written with a fraction or an exponent that a float
+// can't hold (1e999, which Python's json reads as Infinity, and the schemas'
+// loaders refuse as they refuse Infinity and NaN - no JSON, which the
+// decoder refuses already), and a whole number of more digits than Python
+// reads (PyIntDigits: its json can't load the record).
+func unheldNumber(v any) string {
+	switch x := v.(type) {
+	case json.Number:
+		s := x.String()
+		if strings.ContainsAny(s, ".eE") {
+			if f, err := strconv.ParseFloat(s, 64); err != nil && math.IsInf(f, 0) {
+				return fmt.Sprintf("it gives %.20s..., a number past what a float holds (as Infinity)", s)
+			}
+			return ""
+		}
+		if len(strings.TrimPrefix(s, "-")) > PyIntDigits {
+			return fmt.Sprintf("it gives a whole number of %d digits, more than Python reads (%d)",
+				len(strings.TrimPrefix(s, "-")), PyIntDigits)
+		}
+	case Doc:
+		for _, f := range x {
+			if n := unheldNumber(f.Value); n != "" {
+				return n
+			}
+		}
+	case []any:
+		for _, e := range x {
+			if n := unheldNumber(e); n != "" {
+				return n
+			}
+		}
+	}
+	return ""
 }
 
 // repeatedKey is a key an object of the decoded value v gives twice, ""

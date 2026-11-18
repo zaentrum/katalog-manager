@@ -19,10 +19,13 @@ type Progress struct {
 	// LengthMismatch those a read found of another length than their
 	// record's, kept for good until their file or their record is another
 	// (LengthMismatches their source ids), a finding of its own and none of
-	// Read; ToRead the rest (one whose record said no length among them,
-	// handed out again once its record is written again).
-	Originals, Read, WithCaptions, LengthMismatch, ToRead int
-	LengthMismatches                                      []string
+	// Read; AwaitingRecord those a read found its record leaves not known
+	// (it says no length, its records give no plan of its picture, or its
+	// picture's captions need its packets' signature), kept until the record
+	// is written again, which hands them
+	// out again, none of Read nor of ToRead; ToRead the rest.
+	Originals, Read, WithCaptions, LengthMismatch, AwaitingRecord, ToRead int
+	LengthMismatches                                                      []string
 	// Failed are those whose last read failed or had a window that
 	// decoded no frame (each waits its backoff), InFlight those handed out
 	// now.
@@ -47,17 +50,21 @@ func (s *Service) Progress(ctx context.Context) (Progress, error) {
 	now := s.now().UTC()
 	full := readUsable("c", "s")
 	mismatch := full + ` AND c.finding IS NOT DISTINCT FROM '` + library.FindingLengthMismatch + `'`
+	awaiting := full + ` AND c.finding IN ('` + library.FindingNoLength + `', '` + library.FindingNoPlan + `', '` +
+		library.FindingUnscanned + `')`
 	if err := pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE `+full+` AND c.finding IS NULL),
 			count(*) FILTER (WHERE `+full+` AND c.finding IS NULL AND (c.captions OR COALESCE(c.captionstreams, 0) > 0)),
 			count(*) FILTER (WHERE `+mismatch+`),
 			COALESCE(array_agg(s.id ORDER BY s.id) FILTER (WHERE `+mismatch+`), '{}'),
+			count(*) FILTER (WHERE `+awaiting+`),
 			count(*) FILTER (WHERE c.source_id IS NOT NULL AND c.state <> 'pending' AND NOT `+full+` AND c.claimedat IS NULL)
 		FROM com_nalet_katalog_itemsources s LEFT JOIN `+store.SourceCaptionsTable+` c ON c.source_id = s.id
 		WHERE s.state IN ('present', 'superseded') AND COALESCE(s.arrivalpath, '') <> ''`).
-		Scan(&p.Originals, &p.Read, &p.WithCaptions, &p.LengthMismatch, &p.LengthMismatches, &p.Failed); err != nil {
+		Scan(&p.Originals, &p.Read, &p.WithCaptions, &p.LengthMismatch, &p.LengthMismatches, &p.AwaitingRecord,
+			&p.Failed); err != nil {
 		return p, err
 	}
-	p.ToRead = p.Originals - p.Read - p.LengthMismatch
+	p.ToRead = p.Originals - p.Read - p.LengthMismatch - p.AwaitingRecord
 	if err := pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE claimedat IS NOT NULL),
 			(SELECT count(*) FROM `+store.CaptionHandoutsTable+` WHERE handedoutat > $1), max(readat)
 		FROM `+store.SourceCaptionsTable, now.Add(-time.Hour)).

@@ -75,6 +75,31 @@ func (s *Store) EnsureCaptionsWaiting(ctx context.Context) error {
 	return s.applyLocked(ctx, captionsWaitingReady, migrations.CaptionsWaiting)
 }
 
+// CaptionsSpanIndex is the index db/migrations/060_captions_read_span.sql
+// creates with its columns, which says it is in place.
+const CaptionsSpanIndex = "idx_sourcecaptions_unscanned"
+
+// CaptionsSpanReady reports whether migration 060 is in place.
+func (s *Store) CaptionsSpanReady(ctx context.Context) (bool, error) {
+	return captionsSpanReady(ctx, s.pool)
+}
+
+func captionsSpanReady(ctx context.Context, q querier) (bool, error) {
+	var ok bool
+	err := q.QueryRow(ctx, `SELECT to_regclass($1::text) IS NOT NULL`, CaptionsSpanIndex).Scan(&ok)
+	return ok, err
+}
+
+// EnsureCaptionsSpan applies db/migrations/060_captions_read_span.sql, after
+// 058 (EnsureSourceCaptions), when it is missing, under the migrations'
+// lock. Without it the captions backfill hands nothing out.
+func (s *Store) EnsureCaptionsSpan(ctx context.Context) error {
+	if err := s.EnsureSourceCaptions(ctx); err != nil {
+		return err
+	}
+	return s.applyLocked(ctx, captionsSpanReady, migrations.CaptionsSpan)
+}
+
 // EnsureSourceCaptions applies db/migrations/058_source_captions.sql when any
 // of it is missing, under the migrations' lock. Without it the captions
 // backfill hands nothing out, and the deletion gate keeps every original

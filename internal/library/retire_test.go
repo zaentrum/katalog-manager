@@ -159,8 +159,8 @@ func settleAll(t *testing.T, st *store.Store) {
 		FROM com_nalet_katalog_itemversions v WHERE v.state = 'complete'
 		ON CONFLICT (id) DO UPDATE SET state = 'measured', sourceid = EXCLUDED.sourceid, versionid = EXCLUDED.versionid`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_sourcecaptions (source_id, item_id, state, captionwindows, captions,
-			ffprobeversion, framesdecoded, duration, sourcesize, sourceqh1, readat)
-		SELECT v.sourceids[1], v.item_id, 'read', '`+noCaptionsWindows+`', false, '7.1.1', 288, 600, s.sizebytes, s.qh1, now()
+			ffprobeversion, framesdecoded, duration, readspanstart, readspanend, sourcesize, sourceqh1, sourcerecordedat, readat)
+		SELECT v.sourceids[1], v.item_id, 'read', '`+noCaptionsWindows+`', false, '7.1.1', 288, 600, 0, 600, s.sizebytes, s.qh1, s.recordedat, now()
 		FROM com_nalet_katalog_itemversions v JOIN com_nalet_katalog_itemsources s ON s.id = v.sourceids[1]
 		WHERE v.state = 'complete' ON CONFLICT (source_id) DO NOTHING`)
 }
@@ -189,8 +189,8 @@ func (f *retireFixture) settle(t *testing.T, item, source, version string) {
 		VALUES ($1, 'item', $1, 'measured', 1920, 1080, 0, 0, 1920, 1080, $2, $3, 'original', now())
 		ON CONFLICT (id) DO UPDATE SET state = 'measured', sourceid = $2, versionid = $3`, item, source, version)
 	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_sourcecaptions (source_id, item_id, state, captionwindows, captions,
-			ffprobeversion, framesdecoded, duration, sourcesize, sourceqh1, readat)
-		SELECT $1::varchar, $2::varchar, 'read', '`+noCaptionsWindows+`', false, '7.1.1', 288, 600, s.sizebytes, s.qh1, now()
+			ffprobeversion, framesdecoded, duration, readspanstart, readspanend, sourcesize, sourceqh1, sourcerecordedat, readat)
+		SELECT $1::varchar, $2::varchar, 'read', '`+noCaptionsWindows+`', false, '7.1.1', 288, 600, 0, 600, s.sizebytes, s.qh1, s.recordedat, now()
 		FROM com_nalet_katalog_itemsources s WHERE s.id = $1::varchar ON CONFLICT (source_id) DO NOTHING`, source, item)
 }
 
@@ -208,7 +208,7 @@ func packageRecord(essence map[string]any) map[string]any {
 	// the packager read the original's fields and found none (scan.found
 	// progressive), of the version's own original: what it says, which lets
 	// nothing go; and it encoded the picture (an encoder that is not copy)
-	return map[string]any{"essence": essence, "subtitles": subs, "scan": verifiedProgressive(),
+	return map[string]any{"essence": stated(essence), "subtitles": subs, "scan": verifiedProgressive(),
 		"renditions": map[string]any{"video": []any{encodedVideo()}}}
 }
 
@@ -225,8 +225,8 @@ func filmStreams() []any {
 }
 
 // stated is the essence e with each fact the gate compares that e doesn't
-// state stated as nothing (false, null, none), as the record logic writes
-// every one of them.
+// state stated as the record logic writes it of a file with nothing of it
+// (false, 0, none), and of a picture of 1080 lines of 8 bits.
 func stated(e map[string]any) map[string]any {
 	out := maps.Clone(e)
 	if out == nil {
@@ -239,7 +239,14 @@ func stated(e map[string]any) map[string]any {
 	}
 	for _, k := range lossCounts {
 		if _, ok := out[k]; !ok {
-			out[k] = nil
+			switch k {
+			case "maxVideoHeight":
+				out[k] = 1080
+			case "videoBitDepth":
+				out[k] = 8
+			default:
+				out[k] = 0
+			}
 		}
 	}
 	for _, k := range lossLanguages {
@@ -260,7 +267,8 @@ func verifiedProgressive() map[string]any {
 
 // progressiveProbe is a stored probe (ffprobe.json) that states its
 // picture's field order progressive.
-const progressiveProbe = `{"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "field_order": "progressive"}]}`
+const progressiveProbe = `{"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "field_order": "progressive",
+	"start_time": "0.000000", "avg_frame_rate": "24/1"}]}`
 
 // statedProbe is the files files of a source folder and its stored probe
 // progressiveProbe: an original whose field order is stated, what of the

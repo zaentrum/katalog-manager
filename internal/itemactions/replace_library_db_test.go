@@ -296,13 +296,13 @@ func newInVersion(t *testing.T) *inVersion {
 	librarytest.WriteSource(t, library.SourceDir(iv.itemDir, ivSource), map[string]any{"sourceId": ivSource,
 		"file": map[string]any{"name": "original.mkv", "sizeBytes": 100}, "essence": statedEssence(map[string]any{"maxAudioChannels": 2}),
 		"container": tenMinutes, "streams": []any{map[string]any{"index": 0, "type": "video", "codec": "h264", "fieldOrder": "progressive"},
-			map[string]any{"index": 1, "type": "audio", "channels": 2, "language": "en"}}}, nil)
+			map[string]any{"index": 1, "type": "audio", "channels": 2, "language": "en"}}}, planProbe)
 	storetest.AddItem(t, st, bunny, "movie", "Big Buck Bunny", "")
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state, recordedat)
 		VALUES ($3, $1, 'original.mkv', $2, 100, 'present', now())`, bunny, iv.old, ivSource)
 	// its closed captions read by a probe that decoded its frames: none
-	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_sourcecaptions (source_id, item_id, state, captionwindows, captions, ffprobeversion, framesdecoded, duration, sourcesize, readat)
-		VALUES ($1, $2, 'read', '[{"at": 0, "start": 0, "end": 1.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.1, "start": 60, "end": 61.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.3, "start": 180, "end": 181.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.5, "start": 300, "end": 301.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.7, "start": 420, "end": 421.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.9, "start": 540, "end": 541.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}]', false, '7.1.1', 288, 600, 100, now())`, ivSource, bunny)
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_sourcecaptions (source_id, item_id, state, captionwindows, captions, ffprobeversion, framesdecoded, duration, readspanstart, readspanend, sourcesize, sourcerecordedat, readat)
+		VALUES ($1, $2, 'read', '[{"at": 0, "start": 0, "end": 1.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.1, "start": 60, "end": 61.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.3, "start": 180, "end": 181.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.5, "start": 300, "end": 301.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.7, "start": 420, "end": 421.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.9, "start": 540, "end": 541.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}]', false, '7.1.1', 288, 600, 0, 600, 100, (SELECT recordedat FROM com_nalet_katalog_itemsources WHERE id = $1::varchar), now())`, ivSource, bunny)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
 		VALUES ($1, $2, ARRAY[$5::varchar], 'complete', $3, $4, now() - interval '1 day')`, ivVersion, bunny, ivPackage, vdir, ivSource)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, sizebytes, isprimary, kind, sourceid)
@@ -311,6 +311,11 @@ func newInVersion(t *testing.T) *inVersion {
 	iv.arrive = filepath.Join(cfg.ArrivalsRoot, "Big.Buck.Bunny.2008.2160p.mkv")
 	return iv
 }
+
+// planProbe is the stored probe of a source folder that gives the plan of its
+// picture (its start and frame rate), which its read is held to.
+var planProbe = map[string]string{library.ProbeFile: `{"streams": [{"index": 0, "codec_type": "video", ` +
+	`"codec_name": "h264", "field_order": "progressive", "start_time": "0.000000", "avg_frame_rate": "24/1"}]}`}
 
 // asAddon is an addon's service account, as acquire's token is.
 var asAddon = auth.WithPrincipal(context.Background(), &auth.Principal{Subject: "addon-1", Client: "example-addon",
@@ -397,7 +402,7 @@ func TestAReplacedTitlesOldOriginalIsRetiredOnceItsNewVersionIsVerified(t *testi
 	vdir := library.VersionDir(iv.itemDir, newVersion)
 	librarytest.WriteVersion(t, vdir, librarytest.Version{VersionID: newVersion, PackageID: "4d0b0b0b-0000-4000-8000-00000000000d",
 		SourceIDs: []string{newSource}, CreatedAt: "2026-11-04T10:00:00Z",
-		Package: map[string]any{"essence": map[string]any{"maxAudioChannels": 2}, "subtitles": []any{},
+		Package: map[string]any{"essence": statedEssence(map[string]any{"maxAudioChannels": 2}), "subtitles": []any{},
 			"renditions": map[string]any{"audio": []any{map[string]any{"id": "a0", "channels": 2, "language": "en",
 				"sourceStreamIndex": 1}}}}})
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2, supersededat = now()
@@ -449,7 +454,7 @@ func TestAReplaceIsToldWhyItsOldFileIsKept(t *testing.T) {
 	ess := map[string]any{"maxAudioChannels": 2, "audioLanguages": []string{"de", "en"}}
 	librarytest.WriteSource(t, library.SourceDir(iv.itemDir, ivSource), map[string]any{"sourceId": ivSource,
 		"file": map[string]any{"name": "original.mkv", "sizeBytes": 100}, "essence": statedEssence(ess), "container": tenMinutes,
-		"streams": streams}, nil)
+		"streams": streams}, planProbe)
 	res, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true,
 		Key: "handed-1"})
 	if err != nil || res.OldFileDeleted || !res.OldFileSuperseded ||
@@ -465,7 +470,7 @@ func TestAReplaceIsToldWhyItsOldFileIsKept(t *testing.T) {
 	vdir := library.VersionDir(iv.itemDir, newVersion)
 	librarytest.WriteVersion(t, vdir, librarytest.Version{VersionID: newVersion, PackageID: "4d0b0b0b-0000-4000-8000-00000000000d",
 		SourceIDs: []string{newSource}, CreatedAt: "2026-11-04T10:00:00Z",
-		Package: map[string]any{"essence": ess, "subtitles": []any{}, "renditions": map[string]any{"audio": []any{
+		Package: map[string]any{"essence": statedEssence(ess), "subtitles": []any{}, "renditions": map[string]any{"audio": []any{
 			map[string]any{"id": "a0", "channels": 2, "language": "de", "sourceStreamIndex": 1},
 			map[string]any{"id": "a1", "channels": 2, "language": "en", "sourceStreamIndex": 2}}}}})
 	storetest.Exec(t, st, `UPDATE com_nalet_katalog_itemversions SET state = 'superseded', supersededby = $2, supersededat = now()
@@ -989,18 +994,19 @@ func derefTest(s *string) string {
 var tenMinutes = map[string]any{"format": "matroska,webm", "durationMs": 600000}
 
 // statedEssence is the essence e with each fact the deletion gate compares
-// that e doesn't state stated as nothing (false, null, none), as the record
-// logic writes every one of them.
+// that e doesn't state stated as the record logic writes it of a file with
+// nothing of it (false, 0, none), and of a picture of 1080 lines of 8 bits.
 func statedEssence(e map[string]any) map[string]any {
 	out := map[string]any{}
 	for _, k := range []string{"surround", "losslessAudio", "objectAudio", "hdr10Metadata", "dolbyVision", "stereo3d",
 		"imageSubtitles", "styledSubtitles", "fonts", "closedCaptions"} {
 		out[k] = false
 	}
-	for _, k := range []string{"maxAudioChannels", "maxVideoHeight", "videoBitDepth", "subtitleTracks", "commentaryTracks",
-		"commentarySubtitles", "audioDescriptionTracks"} {
-		out[k] = nil
+	for _, k := range []string{"maxAudioChannels", "subtitleTracks", "commentaryTracks", "commentarySubtitles",
+		"audioDescriptionTracks"} {
+		out[k] = 0
 	}
+	out["maxVideoHeight"], out["videoBitDepth"] = 1080, 8
 	for _, k := range []string{"audioLanguages", "subtitleLanguages", "sdhSubtitleLanguages", "forcedSubtitleLanguages"} {
 		out[k] = []string{}
 	}

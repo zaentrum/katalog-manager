@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
+	"math/big"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -73,7 +76,10 @@ type CaptionWindow struct {
 	// KeyframeBefore says the read's packet listing showed no keyframe
 	// between the window's first picture and its place: it starts at the
 	// keyframe at or before its place, however far back (a long group of
-	// pictures), and may lie up to WindowKeyframeSlack before it.
+	// pictures), and may lie up to WindowKeyframeSlack before it. A window
+	// that decoded frames says it as a boolean or not at all (false); null
+	// or any other value fails it, and so does true of a read of the whole
+	// picture, which has no place before its start.
 	KeyframeBefore bool `json:"keyframeBefore,omitempty"`
 	// Unreadable says why the window, as the read reported it, is no window
 	// the gate can take - a value of another type than a window's (a string
@@ -85,10 +91,27 @@ type CaptionWindow struct {
 	// CountsUnreadable says a count of its interlaced or repeated frames
 	// could not be read: its fields count as in fields.
 	CountsUnreadable bool `json:"countsUnreadable,omitempty"`
+	// Whole says the window is a read of the whole picture (WholeRead):
+	// every packet decoded, alone, at the start; Packets is how many packets
+	// of the picture it counted, and Leading its leading pictures (the
+	// packets before its first keyframe in decode order and the first gop's
+	// packets timed before it, at most WholeLeadingMax; none said: the read
+	// is not complete).
+	Whole   bool `json:"whole,omitempty"`
+	Packets *int `json:"packets,omitempty"`
+	Leading *int `json:"leading,omitempty"`
 	// decoded is how many frames it decoded as its read reported them, of a
 	// window that failed afterwards (Frames 0)
 	decoded int
+	// stored says it carries the catalog's own unreadable, as a window the
+	// catalog kept as failed does (a read doesn't say it)
+	stored bool
 }
+
+// Stored reports whether the window carries the catalog's own key
+// (unreadable), which a window the catalog kept as failed has and a read
+// doesn't say.
+func (w CaptionWindow) Stored() bool { return w.stored }
 
 // UnmarshalJSON reads a window as a read reports it, strictly: what is no
 // window's value makes it a failed one (Unreadable), never an error that
@@ -111,11 +134,13 @@ func (w *CaptionWindow) UnmarshalJSON(b []byte) error {
 	all := map[string][]json.RawMessage{}
 	var repeated []string
 	for _, f := range fields {
-		if _, seen := m[f.key]; seen && !slices.Contains(repeated, f.key) {
+		// a key in another case is the same key (as encoding/json reads it)
+		k := strings.ToLower(f.key)
+		if _, seen := m[k]; seen && !slices.Contains(repeated, f.key) {
 			repeated = append(repeated, f.key)
 		}
-		m[f.key] = f.value
-		all[f.key] = append(all[f.key], f.value)
+		m[k] = f.value
+		all[k] = append(all[k], f.value)
 	}
 	isNull := func(raw json.RawMessage) bool { return raw == nil || strings.TrimSpace(string(raw)) == "null" }
 	number := func(k string) (float64, bool) {
@@ -159,7 +184,7 @@ func (w *CaptionWindow) UnmarshalJSON(b []byte) error {
 		w.KeyframeBefore = false
 		if frames != 0 {
 			w.Captions = showed()
-			w.InterlacedFrames, w.RepeatFrames = most("interlacedFrames", frames), most("repeatFrames", frames)
+			w.InterlacedFrames, w.RepeatFrames = most("interlacedframes", frames), most("repeatframes", frames)
 			w.decoded = max(frames, 0)
 		}
 		if w.Unreadable == "" {
@@ -171,6 +196,11 @@ func (w *CaptionWindow) UnmarshalJSON(b []byte) error {
 	if atOK && at >= 0 && at <= 1 {
 		w.At = at
 	}
+	// a read of the whole picture is told by its shape, whatever else of it
+	// fails
+	if b, ok := boolean(m["whole"]); ok && b {
+		w.Whole = true
+	}
 	if why, ok := m["unreadable"]; ok {
 		// a window the catalog kept as one it could not take, with what it
 		// found
@@ -178,7 +208,8 @@ func (w *CaptionWindow) UnmarshalJSON(b []byte) error {
 		if json.Unmarshal(why, &s) != nil || strings.TrimSpace(s) == "" {
 			s = "it could not be read"
 		}
-		w.CountsUnreadable = strings.TrimSpace(string(m["countsUnreadable"])) == "true"
+		w.CountsUnreadable = strings.TrimSpace(string(m["countsunreadable"])) == "true"
+		w.stored = true
 		return fail(strings.TrimSpace(s), -1)
 	}
 	if len(repeated) > 0 {
@@ -194,14 +225,15 @@ func (w *CaptionWindow) UnmarshalJSON(b []byte) error {
 		return fail("its "+strings.Join(repeated, ", ")+" is given more than once", frames)
 	}
 	frames, ok := whole(m["frames"])
+	if !ok || frames < 0 {
+		// how many frames it decoded can't be told: what it found stays
+		frames = -1
+	}
 	if w.At < 0 {
-		if !ok || frames < 0 {
-			frames = 0
-		}
 		return fail("its at is no fraction of the video from 0 to 1", frames)
 	}
-	if !ok || frames < 0 {
-		return fail("its frames is no whole number of frames, 0 or more", 0)
+	if frames < 0 {
+		return fail("its frames is no whole number of frames, 0 or more", frames)
 	}
 	w.Frames = frames
 	if frames == 0 {
@@ -228,10 +260,11 @@ func (w *CaptionWindow) UnmarshalJSON(b []byte) error {
 	}
 	w.Start, w.End = start, end
 	for _, k := range []string{"interlacedFrames", "repeatFrames"} {
-		if isNull(m[k]) {
+		raw := m[strings.ToLower(k)]
+		if isNull(raw) {
 			continue
 		}
-		n, ok := whole(m[k])
+		n, ok := whole(raw)
 		if !ok || n < 0 || n > frames {
 			w.CountsUnreadable = true
 			return fail("its "+k+" is no count of its frames", frames)
@@ -242,12 +275,43 @@ func (w *CaptionWindow) UnmarshalJSON(b []byte) error {
 			w.RepeatFrames = &n
 		}
 	}
-	if !isNull(m["keyframeBefore"]) {
-		kb, ok := boolean(m["keyframeBefore"])
+	if raw, has := m["keyframebefore"]; has {
+		kb, ok := boolean(raw)
 		if !ok {
 			return fail("its keyframeBefore is no boolean", frames)
 		}
 		w.KeyframeBefore = kb
+	}
+	if raw, ok := m["whole"]; ok && !w.Whole && !isNull(raw) {
+		return fail("its whole is not true (a read of the whole picture says whole: true)", frames)
+	}
+	for _, k := range []string{"packets", "leading"} {
+		raw, has := m[k]
+		if !has || (k == "packets" && isNull(raw)) {
+			continue
+		}
+		n, ok := whole(raw)
+		if !ok || n < 0 || (k == "leading" && n > WholeLeadingMax) {
+			return fail(fmt.Sprintf("its %s is no count of packets (leading: 0 to %d)", k, WholeLeadingMax), frames)
+		}
+		if k == "packets" {
+			w.Packets = &n
+		} else {
+			w.Leading = &n
+		}
+	}
+	if w.Whole {
+		switch {
+		case w.Packets == nil:
+			return fail("a read of the whole picture says how many packets it counted (packets)", frames)
+		case frames > *w.Packets:
+			return fail("a read of the whole picture decoded more frames than its packets", frames)
+		case w.Leading != nil && *w.Leading > *w.Packets:
+			return fail("a read of the whole picture counts more packets before its first keyframe than it has", frames)
+		case w.KeyframeBefore:
+			return fail("a read of the whole picture starts at its start, at no keyframe before a place "+
+				"(keyframeBefore)", frames)
+		}
 	}
 	return nil
 }
@@ -316,13 +380,25 @@ type CaptionsRead struct {
 	Duration       *float64
 	CaptionStreams *int
 	OffList        []string
+	// Span is the picture's span the read placed its windows over, as the
+	// read says it (seconds of the picture's clock: its first frame to the
+	// end of its last packet; Step unused; nil: not said), each end of which
+	// the span its records give is held to.
+	Span *Span
+	// Gop is the longest run between two keyframes of the picture's first
+	// packets the read found (seconds; nil or 0: fewer than two keyframes,
+	// or not said), which sets how far from its place a window may lie
+	// (inPlace).
+	Gop *float64
 }
 
 // SourceCaptions is what a read that decoded frames found of the closed
 // captions of the source sourceID, window by window, of the file the source
 // is now: a read of a file of another size, or quick hash where both say
 // one, than the source's (one the scanner's Refix or an adoption put in its
-// place since) is none.
+// place since) is none, and so is a read that found nothing (no captions,
+// no frames in fields) of another record of it than the one it is now: its
+// length and its span were held to that record.
 // Nil when there is none (or the catalog has no migration 058); failed says
 // why the last read of it was not taken, "" when there was none, and finds
 // what that read found of the file before it stopped (its streams of
@@ -332,19 +408,30 @@ func SourceCaptions(ctx context.Context, q Querier, sourceID string) (read *Capt
 	if ok, err := relationReady(ctx, q, store.SourceCaptionsTable); err != nil || !ok {
 		return nil, "", nil, err
 	}
+	// without migration 060 (the span a read says) no read is one the gate
+	// takes: none
+	if ok, err := relationReady(ctx, q, store.CaptionsSpanIndex); err != nil || !ok {
+		return nil, "", nil, err
+	}
 	var state string
 	var windows, offList []byte
-	var duration *float64
+	var duration, spanStart, spanEnd, gop *float64
 	var streams *int
 	var reason *string
 	var same bool
 	var finding *string
-	err = q.QueryRow(ctx, `SELECT c.state, c.captionwindows, c.duration, c.captionstreams, c.offlist, c.reason,
+	err = q.QueryRow(ctx, `SELECT c.state, c.captionwindows, c.duration, c.readspanstart, c.readspanend, c.readgop,
+			c.captionstreams, c.offlist, c.reason,
 			c.sourcesize IS NOT DISTINCT FROM s.sizebytes
 			AND (c.sourceqh1 IS NULL OR s.qh1 IS NULL OR c.sourceqh1 = s.qh1)
-			AND (c.finding IS NULL OR c.sourcerecordedat IS NOT DISTINCT FROM s.recordedat), c.finding
+			AND (c.finding IS NULL OR c.sourcerecordedat IS NOT DISTINCT FROM s.recordedat)
+			AND (c.state <> 'read' OR c.sourcerecordedat IS NOT DISTINCT FROM s.recordedat OR c.captions IS TRUE
+				OR COALESCE(c.captionstreams, 0) > 0 OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(c.captionwindows,
+					'[]'::jsonb)) w WHERE (jsonb_typeof(w->'interlacedFrames') = 'number' AND (w->>'interlacedFrames')::numeric > 0)
+					OR (jsonb_typeof(w->'repeatFrames') = 'number' AND (w->>'repeatFrames')::numeric > 0))), c.finding
 		FROM `+store.SourceCaptionsTable+` c JOIN com_nalet_katalog_itemsources s ON s.id = c.source_id
-		WHERE c.source_id = $1`, sourceID).Scan(&state, &windows, &duration, &streams, &offList, &reason, &same, &finding)
+		WHERE c.source_id = $1`, sourceID).Scan(&state, &windows, &duration, &spanStart, &spanEnd, &gop, &streams,
+		&offList, &reason, &same, &finding)
 	var off []string
 	if err == nil && offList != nil {
 		if err = json.Unmarshal(offList, &off); err != nil {
@@ -357,7 +444,8 @@ func SourceCaptions(ctx context.Context, q Querier, sourceID string) (read *Capt
 	case err != nil:
 		return nil, "", nil, err
 	case !same:
-		return nil, "the file read is not the one the original is now", nil, nil
+		return nil, "the file read is not the one the original is now, or a read that found nothing is of another " +
+			"record of it", nil, nil
 	case state == "failed" && reason != nil:
 		if (streams != nil && *streams > 0) || len(off) > 0 || finding != nil {
 			finds = &CaptionsRead{CaptionStreams: streams, OffList: off, Duration: duration}
@@ -369,7 +457,10 @@ func SourceCaptions(ctx context.Context, q Querier, sourceID string) (read *Capt
 	case state != "read" || windows == nil:
 		return nil, "", nil, nil
 	}
-	r := CaptionsRead{Duration: duration, CaptionStreams: streams, OffList: off}
+	r := CaptionsRead{Duration: duration, CaptionStreams: streams, OffList: off, Gop: gop}
+	if spanStart != nil && spanEnd != nil {
+		r.Span = &Span{Start: *spanStart, End: *spanEnd}
+	}
 	if err := json.Unmarshal(windows, &r.Windows); err != nil {
 		return nil, "", nil, fmt.Errorf("closed captions' windows: %w", err)
 	}
@@ -381,9 +472,15 @@ func SourceCaptions(ctx context.Context, q Querier, sourceID string) (read *Capt
 const MinWindowFrames = 24
 
 // WindowPlaceSlack is how far from its place (the plan's, of the picture's
-// span as its records give it: PictureSpan) a window's first frame may lie:
-// a keyframe before it.
-const WindowPlaceSlack = 15.0
+// span as its records give it: PictureSpan), before or after it, a
+// window's first frame may lie at least: the keyframe its seek lands on.
+// Of a picture whose groups of pictures run longer (the read's gop), it may
+// lie the gop and WindowGopPlus from it (inPlace).
+const WindowPlaceSlack = 10.0
+
+// WindowGopPlus is how far beyond the read's gop a window's first frame may
+// lie from its place.
+const WindowGopPlus = 0.5
 
 // WindowKeyframeSlack is how far before its place a window's first frame may
 // lie where the read says it is the keyframe at or before the place
@@ -392,31 +489,71 @@ const WindowPlaceSlack = 15.0
 const WindowKeyframeSlack = 30.0
 
 // ReadRefused says why the read r of the picture of the span s (its records',
-// PictureSpan) says nothing of it, "" when it may be taken: its windows
-// don't lie in the order of the video (a video too short for them said as
-// that, TooShortForFive), it says no length of its own (which its record's
-// is held to), it lacks a window of the plan (the start among them: a read
-// of five windows and none at the start is not complete), a window lies
-// further than WindowPlaceSlack from its place, the start + at × (end −
-// start) of the span (up to WindowKeyframeSlack before it, where the read
-// says it starts at the keyframe at or before it: KeyframeBefore), or one
-// decoded fewer than MinWindowFrames frames (a window that decoded none
-// failed, which a read may have). The read's own length places nothing. The
-// catalog keeps such a read as a failed one, and the gate holds every read
-// to it.
+// PictureSpan) says nothing of it, "" when it may be taken: a picture whose
+// places lie too close for windows (ShortPicture) read in windows, windows
+// that don't lie in the order of the video (a video too short for them said
+// as that, TooShortForFive), no length of its own (which its record's is
+// held to), no span of the picture it read or one whose start or end lies
+// further than a frame step and SpanSlack from the span's, a gop that is no
+// length from 0, windows that are not the plan's six - one at each of its
+// fractions (the start among them: a read of five windows is not
+// complete), none at another -, a window off its place (Span.Place, by
+// inPlace), or one that decoded fewer than MinWindowFrames frames (a window
+// that decoded none failed, which a read may have). The read's own length
+// places nothing. The catalog keeps such a read as a failed one, and the
+// gate holds every read to it.
 func ReadRefused(r *CaptionsRead, s Span) string {
-	if why, overlap := windowsOutOfPlace(r.Windows); why != "" {
-		if overlap && tooShortForFive(r, s) {
-			return TooShortForFive
-		}
-		return why
+	whole := len(r.Windows) == 1 && r.Windows[0].Whole
+	if !whole && slices.ContainsFunc(r.Windows, func(w CaptionWindow) bool { return w.Whole }) {
+		return "a read of the whole picture stands alone, one window at its start, not among others"
 	}
-	if r.Duration == nil || *r.Duration <= 0 {
+	if whole && r.Windows[0].At >= atSlack {
+		return "a read of the whole picture is one window at its start"
+	}
+	gop := 0.0
+	if r.Gop != nil {
+		if *r.Gop < 0 || !finiteNumber(*r.Gop) {
+			return "its gop is no length from 0 of the picture's longest group of pictures"
+		}
+		gop = *r.Gop
+	}
+	if gop > float64(GopPackets)*s.Step {
+		return fmt.Sprintf("its gop (%g s) is longer than the %d packets a read lists keyframes among last at its "+
+			"frame step (%g s): it can't be one", gop, GopPackets, float64(GopPackets)*s.Step)
+	}
+	if !whole && ShortPicture(s, gop) {
+		return fmt.Sprintf("two of its picture's places lie closer than a window reaches (%.3g s: %d packets at its "+
+			"frame step, its gop and %g s): such a picture is read whole, every packet decoded, not in windows",
+			shortReach(s, gop), WindowPackets, ShortReachSlack)
+	}
+	if !whole {
+		if why, overlap := windowsOutOfPlace(r.Windows); why != "" {
+			if overlap && tooShortForFive(r, s) {
+				return TooShortForFive
+			}
+			return why
+		}
+	}
+	if r.Duration == nil || *r.Duration <= 0 || !finiteNumber(*r.Duration) {
 		return "it says no length of the video, which its record's is held to"
 	}
-	if missing := missingWindows(r, s); len(missing) > 0 {
-		return "it has no window at " + percents(missing) + " (a read is of its start and 10 to 90 % of its picture's " +
-			"span, or as many as its length allows)"
+	if r.Span == nil || !finiteNumber(r.Span.Start) || !finiteNumber(r.Span.End) || r.Span.End <= r.Span.Start {
+		return "it says no span of the picture it read, which its records' is held to"
+	}
+	if math.Abs(r.Span.Start-s.Start) > s.slack() || math.Abs(r.Span.End-s.End) > s.slack() {
+		return fmt.Sprintf("it read a picture from %g s to %g s, and its records give one from %g s to %g s (each end "+
+			"within %.3g s: a frame step and %g s)", r.Span.Start, r.Span.End, s.Start, s.End, s.slack(), SpanSlack)
+	}
+	if whole {
+		return wholeRefused(r.Windows[0], s)
+	}
+	if other := offPlan(r.Windows); len(other) > 0 {
+		return "its windows at " + percents(other) + " are at no fraction of the plan's (the start, 10, 30, 50, 70 and " +
+			"90 % of its picture's span: a window the tail short of the end says its fraction, and starts where it lies)"
+	}
+	if missing := missingWindows(r); len(missing) > 0 {
+		return "it has no window at " + percents(missing) + " (a read is of its start and 10, 30, 50, 70 and 90 % of " +
+			"its picture's span, six windows)"
 	}
 	var far, few []float64
 	for _, w := range r.Windows {
@@ -424,40 +561,121 @@ func ReadRefused(r *CaptionsRead, s Span) string {
 		case w.Frames <= 0:
 		case w.Frames < MinWindowFrames:
 			few = append(few, w.At)
-		case !inPlace(w, s.place(w.At)):
+		case !inPlace(w, s.Place(w.At), gop, s):
 			far = append(far, w.At)
 		}
 	}
 	switch {
 	case len(far) > 0:
-		return fmt.Sprintf("its windows at %s lie more than %g s from their places (the start, and 10 to 90 %% of its "+
-			"picture's span from %g s to %g s, as its records give it)", percents(far), WindowPlaceSlack, s.Start, s.End)
+		return fmt.Sprintf("its windows at %s lie off their places (the start, and 10 to 90 %% of its picture's span "+
+			"from %g s to %g s, as its records give it, each at most %g s short of its end): %s", percents(far), s.Start,
+			s.End, WindowTail, placeWords(gop, s))
 	case len(few) > 0:
 		return fmt.Sprintf("its windows at %s decoded fewer than %d frames", percents(few), MinWindowFrames)
 	}
 	return ""
 }
 
-// inPlace reports whether the window w lies at its place place (seconds):
-// within WindowPlaceSlack of it, or, where the read says it starts at the
-// keyframe at or before it (KeyframeBefore), up to WindowKeyframeSlack
-// before it.
-func inPlace(w CaptionWindow, place float64) bool {
+// GopPackets is how many of a picture's first packets a read lists
+// keyframes among for its gop: a gop longer than they last at the frame
+// step can't be one, and the read is not known.
+const GopPackets = 1200
+
+// finiteNumber reports whether f is a number a rule reads: neither NaN nor
+// an infinity, which count as not stated.
+func finiteNumber(f float64) bool { return !math.IsNaN(f) && !math.IsInf(f, 0) }
+
+// WholeLeadingMax is how many leading pictures (the packets before its
+// first keyframe in decode order, and the first gop's packets timed before
+// it) a read of the whole picture counts apart at most.
+const WholeLeadingMax = 16
+
+// wholeRefused says why the read of the whole picture w of the span s says
+// nothing of it, "" when it stands for the plan's windows: it counted
+// packets of at least the picture's span at its frame step (within a frame
+// step and SpanSlack); it is complete by the plan's wholeComplete - it says
+// its leading pictures (leading, at most
+// WholeLeadingMax), and decoded every packet but them, or them too
+// (packets − leading ≤ frames ≤ packets) -, and its frames are timed (it
+// says where they start and end) and reach the span's start and end, each
+// within a frame step and SpanSlack. A read that gives no leading is not
+// complete.
+func wholeRefused(w CaptionWindow, s Span) string {
+	if w.Frames <= 0 || w.Packets == nil {
+		return "its read of the whole picture decoded no frame it could place"
+	}
+	leading := -1
+	if w.Leading != nil {
+		leading = *w.Leading
+	}
+	if leading < 0 || leading > WholeLeadingMax {
+		return fmt.Sprintf("its read of the whole picture says no leading pictures (leading, 0 to %d), so whether it "+
+			"decoded every packet can't be told: not complete", WholeLeadingMax)
+	}
+	if float64(*w.Packets)*s.Step < s.Length()-s.slack() {
+		return fmt.Sprintf("its read of the whole picture counted %d packets, fewer than its picture's span (%g s) "+
+			"holds at its frame step (%g s, within a frame step and %g s)", *w.Packets, s.Length(), s.Step, SpanSlack)
+	}
+	if w.Frames < *w.Packets-leading || w.Frames > *w.Packets {
+		return fmt.Sprintf("its read of the whole picture decoded %d frames of its %d packets (%d leading): not every "+
+			"packet, or more frames than packets", w.Frames, *w.Packets, leading)
+	}
+	if math.Abs(w.Start-s.Start) > s.slack() || math.Abs(w.End-s.End) > s.slack() {
+		return fmt.Sprintf("its read of the whole picture's frames (%g to %g s) don't reach its picture's start and end "+
+			"(%g to %g s, within %.3g s)", w.Start, w.End, s.Start, s.End, s.slack())
+	}
+	return ""
+}
+
+// inPlace reports whether the window w lies at its place place (seconds),
+// of a read that found the gop gop (seconds) of the picture of the span s,
+// by the plan's slack: its first frame within the greater of
+// WindowPlaceSlack and gop + WindowGopPlus of it, before or after; or,
+// where the read says it starts at the keyframe at or before it
+// (KeyframeBefore), up to WindowKeyframeSlack before it. Of a gop of 0
+// (fewer than two keyframes, or none said) a window lies only at its own
+// place, within a frame step and SpanSlack, and KeyframeBefore moves it
+// nowhere.
+func inPlace(w CaptionWindow, place, gop float64, s Span) bool {
 	back := place - w.Start
-	return math.Abs(back) <= WindowPlaceSlack || (w.KeyframeBefore && back >= 0 && back <= WindowKeyframeSlack)
+	if gop == 0 {
+		return math.Abs(back) <= s.slack()
+	}
+	return math.Abs(back) <= math.Max(WindowPlaceSlack, gop+WindowGopPlus) ||
+		(w.KeyframeBefore && back >= 0 && back <= WindowKeyframeSlack)
+}
+
+// placeWords says where a window of a read that found the gop gop of the
+// picture of the span s lies at its place (inPlace).
+func placeWords(gop float64, s Span) string {
+	if gop == 0 {
+		return fmt.Sprintf("of a read that says no gop, or one of 0, a window lies within %.3g s of its place (a "+
+			"frame step and %g s)", s.slack(), SpanSlack)
+	}
+	return fmt.Sprintf("a window lies within %g s of its place (the greater of %g s and its gop, %g s, and %g s), or "+
+		"up to %g s before it at the keyframe before it (keyframeBefore)", math.Max(WindowPlaceSlack, gop+WindowGopPlus),
+		WindowPlaceSlack, gop, WindowGopPlus, WindowKeyframeSlack)
 }
 
 // The window plan, one for every place that reads or checks a read's
 // windows: a window at the picture's start (WindowAtStart), and one at each
-// of PlannedWindows of the picture's own presentation span (Span: start +
-// at × (end − start)), each at most WindowTail short of its end - six
-// windows, every one of which a read has before it can say "none". A video
-// shorter than twice the tail has them at most half its span in (the ones
-// that fall on one another are one). A window decodes WindowPackets packets
-// and is one when at least MinWindowFrames of them gave a frame. The span is
-// the picture's own: a picture that starts late, or ends before the file
-// does, is read where it is (PictureSpan). These are constants of the code;
-// the plan's reference file is read by a test alone, never at run time.
+// of PlannedWindows of the picture's own presentation span (Span.Place:
+// start + at × (end − start), each at most WindowTail short of its end and
+// never before its start) - six windows, each saying its own fraction (one
+// the tail short of the end says 0.9 and starts where it lies), every one
+// of which a read has before it can say "none". A picture two of whose
+// places lie closer than a window reaches (ShortPicture: WindowPackets
+// packets at its frame step, the read's gop and ShortReachSlack) is read
+// whole instead: every packet decoded, one window at its start that stands
+// for the six (WholeRead); a read whole of a longer one stands for them
+// too. A window decodes WindowPackets packets and is one when at least
+// MinWindowFrames of them gave a frame. The
+// span is the picture's own: a picture that starts late, or ends before the
+// file does, is read where it is (PictureSpan), and a read is held to it
+// within a frame step and SpanSlack. These are constants of the code; the
+// plan's file (library/v2/caption-windows.json of the schemas, vendored in
+// testdata pinned by its sha256) is read by a test alone, never at run
+// time.
 
 // WindowAtStart says the plan has a window at the picture's start.
 const WindowAtStart = true
@@ -473,35 +691,68 @@ const WindowTail = 30.0
 // WindowPackets is how many video packets a read decodes of a window.
 const WindowPackets = 48
 
-// plannedAts are the windows of the plan of a picture whose span lasts
-// length seconds, as fractions of it: the start (0), and PlannedWindows each
-// at most WindowTail, or half the span, short of its end, those that fall on
-// one another one.
-func plannedAts(length float64) []float64 {
-	limit := 1.0
-	if length > 0 {
-		limit = 1 - math.Min(WindowTail/length, 0.5)
+// SpanSlack is how far, besides a frame step, the span a read says of its
+// picture, and where a whole read starts and ends, may lie from the span its
+// records give, in seconds.
+const SpanSlack = 0.5
+
+// ShortReachSlack is how far, besides its packets at the frame step and the
+// read's gop, a window reaches (shortReach), in seconds.
+const ShortReachSlack = 0.5
+
+// planAts are the plan's six windows, as fractions of the picture's span,
+// in their order: the start (0) and PlannedWindows.
+func planAts() []float64 { return append([]float64{0}, PlannedWindows...) }
+
+// shortReach is how far a window of a read that found the gop gop reaches
+// on the picture of the span s: WindowPackets packets at its frame step,
+// from a keyframe up to gop before its place, and ShortReachSlack.
+func shortReach(s Span, gop float64) float64 {
+	return float64(WindowPackets)*s.Step + gop + ShortReachSlack
+}
+
+// ShortPicture reports whether the plan's windows can't be read on frames
+// of their own on the picture of the span s, of a read that found the gop
+// gop: two of its places (Span.Place) lie closer than a window reaches
+// (shortReach). Such a picture is read whole, not in windows.
+func ShortPicture(s Span, gop float64) bool {
+	var places []float64
+	for _, at := range planAts() {
+		places = append(places, s.Place(at))
 	}
-	out := []float64{0}
-	for _, f := range PlannedWindows {
-		at := math.Min(f, limit)
-		if !slices.ContainsFunc(out, func(a float64) bool { return math.Abs(a-at) < atSlack }) {
-			out = append(out, at)
+	sort.Float64s(places)
+	reach := shortReach(s, gop)
+	for i := 1; i < len(places); i++ {
+		if places[i]-places[i-1] < reach {
+			return true
 		}
 	}
-	return out
+	return false
 }
 
 // Span is the presentation span of an original's picture, in seconds of its
-// own clock: from its first picture (Start) to its end (End).
-type Span struct{ Start, End float64 }
+// own clock: from its first picture (Start) to its end (End), and its frame
+// step (Step, seconds: a frame's length, of its frame rate; a 24th of a
+// second where nothing says one).
+type Span struct{ Start, End, Step float64 }
+
+// slack is how far a span a read says, or where it starts and ends, may lie
+// from s: a frame step and SpanSlack.
+func (s Span) slack() float64 { return s.Step + SpanSlack }
 
 // Length is how long the span s lasts.
 func (s Span) Length() float64 { return s.End - s.Start }
 
-// place is where in the picture of the span s the window at at (a fraction
-// of it) lies, in seconds.
-func (s Span) place(at float64) float64 { return s.Start + at*s.Length() }
+// Place is where in the picture of the span s the plan's window at at (a
+// fraction of it) lies, in seconds: the start's at its start, never capped;
+// each other at start + at × (end − start), at most WindowTail short of its
+// end and never before its start.
+func (s Span) Place(at float64) float64 {
+	if at < atSlack {
+		return s.Start
+	}
+	return math.Max(s.Start, math.Min(s.Start+at*s.Length(), s.End-WindowTail))
+}
 
 // CaptionsNoLength begins why the gate keeps an original whose record says
 // no length (container.durationMs): where a read's windows lie can't be told
@@ -512,6 +763,30 @@ const CaptionsNoLength = CaptionsUnknown + ": its record says no length"
 // no length when it was handed out: final for that file and that record,
 // like FindingLengthMismatch.
 const FindingNoLength = "noRecordLength"
+
+// CaptionsNoPlan begins why the gate keeps an original whose records give
+// no plan of its picture (PictureSpan: its stored probe's picture's start,
+// length and frame rate): where a read's windows lie can't be told without
+// one, so no read of it says anything until its records give one.
+const CaptionsNoPlan = CaptionsUnknown + ": its records give no plan of its picture"
+
+// FindingNoPlan is the finding of a read of an original whose records gave
+// no plan of its picture when it was handed out: final for that file and
+// that record, like FindingNoLength.
+const FindingNoPlan = "noPlan"
+
+// FindingUnscanned is the finding of a read that says the captions of its
+// picture can't be told by windows (UnscannedReason: an HEVC picture whose
+// packets were not read whole for a caption signature): the hold of
+// CaptionsUnscanned, final for that file and that record, which a record
+// written again with the picture's captionSignature lets go (its original
+// is read again).
+const FindingUnscanned = "unscanned"
+
+// UnscannedReason begins the reason of a read that says its picture's
+// captions can't be told by windows (captionsKnown false): its packets need
+// to be read whole for a caption signature.
+const UnscannedReason = "hevc: needs the packets' signature"
 
 // RecordedLengthMs is the length the source record rec says of its file
 // (container.durationMs, milliseconds), and whether it says one: a JSON
@@ -555,41 +830,240 @@ func seconds(v any) (float64, bool) {
 	return f, !math.IsNaN(f) && !math.IsInf(f, 0)
 }
 
-// PictureSpan is the presentation span of the picture of the original whose
+// PictureSpan is the plan's span of the picture of the original whose
 // source record is rec and stored probe probe (ffprobe.json; nil: none), as
-// its records give it, or why there is none. It is the part of the record
-// logic's picture_span (libv2_records.py) the catalog can tell without
-// opening the file: the start is the stored probe's picture's start_time,
-// else the probe's format's, else 0; the length the probe's picture's
-// duration, else the record's (container.durationMs); the end the start plus
-// the length. (The record logic reads the end of the picture's last packet
-// from the file as well, which no record keeps.) A record that says no
-// length has no span, whatever its probe says.
+// the gate knows it without reading, or why there is none: the record
+// logic's plan_of (libv2_records.py), in its order. The picture is the
+// probe's film (film_of): its one stream whose codec_type is video and that
+// is no cover by the closed lists' rule (attachedPicture), wherever a cover
+// lies; its start its start_time, else the probe's format's start_time; its
+// length its duration, else the record's container.durationMs (a number
+// above 0), and the format's duration only where the record gives none; its
+// end the start plus the length; its frame step one over its
+// avg_frame_rate, or its r_frame_rate where that is exactly 0/0, each in
+// digits alone (frameStepOf). A probe
+// that is none, lists no streams, no film or more than one, or gives no
+// start, no length above 0 or no frame rate gives no plan: a read of the
+// original is then not known.
 func PictureSpan(rec, probe Doc) (*Span, string) {
-	ms, ok := RecordedLengthMs(rec)
+	if probe == nil {
+		return nil, "it has no stored probe it can read (ffprobe.json) to place a read's windows by"
+	}
+	list, ok := valueOf(probe.Get("streams")).([]any)
 	if !ok {
-		return nil, "its record says no length of its file (container.durationMs), so where a read's windows lie " +
-			"can't be told"
+		return nil, "its stored probe lists no streams"
 	}
-	start, length := 0.0, ms/1000
-	if probe != nil {
-		f, _ := probe.Get("format")
-		fd, _ := f.(Doc)
-		if fd != nil {
-			if v, ok := seconds(valueOf(fd.Get("start_time"))); ok {
-				start = v
-			}
-		}
-		if films := filmsOf(probe, true, nil); len(films) == 1 {
-			if v, ok := seconds(valueOf(films[0].Get("start_time"))); ok {
-				start = v
-			}
-			if v, ok := seconds(valueOf(films[0].Get("duration"))); ok && v > 0 {
-				length = v
-			}
+	films := probeFilms(list)
+	switch len(films) {
+	case 0:
+		return nil, "its stored probe lists no picture (a video stream that is no cover)"
+	case 1:
+	default:
+		return nil, fmt.Sprintf("its stored probe lists %d video streams that are no cover, each of which could be "+
+			"its picture", len(films))
+	}
+	pic := films[0]
+	format, _ := valueOf(probe.Get("format")).(Doc)
+	start, okStart := planSeconds(valueOf(pic.Get("start_time")))
+	if !okStart {
+		start, okStart = planSeconds(valueOf(format.Get("start_time")))
+	}
+	length, okLength := planSeconds(valueOf(pic.Get("duration")))
+	if !okLength || length <= 0 {
+		container, _ := valueOf(rec.Get("container")).(Doc)
+		if ms, ok := planNumber(valueOf(container.Get("durationMs"))); ok && ms > 0 {
+			length, okLength = ms/1000, true
+		} else {
+			length, okLength = planSeconds(valueOf(format.Get("duration")))
 		}
 	}
-	return &Span{Start: start, End: start + length}, ""
+	step, okStep := frameStepOf(pic)
+	switch {
+	case !okStart:
+		return nil, "its stored probe gives no start of its picture (its start_time, or its format's)"
+	case !okLength || length <= 0:
+		return nil, "its records give no length of its picture (its stored probe's duration of it, the record's " +
+			"container.durationMs, or its stored probe's format's duration)"
+	case !okStep:
+		return nil, "its stored probe gives no frame rate of its picture (avg_frame_rate, or r_frame_rate where " +
+			"avg_frame_rate is exactly 0/0: num/den in digits alone, both above 0, one frame a second at least)"
+	}
+	return &Span{Start: start, End: start + length, Step: step}, ""
+}
+
+// probeFilms are the streams of a stored probe's list that could each be
+// its film (film_of): those whose codec_type is video and that are no cover
+// (attachedPicture), wherever a cover lies.
+func probeFilms(list []any) []Doc {
+	var films []Doc
+	for _, e := range list {
+		if x, ok := e.(Doc); ok && valueOf(x.Get("codec_type")) == "video" && !probeCover(x) {
+			films = append(films, x)
+		}
+	}
+	return films
+}
+
+// recordPicture is the source record rec's picture as the record logic's
+// picture_of takes it: its first stream of type video whose dispositions
+// don't mark it attachedPic (any value Python takes for true marks it), nil
+// where there is none. The record logic marks attachedPic on what the cover
+// rule calls a cover (attachedPicture) and nothing else, so a record's
+// picture is its stored probe's film (pictureNotFilm holds one that is not).
+func recordPicture(rec Doc) Doc {
+	list, _ := valueOf(rec.Get("streams")).([]any)
+	for _, e := range list {
+		if x, ok := e.(Doc); ok && valueOf(x.Get("type")) == "video" && !flag(x, "dispositions", "attachedPic") {
+			return x
+		}
+	}
+	return nil
+}
+
+// PictureNotFilm begins why the gate keeps an original whose record's
+// picture is not its stored probe's film: what the one says of the codec
+// and the field order may be another stream's than the other's, so neither
+// its closed captions nor its fields are known.
+const PictureNotFilm = "its record's picture is not its stored probe's film"
+
+// pictureNotFilm says why the picture of the source record rec
+// (recordPicture) is not the film of its stored probe probe (its one video
+// stream that is no cover: probeFilms), the same stream by its index; ""
+// where it is, or where the probe gives no one film (no plan says so).
+func pictureNotFilm(rec, probe Doc) string {
+	if probe == nil {
+		return ""
+	}
+	list, _ := valueOf(probe.Get("streams")).([]any)
+	films := probeFilms(list)
+	if len(films) != 1 {
+		return ""
+	}
+	film, pic := films[0], recordPicture(rec)
+	if pic == nil {
+		return fmt.Sprintf("%s: its record lists no picture (a video stream not marked an attached picture), and its "+
+			"stored probe's film is stream %s", PictureNotFilm, pyStr(valueOf(film.Get("index"))))
+	}
+	a, okA := pyNumber(valueOf(pic.Get("index")))
+	b, okB := pyNumber(valueOf(film.Get("index")))
+	if !okA || !okB || a != b {
+		return fmt.Sprintf("%s: its record's picture is stream %s, and its stored probe's film stream %s",
+			PictureNotFilm, pyStr(valueOf(pic.Get("index"))), pyStr(valueOf(film.Get("index"))))
+	}
+	return ""
+}
+
+// planDecimal is a time or a length as text the record logic's gate_seconds
+// takes: a decimal number, spaces about it.
+var planDecimal = regexp.MustCompile(`^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$`)
+
+// planSeconds is v as the record logic's gate_seconds reads a time or a
+// length (ffprobe's "12.345000", or a number), and whether it is one: no
+// boolean, finite.
+func planSeconds(v any) (float64, bool) {
+	var f float64
+	switch x := v.(type) {
+	case nil, bool:
+		return 0, false
+	case string:
+		t := strings.TrimSpace(x)
+		if !planDecimal.MatchString(t) {
+			return 0, false
+		}
+		var err error
+		if f, err = strconv.ParseFloat(t, 64); err != nil {
+			return 0, false
+		}
+	default:
+		var ok bool
+		if f, ok = toFloat(x); !ok {
+			return 0, false
+		}
+	}
+	return f, !math.IsNaN(f) && !math.IsInf(f, 0)
+}
+
+// planNumber is v as the record logic's gate_number reads one: a number, no
+// boolean, no text.
+func planNumber(v any) (float64, bool) {
+	switch v.(type) {
+	case nil, bool, string:
+		return 0, false
+	}
+	f, ok := toFloat(v)
+	return f, ok && !math.IsNaN(f) && !math.IsInf(f, 0)
+}
+
+// planRate is a frame rate as the record logic's frame_step_of reads one:
+// "num/den" of digits alone (0-9: no space, sign or point).
+var planRate = regexp.MustCompile(`^([0-9]+)/([0-9]+)$`)
+
+// MinFrameRate is the slowest rate, in frames a second, a stored probe may
+// state of its picture and give a plan (the plan's minRate): a slower one
+// would stretch a frame step's tolerance past any window.
+const MinFrameRate = 1
+
+// PyIntDigits is how many digits Python's int() reads of a text at most
+// (sys.int_info.default_max_str_digits): the record logic takes a longer
+// run of digits for no number.
+const PyIntDigits = 4300
+
+// pyDigits is the run of digits s as Python's int() reads it, and whether
+// it reads it: none of more than PyIntDigits digits.
+func pyDigits(s string) (*big.Int, bool) {
+	if len(s) > PyIntDigits {
+		return nil, false
+	}
+	return new(big.Int).SetString(s, 10)
+}
+
+// frameStepOf is one over the frame rate of the probe's picture stream pic,
+// in seconds, and whether it gives one, as the record logic's frame_step_of
+// takes it: its avg_frame_rate, or its r_frame_rate only where
+// avg_frame_rate is exactly the text "0/0" (ffprobe's of a rate it couldn't
+// average), each a ratio "num/den" of digits alone (planRate), both above
+// 0, of no more digits than Python reads (PyIntDigits). An avg_frame_rate
+// that is missing or no such ratio gives none, r_frame_rate whatever it
+// says; so does a rate it states below MinFrameRate, as Python divides:
+// den/num, the nearest float, at most 1/MinFrameRate.
+func frameStepOf(pic Doc) (float64, bool) {
+	v, _ := valueOf(pic.Get("avg_frame_rate")).(string)
+	if v == "0/0" {
+		v, _ = valueOf(pic.Get("r_frame_rate")).(string)
+	}
+	m := planRate.FindStringSubmatch(v)
+	if m == nil {
+		return 0, false
+	}
+	num, ok1 := pyDigits(m[1])
+	den, ok2 := pyDigits(m[2])
+	if !ok1 || !ok2 || num.Sign() <= 0 || den.Sign() <= 0 {
+		return 0, false
+	}
+	// den/num as Python's int division gives it: the float nearest the
+	// ratio (one too large for a float, an infinity here, is past the floor
+	// too)
+	step, _ := new(big.Rat).SetFrac(den, num).Float64()
+	if step > 1.0/MinFrameRate {
+		return 0, false
+	}
+	return step, true
+}
+
+// RecordReadable says why the source record in the source folder dir can't
+// be read as one the gate reads (it can't be opened, it is no JSON, an
+// object of it gives a key twice, no essence object, streams that are no
+// list of objects), "" when it can or when there is none (no source.json:
+// a read of its original is a finding that its record says no length).
+func RecordReadable(dir string) string {
+	rec, err := readRecordDoc(filepath.Join(dir, "source.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return recordShape(rec)
 }
 
 // RecordedSpan is PictureSpan of the source folder dir's records
@@ -674,8 +1148,13 @@ func captionsRule(records, probes []Doc, f GateFacts) (carried, unknown string) 
 			probe = probes[i]
 		}
 		for _, film := range filmsOf(rec, false, probe) {
-			if v, _ := film.Get("captionSignature"); v == true {
+			switch v, has := film.Get("captionSignature"); {
+			case v == true:
 				recordSays = "its record's read of every packet of its picture found a caption signature"
+			case has && v != nil && v != false:
+				// of any codec: a value that is no boolean says nothing it can
+				// be read by
+				flagUnread = "its record's captionSignature of its picture is no boolean"
 			}
 			switch v, has := film.Get("closedCaptions"); {
 			case !has || v == nil || v == false:
@@ -685,8 +1164,16 @@ func captionsRule(records, probes []Doc, f GateFacts) (carried, unknown string) 
 				flagUnread = "its record's closedCaptions of its picture is no boolean"
 			}
 		}
+		for _, film := range filmsOf(rec, false, probe) {
+			if flag(film, "dispositions", "captions") {
+				recordSays = "its record marks its picture as captions (its dispositions)"
+			}
+		}
 		if probe != nil {
 			for _, film := range filmsOf(probe, true, nil) {
+				if flag(film, "disposition", "captions") {
+					recordSays = "its stored probe marks its picture as captions (its disposition)"
+				}
 				switch probeCaptions(film) {
 				case probeCaptionsSaid:
 					recordSays = "its stored probe says closed_captions of its picture"
@@ -737,16 +1224,22 @@ func captionsRule(records, probes []Doc, f GateFacts) (carried, unknown string) 
 		return "", fmt.Sprintf("%s: the rule is asked of one original at a time, and the gate of %d", CaptionsUnknown,
 			len(records))
 	}
-	if why := unscanned(records, probes); why != "" {
-		return "", why
-	}
 	var probe Doc
 	if len(probes) > 0 {
 		probe = probes[0]
 	}
+	if why := pictureNotFilm(records[0], probe); why != "" {
+		return "", CaptionsUnknown + ": " + why
+	}
+	if why := unscanned(records, probes); why != "" {
+		return "", why
+	}
+	if _, ok := RecordedLengthMs(records[0]); !ok {
+		return "", CaptionsNoLength + " of its file (container.durationMs), so where a read's windows lie can't be told"
+	}
 	span, why := PictureSpan(records[0], probe)
 	if span == nil {
-		return "", CaptionsUnknown + ": " + why
+		return "", CaptionsNoPlan + ": " + why
 	}
 	if fd := f.CaptionsFinds; r == nil && fd != nil {
 		// final for this file and this record: no read again changes it
@@ -756,6 +1249,13 @@ func captionsRule(records, probes []Doc, f GateFacts) (carried, unknown string) 
 		case FindingNoLength:
 			return "", CaptionsNoLength + " (as it said when its original was handed out to be read): " +
 				strings.TrimSpace(f.CaptionsFailed)
+		case FindingNoPlan:
+			return "", CaptionsNoPlan + " (as they gave none when its original was handed out to be read): " +
+				strings.TrimSpace(f.CaptionsFailed)
+		case FindingUnscanned:
+			// kept until its record carries a caption signature, which has
+			// it read again
+			return "", CaptionsUnscanned + ": a read of its original says so: " + strings.TrimSpace(f.CaptionsFailed)
 		}
 	}
 	switch {
@@ -765,6 +1265,11 @@ func captionsRule(records, probes []Doc, f GateFacts) (carried, unknown string) 
 	case r == nil:
 		return "", captionsUnknownWhy
 	}
+	// held as the PUT holds it: of its record's length first, then where
+	// its windows lie
+	if why := durationMismatch(records, r); why != "" {
+		return "", CaptionsLengthMismatch + ": " + why
+	}
 	if why := ReadRefused(r, *span); why == TooShortForFive {
 		// no title with captions: a video whose planned windows can't but
 		// fall on one another
@@ -772,9 +1277,6 @@ func captionsRule(records, probes []Doc, f GateFacts) (carried, unknown string) 
 	} else if why != "" {
 		return "", CaptionsUnknown + ": a read of its original says nothing of the video: " + why + "; the captions " +
 			"backfill reads it again (captions.backfill)"
-	}
-	if why := durationMismatch(records, r); why != "" {
-		return "", CaptionsLengthMismatch + ": " + why
 	}
 	if len(unread) > 0 {
 		return "", CaptionsUnknown + ": its read's windows at " + percents(unread) + " can't be read (" + unreadWhy +
@@ -974,12 +1476,16 @@ func tooShortForFive(r *CaptionsRead, s Span) bool {
 		// a window read from a keyframe before its place reaches back as
 		// far as a keyframe may lie (one further back is out of place, not
 		// a reach)
-		back := math.Min(math.Max(s.place(w.At)-w.Start, 0), WindowKeyframeSlack)
+		back := math.Min(math.Max(s.Place(w.At)-w.Start, 0), WindowKeyframeSlack)
 		reach = math.Max(reach, w.End-w.Start+back)
 	}
-	ats := plannedAts(d)
-	for i := 1; i < len(ats); i++ {
-		if (ats[i]-ats[i-1])*d < reach {
+	var places []float64
+	for _, at := range planAts() {
+		places = append(places, s.Place(at))
+	}
+	sort.Float64s(places)
+	for i := 1; i < len(places); i++ {
+		if places[i]-places[i-1] < reach {
 			return true
 		}
 	}
@@ -1017,28 +1523,34 @@ func windowsOutOfPlace(ws []CaptionWindow) (why string, overlap bool) {
 	return "", false
 }
 
-// missingWindows are the planned windows of a picture of the span s
-// (plannedAts) the read r has none at, failed or not.
-func missingWindows(r *CaptionsRead, s Span) []float64 {
-	l := s.Length()
+// missingWindows are the plan's windows (planAts) the read r has none at,
+// failed or not.
+func missingWindows(r *CaptionsRead) []float64 {
 	var out []float64
-	for _, at := range plannedAts(l) {
-		if !slices.ContainsFunc(r.Windows, func(w CaptionWindow) bool { return sameAt(w.At, at, l) }) {
+	for _, at := range planAts() {
+		if !slices.ContainsFunc(r.Windows, func(w CaptionWindow) bool { return sameAt(w.At, at) }) {
 			out = append(out, at)
 		}
 	}
 	return out
 }
 
-// sameAt reports whether the window a read placed at at (a fraction of the
-// length it read) is the plan's window at planned of a picture whose span
-// lasts length seconds: the same fraction, or one a length that differs
-// within DurationSlack moves it to (a window the tail short of the end is
-// placed by the length: 88 % of 250 s, 88.1 % of 252.4 s).
-func sameAt(at, planned, length float64) bool {
-	d := math.Abs(at - planned)
-	return d < atSlack || d*length <= DurationSlack(length)
+// offPlan are the places (at) of the windows of ws that say a place at no
+// fraction of the plan's (planAts), such as one the tail short of the end
+// that says where it lies (0.88) rather than its fraction (0.9).
+func offPlan(ws []CaptionWindow) []float64 {
+	var out []float64
+	for _, w := range ws {
+		if w.At >= 0 && !slices.ContainsFunc(planAts(), func(at float64) bool { return sameAt(w.At, at) }) {
+			out = append(out, w.At)
+		}
+	}
+	return out
 }
+
+// sameAt reports whether the window a read placed at at is the plan's
+// window at planned: the same fraction, within atSlack.
+func sameAt(at, planned float64) bool { return math.Abs(at-planned) < atSlack }
 
 // readReleases are the beginnings of the whys a read of an original's
 // frames may let go of: its closed captions not known, its fields not told

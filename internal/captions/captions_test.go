@@ -92,7 +92,8 @@ func TestAReadOfClosedCaptionsIsItsWindows(t *testing.T) {
 		name    string
 		windows []library.CaptionWindow
 		noSize  bool
-		bad     string // what the refusal says; "" taken
+		gop     float64 // the gop the read says (0: none said)
+		bad     string  // what the refusal says; "" taken
 		read    bool
 		why     string
 	}{
@@ -107,10 +108,13 @@ func TestAReadOfClosedCaptionsIsItsWindows(t *testing.T) {
 		{name: "short of its planned windows", windows: planned(nil)[:2], why: "it has no window at 30%, 50%, 70%, 90%"},
 		{name: "a window at the keyframe 25 s before its place", windows: planned(func(ws []library.CaptionWindow) {
 			ws[3].Start, ws[3].End, ws[3].KeyframeBefore = 275, 276.88, true
-		}), read: true},
+		}), gop: 2, read: true},
 		{name: "a window 25 s before its place, no keyframe said", windows: planned(func(ws []library.CaptionWindow) {
 			ws[3].Start, ws[3].End = 275, 276.88
-		}), why: "its windows at 50% lie more than 15 s from their places"},
+		}), gop: 2, why: "its windows at 50% lie off their places"},
+		{name: "a window at the keyframe 25 s before its place, no gop said", windows: planned(func(ws []library.CaptionWindow) {
+			ws[3].Start, ws[3].End, ws[3].KeyframeBefore = 275, 276.88, true
+		}), why: "its windows at 50% lie off their places"},
 		{name: "no window", bad: "names the windows it decoded (captionWindows"},
 		{name: "no size of its file", windows: planned(nil), noSize: true, bad: "sizeBytes"},
 		// a window that is no window is a failed one, kept and said
@@ -123,15 +127,20 @@ func TestAReadOfClosedCaptionsIsItsWindows(t *testing.T) {
 		{name: "a window of fewer than no frames", windows: unread(`{"at": 0.1, "start": 600, "end": 602, "frames": -1,
 			"captions": false}`), why: "its frames is no whole number of frames"},
 	} {
-		r := FileReport{CaptionWindows: c.windows, Duration: &tenMinutes, SizeBytes: &aSize, FFprobe: "7.1.1"}
+		zero := 0.0
+		r := FileReport{CaptionWindows: c.windows, Duration: &tenMinutes, Span: &SpanReport{Start: &zero, End: &tenMinutes},
+			SizeBytes: &aSize, FFprobe: "7.1.1"}
 		if c.noSize {
 			r.SizeBytes = nil
+		}
+		if c.gop > 0 {
+			r.Gop = &c.gop
 		}
 		o, err := r.check()
 		if err == nil {
 			// held to a claim of a ten-minute record
-			ms, start, end := int64(600000), 0.0, 600.0
-			o.holdTo(&ms, &start, &end)
+			ms, start, end, step := int64(600000), 0.0, 600.0, 0.04
+			o.holdTo(&ms, &start, &end, &step)
 		}
 		switch {
 		case c.bad != "":

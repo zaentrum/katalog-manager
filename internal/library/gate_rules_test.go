@@ -1,9 +1,12 @@
 package library
 
 import (
+	"bytes"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -11,41 +14,142 @@ import (
 	"github.com/zaentrum/katalog-manager/internal/library/librarytest"
 )
 
+// planFile is the plan's file, the schemas' library/v2/caption-windows.json
+// (zaentrum/schemas at 71999959), vendored as testdata and pinned by its
+// sha256 (planFileSHA256): data this test alone reads, never the gate at
+// run time. A copy that differs fails the test.
+const (
+	planFile       = "testdata/caption-windows.json"
+	planFileSHA256 = "02087f1b50f7c6854f8e42ce2526063606657c58aef9942d151005279aa03b87"
+)
+
 // The window plan is one, for every place that reads or checks a read's
-// windows: a window at the picture's start, and one at 10, 30, 50, 70 and
-// 90 % of its own presentation span (start + at × (end − start)), each at
-// most 30 s short of its end; a window decodes 48 packets and is one of at
-// least half of them as frames. The gate's constants are held to it, and so
-// are its places: a picture that starts late, or ends before its file does,
-// is read where it is (the span its records give: PictureSpan).
+// windows, and the gate's constants are held to the plan's file (planFile),
+// every key of it known: a window at the picture's start (never capped by
+// the tail), and one at 10, 30, 50, 70 and 90 % of its own presentation
+// span (start + at × (end − start)), each at most 30 s short of its end and
+// never before its start, each saying its own fraction; a picture two of
+// whose places lie closer than a window reaches (48 packets at its frame
+// step, the read's gop and half a second) read whole, complete with at most
+// 16 leading pictures counted apart; a window decodes 48 packets and is one
+// of at least half of them as frames; a window lies within the greater of
+// 10 s and the gop and half a second of its place, or 30 s before it at
+// the keyframe before; each end of a read's span, and of a whole read, lies
+// within a frame step and half a second of the span the records give; a
+// stated rate below one frame a second (minRate) gives no plan. The keys in
+// prose (words: picture, end, frameStep, wholeComplete; rule, note) are the
+// gate's rules in words, held by the sha; bounds are the readers' (what a
+// read may spend), which the gate doesn't read; gopPackets (how far a read
+// lists keyframes) bounds the gop the gate takes. A picture that starts
+// late, or ends before its file does, is read where it is (the span its
+// records give: PictureSpan).
 func TestTheWindowPlanIsOne(t *testing.T) {
-	plan := struct {
-		start        bool
-		at           []float64
-		tailS        float64
-		minFrames    int
-		packets      int
-		packetsShare float64
-	}{true, []float64{0.1, 0.3, 0.5, 0.7, 0.9}, 30, 24, 48, 0.5}
-	if WindowAtStart != plan.start || !slices.Equal(PlannedWindows, plan.at) || WindowTail != plan.tailS ||
-		MinWindowFrames != plan.minFrames || WindowPackets != plan.packets ||
-		float64(MinWindowFrames) != float64(WindowPackets)*plan.packetsShare {
-		t.Errorf("the gate's plan: start %v, at %v, tail %v s, %d frames of %d packets; want %+v", WindowAtStart,
-			PlannedWindows, WindowTail, MinWindowFrames, WindowPackets, plan)
+	b, err := os.ReadFile(planFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := SHA256(b); got != planFileSHA256 {
+		t.Fatalf("%s: sha256 %s; want %s, the schemas' plan file as vendored", planFile, got, planFileSHA256)
+	}
+	var plan struct {
+		Schema       string    `json:"schema"`
+		Note         string    `json:"note"`
+		Start        *bool     `json:"start"`
+		At           []float64 `json:"at"`
+		MinRate      float64   `json:"minRate"`
+		EndTolerance struct {
+			FrameSteps float64 `json:"frameSteps"`
+			S          float64 `json:"s"`
+			Words      string  `json:"words"`
+		} `json:"endTolerance"`
+		TailS        float64 `json:"tailS"`
+		Packets      int     `json:"packets"`
+		MinFrames    int     `json:"minFrames"`
+		PacketsShare float64 `json:"packetsShare"`
+		GopPackets   int     `json:"gopPackets"`
+		PlaceSlack   struct {
+			S       float64 `json:"s"`
+			GopPlus float64 `json:"gopPlus"`
+			BackS   float64 `json:"backS"`
+			Words   string  `json:"words"`
+		} `json:"placeSlack"`
+		ShortReach struct {
+			Packets int     `json:"packets"`
+			Gop     *bool   `json:"gop"`
+			S       float64 `json:"s"`
+			Words   string  `json:"words"`
+		} `json:"shortReach"`
+		WholeLeadingMax int `json:"wholeLeadingMax"`
+		Bounds          struct {
+			Threads         int `json:"threads"`
+			AddressSpaceMiB int `json:"addressSpaceMiB"`
+			CPUS            int `json:"cpuS"`
+			TimeoutS        int `json:"timeoutS"`
+		} `json:"bounds"`
+		Words struct {
+			Picture       string `json:"picture"`
+			End           string `json:"end"`
+			FrameStep     string `json:"frameStep"`
+			WholeComplete string `json:"wholeComplete"`
+		} `json:"words"`
+		Rule string `json:"rule"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&plan); err != nil {
+		t.Fatalf("%s: %v; want every key of it one this test knows", planFile, err)
+	}
+	if plan.Schema != "zaentrum.library.caption-windows/1" || plan.Start == nil || plan.ShortReach.Gop == nil {
+		t.Fatalf("%s: schema %q, start %v, shortReach.gop %v", planFile, plan.Schema, plan.Start, plan.ShortReach.Gop)
+	}
+	// the gate's constants are the plan's
+	for _, c := range []struct {
+		name      string
+		gate, got any
+	}{
+		{"start", WindowAtStart, *plan.Start},
+		{"at", PlannedWindows, plan.At},
+		{"tailS", WindowTail, plan.TailS},
+		{"packets", WindowPackets, plan.Packets},
+		{"minFrames", MinWindowFrames, max(plan.MinFrames, int(math.Ceil(float64(plan.Packets)*plan.PacketsShare)))},
+		{"endTolerance.s", SpanSlack, plan.EndTolerance.S},
+		{"endTolerance: a frame step", (Span{Step: 0.04}).slack(), plan.EndTolerance.FrameSteps*0.04 + plan.EndTolerance.S},
+		{"placeSlack.s", WindowPlaceSlack, plan.PlaceSlack.S},
+		{"placeSlack.gopPlus", WindowGopPlus, plan.PlaceSlack.GopPlus},
+		{"placeSlack.backS", WindowKeyframeSlack, plan.PlaceSlack.BackS},
+		{"shortReach", shortReach(Span{Step: 0.04}, 3), float64(plan.ShortReach.Packets)*0.04 +
+			map[bool]float64{true: 3}[*plan.ShortReach.Gop] + plan.ShortReach.S},
+		{"wholeLeadingMax", WholeLeadingMax, plan.WholeLeadingMax},
+		{"gopPackets", GopPackets, plan.GopPackets},
+		{"minRate", float64(MinFrameRate), plan.MinRate},
+	} {
+		if !reflect.DeepEqual(c.gate, c.got) {
+			t.Errorf("the plan's %s: the gate's %v; the plan's %v", c.name, c.gate, c.got)
+		}
+	}
+	if got := planAts(); !slices.Equal(got, []float64{0, 0.1, 0.3, 0.5, 0.7, 0.9}) {
+		t.Errorf("the plan's windows: at %v; want the start and the five, six, never fewer", got)
+	}
+	if got := (Span{Start: 0, End: 20}).Place(0); got != 0 {
+		t.Errorf("the start window of a 20 s picture: at %v s; want its start, never capped", got)
 	}
 	for _, c := range []struct {
 		span   Span
 		places []float64
 	}{
-		{Span{0, 600}, []float64{0, 60, 180, 300, 420, 540}},
+		{Span{Start: 0, End: 600}, []float64{0, 60, 180, 300, 420, 540}},
 		// a picture whose clock starts at an hour
-		{Span{3600, 4200}, []float64{3600, 3660, 3780, 3900, 4020, 4140}},
-		// 200 s: 90 % is more than 30 s short of nothing, so at the tail
-		{Span{5, 205}, []float64{5, 25, 65, 105, 145, 175}},
+		{Span{Start: 3600, End: 4200}, []float64{3600, 3660, 3780, 3900, 4020, 4140}},
+		// 200 s: 90 % is less than 30 s short of its end, so at the tail
+		{Span{Start: 5, End: 205}, []float64{5, 25, 65, 105, 145, 175}},
+		// 100 s: 70 % and 90 % at the tail both; 20 s: every place but the
+		// start's at its start, never before it
+		{Span{Start: 0, End: 100}, []float64{0, 10, 30, 50, 70, 70}},
+		{Span{Start: 0, End: 20}, []float64{0, 0, 0, 0, 0, 0}},
 	} {
 		var got []float64
-		for _, at := range plannedAts(c.span.Length()) {
-			got = append(got, c.span.place(at))
+		for _, at := range planAts() {
+			got = append(got, c.span.Place(at))
 		}
 		if !slices.EqualFunc(got, c.places, func(a, b float64) bool { return a-b < 1e-9 && b-a < 1e-9 }) {
 			t.Errorf("a picture of %v: places %v; want %v", c.span, got, c.places)
@@ -55,20 +159,18 @@ func TestTheWindowPlanIsOne(t *testing.T) {
 		name, probe string
 		span        Span
 	}{
-		{"no stored probe", "", Span{0, 600}},
 		{"a picture that starts late and ends before its file", `{"format": {"start_time": "0.000000",
 			"duration": "600.000000"}, "streams": [{"index": 0, "codec_type": "video", "codec_name": "h264",
-			"start_time": "12.500000", "duration": "500.000000"}]}`, Span{12.5, 512.5}},
+			"start_time": "12.500000", "duration": "500.000000", "avg_frame_rate": "25/1"}]}`, Span{Start: 12.5, End: 512.5}},
 		{"a file whose clock starts later", `{"format": {"start_time": "1.400000"}, "streams": [{"index": 0,
-			"codec_type": "video", "codec_name": "h264"}]}`, Span{1.4, 601.4}},
+			"codec_type": "video", "codec_name": "h264", "avg_frame_rate": "25/1"}]}`, Span{Start: 1.4, End: 601.4}},
 	} {
-		var probe Doc
-		if c.probe != "" {
-			probe = doc(t, c.probe)
-		}
-		if s, why := PictureSpan(film(600), probe); s == nil || *s != c.span {
+		if s, why := PictureSpan(film(600), doc(t, c.probe)); s == nil || s.Start != c.span.Start || s.End != c.span.End {
 			t.Errorf("%s: span %v (%s); want %v", c.name, s, why, c.span)
 		}
+	}
+	if s, why := PictureSpan(film(600), nil); s != nil || !strings.Contains(why, "no stored probe") {
+		t.Errorf("no stored probe: span %v (%s); want none", s, why)
 	}
 }
 
@@ -76,7 +178,7 @@ func TestTheWindowPlanIsOne(t *testing.T) {
 // was one - is not complete under the plan: the gate takes it as not known
 // until the original is read again.
 func TestAReadOfFiveWindowsAndNoStartIsNotKnown(t *testing.T) {
-	carried, unknown := captionsRule([]Doc{film(600)}, nil, read(600, every()[1:]...))
+	carried, unknown := captionsRule([]Doc{film(600)}, planProbes, read(600, every()[1:]...))
 	if carried != "" || !strings.HasPrefix(unknown, CaptionsUnknown+": a read of its original says nothing of the "+
 		"video: it has no window at start") {
 		t.Errorf("five windows, none at the start: carried %q, unknown %q; want it not known", carried, unknown)
@@ -85,8 +187,8 @@ func TestAReadOfFiveWindowsAndNoStartIsNotKnown(t *testing.T) {
 
 // A read's windows are placed by the span of the picture its records give,
 // never by the read's own length: a read of a picture whose clock starts at
-// an hour goes where its stored probe says so, and is out of place where
-// nothing says it (the picture's start is then 0); one whose windows lie in
+// an hour goes where its stored probe says so, and has no plan where nothing
+// says its start (no stored probe); one whose windows lie in
 // the first seconds of a ten-minute record, saying it lasts ten seconds, is
 // of another length than its record's.
 func TestTheWindowsArePlacedByTheRecordsSpan(t *testing.T) {
@@ -95,14 +197,15 @@ func TestTheWindowsArePlacedByTheRecordsSpan(t *testing.T) {
 		late = append(late, window(at, 3600+at*600, 48, false))
 	}
 	probe := doc(t, `{"format": {"start_time": "3600.000000"}, "streams": [{"index": 0, "codec_type": "video",
-		"codec_name": "h264", "field_order": "progressive"}]}`)
-	if carried, unknown := captionsRule([]Doc{film(600)}, []Doc{probe}, read(600, late...)); carried != "" ||
+		"codec_name": "h264", "field_order": "progressive", "avg_frame_rate": "24/1"}]}`)
+	lateRead := read(600, late...)
+	lateRead.Captions.Span = &Span{Start: 3600, End: 4200}
+	if carried, unknown := captionsRule([]Doc{film(600)}, []Doc{probe}, lateRead); carried != "" ||
 		unknown != "" {
 		t.Errorf("a picture whose clock starts at an hour, said: carried %q, unknown %q; want it to go", carried, unknown)
 	}
-	if _, unknown := captionsRule([]Doc{film(600)}, nil, read(600, late...)); !strings.Contains(unknown,
-		"lie more than 15 s from their places") {
-		t.Errorf("a picture whose clock starts at an hour, not said: unknown %q; want it out of place", unknown)
+	if _, unknown := captionsRule([]Doc{film(600)}, nil, lateRead); !strings.HasPrefix(unknown, CaptionsNoPlan) {
+		t.Errorf("a picture whose clock starts at an hour, not said: unknown %q; want no plan of it", unknown)
 	}
 	// six windows in the first ten seconds, as a read of a ten-second video
 	// places them, of a record that says ten minutes
@@ -112,12 +215,12 @@ func TestTheWindowsArePlacedByTheRecordsSpan(t *testing.T) {
 		first = append(first, CaptionWindow{At: at, Start: float64(2 * i), End: float64(2*i) + 0.9, Frames: 48,
 			InterlacedFrames: &none, RepeatFrames: &none})
 	}
-	if _, unknown := captionsRule([]Doc{film(600)}, nil, read(10, first...)); !strings.Contains(unknown,
-		"lie more than 15 s from their places") {
-		t.Errorf("a read of ten seconds of a ten-minute record: unknown %q; want its windows out of place", unknown)
+	if _, unknown := captionsRule([]Doc{film(600)}, planProbes, read(10, first...)); !strings.HasPrefix(unknown,
+		CaptionsLengthMismatch) {
+		t.Errorf("a read of ten seconds of a ten-minute record: unknown %q; want its length not its record's", unknown)
 	}
-	if _, unknown := captionsRule([]Doc{film(600)}, nil, read(600, first...)); !strings.Contains(unknown,
-		"lie more than 15 s from their places") {
+	if _, unknown := captionsRule([]Doc{film(600)}, planProbes, read(600, first...)); !strings.Contains(unknown,
+		"lie off their places") {
 		t.Errorf("the same windows, the read saying ten minutes: unknown %q; want them out of place", unknown)
 	}
 }
@@ -135,7 +238,7 @@ func TestARecordWithoutALengthKeepsItsOriginal(t *testing.T) {
 		"durationMs 0":           `{"container": {"format": "matroska,webm", "durationMs": 0}, ` + stream + `}`,
 		"a container of nothing": `{"container": null, ` + stream + `}`,
 	} {
-		carried, unknown := captionsRule([]Doc{doc(t, rec)}, nil, read(600, every()...))
+		carried, unknown := captionsRule([]Doc{doc(t, rec)}, planProbes, read(600, every()...))
 		if carried != "" || !strings.HasPrefix(unknown, CaptionsNoLength) {
 			t.Errorf("%s: carried %q, unknown %q; want it kept, %q", name, carried, unknown, CaptionsNoLength)
 		}
@@ -160,8 +263,13 @@ func TestAFilmWhoseCodecNothingStatesIsHeld(t *testing.T) {
 				probes = []Doc{doc(t, probe)}
 			}
 			carried, unknown := captionsRule([]Doc{doc(t, rec)}, probes, read(600, every()...))
-			if carried != "" || !strings.HasPrefix(unknown, CaptionsUnscanned+": neither its record nor its stored probe") {
-				t.Errorf("%s (probe %q): carried %q, unknown %q; want it held as unscanned", name, probe, carried, unknown)
+			want := CaptionsUnscanned + ": neither its record nor its stored probe"
+			if name == "no picture at all" && probe != "" {
+				// a record of no picture against a probe's film: not its film
+				want = CaptionsUnknown + ": " + PictureNotFilm
+			}
+			if carried != "" || !strings.HasPrefix(unknown, want) {
+				t.Errorf("%s (probe %q): carried %q, unknown %q; want %q", name, probe, carried, unknown, want)
 			}
 		}
 	}
@@ -175,7 +283,7 @@ func TestAProbesClosedCaptionsOfItsPictureAreCarried(t *testing.T) {
 	for v, want := range map[string]string{`1`: "carried", `"1"`: "carried", `true`: "carried", `0`: "",
 		`"0"`: "", `false`: "", `null`: "", `"s"`: "unknown", `2`: "unknown"} {
 		probe := doc(t, `{"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "field_order": "progressive",
-			"closed_captions": `+v+`}]}`)
+			"start_time": "0.000000", "avg_frame_rate": "24/1", "closed_captions": `+v+`}]}`)
 		carried, unknown := captionsRule([]Doc{film(600)}, []Doc{probe}, read(600, every()...))
 		got := ""
 		switch {
@@ -191,7 +299,7 @@ func TestAProbesClosedCaptionsOfItsPictureAreCarried(t *testing.T) {
 	rec := film(600)
 	streams, _ := rec.Get("streams")
 	streams.([]any)[0] = append(streams.([]any)[0].(Doc), Field{"closedCaptions", true})
-	if carried, _ := captionsRule([]Doc{rec}, nil, read(600, every()...)); !strings.HasPrefix(carried, CaptionsCarried) {
+	if carried, _ := captionsRule([]Doc{rec}, planProbes, read(600, every()...)); !strings.HasPrefix(carried, CaptionsCarried) {
 		t.Errorf("a record whose picture says closedCaptions: carried %q; want them carried", carried)
 	}
 }
@@ -379,15 +487,23 @@ func TestEveryScanIsReadAndAScanOfNothingHolds(t *testing.T) {
 
 // A window the tail short of its end is placed by the length a read reads,
 // which may differ from its record's within DurationSlack: such a window is
-// the plan's window all the same (88 % of a 250 s record, 88.1 % of the
-// 252.4 s read), and a read of every window so placed goes.
+// the plan's window all the same (it says its fraction, 0.9, and starts at
+// 222.4 s of a 252.4 s read, 2.4 s from its place of the 250 s record), and
+// a read of every window so placed goes.
 func TestAWindowPlacedByALengthWithinTheSlackIsThePlans(t *testing.T) {
-	for _, c := range []struct{ record, read float64 }{{250, 252.4}, {250, 248}, {100, 98}, {150, 152}, {600, 605}} {
+	for _, c := range []struct{ record, read float64 }{{250, 252.4}, {250, 248}, {120, 118}, {150, 152}, {600, 605}} {
 		var ws []CaptionWindow
-		for _, at := range plannedAts(c.read) {
-			ws = append(ws, window(at, at*c.read, 48, false))
+		for _, at := range planAts() {
+			ws = append(ws, window(at, (Span{End: c.read}).Place(at), 48, false))
 		}
-		if carried, unknown := captionsRule([]Doc{film(c.record)}, nil, read(c.read, ws...)); carried != "" || unknown != "" {
+		f := read(c.read, ws...)
+		// the span it read is its picture's, its file's length the read's;
+		// it found a gop (one of 0 holds its windows to their places, within
+		// a frame step and 0.5 s)
+		f.Captions.Span = &Span{End: c.record}
+		two := 2.0
+		f.Captions.Gop = &two
+		if carried, unknown := captionsRule([]Doc{film(c.record)}, planProbes, f); carried != "" || unknown != "" {
 			t.Errorf("a record of %v s read as %v s: carried %q, unknown %q; want it to go", c.record, c.read, carried, unknown)
 		}
 	}

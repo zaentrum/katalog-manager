@@ -63,8 +63,14 @@ type Read struct {
 	// ClaimSpanStart and ClaimSpanEnd the span of its picture its records
 	// gave (library.PictureSpan), which the read's windows are placed by;
 	// none where the record said no length.
-	ClaimDurationMs              *int64
-	ClaimSpanStart, ClaimSpanEnd *float64
+	ClaimDurationMs                             *int64
+	ClaimSpanStart, ClaimSpanEnd, ClaimSpanStep *float64
+	// ReadSpanStart and ReadSpanEnd are the picture's span the kept read
+	// placed its windows over, as the read said it (seconds of the
+	// picture's clock), and ReadGop the longest run between two keyframes of
+	// its picture's first packets it found (seconds; nil: none said, which
+	// places windows as 0 does).
+	ReadSpanStart, ReadSpanEnd, ReadGop *float64
 	// Finding is what a read found that keeps the original for good of its
 	// file and its record (library.FindingLengthMismatch), nil none.
 	Finding *string
@@ -72,14 +78,14 @@ type Read struct {
 
 const readColumns = `source_id, item_id, state, captionwindows, captions, ffprobeversion, framesdecoded, duration, reason,
 	readat, attempts, failures, nextattemptat, claimedat, claimtoken, lapsedtoken, claimsize, sourcesize, claimqh1, sourceqh1,
-	claimdurationms, finding, claimspanstart, claimspanend`
+	claimdurationms, finding, claimspanstart, claimspanend, claimspanstep, readspanstart, readspanend, readgop`
 
 func scanRead(row pgx.Row) (*Read, error) {
 	var r Read
 	err := row.Scan(&r.SourceID, &r.ItemID, &r.State, &r.Windows, &r.Captions, &r.FFprobeVersion, &r.FramesDecoded,
 		&r.Duration, &r.Reason, &r.ReadAt, &r.Attempts, &r.Failures, &r.NextAttemptAt, &r.ClaimedAt, &r.ClaimToken,
 		&r.LapsedToken, &r.ClaimSize, &r.SourceSize, &r.ClaimQH1, &r.SourceQH1, &r.ClaimDurationMs, &r.Finding,
-		&r.ClaimSpanStart, &r.ClaimSpanEnd)
+		&r.ClaimSpanStart, &r.ClaimSpanEnd, &r.ClaimSpanStep, &r.ReadSpanStart, &r.ReadSpanEnd, &r.ReadGop)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -150,21 +156,23 @@ func RepeatedKey(b []byte) string {
 }
 
 // repeated is a key an object of the value v, at the path path of the
-// report, gives twice, its windows aside.
+// report, gives twice, its windows aside: in any case, as encoding/json
+// takes "Token" for "token".
 func repeated(v any, path string) string {
 	switch x := v.(type) {
 	case library.Doc:
 		seen := make(map[string]bool, len(x))
 		for _, f := range x {
-			if seen[f.Key] {
+			k := strings.ToLower(f.Key)
+			if seen[k] {
 				return f.Key
 			}
-			seen[f.Key] = true
-			if path+"/"+f.Key == "/original/captionWindows" {
+			seen[k] = true
+			if path+"/"+k == "/original/captionwindows" {
 				continue
 			}
-			if k := repeated(f.Value, path+"/"+f.Key); k != "" {
-				return k
+			if r := repeated(f.Value, path+"/"+k); r != "" {
+				return r
 			}
 		}
 	case []any:
@@ -200,11 +208,43 @@ func repeated(v any, path string) string {
 type FileReport struct {
 	CaptionWindows []library.CaptionWindow `json:"captionWindows"`
 	Duration       *float64                `json:"duration"`
-	SizeBytes      *int64                  `json:"sizeBytes"`
-	CaptionStreams *int                    `json:"captionStreams"`
-	OffList        []string                `json:"offList"`
-	FFprobe        string                  `json:"ffprobe"`
-	Error          string                  `json:"error,omitempty"`
+	// Span is the picture's span the read placed its windows over (seconds
+	// of the picture's clock: its first frame, start, to the end of its last
+	// video packet, end), each end of which the span of the picture its
+	// records give is held to.
+	Span *SpanReport `json:"span"`
+	// Gop is the longest run between two keyframes among the picture's first
+	// packets the read listed (seconds, 0 or more; 0 or none said: fewer than
+	// two keyframes), which sets how far from its place a window may lie.
+	Gop *float64 `json:"gop"`
+	// CaptionsKnown false says the read can't tell its picture's captions,
+	// Reason why: one whose packets need to be read whole for a caption
+	// signature (library.UnscannedReason) is kept as the finding unscanned.
+	CaptionsKnown  *bool    `json:"captionsKnown"`
+	Reason         string   `json:"reason,omitempty"`
+	SizeBytes      *int64   `json:"sizeBytes"`
+	CaptionStreams *int     `json:"captionStreams"`
+	OffList        []string `json:"offList"`
+	FFprobe        string   `json:"ffprobe"`
+	Error          string   `json:"error,omitempty"`
+}
+
+// SpanReport is the span of its picture a read says: the seconds of its
+// first frame (Start) and of the end of its last video packet (End).
+type SpanReport struct {
+	Start *float64 `json:"start"`
+	End   *float64 `json:"end"`
+}
+
+// spanEnd is the end (end true) or the start of the span s, nil of none.
+func spanEnd(s *library.Span, end bool) *float64 {
+	switch {
+	case s == nil:
+		return nil
+	case end:
+		return &s.End
+	}
+	return &s.Start
 }
 
 // FFprobeTested is the one release of ffprobe whose reads the catalog
@@ -240,19 +280,22 @@ func FFprobeRelease(v string) ([2]int, error) {
 // decoded frames showed captions or counted frames in fields, which keeps
 // the original whatever else of the read failed.
 type outcome struct {
-	read     bool
-	found    bool
-	ws       []library.CaptionWindow
-	windows  []byte
-	captions bool
-	frames   int32
-	partial  bool
-	duration *float64
-	size     *int64
-	streams  *int
-	offList  []byte
-	version  string
-	why      string
+	read      bool
+	found     bool
+	unscanned bool
+	span      *library.Span
+	gop       *float64
+	ws        []library.CaptionWindow
+	windows   []byte
+	captions  bool
+	frames    int32
+	partial   bool
+	duration  *float64
+	size      *int64
+	streams   *int
+	offList   []byte
+	version   string
+	why       string
 }
 
 // versionWord is the version alone of what ffprobe names: of its first
@@ -321,6 +364,10 @@ func (f *FileReport) check() (outcome, error) {
 	var failed []float64
 	var unread []string
 	for i, w := range f.CaptionWindows {
+		if w.Stored() {
+			return outcome{}, &BadReport{fmt.Sprintf("%s: captionWindows[%d] says unreadable, the catalog's own key of a "+
+				"window it kept as failed: a read doesn't say it", what, i)}
+		}
 		if w.Unreadable != "" {
 			unread = append(unread, fmt.Sprintf("captionWindows[%d]: %s", i, w.Unreadable))
 		}
@@ -337,8 +384,31 @@ func (f *FileReport) check() (outcome, error) {
 			return outcome{}, err
 		}
 	}
+	if sp := f.Span; sp != nil {
+		if sp.Start == nil || sp.End == nil || !finite(*sp.Start) || !finite(*sp.End) || *sp.End <= *sp.Start {
+			return outcome{}, &BadReport{what + ": span is the picture's span it read, {start, end}: the seconds of its " +
+				"first frame and of the end of its last packet, end after start"}
+		}
+		o.span = &library.Span{Start: *sp.Start, End: *sp.End}
+	}
+	if g := f.Gop; g != nil && (!finite(*g) || *g < 0) {
+		return outcome{}, &BadReport{what + ": gop is the longest run between two keyframes of the picture's first " +
+			"packets, in seconds, 0 or more"}
+	}
+	o.gop = f.Gop
 	if strings.TrimSpace(f.Error) != "" {
 		o.why = clip(strings.TrimSpace(f.Error), 500)
+		return o, nil
+	}
+	if f.CaptionsKnown != nil && !*f.CaptionsKnown {
+		// a read that says it can't tell: of a picture whose packets need
+		// to be read whole, the finding unscanned; else a failure
+		reason := strings.TrimSpace(f.Reason)
+		o.unscanned = strings.HasPrefix(reason, library.UnscannedReason)
+		if reason == "" {
+			reason = "the read says its picture's captions aren't known"
+		}
+		o.why = clip(reason, 500)
 		return o, nil
 	}
 	if len(f.CaptionWindows) == 0 {
@@ -381,20 +451,27 @@ func (f *FileReport) check() (outcome, error) {
 // it said (durationMs, milliseconds), within DurationSlack, and the span of
 // its picture its records gave (spanStart, spanEnd, seconds), where the
 // plan places its windows (library.ReadRefused). A record that said no
-// length, and a read of another length, are findings about the record or
-// the file (noRecordLength, lengthMismatch), which it answers; a read whose
+// length, records that gave no plan of its picture (library.PictureSpan),
+// and a read of another length, are findings about the record or the file
+// (noRecordLength, noPlan, lengthMismatch), which it answers; a read whose
 // windows say nothing of the picture is a failed one. A read it refuses is
 // no read (o.read false, o.why why).
-func (o *outcome) holdTo(durationMs *int64, spanStart, spanEnd *float64) (finding string) {
+func (o *outcome) holdTo(durationMs *int64, spanStart, spanEnd, spanStep *float64) (finding string) {
 	if !o.read {
 		return ""
 	}
 	switch {
-	case durationMs == nil || *durationMs <= 0 || spanStart == nil || spanEnd == nil:
+	case durationMs == nil || *durationMs <= 0:
 		o.read = false
 		o.why = "its record said no length of its file (container.durationMs) when it was handed out, so where " +
 			"the read's windows lie can't be told"
 		return library.FindingNoLength
+	case spanStart == nil || spanEnd == nil || spanStep == nil || !finite(*spanStart) || !finite(*spanEnd) ||
+		!finite(*spanStep) || *spanStep <= 0:
+		o.read = false
+		o.why = "its records gave no plan of its picture when it was handed out (its stored probe's picture's " +
+			"start, length and frame rate), so where the read's windows lie can't be told"
+		return library.FindingNoPlan
 	case o.duration != nil && math.Abs(*o.duration-float64(*durationMs)/1000) >
 		library.DurationSlack(float64(*durationMs)/1000):
 		recorded := float64(*durationMs) / 1000
@@ -403,8 +480,9 @@ func (o *outcome) holdTo(durationMs *int64, spanStart, spanEnd *float64) (findin
 			*o.duration, recorded, library.DurationSlack(recorded))
 		return library.FindingLengthMismatch
 	}
-	span := library.Span{Start: *spanStart, End: *spanEnd}
-	if why := library.ReadRefused(&library.CaptionsRead{Windows: o.ws, Duration: o.duration}, span); why != "" {
+	span := library.Span{Start: *spanStart, End: *spanEnd, Step: *spanStep}
+	if why := library.ReadRefused(&library.CaptionsRead{Windows: o.ws, Duration: o.duration, Span: o.span,
+		Gop: o.gop}, span); why != "" {
 		// a read that says nothing of its video is kept as a failed one,
 		// that it is read again and counted not read (the gate holds every
 		// read to the same)
@@ -551,7 +629,12 @@ func Record(ctx context.Context, st *store.Store, sourceID string, r Report, now
 	// length, or a read of the file handed out of another length, is a
 	// finding about the record or the file (noRecordLength, lengthMismatch),
 	// final for that file and that record, which keeps the original for good
-	finding := o.holdTo(kept.ClaimDurationMs, kept.ClaimSpanStart, kept.ClaimSpanEnd)
+	finding := o.holdTo(kept.ClaimDurationMs, kept.ClaimSpanStart, kept.ClaimSpanEnd, kept.ClaimSpanStep)
+	if finding == "" && o.unscanned && sameSize {
+		// final for that file and that record: its record, written again
+		// with the picture's caption signature, has it read again
+		finding = library.FindingUnscanned
+	}
 	// a failure that found what keeps the original anyway (a stream of
 	// captions of its own, something off the closed lists), of the file
 	// handed out, is kept as found: no read again of the same file changes
@@ -590,9 +673,11 @@ func Record(ctx context.Context, st *store.Store, sourceID string, r Report, now
 		_, err = tx.Exec(ctx, `UPDATE `+store.SourceCaptionsTable+` SET state = 'read', captionwindows = $2,
 			captions = $3, ffprobeversion = $4, framesdecoded = $5, duration = $6, reason = NULLIF($7, ''), readat = $8,
 			sourcesize = claimsize, sourceqh1 = claimqh1, sourcerecordedat = claimrecordedat, captionstreams = $9,
-			offlist = $10, finding = NULL
-			WHERE source_id = $1`, sourceID, o.windows, o.captions, o.version, o.frames, o.duration, o.why, now,
-			o.streams, o.offList)
+			offlist = $10, finding = NULL, readspanstart = $11, readspanend = $12, readgop = $13
+			WHERE source_id = $1`, sourceID, o.windows, o.captions, o.version, max(o.frames, 1), o.duration, o.why, now,
+			o.streams, o.offList, spanEnd(o.span, false), spanEnd(o.span, true), o.gop)
+		// (a read kept as found decoded a frame at least, the one that
+		// found what it found)
 	case takeFind:
 		_, err = tx.Exec(ctx, `UPDATE `+store.SourceCaptionsTable+` SET state = 'failed', captionwindows = $2,
 			captions = NULL, ffprobeversion = $3, framesdecoded = $4, duration = $5, reason = $6, readat = $7,

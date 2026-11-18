@@ -247,6 +247,9 @@ func (s *Service) ready(ctx context.Context) error {
 	if err == nil && ok {
 		ok, err = s.st.CaptionsWaitingReady(ctx)
 	}
+	if err == nil && ok {
+		ok, err = s.st.CaptionsSpanReady(ctx)
+	}
 	if err != nil {
 		return err
 	}
@@ -373,23 +376,33 @@ func (s *Service) Claim(ctx context.Context, worker string, limit int) (Claim, e
 		// span of its picture its records give, which its windows are
 		// placed by (none of a record that says no length: its report is
 		// a finding of that)
-		var spanStart, spanEnd *float64
+		// a record that can't be read is not handed out: what it says of the
+		// original's length can't be told, which is no finding of it (one
+		// that is read and says no length is, and so is one not yet written)
+		if why := recordReadable(c.dir); why != "" {
+			if err := fail(ctx, tx, c.id, c.item, "its source record can't be read: "+why, now); err != nil {
+				return Claim{}, err
+			}
+			continue
+		}
+		var spanStart, spanEnd, spanStep *float64
 		if c.dir != nil {
 			job.DurationMs = library.RecordedDurationMs(*c.dir)
 			if span := library.RecordedSpan(*c.dir); span != nil && job.DurationMs != nil {
-				spanStart, spanEnd = &span.Start, &span.End
+				spanStart, spanEnd, spanStep = &span.Start, &span.End, &span.Step
 			}
 		}
 		var token string
 		if err := tx.QueryRow(ctx, `INSERT INTO `+store.SourceCaptionsTable+`
 				(source_id, item_id, state, claimedat, claimedby, claimtoken, lastclaimedat, attempts, claimsize, claimqh1,
-				 claimdurationms, claimrecordedat, claimspanstart, claimspanend, createdat, modifiedat)
-			VALUES ($1, $2, 'pending', $3, $4, gen_random_uuid()::varchar, $3, 1, $5, $6, $7, $8, $9, $10, $3, $3)
+				 claimdurationms, claimrecordedat, claimspanstart, claimspanend, claimspanstep, createdat, modifiedat)
+			VALUES ($1, $2, 'pending', $3, $4, gen_random_uuid()::varchar, $3, 1, $5, $6, $7, $8, $9, $10, $11, $3, $3)
 			ON CONFLICT (source_id) DO UPDATE SET claimedat = $3, claimedby = $4, claimtoken = gen_random_uuid()::varchar,
 				lastclaimedat = $3, attempts = `+store.SourceCaptionsTable+`.attempts + 1, claimsize = $5, claimqh1 = $6,
-				claimdurationms = $7, claimrecordedat = $8, claimspanstart = $9, claimspanend = $10, modifiedat = $3
+				claimdurationms = $7, claimrecordedat = $8, claimspanstart = $9, claimspanend = $10, claimspanstep = $11,
+				modifiedat = $3
 			RETURNING claimtoken`, c.id, c.item, now, clip(worker, 255), c.size, c.qh1, job.DurationMs,
-			c.recorded, spanStart, spanEnd).Scan(&token); err != nil {
+			c.recorded, spanStart, spanEnd, spanStep).Scan(&token); err != nil {
 			return Claim{}, err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO `+store.CaptionHandoutsTable+` (source_id, handedoutat) VALUES ($1, $2)`,
@@ -406,7 +419,7 @@ func (s *Service) Claim(ctx context.Context, worker string, limit int) (Claim, e
 		if len(cs) == 0 {
 			return idle("every original on disk has its closed captions read, or waits its backoff", time.Hour), nil
 		}
-		return idle("the originals looked at were not on disk", time.Minute), nil
+		return idle("the originals looked at were not on disk, or their records can't be read", time.Minute), nil
 	}
 	out.Deadline = &deadline
 	return out, nil
@@ -447,8 +460,8 @@ var candidatesSQL = `
 // window that decoded frames says how many are interlaced and repeat a
 // field); a failure that found a stream of captions of its own or something
 // off the closed lists (offlist) of the file handed out; or a finding
-// (lengthMismatch, noRecordLength) of the file handed out and of the record
-// as it is now. Another file, or another record of a read that found
+// (lengthMismatch, noRecordLength, noPlan, unscanned) of the file handed out and of
+// the record as it is now. Another file, or another record of a read that found
 // nothing, goes back to be read.
 func readUsable(c, s string) string {
 	return `(` + c + `.sourcesize IS NOT DISTINCT FROM ` + s + `.sizebytes
@@ -465,7 +478,8 @@ func readUsable(c, s string) string {
 			AND (COALESCE(` + c + `.captionstreams, 0) > 0 OR COALESCE(jsonb_array_length(` + c + `.offlist), 0) > 0)
 			AND ` + c + `.finding IS NULL)
 		  OR (` + c + `.state IS NOT DISTINCT FROM 'failed' AND ` + c + `.sourcesize IS NOT NULL
-			AND ` + c + `.finding IN ('` + library.FindingLengthMismatch + `', '` + library.FindingNoLength + `')
+			AND ` + c + `.finding IN ('` + library.FindingLengthMismatch + `', '` + library.FindingNoLength + `', '` +
+		library.FindingNoPlan + `', '` + library.FindingUnscanned + `')
 			AND ` + c + `.sourcerecordedat IS NOT DISTINCT FROM ` + s + `.recordedat)))`
 }
 
@@ -570,4 +584,13 @@ func clip(s string, n int) string {
 		n--
 	}
 	return s[:n]
+}
+
+// recordReadable is library.RecordReadable of the record folder dir, ""
+// where the catalog names none (no record yet).
+func recordReadable(dir *string) string {
+	if dir == nil {
+		return ""
+	}
+	return library.RecordReadable(*dir)
 }

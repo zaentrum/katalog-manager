@@ -16,8 +16,8 @@
 // store.EnsureCompliance, store.EnsureRetireRuns, store.EnsureStyledSubtitles,
 // store.EnsurePictureAreas, store.EnsureChapterReads,
 // store.EnsureSupersededSources, store.EnsureSupersededDecisions,
-// store.EnsureSourceCaptions and store.EnsureCaptionsWaiting, which applies
-// 059 after 058).
+// store.EnsureSourceCaptions, store.EnsureCaptionsWaiting, which applies
+// 059 after 058, and store.EnsureCaptionsSpan, which applies 060 after 058).
 // It applies 035, which drops what is left of a retired integration, at every
 // start when any of that is there (store.DropRetiredJobTables), and 049, the
 // catalog search, in the background after startup, one statement at a time:
@@ -222,3 +222,9 @@ var SourceCaptions string
 //
 //go:embed 059_captions_retire_waiting.sql
 var CaptionsWaiting string
+
+// CaptionsSpan is 060_captions_read_span.sql: the span of the picture a read
+// says, the frame step its claim noted, and the finding unscanned.
+//
+//go:embed 060_captions_read_span.sql
+var CaptionsSpan string

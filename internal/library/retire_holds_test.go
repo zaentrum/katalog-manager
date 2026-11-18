@@ -94,8 +94,8 @@ var sameEssence = map[string]any{"surround": false, "maxAudioChannels": 2, "audi
 
 // The copy rule: an original whose package copies its picture (its top
 // video rendition's encoder copy) is kept, as no record proves the copy
-// carries it whole, and so is one whose package says no encoder; one whose
-// package states its encoder goes.
+// carries it whole, and so is one whose package says no encoder or one the
+// transcoder doesn't write; one whose package states its encoder goes.
 func TestTheCopyRuleKeepsTheOriginalOfACopy(t *testing.T) {
 	video := func(v0 map[string]any) func(pkg map[string]any) {
 		return func(pkg map[string]any) {
@@ -108,7 +108,10 @@ func TestTheCopyRuleKeepsTheOriginalOfACopy(t *testing.T) {
 		want   string
 	}{
 		{"encoder copy", video(map[string]any{"id": "v0", "encoder": "copy"}), CopyUnproven},
-		{"encoder Copy, spaced", video(map[string]any{"id": "v0", "encoder": " Copy "}), CopyUnproven},
+		// the transcoder writes its words as they are: one in another case
+		// or spaced is none of them
+		{"encoder Copy, spaced", video(map[string]any{"id": "v0", "encoder": " Copy "}),
+			"no word the transcoder writes of an encode"},
 		{"encoder copy, a scan that verified it progressive", func(pkg map[string]any) {
 			video(map[string]any{"id": "v0", "encoder": "copy"})(pkg)
 			pkg["scan"] = verifiedProgressive()

@@ -479,6 +479,12 @@ the base schema in the order of their numbers, and each is idempotent:
   retire job found nothing else keeps them), which the captions backfill
   hands out first. Applied at startup after 058 under the same lock when it
   is missing; without it the captions backfill hands out nothing.
+- `060_captions_read_span.sql` adds to it the frame step a claim notes of
+  the picture (`claimspanstep`), the span a read kept says it read
+  (`readspan`), which the gate holds it to again, and the finding
+  `unscanned`. Applied at startup after 058 under the same lock when it is
+  missing; without it the captions backfill hands out nothing, and the gate
+  takes no read.
 
 ## Track languages
 
@@ -1797,7 +1803,9 @@ video packets each from a keyframe, with ffprobe 7.1;
 katalog-manager reads no media, it hands out where an original lies (a
 stat) and keeps the reads (`com_nalet_katalog_sourcecaptions`, migration
 058). It hands out an original only once its source record is written
-(`recordedat`), and notes the size and quick hash the catalog's row has of
+(`recordedat`) and can be read (one that can't - not there, no JSON, a key
+given twice, no essence object - is not handed out: a failure, after its
+backoff, never a finding), and notes the size and quick hash the catalog's row has of
 it then (`claimsize`, `claimqh1`: the row's `sizebytes` and `qh1`, not a stat
 of the file), the length its record says (`claimdurationms`), the span of
 its picture its records give (`claimspanstart`, `claimspanend`) and when its
@@ -1824,18 +1832,63 @@ the length it reads to, and the catalog holds its read to as well.
 The window plan is one, for every place that reads or checks a read's
 windows: a window at the picture's start, and one at 10, 30, 50, 70 and 90 %
 of the picture's own presentation span (`start + at × (end − start)`), each
-at most 30 s short of its end - six windows, every one of which a read has
-before it says "none" (a picture shorter than a minute has them at most half
-its span in, those that fall on one another one). A window decodes 48
-packets and is one of at least 24 frames. The span is the picture's own: a
+at most 30 s short of its end and never before its start - six windows,
+every one of which a read has before it says "none"; a window says its own
+fraction (one the tail short of the end says 0.9) and starts where it lies.
+A picture two of whose places lie closer than a window reaches (48 packets
+at its frame step, the read's `gop` and half a second: at 24 frames a
+second and a `gop` of 0, one shorter than about 108 s) is read whole instead:
+every packet decoded, one window at its start that says `whole: true`, how
+many packets it counted (`packets`) and its leading pictures (`leading`: the
+packets before its first keyframe in decode order and the first gop's
+packets timed before it, 0 to 16). A read whole stands for the six windows,
+and says "none" only where it is complete - it says its `leading` and
+decoded every packet but them, or them too (`packets` − `leading` ≤
+`frames` ≤ `packets`; one that says no `leading` is not complete; its
+`packets` at the frame step reach the picture's span, within a frame step
+and half a second), and its first and
+last frames lie within a frame step and half a second of the picture's span
+- and none of its frames shows captions; a longer picture read whole is
+taken too, the stronger proof. A short picture read in windows, a whole read
+among other windows or not at the start, and one that is not complete say
+nothing of it. A window decodes 48 packets and is one of at least 24
+frames. Every read says the span it read (`span`: `{"start", "end"}`,
+seconds of the picture's clock: its first frame and the end of its last
+video packet): one that says none, or one either end of which lies off the
+span its records give by more than a frame step (one over the stored
+probe's picture's `avg_frame_rate`, or its `r_frame_rate` where that is
+exactly `0/0`) and half a second, says nothing of the picture; a `span` of another shape is refused (400). Every read says, too, the
+longest run between two keyframes among its picture's first packets it
+listed (`gop`, seconds, 0 or more; 0 or none said: fewer than two
+keyframes), by which its windows lie at their places; one below 0 is
+refused (400), and one longer than its first 1200 packets last at the frame
+step says nothing of the picture, a read of the whole picture's too (one
+exactly that long is taken). A number that is not finite (NaN, an
+infinity), or a whole number too large for a float (10^400), in a span, a
+gop, a count or a probe's value, counts as not stated, never a crash: the
+PUT refuses a report that gives one (400), and a record or a stored probe
+that gives a number written past a float (`1e999`, as the schemas' loaders
+refuse it like Infinity) or a whole number of more digits than Python reads
+(4300) can't be read. The span is the picture's own: a
 picture that starts late, or ends before its file does, is read where it is.
-The catalog takes it from the records, as the part of the record logic's
-`picture_span` (schemas, `libv2_records.py`) it can tell without opening the
-file: the start is the stored probe's picture's `start_time`, else the
-probe's format's, else 0; the length the probe's picture's `duration`, else
-the record's `container.durationMs`; the end the start plus the length (the
-record logic reads the end of the picture's last packet from the file too,
-which no record keeps). The read's own length places nothing: it is held to
+The catalog takes it from the records as the record logic's `plan_of`
+(schemas, `libv2_records.py`) does, without opening the file: the picture is
+the stored probe's one video stream that is no cover by the closed lists'
+rule (below), wherever a cover lies - where none is, or two could each be
+it, there is no plan; the start its `start_time`, else the probe's format's;
+the length its `duration` (above 0), else the record's
+`container.durationMs`, and the format's `duration` only where the record
+gives none; the end the start plus the
+length; the frame step one over its `avg_frame_rate`, or its
+`r_frame_rate` where `avg_frame_rate` is exactly `0/0` (`num/den` of digits
+alone - no space, sign or point -, both above 0, of no more digits than
+Python reads, divided as Python divides; an `avg_frame_rate` missing or of
+no such ratio, and a rate it states below one frame a second, the plan's
+`minRate`, give none). An original of no stored probe, or
+of one that gives no start, no length or no frame rate, has no plan, and is
+kept ("its closed captions aren't known: its records give no plan of its
+picture"); a read of it is kept as the finding `noPlan`, final for that file
+and that record. The read's own length places nothing: it is held to
 the record's (a window the tail short of the end, which a read places by the
 length it reads, is the plan's window all the same where that length lies
 within 2 s or 1 % of the record's). A record that says no length has no span, and the original
@@ -1843,10 +1896,18 @@ is kept ("its closed captions aren't known: its record says no length"); a
 read of it is kept as the finding `noRecordLength`, final for that file and
 that record. A read of five windows and none at the start (one made before
 the plan was one) is not complete under the plan: it is not known until the
-original is read again. A short picture read whole (every packet decoded,
-where its six windows wouldn't lie apart) is kept until the gate knows such
-a read: the gate takes six windows alone. The plan's numbers are constants
-of the code (`internal/library/captions.go`); a test holds them to the plan.
+original is read again. A read that says its picture's captions can't be
+told by windows (`captionsKnown: false`, its `reason` "hevc: needs the
+packets' signature": an HEVC picture whose packets weren't read whole for a
+caption signature) is kept as the finding `unscanned`, the hold of a picture
+whose captions windows alone don't tell: no backoff, not handed out again
+while its record is as it was; once the record is written again with the
+picture's `captionSignature`, it is read again, and the read lets the hold
+go. Any other `captionsKnown: false` is a failed read. The plan's numbers
+are constants of the code (`internal/library/captions.go`); a test holds
+them to the plan's values (the schemas' `library/v2/caption-windows.json`,
+vendored in `internal/library/testdata` and pinned by its sha256, every key
+of it known), and nothing reads a plan at run time.
 
 With no item, `items` is empty and `idle` says why (`"captions.backfill is
 off"`, …) and `retryAfterSeconds` when to ask again. It reports each with
@@ -1854,8 +1915,8 @@ off"`, …) and `retryAfterSeconds` when to ask again. It reports each with
 
 ```json
 {"token": "…",
- "original": {"ffprobe": "7.1.5", "duration": 600.0, "sizeBytes": 7340032000,
-   "captionStreams": 0, "offList": [], "captionWindows": [
+ "original": {"ffprobe": "7.1.5", "duration": 600.0, "span": {"start": 0.0, "end": 600.0}, "gop": 2.0,
+   "sizeBytes": 7340032000, "captionStreams": 0, "offList": [], "captionWindows": [
    {"at": 0, "start": 0.0, "end": 1.88, "frames": 48, "captions": false,
     "interlacedFrames": 0, "repeatFrames": 0},
    {"at": 0.1, "start": 60.0, "end": 61.88, "frames": 48, "captions": true,
@@ -1865,18 +1926,22 @@ off"`, …) and `retryAfterSeconds` when to ask again. It reports each with
    …]}}
 ```
 
-Each window is where in the picture it was read (`at`, a fraction of its
-span: 0 its start, 0.1 to 0.9), the presentation seconds of the frames
+Each window is which of the plan's it is (`at`, its fraction of the span: 0
+its start, 0.1 to 0.9; a window the tail short of the end says its fraction
+and starts where it lies), the presentation seconds of the frames
 it decoded (`start` to `end`; none of a window that failed), how many
 (`frames`; 0, a window that failed) and whether one of them showed captions
 (`captions`), and of the frames it decoded how many were coded as fields
 (`interlacedFrames`) and how many repeat a field (`repeatFrames`), and,
 where its packet listing showed no keyframe between the window's first
 picture and its place, that it starts at the keyframe at or before its
-place (`keyframeBefore: true`).
+place (`keyframeBefore: true`). A window that decoded frames says
+`keyframeBefore` as `true` or `false`, or not at all (`false`): null or any
+other value fails the window, and so does `true` of a read of the whole
+picture.
 `duration` is the video's length the read says (seconds), which its
-record's is held to; how many windows a short picture has, and where they
-lie, is the plan's, of the span the claim handed out. `sizeBytes` is the size of the file it read, as it found it (a read
+record's is held to; where its windows lie, and which picture is read whole,
+is the plan's, of the span the claim handed out. `sizeBytes` is the size of the file it read, as it found it (a read
 says it; a read of no frame and a failure need not). `captionStreams` is
 how many streams of closed captions of their own the read found (codec
 `eia_608`, or tagged `c608` or `c708`: a QuickTime or MP4 track of them),
@@ -1900,26 +1965,32 @@ ffprobe (`ffprobe`, as `ffprobe -version` names it: `7.1.5`, `n7.1.1`,
 One without it, one of another release (`9.0.2`, which says no stream's
 `closed_captions`), one that names no release (a build of the development
 branch, `N-…`), a read without windows, a report that gives one of its
-own keys twice and a report of no read are refused (400) and change
+own keys twice (in any case: `Token` is `token`), a window that carries the
+catalog's own `unreadable` (a window it kept as failed has it; a read
+doesn't say it) and a report of no read are refused (400) and change
 nothing, as is a read that says no `sizeBytes`. A window that is no window
 (`at` outside 0 to 1, `end` before `start`, captions in a window of no
-frame, a value of another type, a key given twice) is no 400: it is kept as
-a failed window and said, and what it found where it decoded frames stays
-(below). A read none of whose windows decoded a frame is kept as a failed
+frame, a value of another type, a key given twice, in any case) is no 400:
+it is kept as a failed window and said, and what it found where it decoded
+frames, or where how many it decoded can't be read, stays (below). A read none of whose windows decoded a frame is kept as a failed
 one: it can't say there are none. So is a read the catalog can't take as
 one of the video: its windows not in the order of the video, none said for
-a planned place (the start among them), a window that lies more than 15 s
-from its place (the plan's, of the span the claim handed out; a window at
-the keyframe at or before its place, `keyframeBefore`, up to 30 s before it,
-as a long group of pictures puts it: a window is in place by where it
-starts, not by its distance), one that decoded fewer than 24 frames, no
+a planned place (the start among them), a window that lies off its place
+(the plan's, of the span the claim handed out: its first frame within the
+greater of 10 s and the read's `gop` and 0.5 s of it, before or after; a
+window at the keyframe at or before its place, `keyframeBefore`, up to 30 s
+before it, as a long group of pictures puts it; of a `gop` of 0, or none
+said, only at its own place, within a frame step and half a second: a
+window is in place by where it starts, not by its distance), one that
+decoded fewer than 24 frames, no
 length said; and a read of a file of
 another size than the one handed out (another file, or one still being
 copied). Each is handed out again after its backoff. A read of the file
 handed out of another length than its record's (`durationMs`, by more than
 2 s or 1 % of it, the more), and one of an original whose record said no
-length, is a finding about the record or the file, of its own (`finding`
-`lengthMismatch`, `noRecordLength`): the original is kept for good on it,
+length, or whose records gave no plan of its picture, is a finding about
+the record or the file, of its own (`finding` `lengthMismatch`,
+`noRecordLength`, `noPlan`): the original is kept for good on it,
 with the standing of captions not known ("its closed captions aren't known:
 its length is not its record's: a read of its original says it lasts 610 s,
 and its record 600 s (within 6 s)"), and it is not handed out again - for
@@ -2002,11 +2073,15 @@ instance hands out originals at a time (an advisory lock). `captionReads`
 full of the file at their place (`withCaptions` of them with captions),
 those a read found of another length than their record's (`lengthMismatch`,
 their source ids `lengthMismatches`: a finding about the record or the
-file, none of read nor of to read) and to read (`toRead`, those read with a
-window that decoded no frame, one that says nothing of interlaced or
-repeated frames, a read refused or of another file among them, and one
-whose record said no length, until its record is written again; a read
-that found captions counts as read), the failed ones,
+file, none of read nor of to read), those a read found their record
+leaves not known (`awaitingRecord`: it says no length, its records give
+no plan of its picture, or the picture's captions need its packets'
+signature; kept until the record is written
+again, which has them read again, none of read nor of to read) and to read
+(`toRead`, those read with a window that decoded no frame, one that says
+nothing of interlaced or repeated frames, a read refused or of another
+file among them; a read that found captions counts as read), the failed
+ones,
 those handed out now and the hand-outs of the last hour, when the last read
 was reported,
 the settings as read and why it hands out nothing now. Its `packaged`,
@@ -2712,7 +2787,9 @@ chain alone is checked;
 an [attached subtitle](#attached-subtitles) in its `subs/` is no file of the
 package the chain covers, and in full its bytes are held to its name),
 its `original-deleted` event recorded with what the package does not carry
-of it, the original moved to `.work/trash/<day>/<sourceId>/` from its
+of it (an `original-deleted` event names the source whose original it
+deletes, one event a source, as every writer of one does: one that names
+none is not written), the original moved to `.work/trash/<day>/<sourceId>/` from its
 version's folder (or from where it arrived, one from before), the files
 that came with it from where it arrived, then the catalog says so: the
 playback row is an original's, which points at its record, and the
@@ -2753,35 +2830,58 @@ keeps the original until the title is packaged again. An original in fields
 is not retired for now, whatever was done to make its package progressive:
 reviews found originals whose package was called whole and wasn't, so no
 word of a package's scan lets one go. In fields is read the widest way, of
-its picture, its one video stream that is no attachment (a stream with the
-container marks as an attached file, the attached picture flag or a
-Matroska attachment's `filename` and `mimetype` tags, that is an image, its
-mimetype `image/*`, or, an MP4's cover, which has none, of codec `mjpeg`,
-`png` or `bmp`, and has no length of its own, no more than one frame
-counted, `nb_frames` or `NUMBER_OF_FRAMES`, and no `DURATION` tag, as the
-analyzer counts one; a file's name decides nothing, and a picture track not
-so marked, or one with a length, is a video stream): its
+its picture, its one video stream that is no cover (the record logic's
+`attached_picture`, line for line: a stream the container marks as an
+attached file - the attached picture flag, or both a `filename` and a
+`mimetype` tag, an empty one present too; the flag marks it only as the
+number 1 or `true` -, of a cover's codec, `mjpeg`,
+`png` or `bmp`, always, its mimetype, where it has one, `image/*` (trimmed,
+in any case; an empty one is none; an MP4's cover, which has no mimetype,
+needs the flag), its tags read without case (two names that differ only by
+it and disagree make it no cover), and with no length of its own: every
+count of its frames it is given, `nb_frames` and every tag whose name
+begins with `NUMBER_OF_FRAMES`, a count in digits alone of at most one (one
+that is there and can't be read, `"1.0"`, `" 5"`, `"+1"`, `"1e3"`, a
+boolean, makes it no cover), and no tag whose name begins with `duration`,
+in any case; the duration ffprobe gives a stream from its file is no mark.
+The record logic marks `attachedPic` on what this rule calls a cover and
+nothing else, so a record's picture, its first video stream not marked
+`attachedPic`, is its probe's film. A file's name decides nothing, and a picture track not so
+marked, of another codec - a `webp` image among them - or with a length, is
+a video stream): its
 record or its stored probe lists more than one such ("its record lists 2
-picture streams, so which is its picture can't be told"); its record says
+picture streams, so which is its picture can't be told"); its record's
+picture (its first video stream not marked an attached picture) is not its
+stored probe's film, the same stream by its index (its closed captions are
+kept on it too: what the one says of the codec and the field order may be
+another stream's); its record says
 `interlaced`, or its picture a `fieldOrder` other than `progressive` (`tt`,
 `bb`, `tb`, `bt`, `unknown`, …); its stored probe
 (`sources/<id>/ffprobe.json`) gives its picture such a `field_order`, or
 can't be read, or is no probe of a file (no object, no list of streams, a
-format that is no object); the `scan` of the package of the version it is
-retired from, read whatever that version's `version.json` says, or of a
-package version made of it (one whose `version.json` names it in
-`sourceIds`; `versions/*/package.json`, the transcoder's renditions
-contract the packager copies, every folder of `versions/` listed, one that
-can't be listed holding it; a version whose `version.json` says no list of
-`sourceIds` holds it, and one without a `version.json` whose package's scan
-holds) is no object (`null` among them), or
-`found` anything but exactly `progressive` (`fields`, `film`, `telecine`,
-`mixed`, `field-pictures`, `unknown`, a word the gate doesn't know, a blank,
-another type, none), or did something to the picture or doesn't say (a
-`done` other than `progressive` or `none`, or none), or did not verify it
-whole (`verified.ok` and
-`verified.complete` true), or such a version's or package's record can't be
-read (one not there says nothing); its record's `interlaced` is no boolean;
+format that is no object, or lists no picture, no video stream that is no
+cover); the
+`scan` of the package of the version it is retired from (read whatever that
+version's `version.json` says; `versions/*/package.json`, the transcoder's
+renditions contract the packager copies) is no object (`null` among them),
+or `found` anything but exactly `progressive` (`fields`, `film`,
+`telecine`, `mixed`, `field-pictures`, `unknown`, a word the gate doesn't
+know, a blank, another type, none), or did something to the picture or
+doesn't say (a `done` other than `progressive` or `none`, or none), or did
+not verify it whole (`verified.ok` and `verified.complete` true), or found
+`progressive` and its own counts say otherwise (its read-through counted
+chunks in fields, `verified.chunksInFields` above 0, or its examination,
+`idet`, more `tff` and `bff` pictures together than `progressive` ones; a
+count that can't be read holds too); the scan of
+another package version made of it (one whose `version.json` names it in
+`sourceIds`, every entry of `versions/` listed: one that can't be listed,
+or an entry that is no folder of its own, a link or a file, holds it; a
+version whose `version.json` says no list of `sourceIds` holds it, and one
+without a `version.json` whose package's scan holds) found anything but
+`progressive`, or `progressive` and counts of its own that say otherwise -
+what an older version's scan lacks is for the version it is retired from to
+state, not a hold for good -; or such a version's or
+package's record can't be read (one not there says nothing); its record's `interlaced` is no boolean;
 a read of its frames (see [Closed captions](#closed-captions)) found frames
 coded as fields (`interlacedFrames`) or ones that repeat a field
 (`repeatFrames`) in a window, or gave a count of them that can't be read; or
@@ -2868,7 +2968,11 @@ one with a stream of closed captions of its own (an EIA-608 stream, or one
 tagged `c608` or `c708`, in its record or its stored probe, or as the read
 found them, `captionStreams`), or whose record says it has them (its
 essence's `closedCaptions`, its picture's `closedCaptions`, its stored
-probe's `closed_captions` of its picture, 1 or true, or a read of every
+probe's `closed_captions` of its picture, 1 or true, a probe or a record
+that marks its picture as captions (the disposition `captions`; a
+`captionSignature` that is no boolean, of any codec, leaves them not known),
+or a read
+of every
 packet of its picture that found a caption signature, `captionSignature`
 true), is kept for good ("its
 original carries closed captions at start, 10%; an original that carries
@@ -2887,9 +2991,11 @@ type, one out of its range, an entry that is no object: a failed window,
 never left out), an essence's `closedCaptions` that is no boolean, a
 record that says no length (`container.durationMs` none, a string, 0),
 more than one picture stream (a read reads one), a read whose length lies more than 2 s, or 1 % of it, whichever is
-more, from its record's (`container.durationMs`), one whose window lies more
-than 15 s from its place (the plan's, of the span its records give; up to
-30 s before it at the keyframe at or before it, `keyframeBefore`) or decoded
+more, from its record's (`container.durationMs`), one whose window lies off
+its place (the plan's, of the span its records give: within the greater of
+10 s and its `gop` and 0.5 s of it; up to 30 s before it at the keyframe at
+or before it, `keyframeBefore`; of a `gop` of 0 or none, within a frame
+step and half a second) or decoded
 fewer than 24 frames, a read whose
 windows don't lie in the order of the video (each after
 the one before it, none on another: a read that landed elsewhere, as on a
@@ -2906,15 +3012,27 @@ object of it gives a key twice: which one a reader takes is its choice),
 where it lists no streams of its file (none, null, an empty list), and
 where its essence doesn't state a fact the gate compares (`surround`,
 `maxAudioChannels`, `videoBitDepth`, `subtitleLanguages`, …: a fact it
-doesn't state is no "nothing to lose"). The copy rule: an original whose
-package copies its picture (its top video rendition's `encoder` `copy`) is
-kept, as no record proves the copy carries it whole, and so is one whose
-package states no encoder of its top video rendition, or lists none. A
+doesn't state is no "nothing to lose"), or states one as no value of its
+kind as the record logic writes it (a flag a boolean, a count a whole
+number, a language list a list of languages; null is a picture's height
+or bit depth of a file with no picture alone, which the record logic
+writes as null; of a file with a picture it says they couldn't be
+measured); so does a package flag that is no boolean. The copy rule: an
+original whose package copies its picture (its top video rendition's
+`encoder` `copy`) is kept, as no record proves the copy carries it whole,
+and so is one whose package states no encoder of its top video rendition,
+lists none, or states a word that is none of the transcoder's encoders
+(`hevc_nvenc`, `h264_nvenc`, `libx265`, `libx264`: "stream copy",
+"passthrough", "remux" are none of them). A
 superseded version made of an original that is still there (present,
 retiring or superseded) is not removed: its package's scan is what the gate
 reads of that original's fields. A superseded original's retirement asks
 the gate again right before its event is written, after its master is
-verified.
+verified. A read that found nothing is held to the record it was made
+under: once the record is written again, the gate takes it no more until
+the original is read again; one that found captions or frames in fields is
+of the file, whichever record. An extra's original the gate lets go is
+checked against its record again right before it is moved or unlinked.
 
 The closing rule: the reads were made for, and tested with, some ways
 closed captions and fields are carried, and the gate takes a read of no

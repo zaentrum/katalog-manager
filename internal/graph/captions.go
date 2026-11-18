@@ -29,6 +29,7 @@ func (r *captionsProgressResolver) Read() int32           { return int32(r.m.Rea
 func (r *captionsProgressResolver) WithCaptions() int32   { return int32(r.m.WithCaptions) }
 func (r *captionsProgressResolver) ToRead() int32         { return int32(r.m.ToRead) }
 func (r *captionsProgressResolver) LengthMismatch() int32 { return int32(r.m.LengthMismatch) }
+func (r *captionsProgressResolver) AwaitingRecord() int32 { return int32(r.m.AwaitingRecord) }
 func (r *captionsProgressResolver) LengthMismatches() []string {
 	if r.m.LengthMismatches == nil {
 		return []string{}

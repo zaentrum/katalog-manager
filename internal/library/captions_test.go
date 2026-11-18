@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -44,12 +43,12 @@ func TestAReadOfTheCaptionsReleasesTheRetirementHeldForThem(t *testing.T) {
 		t.Errorf("a read of another original let go of the hold: %s", got)
 	}
 	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_sourcecaptions (source_id, item_id, state, captionwindows, captions,
-			ffprobeversion, framesdecoded, duration, sourcesize, sourceqh1, readat)
-		SELECT $1::varchar, $2::varchar, 'read', '`+noCaptionsWindows+`', false, '7.1.1', 288, 600, s.sizebytes, s.qh1, now()
+			ffprobeversion, framesdecoded, duration, readspanstart, readspanend, sourcesize, sourceqh1, sourcerecordedat, readat)
+		SELECT $1::varchar, $2::varchar, 'read', '`+noCaptionsWindows+`', false, '7.1.1', 288, 600, 0, 600, s.sizebytes, s.qh1, s.recordedat, now()
 		FROM com_nalet_katalog_itemsources s WHERE s.id = $1::varchar
 		ON CONFLICT (source_id) DO UPDATE SET state = 'read', captionwindows = EXCLUDED.captionwindows, captions = false,
-			ffprobeversion = '7.1.1', framesdecoded = 288, duration = 600, sourcesize = EXCLUDED.sourcesize,
-			sourceqh1 = EXCLUDED.sourceqh1, readat = now()`, rtSource, rtFilm)
+			ffprobeversion = '7.1.1', framesdecoded = 288, duration = 600, readspanstart = 0, readspanend = 600, sourcesize = EXCLUDED.sourcesize,
+			sourceqh1 = EXCLUDED.sourceqh1, sourcerecordedat = EXCLUDED.sourcerecordedat, readat = now()`, rtSource, rtFilm)
 	if err := ReleaseCaptionsHold(ctx, f.st.Pool(), rtFilm, rtSource); err != nil {
 		t.Fatal(err)
 	}
@@ -60,6 +59,14 @@ func TestAReadOfTheCaptionsReleasesTheRetirementHeldForThem(t *testing.T) {
 		t.Errorf("the pass once the captions are read: %+v", rep)
 	}
 }
+
+// planProbe is a stored probe that gives the plan of its picture (its start
+// at 0, 24 frames a second; its length the record's), and planProbes the
+// probes of the one original it is of.
+var planProbe = Doc{{Key: "format", Value: Doc{{Key: "start_time", Value: "0.000000"}}},
+	{Key: "streams", Value: []any{Doc{{Key: "index", Value: 0}, {Key: "codec_type", Value: "video"},
+		{Key: "avg_frame_rate", Value: "24/1"}}}}}
+var planProbes = []Doc{planProbe}
 
 // window is a window of a read that decoded frames frames (0: failed, no
 // times) from start on.
@@ -77,7 +84,8 @@ func window(at, start float64, frames int, captions bool) CaptionWindow {
 func read(duration float64, ws ...CaptionWindow) GateFacts {
 	r := &CaptionsRead{Windows: ws}
 	if duration > 0 {
-		r.Duration = &duration
+		// a read says its length and the span it read, as long
+		r.Duration, r.Span = &duration, &Span{End: duration}
 	}
 	return GateFacts{Captions: r}
 }
@@ -173,7 +181,7 @@ func TestTheCaptionsRuleAsksTheOriginalAlone(t *testing.T) {
 		if rec == nil {
 			rec = film(600)
 		}
-		carried, unknown := captionsRule([]Doc{rec}, nil, c.f)
+		carried, unknown := captionsRule([]Doc{rec}, planProbes, c.f)
 		if !strings.HasPrefix(carried, c.carried) || (c.carried == "") != (carried == "") ||
 			!strings.HasPrefix(unknown, c.unknown) || (c.unknown == "") != (unknown == "") {
 			t.Errorf("%s: carried %q, unknown %q; want them to begin %q, %q", c.name, carried, unknown, c.carried, c.unknown)
@@ -195,53 +203,73 @@ func TestCaptionWindowsThatReadTheSameFramesOverTellNothing(t *testing.T) {
 	onOne[2].Start, onOne[2].End = onOne[1].Start+1, onOne[1].End+1
 	twice := append(every(), window(0.5, 300, 48, false))
 	for name, ws := range map[string][]CaptionWindow{"the same frames": again, "on one another": onOne, "twice": twice} {
-		if carried, unknown := captionsRule([]Doc{film(0)}, nil, read(0, ws...)); carried != "" ||
+		if carried, unknown := captionsRule([]Doc{film(0)}, planProbes, read(0, ws...)); carried != "" ||
 			!strings.HasPrefix(unknown, CaptionsUnknown+": a read of its original says nothing of the video: windows at") {
 			t.Errorf("%s: carried %q, unknown %q; want it not known", name, carried, unknown)
 		}
 	}
 }
 
-// A read is of the planned windows: the start, and 10 to 90 % of the video,
-// as many as its length allows (each 30 s, or half the video, short of its
-// end; those that fall on one another one). A read of the start alone, or of
-// fewer than its length explains, can't say there are none.
+// A read is of the plan's six windows: the start, and 10 to 90 % of the
+// video, each saying its fraction and starting at its place (at most 30 s
+// short of its end). A read of the start alone, or of five, can't say there
+// are none, nor can one whose window at the tail says where it lies (0.85)
+// rather than its fraction; a picture two of whose places lie closer than a
+// window reaches is read whole, so windows of it say nothing.
 func TestAReadShortOfItsPlannedWindowsTellsNothing(t *testing.T) {
-	if carried, unknown := captionsRule([]Doc{film(600)}, nil, read(600, window(0, 0, 48, false))); carried != "" ||
+	if carried, unknown := captionsRule([]Doc{film(600)}, planProbes, read(600, window(0, 0, 48, false))); carried != "" ||
 		!strings.Contains(unknown, "has no window at 10%, 30%, 50%, 70%, 90%") {
 		t.Errorf("the start alone: carried %q, unknown %q", carried, unknown)
 	}
-	if _, unknown := captionsRule([]Doc{film(0)}, nil, read(0, every()...)); !strings.Contains(unknown, "says no length") {
+	if _, unknown := captionsRule([]Doc{film(0)}, planProbes, read(0, every()...)); !strings.Contains(unknown, "says no length") {
 		t.Errorf("a read that says no length: unknown %q; want it not known", unknown)
 	}
 	for _, c := range []struct {
 		duration float64
-		ats      []float64
 		unknown  string // what its read's why says; "" it goes
 	}{
-		{600, []float64{0, 0.1, 0.3, 0.5, 0.7, 0.9}, ""},
-		{120, []float64{0, 0.1, 0.3, 0.5, 0.7, 0.75}, ""},
-		{40, []float64{0, 0.1, 0.3, 0.5}, ""},
-		{4, []float64{0, 0.1, 0.3, 0.5}, TooShortForFive},
+		{600, ""},
+		{200, ""},
+		{120, ""},
+		// 100 s: its windows at 70 and 90 % lie at 70 s both
+		{100, "is read whole, every packet decoded, not in windows"},
+		{40, "is read whole, every packet decoded, not in windows"},
+		{4, "is read whole, every packet decoded, not in windows"},
 	} {
-		got := plannedAts(c.duration)
-		if !slices.EqualFunc(got, c.ats, func(a, b float64) bool { return math.Abs(a-b) < 1e-9 }) {
-			t.Errorf("a video of %v s: windows at %v, want %v", c.duration, got, c.ats)
-			continue
-		}
 		var ws []CaptionWindow
-		for _, at := range c.ats {
-			ws = append(ws, window(at, at*c.duration, 48, false))
+		for _, at := range planAts() {
+			ws = append(ws, window(at, (Span{End: c.duration}).Place(at), 48, false))
 		}
-		carried, unknown := captionsRule([]Doc{film(c.duration)}, nil, read(c.duration, ws...))
+		carried, unknown := captionsRule([]Doc{film(c.duration)}, planProbes, read(c.duration, ws...))
 		if carried != "" || !strings.Contains(unknown, c.unknown) || (c.unknown == "") != (unknown == "") {
-			t.Errorf("a video of %v s read at %v: carried %q, unknown %q; want %q", c.duration, c.ats, carried, unknown,
+			t.Errorf("a video of %v s read at its places: carried %q, unknown %q; want %q", c.duration, carried, unknown,
 				c.unknown)
 		}
-		if _, unknown := captionsRule([]Doc{film(c.duration)}, nil, read(c.duration, ws[:len(ws)-1]...)); unknown == "" {
+		if _, unknown := captionsRule([]Doc{film(c.duration)}, planProbes, read(c.duration, ws[:len(ws)-1]...)); unknown == "" {
 			t.Errorf("a video of %v s read short of a window: unknown %q", c.duration, unknown)
 		}
 	}
+	// the window at the tail of a 200 s video says its fraction, 0.9, and
+	// starts at 170 s; one that says where it lies (0.85) is no window of the
+	// plan's, and the read short of its 90 %
+	var tail []CaptionWindow
+	for _, at := range planAts() {
+		tail = append(tail, window(at, (Span{End: 200}).Place(at), 48, false))
+	}
+	tail[5].At = 0.85
+	if _, unknown := captionsRule([]Doc{film(200)}, planProbes, read(200, tail...)); !strings.Contains(unknown,
+		"its windows at 85% are at no fraction of the plan's") {
+		t.Errorf("a 200 s video whose tail window says 0.85: unknown %q; want it not known", unknown)
+	}
+}
+
+// gopRead120 is read of a 120 s video's windows ws, of a read that found a
+// gop of 2 s.
+func gopRead120(ws ...CaptionWindow) GateFacts {
+	f := read(120, ws...)
+	two := 2.0
+	f.Captions.Gop = &two
+	return f
 }
 
 // A read lands between the retire pass's look at the facts (no read yet)
@@ -303,6 +331,7 @@ func TestTheAnalyzersReadsThroughTheCaptionsRule(t *testing.T) {
 			Original struct {
 				CaptionWindows []CaptionWindow `json:"captionWindows"`
 				Duration       *float64        `json:"duration"`
+				Span           *Span           `json:"span"`
 				Error          string          `json:"error"`
 			} `json:"original"`
 		} `json:"body"`
@@ -312,6 +341,8 @@ func TestTheAnalyzersReadsThroughTheCaptionsRule(t *testing.T) {
 	}
 	notKnown := map[string]bool{"clockreset-ts__enc-nocc": true, "raw-cc__lost-after-40pct": true,
 		"back-jump-ts__failed-windows": true}
+	// these reads say no span (an analyzer from before it reported one):
+	// none goes on them but with the span its picture has
 	none := map[string]bool{"plain-mkv__none": true}
 	if len(cases) < 10 {
 		t.Fatalf("%d reads", len(cases))
@@ -320,13 +351,19 @@ func TestTheAnalyzersReadsThroughTheCaptionsRule(t *testing.T) {
 		o := c.Body.Original
 		f := GateFacts{}
 		if o.Error == "" {
-			f.Captions = &CaptionsRead{Windows: o.CaptionWindows, Duration: o.Duration}
+			f.Captions = &CaptionsRead{Windows: o.CaptionWindows, Duration: o.Duration, Span: o.Span}
 		}
 		length := 600.0
 		if o.Duration != nil {
 			length = *o.Duration
 		}
-		carried, unknown := captionsRule([]Doc{film(length)}, nil, f)
+		if none[name] {
+			if _, unknown := captionsRule([]Doc{film(length)}, planProbes, f); !strings.Contains(unknown, "says no span") {
+				t.Errorf("%s, of no span: unknown %q; want it not known", name, unknown)
+			}
+			f.Captions.Span = &Span{End: length}
+		}
+		carried, unknown := captionsRule([]Doc{film(length)}, planProbes, f)
 		switch {
 		case notKnown[name]:
 			if carried != "" || !strings.HasPrefix(unknown, CaptionsUnknown) {
@@ -349,25 +386,33 @@ func TestTheAnalyzersReadsThroughTheCaptionsRule(t *testing.T) {
 // video long enough for them to lie apart (a clock that starts again) keep
 // the general why.
 func TestWindowsOfAVideoTooShortForFiveSaySo(t *testing.T) {
-	// a 20 s video with a keyframe every 5 s: the windows at 0, 2, 6 and
-	// 10 s are read from the keyframes at 0, 0, 5 and 10 s
-	short := []CaptionWindow{window(0, 0, 48, false), window(0.1, 0, 48, false), window(0.3, 5, 48, false),
-		window(0.5, 10, 48, false)}
-	if carried, unknown := captionsRule([]Doc{film(20)}, nil, read(20, short...)); carried != "" ||
+	// a 120 s video, a gop of 2 s found among its first packets, a keyframe
+	// at 80 s and none until 90 s: its windows at 70 and 90 % (84 and 90 s)
+	// are both read from the keyframe at 80 s
+	short := []CaptionWindow{window(0, 0, 48, false), window(0.1, 12, 48, false), window(0.3, 36, 48, false),
+		window(0.5, 60, 48, false), window(0.7, 80, 48, false), window(0.9, 80, 48, false)}
+	short[4].KeyframeBefore, short[5].KeyframeBefore = true, true
+	if carried, unknown := captionsRule([]Doc{film(120)}, planProbes, gopRead120(short...)); carried != "" ||
 		unknown != CaptionsUnknown+": windows overlap: the video is too short for five" {
-		t.Errorf("a 20 s video: carried %q, unknown %q", carried, unknown)
+		t.Errorf("a 120 s video: carried %q, unknown %q", carried, unknown)
+	}
+	// a 70 s one is read whole (its windows at 70 and 90 % lie at 40 s
+	// both): windows of it say so
+	if _, unknown := captionsRule([]Doc{film(70)}, planProbes, read(70, short[:4]...)); !strings.Contains(unknown,
+		"is read whole") {
+		t.Errorf("a 70 s video read in windows: unknown %q; want it read whole", unknown)
 	}
 	// a ten-minute one whose windows read the same frames over
 	long := every()
 	for i := 1; i < len(long); i++ {
 		long[i].Start, long[i].End = 900, 901.88
 	}
-	if _, unknown := captionsRule([]Doc{film(600)}, nil, read(600, long...)); strings.Contains(unknown, TooShortForFive) ||
+	if _, unknown := captionsRule([]Doc{film(600)}, planProbes, read(600, long...)); strings.Contains(unknown, TooShortForFive) ||
 		!strings.Contains(unknown, "start in the wrong order") {
 		t.Errorf("a ten-minute video whose windows read the same frames: unknown %q", unknown)
 	}
 	// and the same short read, no length said: the general why
-	if _, unknown := captionsRule([]Doc{film(0)}, nil, read(0, short...)); strings.Contains(unknown, TooShortForFive) {
+	if _, unknown := captionsRule([]Doc{film(0)}, planProbes, read(0, short...)); strings.Contains(unknown, TooShortForFive) {
 		t.Errorf("a read that says no length: unknown %q", unknown)
 	}
 }
@@ -392,6 +437,7 @@ func TestNoMadeClipWithCaptionsGoesOnTheAnalyzersRead(t *testing.T) {
 			Original struct {
 				CaptionWindows []CaptionWindow `json:"captionWindows"`
 				Duration       *float64        `json:"duration"`
+				Span           *Span           `json:"span"`
 				CaptionStreams *int            `json:"captionStreams"`
 				OffList        []string        `json:"offList"`
 				Error          string          `json:"error"`
@@ -424,14 +470,63 @@ func TestNoMadeClipWithCaptionsGoesOnTheAnalyzersRead(t *testing.T) {
 		f := GateFacts{}
 		if o.Error == "" {
 			f.Captions = &CaptionsRead{Windows: o.CaptionWindows, Duration: o.Duration, CaptionStreams: o.CaptionStreams,
-				OffList: o.OffList}
+				OffList: o.OffList, Span: o.Span}
 		} else {
 			f.CaptionsFailed = o.Error
 			if len(o.OffList) > 0 || (o.CaptionStreams != nil && *o.CaptionStreams > 0) {
 				f.CaptionsFinds = &CaptionsRead{CaptionStreams: o.CaptionStreams, OffList: o.OffList}
 			}
 		}
-		yes, why := captionsRule([]Doc{recordOfProbe(probe)}, []Doc{probe}, f)
+		rec := recordOfProbe(probe)
+		if want[name] == goes {
+			// the probes kept here give no start and no frame rate of their
+			// picture: no plan, so nothing goes; with a start of 0 and 25
+			// frames a second, as such a file's probe gives them, it may
+			if _, why := captionsRule([]Doc{rec}, []Doc{probe}, f); !strings.HasPrefix(why, CaptionsNoPlan) {
+				t.Errorf("%s, of a probe of no start and no rate: %q; want no plan", name, why)
+			}
+			var p map[string]any
+			if err := json.Unmarshal(c.Probe, &p); err != nil {
+				t.Fatal(err)
+			}
+			pic := p["streams"].([]any)[0].(map[string]any)
+			pic["start_time"], pic["avg_frame_rate"] = "0.000000", "25/1"
+			b, _ := json.Marshal(p)
+			if probe, err = DecodeDoc(b); err != nil {
+				t.Fatal(err)
+			}
+			// a read that says no span (the analyzer's of before it reported
+			// one) goes on nothing; with the span its picture has, it goes
+			if _, why := captionsRule([]Doc{rec}, []Doc{probe}, f); !strings.Contains(why, "says no span") {
+				t.Errorf("%s, of no span: %q; want it not known", name, why)
+			}
+			span, _ := PictureSpan(rec, probe)
+			f.Captions.Span = &Span{Start: span.Start, End: span.End}
+			// nor does a window the tail short of the end that says where it
+			// lies (the analyzer's of before: 0.751) rather than its fraction;
+			// it is said as the plan's 0.9 below
+			ws := f.Captions.Windows
+			for i := range ws {
+				if ws[i].At > 0.7+atSlack && ws[i].At < 0.9-atSlack {
+					if _, why := captionsRule([]Doc{rec}, []Doc{probe}, f); !strings.Contains(why,
+						"at no fraction of the plan's") {
+						t.Errorf("%s, its tail window at %v: %q; want it not known", name, ws[i].At, why)
+					}
+					ws[i].At = 0.9
+				}
+			}
+			// nor, of windows that start at their keyframes seconds from
+			// their places, does a read that says no gop (the analyzer's of
+			// before it reported one): such windows lie off their places; of
+			// a gop of 2 s, a group of pictures the analyzer reports, it goes
+			if _, why := captionsRule([]Doc{rec}, []Doc{probe}, f); name == "partial-arrival-ts" &&
+				!strings.Contains(why, "lie off their places") {
+				t.Errorf("%s, of no gop: %q; want it not known", name, why)
+			}
+			two := 2.0
+			f.Captions.Gop = &two
+		}
+		yes, why := captionsRule([]Doc{rec}, []Doc{probe}, f)
 		got := goes
 		switch {
 		case yes != "":
@@ -461,32 +556,32 @@ func TestNoMadeClipWithCaptionsGoesOnTheAnalyzersRead(t *testing.T) {
 func TestALengthMismatchKeepsTheOriginal(t *testing.T) {
 	f := GateFacts{CaptionsFailed: "a read of its original says it lasts 610 s, and its record 600 s",
 		CaptionsFinds: &CaptionsRead{Finding: FindingLengthMismatch}}
-	if carried, unknown := captionsRule([]Doc{film(600)}, nil, f); carried != "" ||
+	if carried, unknown := captionsRule([]Doc{film(600)}, planProbes, f); carried != "" ||
 		unknown != CaptionsLengthMismatch+": a read of its original says it lasts 610 s, and its record 600 s" ||
 		!strings.HasPrefix(unknown, CaptionsUnknown) {
 		t.Errorf("the finding: carried %q, unknown %q", carried, unknown)
 	}
 	rec := film(600)
-	if _, unknown := captionsRule([]Doc{rec}, nil, read(610, every()...)); !strings.HasPrefix(unknown,
+	if _, unknown := captionsRule([]Doc{rec}, planProbes, read(610, every()...)); !strings.HasPrefix(unknown,
 		CaptionsLengthMismatch+": ") {
 		t.Errorf("a read of another length: unknown %q", unknown)
 	}
-	if _, unknown := captionsRule([]Doc{rec}, nil, read(600, every()...)); unknown != "" {
+	if _, unknown := captionsRule([]Doc{rec}, planProbes, read(600, every()...)); unknown != "" {
 		t.Errorf("a read of its length: unknown %q", unknown)
 	}
 }
 
 // A read's windows lie where they were planned: each starts within
-// WindowPlaceSlack of where the read's start window starts plus its share of
-// the video. Six windows in order and apart that all lie in the first 12 s
-// of a two-hour video say nothing of the rest of it.
+// WindowPlaceSlack of its place, of a read that found a gop (one of 0 holds
+// them to their places exactly). Six windows in order and apart that all lie
+// in the first 12 s of a two-hour video say nothing of the rest of it.
 func TestWindowsFarFromTheirPlacesTellNothing(t *testing.T) {
 	var ws []CaptionWindow
 	for i, at := range []float64{0, 0.1, 0.3, 0.5, 0.7, 0.9} {
 		ws = append(ws, window(at, float64(2*i), 48, false))
 	}
-	if carried, unknown := captionsRule([]Doc{film(7200)}, nil, read(7200, ws...)); carried != "" ||
-		!strings.Contains(unknown, "its windows at 10%, 30%, 50%, 70%, 90% lie more than 15 s from their places") {
+	if carried, unknown := captionsRule([]Doc{film(7200)}, planProbes, read(7200, ws...)); carried != "" ||
+		!strings.Contains(unknown, "its windows at 10%, 30%, 50%, 70%, 90% lie off their places") {
 		t.Errorf("windows at 0-12 s of a 7200 s video: carried %q, unknown %q; want it not known", carried, unknown)
 	}
 	// within the slack (a keyframe before its place) is where it was planned
@@ -494,7 +589,8 @@ func TestWindowsFarFromTheirPlacesTellNothing(t *testing.T) {
 	for i := range near[1:] {
 		near[i+1].Start -= WindowPlaceSlack - 1
 	}
-	if carried, unknown := captionsRule([]Doc{film(600)}, nil, read(600, near...)); carried != "" || unknown != "" {
+	two := 2.0
+	if carried, unknown := captionsRule([]Doc{film(600)}, planProbes, gopRead(&two, near...)); carried != "" || unknown != "" {
 		t.Errorf("windows a keyframe before their places: carried %q, unknown %q", carried, unknown)
 	}
 }
@@ -502,8 +598,9 @@ func TestWindowsFarFromTheirPlacesTellNothing(t *testing.T) {
 // A window is in place by where it starts: at the keyframe at or before its
 // place, which a long group of pictures puts more than WindowPlaceSlack
 // before it. Where the read says so (keyframeBefore), a window up to
-// WindowKeyframeSlack before its place is in place; without it the general
-// slack holds; further back, or after its place, it is not, either way.
+// WindowKeyframeSlack before its place is in place, of a read that found a
+// gop; without it the general slack holds; further back, or after its place
+// beyond the general slack, it is not, either way.
 func TestAWindowAtTheKeyframeBeforeItsPlaceIsInPlace(t *testing.T) {
 	for _, c := range []struct {
 		name           string
@@ -521,8 +618,9 @@ func TestAWindowAtTheKeyframeBeforeItsPlaceIsInPlace(t *testing.T) {
 		ws[3].Start -= c.back
 		ws[3].End -= c.back
 		ws[3].KeyframeBefore = c.keyframeBefore
-		carried, unknown := captionsRule([]Doc{film(600)}, nil, read(600, ws...))
-		far := strings.Contains(unknown, "its windows at 50% lie more than 15 s from their places")
+		two := 2.0
+		carried, unknown := captionsRule([]Doc{film(600)}, planProbes, gopRead(&two, ws...))
+		far := strings.Contains(unknown, "its windows at 50% lie off their places")
 		if carried != "" || far == c.inPlace || (c.inPlace && unknown != "") {
 			t.Errorf("%s: carried %q, unknown %q; want in place %v", c.name, carried, unknown, c.inPlace)
 		}
@@ -536,7 +634,7 @@ func TestAWindowOfOneFrameTellsNothing(t *testing.T) {
 	for i := range ws {
 		ws[i].Frames, ws[i].End = 1, ws[i].Start
 	}
-	if carried, unknown := captionsRule([]Doc{film(600)}, nil, read(600, ws...)); carried != "" ||
+	if carried, unknown := captionsRule([]Doc{film(600)}, planProbes, read(600, ws...)); carried != "" ||
 		!strings.Contains(unknown, "decoded fewer than 24 frames") {
 		t.Errorf("six windows of one frame: carried %q, unknown %q; want it not known", carried, unknown)
 	}
@@ -590,7 +688,7 @@ func TestCaptionsInAStreamOfTheirOwnAreCarried(t *testing.T) {
 	}
 	none := 0
 	found.Captions.CaptionStreams = &none
-	if carried, unknown := captionsRule([]Doc{film(600)}, nil, found); carried != "" || unknown != "" {
+	if carried, unknown := captionsRule([]Doc{film(600)}, planProbes, found); carried != "" || unknown != "" {
 		t.Errorf("a read that found no stream of them: carried %q, unknown %q", carried, unknown)
 	}
 }

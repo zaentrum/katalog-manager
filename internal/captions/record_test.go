@@ -23,8 +23,8 @@ var fullRead = `{"captionWindows": [{"at": 0, "start": 0, "end": 1.88, "frames":
 	{"at": 0.3, "start": 180, "end": 181.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0},
 	{"at": 0.5, "start": 300, "end": 301.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0},
 	{"at": 0.7, "start": 420, "end": 421.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0},
-	{"at": 0.9, "start": 540, "end": 541.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}], "duration": 600, "sizeBytes": 6,
-	"ffprobe": "7.1.5"}`
+	{"at": 0.9, "start": 540, "end": 541.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}], "duration": 600, "span": {"start": 0, "end": 600},
+	"sizeBytes": 6, "ffprobe": "7.1.5"}`
 
 // claimed is an original on disk the backfill handed out: the store, the
 // source, its title and the claim's token.
@@ -50,7 +50,7 @@ func claimed(t *testing.T) (*store.Store, string, string, string) {
 
 // tenMinuteRecord is the source record of a ten-minute film: its container
 // and its length, its one picture.
-const tenMinuteRecord = `{"schema": "zaentrum.library.source/2", "container": {"format": "matroska,webm",
+const tenMinuteRecord = `{"schema": "zaentrum.library.source/2", "essence": {}, "container": {"format": "matroska,webm",
 	"durationMs": 600000}, "streams": [{"index": 0, "type": "video", "codec": "h264", "fieldOrder": "progressive"}]}`
 
 // writeRecord writes the source record record into dir/sources/r1-src, and
@@ -64,8 +64,16 @@ func writeRecord(t *testing.T, dir, record string) string {
 	if err := os.WriteFile(filepath.Join(d, "source.json"), []byte(record), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(d, library.ProbeFile), []byte(planProbe), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	return d
 }
+
+// planProbe is a stored probe that gives the plan of its picture: its start
+// at 0 and its frame rate (24 a second); its length is the record's.
+const planProbe = `{"format": {"start_time": "0.000000"}, "streams": [{"index": 0, "codec_type": "video", ` +
+	`"codec_name": "h264", "field_order": "progressive", "avg_frame_rate": "24/1"}]}`
 
 func report(t *testing.T, body string) Report {
 	t.Helper()
@@ -310,7 +318,10 @@ func TestAReadIsOfTheLengthItsRecordSays(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(filepath.Join(record, "source.json"), []byte(`{"schema": "zaentrum.library.source/2",
-				"container": {"format": "matroska,webm", "durationMs": 600000}}`), 0o644); err != nil {
+				"essence": {}, "container": {"format": "matroska,webm", "durationMs": 600000}}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(record, library.ProbeFile), []byte(planProbe), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			storetest.AddItem(t, st, "r1", "movie", "A Film", "")
@@ -510,9 +521,9 @@ func TestARefusedReadIsToRead(t *testing.T) {
 		ws = append(ws, fmt.Sprintf(`{"at": %s, "start": %d, "end": %d.88, "frames": 48, "captions": false,
 			"interlacedFrames": 0, "repeatFrames": 0}`, w, 2*i, 2*i))
 	}
-	far := `{"captionWindows": [` + strings.Join(ws, ", ") + `], "duration": 600, "sizeBytes": 6, "ffprobe": "7.1.5"}`
+	far := `{"captionWindows": [` + strings.Join(ws, ", ") + `], "duration": 600, "span": {"start": 0, "end": 600}, "sizeBytes": 6, "ffprobe": "7.1.5"}`
 	r, err := Record(ctx, st, source, report(t, `{"token": "`+token+`", "original": `+far+`}`), time.Now())
-	if err != nil || r.State == StateRead || r.Reason == nil || !strings.Contains(*r.Reason, "from their places") {
+	if err != nil || r.State == StateRead || r.Reason == nil || !strings.Contains(*r.Reason, "off their places") {
 		t.Fatalf("a read whose windows lie far from their places: %+v, %v", r, err)
 	}
 	svc := New(st).WithClock(at(time.Date(2026, 11, 16, 23, 30, 0, 0, time.UTC)))

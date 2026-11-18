@@ -197,7 +197,8 @@ func TestWhatARetirementGivesUpIsWhatTheSpecDrops(t *testing.T) {
 				d = &duration
 			}
 			storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_sourcecaptions SET captionwindows = $2, captions = $3,
-				framesdecoded = $4, duration = $5 WHERE source_id = $1`, rtSource, string(b), has, max(frames, 1), d)
+				framesdecoded = $4, duration = $5, readspanstart = 0, readspanend = $5 WHERE source_id = $1`, rtSource, string(b), has,
+				max(frames, 1), d)
 		}
 	}
 	captionsRead := func(ws []map[string]any) func(t *testing.T, f *listFixture) { return captionsOf(ws, 600) }
@@ -350,7 +351,8 @@ func TestWhatARetirementGivesUpIsWhatTheSpecDrops(t *testing.T) {
 				// the probe the record was made of, kept beside it and in its
 				// checksums
 				librarytest.Write(t, filepath.Join(f.sourceDir, "ffprobe.json"), []byte(`{"streams": [
-					{"index": 0, "codec_type": "video", "field_order": "tt"}]}`))
+					{"index": 0, "codec_type": "video", "field_order": "tt", "start_time": "0.000000",
+					"avg_frame_rate": "24/1"}]}`))
 				f.rewriteSource(t, full, fieldStreams("progressive"))
 			}, kept: fieldsKept("its probe's field order is tt"), held: true},
 		// found to hold fields, though its record says progressive
@@ -428,26 +430,38 @@ func TestWhatARetirementGivesUpIsWhatTheSpecDrops(t *testing.T) {
 			change: captionsRead(readOf())},
 		{name: "no closed captions in any planned window, the package copied", src: full, pkg: copied(record(full, "SDR")),
 			change: captionsRead(readOf()), kept: copyKept, held: true, job: copyKept + "; the original is kept"},
-		{name: "a short video's fewer windows, its length said", src: full, pkg: encoded(record(full, "SDR")),
+		{name: "a short video read whole, its length said", src: full, pkg: encoded(record(full, "SDR")),
 			change: func(t *testing.T, f *listFixture) {
-				// the record's length: the span its windows are placed by
+				// the record's length: the span it is read over
 				f.rewriteRecord(t, func(rec map[string]any) {
 					rec["container"].(map[string]any)["durationMs"] = 40000
 				}, nil)
-				captionsOf(readOfLength(40, 4), 40)(t, f)
+				captionsOf([]map[string]any{{"at": 0.0, "start": 0.0, "end": 39.958, "frames": 960, "packets": 960,
+					"leading": 0, "whole": true, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}}, 40)(t, f)
 			}},
+		{name: "a short video's windows", src: full, pkg: encoded(record(full, "SDR")),
+			change: func(t *testing.T, f *listFixture) {
+				f.rewriteRecord(t, func(rec map[string]any) {
+					rec["container"].(map[string]any)["durationMs"] = 40000
+				}, nil)
+				captionsOf(readOfLength(40, 3), 40)(t, f)
+			}, kept: refused("two of its picture's places lie closer than a window reaches (2.5 s: 48 packets at its frame " +
+				"step, its gop and 0.5 s): such a picture is read whole, every packet decoded, not in windows"), held: true,
+			job: refused("two of its picture's places lie closer than a window reaches (2.5 s: 48 packets at its frame "+
+				"step, its gop and 0.5 s): such a picture is read whole, every packet decoded, not in windows") +
+				"; the original is kept"},
 		{name: "fewer windows than its length plans", src: full, pkg: encoded(record(full, "SDR")),
 			change: captionsRead(readOf()[:4]),
-			kept: refused("it has no window at 70%, 90% (a read is of its start and 10 to 90 % of its picture's span, or " +
-				"as many as its length allows)"), held: true,
-			job: refused("it has no window at 70%, 90% (a read is of its start and 10 to 90 % of its picture's span, or "+
-				"as many as its length allows)") + "; the original is kept"},
+			kept: refused("it has no window at 70%, 90% (a read is of its start and 10, 30, 50, 70 and 90 % of its " +
+				"picture's span, six windows)"), held: true,
+			job: refused("it has no window at 70%, 90% (a read is of its start and 10, 30, 50, 70 and 90 % of its "+
+				"picture's span, six windows)") + "; the original is kept"},
 		{name: "a read of the start alone", src: full, pkg: encoded(record(full, "SDR")),
 			change: captionsRead(readOf()[:1]),
-			kept: refused("it has no window at 10%, 30%, 50%, 70%, 90% (a read is of its start and 10 to 90 % of its " +
-				"picture's span, or as many as its length allows)"), held: true,
-			job: refused("it has no window at 10%, 30%, 50%, 70%, 90% (a read is of its start and 10 to 90 % of its "+
-				"picture's span, or as many as its length allows)") + "; the original is kept"},
+			kept: refused("it has no window at 10%, 30%, 50%, 70%, 90% (a read is of its start and 10, 30, 50, 70 and " +
+				"90 % of its picture's span, six windows)"), held: true,
+			job: refused("it has no window at 10%, 30%, 50%, 70%, 90% (a read is of its start and 10, 30, 50, 70 and "+
+				"90 % of its picture's span, six windows)") + "; the original is kept"},
 		{name: "a window of the original that decoded no frame", src: full, pkg: encoded(record(full, "SDR")),
 			change: captionsRead(with1(readOf(), win(0.5, 0, false))),
 			kept:   unknownFor("its original's windows at 50% decoded no frame"), held: true,
@@ -755,9 +769,10 @@ func with2(base map[string]any, kv ...any) map[string]any {
 	return out
 }
 
-// noProbe is the change of a case that takes its original's stored probe
-// away, its record its essence as it is and the streams streams: a field
-// order nothing states.
+// noProbe is the change of a case that takes what its original's stored
+// probe says of its picture away but the plan of it (its start and frame
+// rate, which a read is held to), its record its essence as it is and the
+// streams streams: a field order nothing states.
 func noProbe(streams []any) func(*testing.T, *listFixture) {
 	return func(t *testing.T, f *listFixture) {
 		t.Helper()
@@ -770,7 +785,8 @@ func noProbe(streams []any) func(*testing.T, *listFixture) {
 			t.Fatal(err)
 		}
 		essence, _ := rec["essence"].(map[string]any)
-		if err := os.Remove(filepath.Join(f.sourceDir, ProbeFile)); err != nil {
+		if err := os.WriteFile(filepath.Join(f.sourceDir, ProbeFile), []byte(`{"streams": [{"index": 0, "codec_type":
+			"video", "start_time": "0.000000", "avg_frame_rate": "24/1"}]}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		f.rewriteSource(t, essence, streams)

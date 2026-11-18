@@ -56,7 +56,7 @@ var mgPackage = map[string]any{
 			"default": true, "bitrateBps": 128000}}},
 	"subtitles":        []any{map[string]any{"id": "s0", "path": "subs/0.vtt"}, map[string]any{"id": "s1", "path": "subs/1.vtt"}},
 	"peakBandwidthBps": 4000000, "durationMs": 600000,
-	"essence": map[string]any{"surround": false, "maxAudioChannels": 2},
+	"essence": stated(map[string]any{"surround": false, "maxAudioChannels": 2}),
 	// the packager read the original's fields and found none
 	"scan": verifiedProgressive(),
 }

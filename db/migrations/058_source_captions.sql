@@ -50,7 +50,9 @@
 --   finding          what a read found that keeps the original for good of
 --                    this file and this record: lengthMismatch (its length is
 --                    not its record's), noRecordLength (its record said no
---                    length); none otherwise
+--                    length), noPlan (its records gave no plan of its
+--                    picture), unscanned (its picture's captions need its
+--                    packets' signature); none otherwise
 --   failures         reports in a row with a failed read or window
 --   claimedat, claimedby, claimtoken
 --                    the claim that handed it out, while it is the reader's
@@ -136,7 +138,8 @@ UPDATE com_nalet_katalog_sourcecaptions SET state = 'pending', captions = NULL, 
 ALTER TABLE com_nalet_katalog_sourcecaptions
   ADD CONSTRAINT sourcecaptions_state CHECK (state IN ('pending', 'read', 'failed')),
   ADD CONSTRAINT sourcecaptions_frames CHECK (framesdecoded IS NULL OR framesdecoded >= 0),
-  ADD CONSTRAINT sourcecaptions_finding CHECK (finding IS NULL OR finding IN ('lengthMismatch', 'noRecordLength')),
+  ADD CONSTRAINT sourcecaptions_finding CHECK (finding IS NULL OR finding IN ('lengthMismatch', 'noRecordLength', 'noPlan',
+    'unscanned')),
   ADD CONSTRAINT sourcecaptions_read CHECK (state <> 'read'
     OR (captionwindows IS NOT NULL AND captions IS NOT NULL AND ffprobeversion IS NOT NULL AND framesdecoded > 0));
 CREATE TABLE IF NOT EXISTS com_nalet_katalog_captionhandouts (

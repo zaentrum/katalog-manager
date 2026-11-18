@@ -327,8 +327,14 @@ func TestTheClosingRuleKeepsWhatIsOffItsLists(t *testing.T) {
 			librarytest.WriteSource(t, SourceDir(d, "a"), map[string]any{"sourceId": "a",
 				"container": map[string]any{"format": c.container, "durationMs": 600000}, "essence": fullEssence(),
 				"streams": mustJSON(t, "["+c.streams+"]")}, nil)
-			if c.probe != "" {
-				if err := os.WriteFile(filepath.Join(SourceDir(d, "a"), ProbeFile), []byte(c.probe), 0o644); err != nil {
+			// one that goes on captions has a plan of its picture: its
+			// stored probe gives its start and frame rate
+			probe := c.probe
+			if c.off == "" {
+				probe = withPlan(t, probe)
+			}
+			if probe != "" {
+				if err := os.WriteFile(filepath.Join(SourceDir(d, "a"), ProbeFile), []byte(probe), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -360,4 +366,34 @@ func mustJSON(t *testing.T, js string) any {
 		t.Fatal(err)
 	}
 	return v
+}
+
+// withPlan is the stored probe probe ("": one of an h264 picture, progressive)
+// with its first picture's start (0) and frame rate (24 a second) where it
+// gives none: one that gives the plan of its picture.
+func withPlan(t *testing.T, probe string) string {
+	t.Helper()
+	if probe == "" {
+		probe = `{"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "field_order": "progressive"}]}`
+	}
+	var p map[string]any
+	if err := json.Unmarshal([]byte(probe), &p); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range p["streams"].([]any) {
+		if st, ok := e.(map[string]any); ok && st["codec_type"] == "video" {
+			if _, ok := st["start_time"]; !ok {
+				st["start_time"] = "0.000000"
+			}
+			if _, ok := st["avg_frame_rate"]; !ok {
+				st["avg_frame_rate"] = "24/1"
+			}
+			break
+		}
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

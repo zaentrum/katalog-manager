@@ -53,8 +53,8 @@ func TestGateOfReadsTheRecords(t *testing.T) {
 		statedProbe(nil))
 	librarytest.WriteVersion(t, VersionDir(item, "v1"), librarytest.Version{VersionID: "v1", PackageID: "p1",
 		SourceIDs: []string{"s1"}, CreatedAt: "2026-10-06T09:00:00Z", Package: map[string]any{
-			"scan": verifiedProgressive(), "essence": map[string]any{
-				"surround": false, "maxAudioChannels": 2, "subtitleLanguages": []string{"en"}},
+			"scan": verifiedProgressive(), "essence": stated(map[string]any{
+				"surround": false, "maxAudioChannels": 2, "subtitleLanguages": []string{"en"}}),
 			"subtitles": []any{map[string]any{"id": "sub0", "path": "subs/0.vtt", "format": "webvtt", "language": "en"}}}})
 	got, err := GateOf(item, "v1", "s1")
 	if err != nil || strings.Join(got, " ") != "maxAudioChannels subtitleLanguages:de surround" {
@@ -85,7 +85,8 @@ func pgsOriginal(n int) (map[string]any, []any) {
 // stereoCarrying is the essence of a stereo package, with the subtitle facts
 // of the essence subs.
 func stereoCarrying(subs map[string]any) map[string]any {
-	out := map[string]any{"surround": false, "maxAudioChannels": 2, "audioLanguages": []string{"en"}}
+	out := map[string]any{"surround": false, "maxAudioChannels": 2, "audioLanguages": []string{"en"},
+		"maxVideoHeight": 1080, "videoBitDepth": 8, "commentaryTracks": 0, "audioDescriptionTracks": 0}
 	for _, k := range []string{"subtitleTracks", "commentarySubtitles", "imageSubtitles", "styledSubtitles",
 		"subtitleLanguages", "sdhSubtitleLanguages", "forcedSubtitleLanguages"} {
 		if v, ok := subs[k]; ok {
@@ -250,7 +251,7 @@ func TestTheGateOfSubtitlesTheRecordsTell(t *testing.T) {
 				"subtitleLanguages:fr", "subtitleTracks", "surround")},
 		{"an original with no subtitles",
 			map[string]any{"essence": stereoSource, "streams": streams[:2]},
-			map[string]any{"essence": stereoCarrying(nil), "renditions": stereoTrack},
+			map[string]any{"essence": stereoCarrying(none), "renditions": stereoTrack},
 			""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -496,7 +497,7 @@ func TestTheGateHoldsAnOriginalTrackByTrack(t *testing.T) {
 			}
 			librarytest.WriteVersion(t, VersionDir(item, "v1"), librarytest.Version{VersionID: "v1", PackageID: "p1",
 				SourceIDs: made, CreatedAt: "2026-10-06T09:00:00Z", Files: files, Package: map[string]any{
-					"essence": c.pkg, "subtitles": subs, "renditions": ren}})
+					"essence": stated(c.pkg), "subtitles": subs, "renditions": ren}})
 			// a master of another original is asked as one (the superseded
 			// path's gate)
 			g, err := ReadGateWith(item, "v1", GateFacts{CaptionsNotAsked: true, Master: !slices.Contains(made, ids[0])},

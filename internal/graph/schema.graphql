@@ -2092,8 +2092,12 @@ type CaptionReadProgress {
   lengthMismatch: Int!
   # Their source ids.
   lengthMismatches: [String!]!
-  # The rest; one whose record said no length is among them until its
-  # record is written again.
+  # Originals a read found their record leaves not known (it says no length,
+  # its records give no plan of its picture, or the picture's captions need
+  # its packets' signature): kept until the
+  # record is written again, which has them read again; none of read, nor of
+  # toRead.
+  awaitingRecord: Int!
   toRead: Int!
   packaged: Int!
   packagesRead: Int!

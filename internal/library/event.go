@@ -85,13 +85,18 @@ func (ev Event) Dir(itemDir string) string { return EventDir(itemDir, ev.At, ev.
 // event.json, then the checksums.sha256 that lists exactly it, which says the
 // event is recorded. A folder whose checksums are written holds the event
 // already and is left as it is; one without is written again, the same
-// bytes. It answers the folder.
+// bytes. It answers the folder. An original-deleted event names the source
+// whose original it deletes, one event a source (the schemas refuse one
+// from 2026-11-16 on that names none): one that names none is not written.
 func WriteEvent(itemDir string, ev Event) (string, error) {
 	if !ValidID(ev.ID) {
 		return "", fmt.Errorf("an event's id is a lower-case UUID, not %q", ev.ID)
 	}
 	if ev.At.IsZero() {
 		return "", errors.New("an event needs its moment")
+	}
+	if ev.Kind == EventOriginalDeleted && strings.TrimSpace(ev.SourceID) == "" {
+		return "", errors.New("an original-deleted event names the source whose original it deletes (sourceId)")
 	}
 	dir := ev.Dir(itemDir)
 	if _, err := os.Stat(filepath.Join(dir, SumsFile)); err == nil {
