@@ -241,7 +241,25 @@ func TestAFullVerificationNamesTheFirstAttachedSubtitleThatDoesNotHold(t *testin
 	sort.Strings(names)
 	var mu sync.Mutex
 	var answered []string
+	// read at once, the three attached reads all start before any of them
+	// answers: each waits for the others (a while at most), so that the
+	// first by name, which answers last, is read while the others fail
+	parallel, started, all := false, 0, make(chan struct{})
 	onHash(t, func(ctx context.Context, path string) error {
+		mu.Lock()
+		barrier := parallel && strings.HasPrefix(filepath.Base(path), AttachedPrefix)
+		if barrier {
+			if started++; started == len(names) {
+				close(all)
+			}
+		}
+		mu.Unlock()
+		if barrier {
+			select {
+			case <-all:
+			case <-time.After(10 * time.Second):
+			}
+		}
 		if filepath.Base(path) == names[0] {
 			time.Sleep(200 * time.Millisecond)
 		}
@@ -253,7 +271,9 @@ func TestAFullVerificationNamesTheFirstAttachedSubtitleThatDoesNotHold(t *testin
 		return nil
 	})
 	_, one := verifyChain(ctx, dir, VersionFile, versionPackageDirs, true, 1)
-	answered = nil
+	mu.Lock()
+	answered, parallel = nil, true
+	mu.Unlock()
 	_, err := verifyChain(ctx, dir, VersionFile, versionPackageDirs, true, verifyReads)
 	var b *Broken
 	if !errors.As(err, &b) || b.File != AttachedPath(dir, names[0]) ||
