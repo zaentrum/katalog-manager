@@ -123,6 +123,11 @@ func verifyChain(ctx context.Context, dir, record string, dirs []string, full bo
 	if c.Package, err = DecodeDoc(pkg); err != nil {
 		return nil, broken(at(PackageFile), "no JSON object: %v", err)
 	}
+	// the entries of a package mended after it completed (mends.go)
+	mended, err := mendsOf(c.Package)
+	if err != nil {
+		return nil, broken(at(PackageFile), "%v", err)
+	}
 	cs, _ := c.Package.Get("checksums")
 	sums, _ := cs.(Doc)
 	file := str(sums, "file")
@@ -148,6 +153,21 @@ func verifyChain(ctx context.Context, dir, record string, dirs []string, full bo
 		if c.Listed, err = ReadChecksums(at(SumsFile)); err != nil {
 			return nil, broken(at(SumsFile), "%v", err)
 		}
+		if why := mendsProblem(mended, c.Listed); why != "" {
+			return nil, broken(at(PackageFile), "%s", why)
+		}
+		// the files a mend changed are read at every level: a chain that
+		// holds is no proof of what was done to them after the package
+		// completed
+		if file, why := mendedBytesProblem(dir, mended); why != "" {
+			return nil, broken(file, "%s", why)
+		}
+	}
+	if left, _ := filepath.Glob(at("*" + MendingSuffix)); len(left) > 0 {
+		return nil, broken(left[0], "a mend's file not yet put in place: a mend of the package stopped mid-way, or is under way")
+	}
+	if c.Pending && len(mended) > 0 {
+		return nil, broken(at(PackageFile), "its checksums are pending and it is mended: a mend writes the mended file's line in them again")
 	}
 	present := map[string]bool{}
 	if _, err := os.Stat(at(record)); err == nil {
@@ -175,6 +195,9 @@ func verifyChain(ctx context.Context, dir, record string, dirs []string, full bo
 					return err
 				}
 				rel = filepath.ToSlash(rel)
+				if strings.HasSuffix(rel, MendingSuffix) {
+					return broken(path, "a mend's file not yet put in place: a mend of the package stopped mid-way, or is under way")
+				}
 				if _, listed := c.Listed[rel]; record == VersionFile && !listed && isAttachedFile(rel) {
 					attached = append(attached, rel)
 					return nil
@@ -183,6 +206,10 @@ func verifyChain(ctx context.Context, dir, record string, dirs []string, full bo
 			}
 			return nil
 		})
+		var b *Broken
+		if errors.As(err, &b) {
+			return nil, err
+		}
 		if err != nil {
 			return nil, broken(root, "%v", err)
 		}

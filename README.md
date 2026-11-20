@@ -3180,7 +3180,45 @@ catalog keeps it, complete and of that package, in the folder the journal
 names, and its chain holds from the `package.json` the tool wrote. It takes
 `{"items": ["<itemId>", …]}` to work on some items only, and answers `{"run",
 "versions", "unchanged", "skipped": [{"itemId", "versionId", "reason"}]}`;
-calling it again changes nothing. Where the library record holds subtitles the catalog
+calling it again changes nothing. The schemas' `library-v2-mend.py` changes
+boxes of a version's init segments in place after its package completed — an
+`avsync-editlist`, a video edit list that presented the picture early — and
+closes the chain again as a fill does: the file's line in `checksums.sha256`,
+`package.json` with the checksums' new hash and the change in its `mends`, and
+`.complete`. A verification holds a mended file to its line as any other, and
+its entries to the checksums and the file, at every level, as the schemas'
+validator does: each entry of the fields the format lists, of a kind it lists,
+an `avsync-editlist` the init segment (`hls/<rendition>/init.mp4`) of one of the
+package's video renditions whose track is a video track, its box the edit list
+and its new value 0, the entries in the order they were made; they run with no
+gap (each made to the bytes the one before left), the last ends at the digest
+the checksums list and at the file's bytes, and each, newest first, changed the
+one field it names and nothing else — its `old` written back gives its
+`sha256Before`. A file changed with no entry fails its line, and a mend's
+temporary file (`*.mending`) in the folder breaks the chain. After
+each `--apply` or `--undo` of it, `POST /api/library/migrations/<run>/mends`
+(the service account and admins) verifies every version the run's
+`mends.jsonl` says it mended or put back again, in full, and notes it
+verified then, while it is what the tool left; one the run left mid-way (its
+last line a `mend` or an `undo`) and one whose full verification fails are
+skipped and lose the verification noted for them (`verifiedat` and
+`verifiedlevel` cleared), so the retire job verifies them in full before an
+original goes. It takes `{"items": [...]}` and answers as the checksums call
+does, and calling it again changes nothing: it keeps, in the run's folder
+(`mends-noted.json`), the `.complete` each verification it noted held and the
+`verifiedat` it wrote, and counts a version unchanged only while it is still
+those bytes and nothing wrote its row since — decided on the bytes, not on the
+clocks of the tool's host and the database. The tool writes a version's files
+one after the other and takes a lock of its own, which the retire job does not:
+a chain the job finds broken in a file a mend writes (`.complete`,
+`package.json`, `checksums.sha256`, an init segment, a `*.mending`) it holds
+against the runs' journals (`.work/migration/<run>/mends.jsonl`): while a run
+has a step of the version open — under way, or stopped mid-way — the
+retirement is called off for the pass, the source present and the title's
+retire step waiting (not failed), naming the run, and the next pass looks at
+it again; with no step open it reads the version once more at once, and
+refuses it when it is still broken.
+Where the library record holds subtitles the catalog
 has no rows for — the migration's subtitles phase finds them with the
 schemas' `library-v2-rebuild.py --compare --differences` and plans them in
 the run's `subtitles-plan.json` — `POST /api/library/migrations/<run>/subtitles`

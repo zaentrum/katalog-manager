@@ -96,6 +96,26 @@ func (h *Handlers) checksumsRun(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// mendsRun serves POST /api/library/migrations/{run}/mends, the catalog's
+// note of what the schemas' library-v2-mend.py did under
+// .work/migration/<run>/: by its journal (mends.jsonl), every version it
+// mended or put back is verified again in full, its mends held to its
+// checksums, and noted verified then — while the catalog
+// keeps it, complete and of that package, in that folder, and its chain
+// holds from the package.json the tool left (library.Migration.Mended). The
+// tool changes no database; this is called after each --apply or --undo.
+//
+// For the workers' service account and admins, as the adopt is; the body
+// may name the items, {"items": [...]}. It answers the report: the versions
+// noted, those verified since, those left with why; 400 for a run's name
+// that is none, 404 for a run that is not staged, 409 while another call on
+// the run runs.
+func (h *Handlers) mendsRun(w http.ResponseWriter, r *http.Request) {
+	h.migrate(w, r, func(ctx context.Context, m *library.Migration, items []string) (any, error) {
+		return m.Mended(ctx, items)
+	})
+}
+
 // subtitlesRun serves POST /api/library/migrations/{run}/subtitles: the rows
 // of the run's subtitles plan (subtitles-plan.json, which the migration's
 // subtitles phase makes from the compare of the library record with the
