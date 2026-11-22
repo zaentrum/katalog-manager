@@ -168,6 +168,12 @@ func TestASupersededOriginalIsRetiredOnceItsTitlesMasterIsVerified(t *testing.T)
 	by, _ := ev.Get("by")
 	reason, _ := ev.Get("reason")
 	acc, _ := ev.Get("accepted")
+	// the read the gate let it go on, carried
+	if read, _ := ev.Get("captionsRead"); read == nil {
+		t.Errorf("the event carries no read: %v", ev)
+	} else if ws, _ := read.(Doc).Get("windows"); len(ws.([]any)) != 6 {
+		t.Errorf("the event's read: %v; want its six windows", read)
+	}
 	if vid != rtVersion || sid != rtSource || by != SupersededRetiredBy ||
 		reason != supersededReason(rtNewSource, rtNewVersion)+"; what it gives up, maxAudioChannels, within library.superseded.accept" ||
 		strings.Join(stringsOf(acc), ",") != "maxAudioChannels" {
@@ -772,7 +778,8 @@ func TestTheOwnersRulesForASupersededOriginal(t *testing.T) {
 		return func(t *testing.T, f *retireFixture) {
 			ws := strings.Replace(noCaptionsWindows, `"start": 60, "end": 61.88, "frames": 48, "captions": false`,
 				`"start": 60, "end": 61.88, "frames": 48, "captions": `+strconv.FormatBool(captions), 1)
-			storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_sourcecaptions SET captions = $2, captionwindows = $3
+			storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_sourcecaptions SET captions = $2, captionwindows = $3,
+				readreport = NULL
 				WHERE source_id = $1`, rtSource, captions, ws)
 		}
 	}

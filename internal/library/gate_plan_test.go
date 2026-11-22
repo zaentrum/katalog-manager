@@ -341,6 +341,7 @@ func TestTheRetireJobKnowsThePlansDetails(t *testing.T) {
 					UnscannedReason)
 			} else {
 				storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_sourcecaptions SET captionwindows = $2::jsonb, duration = $3,
+					readreport = NULL,
 					readspanstart = $4, readspanend = $5 WHERE source_id = $1`, rtSource, c.windows, c.duration, c.span[0],
 					c.span[1])
 			}

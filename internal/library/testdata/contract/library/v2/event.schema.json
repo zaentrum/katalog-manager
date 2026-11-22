@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zaentrum.github.io/schemas/library/v2/event.schema.json",
+  "title": "events/<timestamp>-<eventId8>-<kind>/event.json — a fact that arose after the records were written",
+  "description": "Written once by whoever acts, and never touched again. The other records describe things that cannot change, so the few facts that appear afterwards get their own folder rather than a rewrite.\n\nApplying events — the contract every reader and every rebuild follows. Read the item's records first, then apply its events in order of 'at', earliest first; an event with no effect listed here changes nothing:\n  original-deleted   The originals this names are gone from the version folder: the source it names, or every original of the version when it names none. Once no original of the version is left, that version's package is the only copy of it — canonical, whatever role its record was written with — and everything the package failed to carry is permanent. A version that keeps no original in its folder — as every version the platform writes: an original waits outside the library until its package is recorded, and is deleted then — has its original deleted outside the record, and the event names the source whose original it was, always.\n  version-removed    The version this names is no longer part of the item. Ignore its folder even when it is still on storage, and everything in it: its package is not playable, its records are not a version, and nothing but the item's events may point at it. The events that name it — the deletion of its original, the supersession of its package — are its history, and stay as they were once its folder is gone, naming it by its versionId, or its package by the packageId an event of this item names beside it: this event is the record of where it went. A version-removed event of another item removes nothing from this one.\n  package-superseded The package this names is no longer the one to use. The package supersededBy names is authoritative for its version from this moment; the superseded folder stays exactly as it was.\n  extra-removed      The extra this names is no longer part of the item. Ignore its folder even when it is still on storage, and everything in it: it is not listed, not played, and nothing may point at it. This is how an extra kept only as its original is packaged later: the package is a new extra folder, and this event retires the old one.\n  note               Nothing. It is something a person recorded that no other record holds.\n\nThe deletion gate — what deleting a version's originals costs — is not recorded by anything: a reader computes it from the records, as the essence of the version's sources minus the essence of its package, so it is right however often the version is re-packaged. Only the person's answer to it is a fact, and that is 'accepted' below.\n\nFolder: events/<YYYYMMDDTHHMMSSZ>-<eventId8>-<kind>/, from this record's own at, the first eight characters of its eventId and its kind — for example events/20261001T093000Z-1f2e3d4c-original-deleted/. It holds event.json, this record, and checksums.sha256, which lists exactly event.json and is written with it, so `sha256sum -c checksums.sha256` in the folder proves the fact a rebuild applies is the one that was recorded. Each event is a folder because a checksums file shared by every event would change with each new one, and no file here is ever rewritten. The eventId in the name means two events can never share a folder, however close together they land, and the folders sort by the moment they happened.\n\nThe ids a subject names are records in this item folder: sources/<sourceId>/source.json, versions/<versionId>/, the packageId of a versions/<id>/package.json and extras/<extraId>/. The version-removed and extra-removed events are the exceptions: the folder they name may already be gone. So may the folder of a version a version-removed event of this item removed, which any event of the item may still name.",
+  "type": "object",
+  "required": ["schema", "eventId", "at", "kind"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "original-deleted" } }, "required": ["kind"] },
+      "then": { "required": ["versionId", "accepted"] }
+    },
+    {
+      "if": { "not": { "properties": { "kind": { "const": "original-deleted" } }, "required": ["kind"] } },
+      "then": { "not": { "required": ["captionsRead"] } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "package-superseded" } }, "required": ["kind"] },
+      "then": { "required": ["versionId", "packageId", "supersededBy"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "version-removed" } }, "required": ["kind"] },
+      "then": { "required": ["versionId"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "source-removed" } }, "required": ["kind"] },
+      "then": { "required": ["sourceId"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "extra-removed" } }, "required": ["kind"] },
+      "then": { "required": ["extraId"] }
+    },
+    {
+      "$comment": "An extra is the subject of its removal, or of a note; no event about a version's or a source's records names one.",
+      "if": { "not": { "properties": { "kind": { "enum": ["extra-removed", "note"] } }, "required": ["kind"] } },
+      "then": { "not": { "required": ["extraId"] } }
+    },
+    {
+      "if": { "not": { "properties": { "kind": { "const": "original-deleted" } }, "required": ["kind"] } },
+      "then": { "not": { "required": ["accepted"] } }
+    },
+    {
+      "if": { "not": { "properties": { "kind": { "const": "package-superseded" } }, "required": ["kind"] } },
+      "then": { "not": { "required": ["supersededBy"] } }
+    }
+  ],
+  "properties": {
+    "schema": { "const": "zaentrum.library.event/2" },
+    "eventId": { "$ref": "defs.schema.json#/$defs/uuid", "description": "Its first eight characters are in the name of the folder this record sits in." },
+    "at": { "$ref": "defs.schema.json#/$defs/timestamp", "description": "When it happened. The folder name carries the same moment, so the folders sort in the order a reader must apply them." },
+    "by": { "type": "string", "description": "The service or person that acted." },
+    "kind": {
+      "enum": ["original-deleted", "version-removed", "package-superseded", "source-removed", "extra-removed", "note"],
+      "description": "'original-deleted': an original was deleted — removed from the version folder that kept it, or, for a version that never kept it there, deleted where it waited outside the library once its package was recorded. 'version-removed': a version is no longer part of the item, whether or not its folder has been swept yet — without this the folder would simply vanish and nothing would say it ever existed. 'package-superseded': a package was replaced by one in a newer version folder; the old folder stays as it was. 'source-removed': an original that had been taken in does not belong to this item after all; its record stays, and nothing counts it any more. 'extra-removed': an extra is no longer part of the item, whether or not its folder has been swept yet, the way version-removed retires a version — and the way an extra kept only as its original is packaged later, its package being a new extra folder. 'note': something a person recorded about this item that no other record holds."
+    },
+
+    "sourceId": { "$ref": "defs.schema.json#/$defs/uuid", "description": "The source record this is about: sources/<sourceId>/source.json. On original-deleted it narrows the deletion to that one original, which is how one part of a version split across files is deleted; without it the whole version's originals are gone. A version that keeps no original in its folder names it always: its original was deleted outside the record, and this says which." },
+    "versionId": { "$ref": "defs.schema.json#/$defs/uuid", "description": "The version folder this is about: versions/<versionId>/ — or a version a version-removed event of this item removed, whose folder may be gone." },
+    "packageId": { "$ref": "defs.schema.json#/$defs/uuid", "description": "The package this is about, by the packageId its package.json carries. A removed version's package, whose folder may be gone, is the one an event of this item names beside that version." },
+    "extraId": { "$ref": "defs.schema.json#/$defs/uuid", "description": "The extra this is about: extras/<extraId>/ of this item, a movie or a series. Only on extra-removed, where its folder may already be gone, and on a note." },
+    "supersededBy": {
+      "type": "object",
+      "description": "Only on package-superseded: the package that takes over, so a reader never has to guess the successor from timestamps. It is in another version folder of this same item, because a re-package is a new folder.",
+      "required": ["versionId", "packageId"],
+      "additionalProperties": false,
+      "properties": {
+        "versionId": { "$ref": "defs.schema.json#/$defs/uuid" },
+        "packageId": { "$ref": "defs.schema.json#/$defs/uuid" }
+      }
+    },
+
+    "reason": { "type": ["string", "null"], "description": "Why it happened, in a person's words: 'space', 'replaced by a 4K master', 'wrong file'." },
+    "accepted": {
+      "type": "array",
+      "uniqueItems": true,
+      "description": "Only on original-deleted: what a person agreed to lose, named in the terms of the essence both the source and the package record — a property that is poorer or absent in the package ('surround', 'maxAudioChannels', 'videoBitDepth'), or one language of a language list ('subtitleLanguages:en', 'sdhSubtitleLanguages:de'). Empty means nothing was given up.\n\nIt is a person's answer, not a measurement, so it is a subset of what the records say is lost at that moment and not necessarily all of it: someone who measures again before deleting may accept less than the computed gate. What the package failed to carry stays computable from the records; what a person agreed to is only ever here.\n\nChapter marks and detected ranges are never in this list: the version keeps them, not the file.",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-zA-Z][a-zA-Z0-9]*(:[A-Za-z0-9-]+)?$",
+        "not": { "pattern": "^(closedCaptions|interlaced)(:.*)?$" },
+        "description": "An essence property, or a property and one of its languages after a colon. Never closedCaptions or interlaced: an original that has closed captions or whose captions are not known, and one in fields, are kept (ADR-0015), and no person's answer lets one go."
+      }
+    },
+    "captionsRead": {
+      "type": "object",
+      "description": "Only on original-deleted: the read of the original's closed captions that allowed its deletion, where its record does not keep one — the catalog's, window by window. Every window decoded frames, none shows captions and none counted interlaced frames: a read that does not tell the captions, or shows them, allows no deletion (ADR-0015). A rebuild reads the original's essence as it tells it (libv2_records.essence_as_read), so a deletion it allowed costs no closed captions. Of the source the event names, or of the version's one source.",
+      "required": ["windows", "at"],
+      "additionalProperties": false,
+      "properties": {
+        "windows": { "type": "array", "items": { "$ref": "defs.schema.json#/$defs/captionWindow" }, "minItems": 1, "anyOf": [{ "minItems": 6 }, { "maxItems": 1, "items": { "required": ["whole"] } }], "description": "The windows the original was read in, on its own timeline, by the plan of library/v2/caption-windows.json: the six, or the one read of the whole picture. A read of five without the start, made before the plan, tells nothing: the validator notes it, and the gate holds the deletion to what the records tell." },
+        "span": { "$ref": "defs.schema.json#/$defs/captionSpan" },
+        "gop": { "$ref": "defs.schema.json#/$defs/captionGop" },
+        "ffprobe": { "type": "string", "minLength": 1, "description": "The release of the ffprobe the original was read with." },
+        "at": { "$ref": "defs.schema.json#/$defs/timestamp", "description": "When it was read." }
+      }
+    }
+  }
+}

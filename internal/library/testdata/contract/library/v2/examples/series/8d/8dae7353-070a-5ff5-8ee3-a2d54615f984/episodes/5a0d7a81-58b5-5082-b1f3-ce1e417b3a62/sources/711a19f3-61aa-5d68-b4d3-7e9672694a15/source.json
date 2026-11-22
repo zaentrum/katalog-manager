@@ -1,0 +1,224 @@
+{
+  "schema": "zaentrum.library.source/2",
+  "sourceId": "711a19f3-61aa-5d68-b4d3-7e9672694a15",
+  "takenAt": "2026-09-18T09:05:00Z",
+  "takenBy": "analyzer example",
+  "file": {
+    "name": "original.mkv",
+    "kind": "stream-container",
+    "sizeBytes": 56,
+    "mtime": "2026-09-18T09:00:00Z",
+    "fixity": {
+      "qh1": "sha256:572c2fc1826b839d8dbbc9f1e8cf8966b1c9890bc0bebaed83ce14dfa410f1b7"
+    },
+    "part": null
+  },
+  "naming": {
+    "scheme": "unknown",
+    "seasonNumber": 1,
+    "episodeNumber": 2,
+    "episodeEnd": 3,
+    "raw": "S01E02-03"
+  },
+  "labels": {
+    "quality": "2160p",
+    "medium": "web",
+    "resolution": "2160p",
+    "edition": null,
+    "folderEdition": null
+  },
+  "container": {
+    "format": "matroska,webm",
+    "durationMs": 2700000,
+    "bitrate": null,
+    "title": null,
+    "muxingApp": null,
+    "writingApp": null,
+    "creationTime": null,
+    "tags": {}
+  },
+  "offList": [],
+  "fidelity": {
+    "class": "original",
+    "fingerprint": "hevc/main10/10bit/hdr10/3840x2160",
+    "evidence": []
+  },
+  "streams": [
+    {
+      "index": 0,
+      "type": "video",
+      "codec": "hevc",
+      "language": null,
+      "languageRaw": null,
+      "title": null,
+      "dispositions": {
+        "default": true
+      },
+      "profile": "Main 10",
+      "level": null,
+      "bitDepth": 10,
+      "pixelFormat": "yuv420p10le",
+      "width": 3840,
+      "height": 2160,
+      "sampleAspectRatio": "1:1",
+      "displayAspectRatio": null,
+      "frameRate": "24/1",
+      "fieldOrder": "progressive",
+      "bitrate": null,
+      "colour": {
+        "primaries": "bt2020",
+        "transfer": "smpte2084",
+        "matrix": null,
+        "range": "tv"
+      },
+      "hdr": {
+        "format": "hdr10",
+        "masteringDisplay": null,
+        "contentLightLevel": null,
+        "dolbyVision": null
+      },
+      "stereo3d": null,
+      "closedCaptions": true,
+      "encoder": null,
+      "captionWindows": [
+        {
+          "at": 0.0,
+          "start": 0.0,
+          "end": 2.0,
+          "frames": 48,
+          "captions": true,
+          "interlacedFrames": 0,
+          "repeatFrames": 0
+        },
+        {
+          "at": 0.1,
+          "start": 270.0,
+          "end": 272.0,
+          "frames": 48,
+          "captions": true,
+          "interlacedFrames": 0,
+          "repeatFrames": 0
+        },
+        {
+          "at": 0.3,
+          "start": 810.0,
+          "end": 812.0,
+          "frames": 48,
+          "captions": true,
+          "interlacedFrames": 0,
+          "repeatFrames": 0
+        },
+        {
+          "at": 0.5,
+          "start": 1350.0,
+          "end": 1352.0,
+          "frames": 48,
+          "captions": true,
+          "interlacedFrames": 0,
+          "repeatFrames": 0
+        },
+        {
+          "at": 0.7,
+          "start": 1890.0,
+          "end": 1892.0,
+          "frames": 48,
+          "captions": true,
+          "interlacedFrames": 0,
+          "repeatFrames": 0
+        },
+        {
+          "at": 0.9,
+          "start": 2430.0,
+          "end": 2432.0,
+          "frames": 48,
+          "captions": true,
+          "interlacedFrames": 0,
+          "repeatFrames": 0
+        }
+      ],
+      "captionSpan": {
+        "start": 0.0,
+        "end": 2700.0
+      },
+      "captionGop": 2.0
+    },
+    {
+      "index": 1,
+      "type": "audio",
+      "codec": "eac3",
+      "language": "en",
+      "languageRaw": "eng",
+      "title": null,
+      "dispositions": {
+        "default": true,
+        "commentary": false
+      },
+      "profile": null,
+      "channels": 6,
+      "channelLayout": "5.1",
+      "sampleRate": 48000,
+      "bitDepth": null,
+      "bitrate": null,
+      "lossless": false,
+      "objectAudio": "none",
+      "titleClaim": null,
+      "encoder": null,
+      "purpose": "main",
+      "purposeFrom": "assumed",
+      "variant": null
+    }
+  ],
+  "sidecars": [
+    {
+      "file": "sources/711a19f3-61aa-5d68-b4d3-7e9672694a15/subtitle-1.de.srt",
+      "kind": "subtitle",
+      "format": "srt",
+      "language": "de",
+      "forced": false,
+      "hearingImpaired": false,
+      "purpose": "dialogue",
+      "sizeBytes": 38,
+      "sha256": "sha256:37db83633a86bf79edc5a0ba4efdb07326386e95321030b87df7f37ab284d3b4"
+    }
+  ],
+  "covers": [
+    "5a0d7a81-58b5-5082-b1f3-ce1e417b3a62",
+    "c1b3ef5b-819d-57b4-a395-f8cec43ba6ca"
+  ],
+  "essence": {
+    "maxAudioChannels": 6,
+    "surround": true,
+    "losslessAudio": false,
+    "objectAudio": false,
+    "maxVideoHeight": 2160,
+    "videoBitDepth": 10,
+    "hdr10Metadata": true,
+    "dolbyVision": false,
+    "stereo3d": false,
+    "interlaced": false,
+    "audioLanguages": [
+      "en"
+    ],
+    "subtitleLanguages": [],
+    "subtitleTracks": 0,
+    "imageSubtitles": false,
+    "styledSubtitles": false,
+    "fonts": false,
+    "chapters": false,
+    "commentaryTracks": 0,
+    "commentarySubtitles": 0,
+    "audioDescriptionTracks": 0,
+    "sdhSubtitleLanguages": [],
+    "forcedSubtitleLanguages": [],
+    "closedCaptions": true,
+    "closedCaptionsKnown": true
+  },
+  "probe": {
+    "tool": "ffprobe",
+    "version": null,
+    "at": "2026-09-18T09:05:00Z",
+    "file": "sources/711a19f3-61aa-5d68-b4d3-7e9672694a15/ffprobe.json",
+    "sha256": "sha256:3eb8665187979c51d605e614f3b9ac1aa34a33116bcdafd476385b773eb375f8",
+    "note": null
+  }
+}

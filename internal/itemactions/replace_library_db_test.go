@@ -289,7 +289,7 @@ func newInVersion(t *testing.T) *inVersion {
 	// nothing go: the original's record states its field order)
 	librarytest.WriteVersion(t, vdir, librarytest.Version{VersionID: ivVersion, PackageID: ivPackage, SourceIDs: []string{ivSource},
 		CreatedAt: "2026-10-06T10:00:00Z", Package: map[string]any{"scan": map[string]any{"found": "progressive", "done": "progressive",
-			"verified": map[string]any{"ok": true, "complete": true}}}})
+			"verified": map[string]any{"ok": true, "complete": true, "frames": 14400, "packets": 14400, "leading": 0}}}})
 	iv.old = filepath.Join(vdir, "original.mkv")
 	librarytest.Write(t, iv.old, make([]byte, 100))
 	// probed: a progressive picture and a stereo track, no subtitle
@@ -300,9 +300,12 @@ func newInVersion(t *testing.T) *inVersion {
 	storetest.AddItem(t, st, bunny, "movie", "Big Buck Bunny", "")
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state, recordedat)
 		VALUES ($3, $1, 'original.mkv', $2, 100, 'present', now())`, bunny, iv.old, ivSource)
-	// its closed captions read by a probe that decoded its frames: none
-	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_sourcecaptions (source_id, item_id, state, captionwindows, captions, ffprobeversion, framesdecoded, duration, readspanstart, readspanend, sourcesize, sourcerecordedat, readat)
-		VALUES ($1, $2, 'read', '[{"at": 0, "start": 0, "end": 1.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.1, "start": 60, "end": 61.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.3, "start": 180, "end": 181.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.5, "start": 300, "end": 301.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.7, "start": 420, "end": 421.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.9, "start": 540, "end": 541.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}]', false, '7.1.1', 288, 600, 0, 600, 100, (SELECT recordedat FROM com_nalet_katalog_itemsources WHERE id = $1::varchar), now())`, ivSource, bunny)
+	// its closed captions read by a probe that decoded its frames: none (its
+	// report as the analyzer sent it, which the catalog keeps beside)
+	windows := `[{"at": 0, "start": 0, "end": 1.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.1, "start": 60, "end": 61.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.3, "start": 180, "end": 181.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.5, "start": 300, "end": 301.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.7, "start": 420, "end": 421.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.9, "start": 540, "end": 541.88, "frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}]`
+	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_sourcecaptions (source_id, item_id, state, captionwindows, captions, ffprobeversion, framesdecoded, duration, readspanstart, readspanend, sourcesize, sourcerecordedat, readat, readreport)
+		VALUES ($1, $2, 'read', $3::jsonb, false, '7.1.1', 288, 600, 0, 600, 100, (SELECT recordedat FROM com_nalet_katalog_itemsources WHERE id = $1::varchar), now(), $4)`,
+		ivSource, bunny, windows, `{"captionWindows": `+windows+`, "span": {"start": 0, "end": 600}}`)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemversions (id, item_id, sourceids, state, packageid, dir, completedat)
 		VALUES ($1, $2, ARRAY[$5::varchar], 'complete', $3, $4, now() - interval '1 day')`, ivVersion, bunny, ivPackage, vdir, ivSource)
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_playbackassets (id, item_id, path, sizebytes, isprimary, kind, sourceid)
@@ -314,7 +317,7 @@ func newInVersion(t *testing.T) *inVersion {
 
 // planProbe is the stored probe of a source folder that gives the plan of its
 // picture (its start and frame rate), which its read is held to.
-var planProbe = map[string]string{library.ProbeFile: `{"streams": [{"index": 0, "codec_type": "video", ` +
+var planProbe = map[string]string{library.ProbeFile: `{"format": {"format_name": "matroska,webm"}, "streams": [{"index": 0, "codec_type": "video", ` +
 	`"codec_name": "h264", "field_order": "progressive", "start_time": "0.000000", "avg_frame_rate": "24/1"}]}`}
 
 // asAddon is an addon's service account, as acquire's token is.
@@ -1007,6 +1010,9 @@ func statedEssence(e map[string]any) map[string]any {
 		out[k] = 0
 	}
 	out["maxVideoHeight"], out["videoBitDepth"] = 1080, 8
+	// and its field order, as the record logic writes it of a progressive
+	// picture: no fields
+	out["interlaced"] = false
 	for _, k := range []string{"audioLanguages", "subtitleLanguages", "sdhSubtitleLanguages", "forcedSubtitleLanguages"} {
 		out[k] = []string{}
 	}

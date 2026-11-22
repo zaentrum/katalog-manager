@@ -146,7 +146,7 @@ func TestAWindowThatIsNoWindowIsAFailedOne(t *testing.T) {
 		case !c.showed && (carried != "" || !strings.HasPrefix(unknown, CaptionsUnknown)):
 			t.Errorf("%s: carried %q, unknown %q; want captions not known", c.name, carried, unknown)
 		}
-		fields, _ := inFields(t.TempDir(), "", nil, nil, []Doc{doc(t, `{"container": {"format": "matroska,webm", "durationMs": 600000}, "streams": [{"index": 0, "type": "video",
+		fields, _ := inFields(t.TempDir(), "", nil, nil, []Doc{doc(t, `{"essence": {"interlaced": false}, "container": {"format": "matroska,webm", "durationMs": 600000}, "streams": [{"index": 0, "type": "video",
 			"codec": "h264", "fieldOrder": "progressive"}]}`)}, nil, read(600, ws...).Captions)
 		if (fields != "") != c.countsUnread {
 			t.Errorf("%s: fields %q; want in fields %v", c.name, fields, c.countsUnread)
@@ -220,11 +220,11 @@ func TestARecordOrProbeThatIsNoneHolds(t *testing.T) {
 // verified.complete true): a word found, a blank, another type, none, a done
 // of something, a verification not ok or not complete or none, a scan that
 // is no object - each holds, and none of them breaks the gate. A scan that
-// found nothing lets nothing go either. Of another version made of it, only
-// a found other than NothingFound holds, or NothingFound its own counts say
-// otherwise of (chunks in fields, more fields than frames: scanCountsHold).
+// found nothing lets nothing go either. Of another version of the title, of
+// it or of another source, each holds as well: the record logic holds every
+// package of the title to the whole rule.
 func TestAPackagesScanHoldsUnlessItVerifiedThePictureProgressive(t *testing.T) {
-	ok := map[string]any{"ok": true, "complete": true}
+	ok := readThrough()
 	for name, scan := range map[string]any{
 		"found fields":                    map[string]any{"found": "fields", "done": "deinterlaced-frame"},
 		"found a word unknown":            map[string]any{"found": "woven", "done": "none", "verified": ok},
@@ -262,18 +262,11 @@ func TestAPackagesScanHoldsUnlessItVerifiedThePictureProgressive(t *testing.T) {
 			"the scan of its package of version v-a ") {
 			t.Errorf("%s: %q; want it held by the scan", name, why)
 		}
-		// of another version made of it: a found other than NothingFound,
-		// or one its counts say otherwise of
-		var found any
-		hasFound := false
-		if x, ok := scan.(map[string]any); ok {
-			found, hasFound = x["found"]
-		}
-		countsSay := name == "found progressive, not ok" || name == "found progressive, no verification"
-		other := hasFound && found != nil && (found != NothingFound || countsSay)
-		if why, _ := inFields(d, "", nil, []string{"a"}, []Doc{rec}, nil, nil); other != strings.HasPrefix(why,
-			"the scan of its package of version v-a found") {
-			t.Errorf("%s, of another version: %q; want it held %v", name, why, other)
+		// of another version: every package of the title is held to the
+		// full rule, so each of these scans holds as well
+		if why, _ := inFields(d, "", nil, []string{"a"}, []Doc{rec}, nil, nil); !strings.HasPrefix(why,
+			"the scan of its package of version v-a ") {
+			t.Errorf("%s, of another version: %q; want it held", name, why)
 		}
 	}
 	d := t.TempDir()

@@ -458,18 +458,19 @@ var candidatesSQL = `
 // fields counted in a window -, of whichever record; a read in full of the
 // record as it is now (recordedat: none of its windows failed, and every
 // window that decoded frames says how many are interlaced and repeat a
-// field); a failure that found a stream of captions of its own or something
-// off the closed lists (offlist) of the file handed out; or a finding
-// (lengthMismatch, noRecordLength, noPlan, unscanned) of the file handed out and of
-// the record as it is now. Another file, or another record of a read that found
-// nothing, goes back to be read.
+// field) whose report the catalog keeps (readreport, the contract's deletion
+// gate reads it); a failure that found a stream of captions of its own or
+// something off the closed lists (offlist) of the file handed out; or a
+// finding (lengthMismatch, noRecordLength, noPlan, unscanned) of the file
+// handed out and of the record as it is now. Another file, or another record
+// of a read that found nothing, goes back to be read.
 func readUsable(c, s string) string {
 	return `(` + c + `.sourcesize IS NOT DISTINCT FROM ` + s + `.sizebytes
 		AND (` + c + `.sourceqh1 IS NULL OR ` + s + `.qh1 IS NULL OR ` + c + `.sourceqh1 = ` + s + `.qh1)
 		AND ((` + c + `.state IS NOT DISTINCT FROM 'read' AND (` + c + `.captions IS TRUE
 				OR COALESCE(` + c + `.captionstreams, 0) > 0 OR ` + fieldsCounted(c+".captionwindows") + `))
 		  OR (` + c + `.state IS NOT DISTINCT FROM 'read' AND ` + c + `.sourcerecordedat IS NOT DISTINCT FROM ` + s + `.recordedat
-			AND NOT ` + failedWindow(c+".captionwindows") + `
+			AND ` + c + `.readreport IS NOT NULL AND NOT ` + failedWindow(c+".captionwindows") + `
 			AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(` + c + `.captionwindows, '[]'::jsonb)) w
 				WHERE COALESCE((w->>'frames')::numeric, 0) > 0
 				  AND (w->'interlacedFrames' IS NULL OR w->'repeatFrames' IS NULL

@@ -10,16 +10,22 @@
 -- that says the picture's captions can't be told by windows (an HEVC
 -- picture whose packets weren't read whole for a caption signature) is kept
 -- as the finding unscanned: final for that file and that record, handed out
--- again once the record is written again (with its caption signature).
+-- again once the record is written again (with its caption signature). A
+-- read kept keeps its report as the analyzer sent it (readreport), which
+-- the contract's deletion gate reads as the record logic reads a deletion's
+-- read; a clean read kept before it, without one, is read again.
 -- Lowercase identifiers, like every com_nalet_katalog_* table.
 ALTER TABLE com_nalet_katalog_sourcecaptions
   ADD COLUMN IF NOT EXISTS claimspanstep DOUBLE PRECISION,
   ADD COLUMN IF NOT EXISTS readspanstart DOUBLE PRECISION,
   ADD COLUMN IF NOT EXISTS readspanend DOUBLE PRECISION,
   ADD COLUMN IF NOT EXISTS readgop DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS readreport TEXT,
   DROP CONSTRAINT IF EXISTS sourcecaptions_finding;
 ALTER TABLE com_nalet_katalog_sourcecaptions
   ADD CONSTRAINT sourcecaptions_finding CHECK (finding IS NULL
     OR finding IN ('lengthMismatch', 'noRecordLength', 'noPlan', 'unscanned'));
 CREATE INDEX IF NOT EXISTS idx_sourcecaptions_unscanned ON com_nalet_katalog_sourcecaptions (source_id)
   WHERE finding = 'unscanned';
+CREATE INDEX IF NOT EXISTS idx_sourcecaptions_report ON com_nalet_katalog_sourcecaptions (source_id)
+  WHERE readreport IS NOT NULL;

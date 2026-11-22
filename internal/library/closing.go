@@ -69,12 +69,16 @@ const closedNotKnown = "closed captions and fields not known"
 // streamView is a stream of a source record or of a stored probe, in what
 // the closing rule reads of it: its kind, codec and codec tag (codec "" for
 // none, ffprobe's unknown too; a tag "" for none or one that is no name,
-// [0][0][0][0]), its height, and whether it is a cover (attachedPicture).
+// [0][0][0][0]), its height, whether it is a cover (attachedPicture), and,
+// of a source record's stream, whether its record marks it attachedPic
+// (marked: any value Python takes for true, as the record logic's
+// picture_of reads the mark).
 type streamView struct {
 	doc              Doc
 	kind, codec, tag string
 	height           float64
 	cover            bool
+	marked           bool
 }
 
 // viewsOf are the streams of the record d: a probe's (probe, ffprobe's
@@ -109,6 +113,7 @@ func viewsOf(d Doc, probe bool, aligned Doc) []streamView {
 		} else {
 			v.kind, v.codec = str(st, "type"), str(st, "codec")
 			c.pic, c.codec = markedAt(st, "dispositions", "attachedPic"), valueOf(st.Get("codec"))
+			v.marked = flag(st, "dispositions", "attachedPic")
 			src = nil
 			if i, ok := st.Get("index"); ok {
 				src = byIndex[fmt.Sprint(i)]
@@ -551,6 +556,27 @@ func offListOf(records, probes []Doc, said []string) []string {
 		containerOf(rec, "container", "format")
 		off, _, _ := closedOf(viewsOf(rec, false, probe))
 		add(off)
+		// the record's own offList (record logic 11 writes one), as the
+		// record logic's record_off_list reads it: what it names is off, as
+		// it names it, and one that is no list of names is offList:unreadable;
+		// where it and the record's streams read here disagree, what either
+		// says is off holds
+		if v, has := rec.Get("offList"); has {
+			list, ok := v.([]any)
+			for _, e := range list {
+				if n, isText := e.(string); !isText || n == "" {
+					ok = false
+				}
+			}
+			if !ok {
+				seen["offList:unreadable"] = true
+			}
+			for _, e := range list {
+				if n, isText := e.(string); ok && isText {
+					seen[n] = true
+				}
+			}
+		}
 	}
 	for _, probe := range probes {
 		if probe == nil {
@@ -567,6 +593,32 @@ func offListOf(records, probes []Doc, said []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// coverMarkWhy says of the source records records (their stored probes
+// probes, nil for none, aligned) why the gate can't tell which of their
+// video streams is a cover: one whose record's attachedPic mark (marked) is
+// not what the cover rule reads of it (attachedPicture, over the mark and
+// its stored probe's tags and counts) - an older record's of a cover its
+// tags alone mark, left unmarked, or of a stream the rule calls none,
+// marked. The record logic marks a cover by the rule and nothing else, so
+// the two disagree only of a record written otherwise, and the gate holds
+// it: "" when they agree.
+func coverMarkWhy(records, probes []Doc) string {
+	for i, rec := range records {
+		var probe Doc
+		if i < len(probes) {
+			probe = probes[i]
+		}
+		for _, v := range viewsOf(rec, false, probe) {
+			if v.kind == "video" && v.marked != v.cover {
+				return fmt.Sprintf("%s: its record marks its stream %s attachedPic %v, and the cover rule reads it, "+
+					"with its stored probe's tags, as a cover %v", closedNotKnown, pyStr(valueOf(v.doc.Get("index"))),
+					v.marked, v.cover)
+			}
+		}
+	}
+	return ""
 }
 
 // offListWhy says of the names off the closing rule's lists why the gate

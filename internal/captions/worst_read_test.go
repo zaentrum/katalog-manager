@@ -261,3 +261,27 @@ func TestAReportThatSaysAThingTwiceIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// A clean read keeps its report as the analyzer sent it (readreport), the one
+// the contract's deletion gate reads; a clean read kept without one (taken
+// before the catalog kept reports) is not done: it is handed out again.
+func TestACleanReadKeepsItsReport(t *testing.T) {
+	ctx := context.Background()
+	st, source, _, token := claimed(t)
+	svc := New(st).WithClock(at(time.Date(2026, 11, 16, 23, 0, 1, 0, time.UTC)))
+	if r := record(t, ctx, svc, source, token, fullRead); r.State != StateRead || r.found() {
+		t.Fatalf("the read: %+v; want a clean one", r)
+	}
+	var kept *string
+	if err := st.Pool().QueryRow(ctx, `SELECT readreport FROM com_nalet_katalog_sourcecaptions WHERE source_id = $1`,
+		source).Scan(&kept); err != nil || kept == nil || *kept != fullRead {
+		t.Fatalf("the report kept: %v, %v; want it as sent", kept, err)
+	}
+	if cl, err := svc.Claim(ctx, "analyzer-0", 1); err != nil || len(cl.Items) != 0 {
+		t.Fatalf("a clean read with its report was handed out again: %+v, %v", cl, err)
+	}
+	storetest.Exec(t, st, `UPDATE com_nalet_katalog_sourcecaptions SET readreport = NULL WHERE source_id = $1`, source)
+	if cl, err := svc.Claim(ctx, "analyzer-0", 1); err != nil || len(cl.Items) != 1 {
+		t.Errorf("a clean read without its report was not handed out again: %+v, %v", cl, err)
+	}
+}

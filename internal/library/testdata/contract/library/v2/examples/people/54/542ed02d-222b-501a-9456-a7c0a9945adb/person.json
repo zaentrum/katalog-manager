@@ -1,0 +1,80 @@
+{
+  "schema": "zaentrum.library.person/2",
+  "personId": "542ed02d-222b-501a-9456-a7c0a9945adb",
+  "asOf": "2026-09-20T12:00:00Z",
+  "projectedBy": "catalog example",
+  "databaseUpdatedAt": "2026-09-20T11:55:00Z",
+  "sources": {
+    "tmdb": {
+      "fetchedAt": "2026-09-20T11:50:00Z",
+      "changedAt": "2026-09-16"
+    }
+  },
+  "name": "Mara Example",
+  "sortName": "Example, Mara",
+  "alsoKnownAs": [
+    "M. Example"
+  ],
+  "birthDate": "1985-04",
+  "deathDate": null,
+  "birthPlace": "Example City",
+  "knownForDepartment": "Acting",
+  "biography": {
+    "en": "A fictional actor who plays the lead in Example Show.",
+    "de": "Eine erfundene Schauspielerin, die in Example Show die Hauptrolle spielt."
+  },
+  "externalIds": {},
+  "images": [
+    {
+      "kind": "profile",
+      "primary": true,
+      "file": "9fa4ded4f1413099d4005217a9cafda0dad1b13b8823602097199ee3bf24b286.jpg",
+      "sha256": "sha256:9fa4ded4f1413099d4005217a9cafda0dad1b13b8823602097199ee3bf24b286",
+      "contentType": "image/jpeg",
+      "sizeBytes": 158,
+      "width": 1,
+      "height": 1,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": "2026-09-20T12:00:00Z",
+      "origin": {
+        "source": "manual",
+        "fetchedAt": "2026-09-20T12:00:00Z"
+      }
+    },
+    {
+      "kind": "profile",
+      "file": "94c52ce5ed0834b449d626980a173df303a969950b72c251f315dd9d883dded8.jpg",
+      "sha256": "sha256:94c52ce5ed0834b449d626980a173df303a969950b72c251f315dd9d883dded8",
+      "contentType": "image/jpeg",
+      "sizeBytes": 185,
+      "width": 1,
+      "height": 1,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": "2026-09-20T11:50:00Z",
+      "origin": {
+        "source": "tmdb",
+        "ref": "/example-profile-mara.jpg",
+        "fetchedAt": "2026-09-20T11:50:00Z"
+      }
+    }
+  ],
+  "curation": {
+    "metadataLocked": false,
+    "lockedFields": [
+      "biography"
+    ],
+    "notes": "biography written by hand"
+  },
+  "fieldOrigins": {
+    "name": "manual",
+    "sortName": "manual",
+    "alsoKnownAs": "manual",
+    "birthDate": "manual",
+    "birthPlace": "manual",
+    "knownForDepartment": "tmdb",
+    "biography": "manual",
+    "images": "manual"
+  }
+}

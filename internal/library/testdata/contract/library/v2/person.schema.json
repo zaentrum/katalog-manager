@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zaentrum.github.io/schemas/library/v2/person.schema.json",
+  "title": "person.json — a person the database holds, projected",
+  "description": "People are shared by the items that credit them, so they are a category of their own beside movies/ and series/, with the same id-based folders and the same shard:\n\n  people/<aa>/<personId>/person.json\n  people/<aa>/<personId>/<content hash>.<ext>   the images it lists\n\n<aa> is the first two characters of the id. Like metadata.json this is a projection, not a record: what the catalog database held about the person at the moment asOf names — the person's row as databaseUpdatedAt says it was last modified, with the reference data as fresh as sources says — written by the one service that owns people and replaced whole on every projection, so nothing is merged. There is no checksums file beside it, on purpose: a checksum written with one projection would be wrong after the next, and each image is named by the hash of its own bytes, so its name is its check. A rebuild restores the person exactly as the last projection left it, so a biography and a portrait survive the loss of the database.\n\nThere is no list of credits: which items credit a person is what those items' metadata.json says, by personId, and repeating it here would make every new credit rewrite this file. A credit whose person has no folder here is not an error — the person may not have been projected yet — and a validator says so as a note.",
+  "type": "object",
+  "required": ["schema", "personId", "asOf", "name", "images"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "zaentrum.library.person/2" },
+    "personId": {
+      "$ref": "defs.schema.json#/$defs/uuid",
+      "description": "Equals the name of the folder this file sits in, its first two characters are the shard folder, and it is the personId every credit of this person carries. Stable: person pages are user-facing URLs keyed by it."
+    },
+    "asOf": { "$ref": "defs.schema.json#/$defs/timestamp", "description": "The state of the database this file is a projection of. A later projection replaces the whole file." },
+    "projectedBy": { "type": "string", "description": "The service that wrote it." },
+    "databaseUpdatedAt": { "$ref": "defs.schema.json#/$defs/databaseUpdatedAt", "description": "The modification time of the person's database row this projection reflects, as defs.schema.json describes it. A person changes more often than an item does — a new role, a death, a new photo — so this is what tells a person record that went stale from a current one." },
+    "sources": { "$ref": "defs.schema.json#/$defs/sources" },
+
+    "name": { "type": "string", "minLength": 1, "description": "The person's current name, as the database displays it. A credit records the name as it was for its title — it may be the one the person went by then — and a reader prefers this one wherever the person has a record." },
+    "sortName": { "type": ["string", "null"], "description": "The name as it sorts, e.g. 'Hubert, Ian'." },
+    "alsoKnownAs": {
+      "type": "array",
+      "description": "Other names the person is known by: a birth name, a stage name, the name in another script.",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "birthDate": { "oneOf": [{ "$ref": "defs.schema.json#/$defs/date" }, { "type": "null" }] },
+    "deathDate": { "oneOf": [{ "$ref": "defs.schema.json#/$defs/date" }, { "type": "null" }], "description": "Not before birthDate, as far as both are known." },
+    "birthPlace": { "type": ["string", "null"] },
+    "knownForDepartment": { "type": ["string", "null"], "description": "The department the reference database says the person is best known for — 'Acting', 'Directing', 'Writing' — in its words. A hint for ordering what a person page shows, not a credit: the credits stay the items'." },
+    "biography": {
+      "type": "object",
+      "description": "The biography in every language the database holds it in, keyed by BCP 47 language — 'und' when the database does not record which language its text is in. A reader picks the variant for its viewer the way it picks a localized title.",
+      "propertyNames": { "$ref": "defs.schema.json#/$defs/language" },
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "externalIds": {
+      "type": "object",
+      "description": "Explicit, unambiguous keys into reference databases, enough to fetch the person's texts and images again.",
+      "additionalProperties": false,
+      "properties": {
+        "tmdbPerson": { "type": "string", "pattern": "^[0-9]+$" },
+        "imdb": { "type": "string", "pattern": "^nm[0-9]+$", "description": "A person id, which starts 'nm'; a title id ('tt…') is not one." },
+        "tvdb": { "type": "string", "pattern": "^[0-9]+$" },
+        "wikidata": { "type": "string", "pattern": "^Q[0-9]+$" }
+      }
+    },
+    "images": {
+      "type": "array",
+      "description": "Every image file in this folder that the projection uses, beside person.json. An image a later projection stops naming is left to be swept (library-v2-sweep.py). At most one portrait is primary: the one a person page shows.",
+      "items": {
+        "$ref": "defs.schema.json#/$defs/image",
+        "properties": {
+          "kind": { "enum": ["profile"], "description": "'profile': a portrait of the person." }
+        },
+        "not": { "required": ["season"] }
+      }
+    },
+    "curation": { "$ref": "defs.schema.json#/$defs/curation" },
+    "fieldOrigins": { "$ref": "defs.schema.json#/$defs/fieldOrigins" }
+  }
+}

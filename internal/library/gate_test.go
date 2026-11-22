@@ -48,7 +48,7 @@ func must2(v any, _ bool) any { return v }
 // sources' source.json minus its package.json's.
 func TestGateOfReadsTheRecords(t *testing.T) {
 	item := t.TempDir()
-	librarytest.WriteSource(t, SourceDir(item, "s1"), map[string]any{"essence": stated(map[string]any{
+	writeRecorded(t, SourceDir(item, "s1"), map[string]any{"essence": stated(map[string]any{
 		"surround": true, "maxAudioChannels": 6, "subtitleLanguages": []string{"de", "en"}}), "streams": filmStreams()},
 		statedProbe(nil))
 	librarytest.WriteVersion(t, VersionDir(item, "v1"), librarytest.Version{VersionID: "v1", PackageID: "p1",
@@ -74,7 +74,7 @@ func pgsOriginal(n int) (map[string]any, []any) {
 	essence := map[string]any{"surround": true, "maxAudioChannels": 6, "audioLanguages": []string{"en"},
 		"subtitleTracks": n, "commentarySubtitles": 0, "imageSubtitles": true, "styledSubtitles": false,
 		"subtitleLanguages": []string{"de", "en", "fr"}, "sdhSubtitleLanguages": []string{}, "forcedSubtitleLanguages": []string{}}
-	streams := []any{map[string]any{"index": 0, "type": "video"}, map[string]any{"index": 1, "type": "audio", "channels": 6}}
+	streams := []any{map[string]any{"index": 0, "type": "video", "codec": "h264", "fieldOrder": "progressive"}, map[string]any{"index": 1, "type": "audio", "channels": 6}}
 	for i := range n {
 		streams = append(streams, map[string]any{"index": 2 + i, "type": "subtitle", "codec": "hdmv_pgs_subtitle",
 			"form": "image", "language": []string{"de", "en", "fr"}[i%3]})
@@ -194,7 +194,7 @@ func TestTheGateDoesNotLetGoSubtitlesTheRecordsLeaveUnknown(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			item := t.TempDir()
-			librarytest.WriteSource(t, SourceDir(item, "s1"), c.source, statedProbe(nil))
+			writeRecorded(t, SourceDir(item, "s1"), c.source, statedProbe(nil))
 			librarytest.WriteVersion(t, VersionDir(item, "v1"), librarytest.Version{VersionID: "v1", PackageID: "p1",
 				SourceIDs: []string{"s1"}, CreatedAt: "2026-10-06T09:00:00Z", Files: pgsFiles(12), Package: c.pkg})
 			got, err := GateOf(item, "v1", "s1")
@@ -258,12 +258,13 @@ func TestTheGateOfSubtitlesTheRecordsTell(t *testing.T) {
 			item := t.TempDir()
 			source := maps.Clone(c.source)
 			source["essence"] = stated(source["essence"].(map[string]any))
-			librarytest.WriteSource(t, SourceDir(item, "s1"), source, statedProbe(nil))
+			writeRecorded(t, SourceDir(item, "s1"), source, statedProbe(nil))
 			librarytest.WriteVersion(t, VersionDir(item, "v1"), librarytest.Version{VersionID: "v1", PackageID: "p1",
 				SourceIDs: []string{"s1"}, CreatedAt: "2026-10-06T09:00:00Z", Files: pgsFiles(12), Package: c.pkg})
 			got, err := GateOf(item, "v1", "s1")
 			if err != nil || strings.Join(got, " ") != c.gate {
-				t.Errorf("the gate: %v, %v\nwant %s", got, err, c.gate)
+				g, _ := ReadGate(item, "v1", "s1")
+				t.Errorf("the gate: %v, %v\nwant %s (%s)", got, err, c.gate, g.Scan)
 			}
 		})
 	}
@@ -289,7 +290,8 @@ func TestTheGateHoldsAnOriginalTrackByTrack(t *testing.T) {
 		return map[string]any{"index": i, "type": "subtitle", "codec": "subrip", "language": lang, "purpose": purpose}
 	}
 	video := func(format string) map[string]any {
-		return map[string]any{"index": 0, "type": "video", "hdr": map[string]any{"format": format}}
+		return map[string]any{"index": 0, "type": "video", "codec": "h264", "fieldOrder": "progressive",
+			"hdr": map[string]any{"format": format}}
 	}
 	// st, its field order stated progressive: a master of another file
 	// says nothing of this original's fields, its record does
@@ -472,7 +474,7 @@ func TestTheGateHoldsAnOriginalTrackByTrack(t *testing.T) {
 			item := t.TempDir()
 			var ids []string
 			for _, src := range c.sources {
-				librarytest.WriteSource(t, SourceDir(item, src.id), map[string]any{"essence": stated(src.essence),
+				writeRecorded(t, SourceDir(item, src.id), map[string]any{"essence": stated(src.essence),
 					"streams": src.streams}, statedProbe(nil))
 				ids = append(ids, src.id)
 			}
@@ -516,7 +518,7 @@ func TestTheGateHoldsAnOriginalTrackByTrack(t *testing.T) {
 				return
 			}
 			if err != nil || strings.Join(got, " ") != c.gate {
-				t.Errorf("the gate: %v, %v; want %q", got, err, c.gate)
+				t.Errorf("the gate: %v, %v; want %q (%s)", got, err, c.gate, g.Scan)
 			}
 		})
 	}
@@ -528,7 +530,7 @@ func TestTheGateHoldsAnOriginalTrackByTrack(t *testing.T) {
 // were.
 func TestInterlacingIsKeptUntilTheListNamesIt(t *testing.T) {
 	item := t.TempDir()
-	librarytest.WriteSource(t, SourceDir(item, "s1"), map[string]any{"essence": stated(map[string]any{"interlaced": true,
+	writeRecorded(t, SourceDir(item, "s1"), map[string]any{"essence": stated(map[string]any{"interlaced": true,
 		"surround": true, "maxAudioChannels": 6, "subtitleLanguages": []string{"en"}}), "streams": filmStreams()}, nil)
 	librarytest.WriteVersion(t, VersionDir(item, "v1"), librarytest.Version{VersionID: "v1", PackageID: "p1",
 		SourceIDs: []string{"s1"}, CreatedAt: "2026-10-06T09:00:00Z", Package: packageRecord(map[string]any{
@@ -548,31 +550,73 @@ func TestInterlacingIsKeptUntilTheListNamesIt(t *testing.T) {
 	}
 }
 
-// An original whose record and probe state no field order, and that no
-// package's scan examined, counts as in fields as its group's policy says
-// (AbsentFieldOrder): for now every group's keeps it; a policy that lets a
-// group go lets those of it go the ordinary way, and keeps the others.
-func TestAnAbsentFieldOrderIsDecidedByItsGroupsPolicy(t *testing.T) {
-	recordOf := func(codec string) Doc {
-		d, err := DecodeDoc([]byte(`{"container": {"format": "matroska,webm"}, "streams": [{"index": 0, "type": "video",
-			"codec": "` + codec + `"}]}`))
+// The field order as the record logic reads it: as written, of the record's
+// picture and of its stored probe's film both, exactly progressive; one that
+// is missing is unknown, of any codec or container, and one in capitals or
+// spaced is another word: each keeps the original. A record that doesn't say
+// its picture is no fields (interlaced missing or null) keeps it too.
+func TestAFieldOrderIsReadAsWritten(t *testing.T) {
+	recordOf := func(codec, order, interlaced string) Doc {
+		o := ""
+		if order != "" {
+			o = `, "fieldOrder": ` + order
+		}
+		e := ""
+		if interlaced != "" {
+			e = `"essence": {"interlaced": ` + interlaced + `}, `
+		}
+		d, err := DecodeDoc([]byte(`{` + e + `"container": {"format": "matroska,webm"}, "streams": [{"index": 0,
+			"type": "video", "codec": "` + codec + `"` + o + `}]}`))
 		if err != nil {
 			t.Fatal(err)
 		}
 		return d
 	}
+	probeOf := func(order string) Doc {
+		o := ""
+		if order != "" {
+			o = `, "field_order": ` + order
+		}
+		return doc(t, `{"format": {"format_name": "matroska,webm"}, "streams": [{"index": 0, "codec_type": "video",
+			"codec_name": "h264"`+o+`}]}`)
+	}
 	dir := t.TempDir()
-	for _, codec := range []string{"h264", "mpeg2video"} {
-		if why, _ := inFields(dir, "", nil, []string{"s1"}, []Doc{recordOf(codec)}, nil, nil); why != absentFieldOrderWhy {
-			t.Errorf("%s, no field order, no scan: %q; want it kept", codec, why)
+	for _, c := range []struct {
+		name  string
+		rec   Doc
+		probe Doc
+		want  string // "" it goes
+	}{
+		{"h264, no field order", recordOf("h264", "", "false"), nil, "its record's field order is not stated"},
+		{"mpeg2video, no field order", recordOf("mpeg2video", "", "false"), nil, "its record's field order is not stated"},
+		{"progressive", recordOf("h264", `"progressive"`, "false"), nil, ""},
+		{"in capitals", recordOf("h264", `"Progressive"`, "false"), nil, "its record's field order is Progressive"},
+		{"spaced", recordOf("h264", `" progressive"`, "false"), nil, "its record's field order is  progressive"},
+		{"null", recordOf("h264", `null`, "false"), nil, "its record's field order is not stated"},
+		{"the probe's missing", recordOf("h264", `"progressive"`, "false"), probeOf(""), "its probe's field order is not stated"},
+		{"the probe's in capitals", recordOf("h264", `"progressive"`, "false"), probeOf(`"PROGRESSIVE"`),
+			"its probe's field order is PROGRESSIVE"},
+		{"both progressive", recordOf("h264", `"progressive"`, "false"), probeOf(`"progressive"`), ""},
+		{"interlaced missing", recordOf("h264", `"progressive"`, ""), nil,
+			"its record doesn't say its picture is no fields (interlaced)"},
+		{"interlaced null", recordOf("h264", `"progressive"`, "null"), nil,
+			"its record doesn't say its picture is no fields (interlaced)"},
+	} {
+		why, _ := inFields(dir, "", nil, []string{"s1"}, []Doc{c.rec}, []Doc{c.probe}, nil)
+		if why != c.want {
+			t.Errorf("%s: %q; want %q", c.name, why, c.want)
 		}
 	}
-	defer func(p func(FieldOrderGroup) bool) { AbsentFieldOrder = p }(AbsentFieldOrder)
-	AbsentFieldOrder = func(g FieldOrderGroup) bool { return !(g.Codec == "h264" && g.Container == "matroska,webm") }
-	if why, _ := inFields(dir, "", nil, []string{"s1"}, []Doc{recordOf("h264")}, nil, nil); why != "" {
-		t.Errorf("a group the policy lets go: %q", why)
+}
+
+// writeRecorded writes the source record rec as the record logic writes one,
+// with its container (a Matroska file of ten minutes) where rec gives none,
+// and the files files beside it.
+func writeRecorded(t *testing.T, dir string, rec map[string]any, files map[string]string) {
+	t.Helper()
+	out := maps.Clone(rec)
+	if _, ok := out["container"]; !ok {
+		out["container"] = map[string]any{"format": "matroska,webm", "durationMs": 600000}
 	}
-	if why, _ := inFields(dir, "", nil, []string{"s1"}, []Doc{recordOf("mpeg2video")}, nil, nil); why != absentFieldOrderWhy {
-		t.Errorf("a group the policy keeps: %q", why)
-	}
+	librarytest.WriteSource(t, dir, out, files)
 }

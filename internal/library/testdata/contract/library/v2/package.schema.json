@@ -1,0 +1,503 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zaentrum.github.io/schemas/library/v2/package.schema.json",
+  "title": "versions/<versionId>/package.json and extras/<extraId>/package.json — what the packager produced",
+  "description": "Written once by the packager, when the package completes, and never touched again. It sits next to the bytes it describes, so it can never end up describing a different package, and it is the record a rebuild reads to restore the playback rows: everything the v1 manifest's playback section carried is here, under the same names.\n\nAn extra's package (extras/<extraId>/, see extra.schema.json) is described by this same record, with two differences. Its checksums.sha256 lists extra.json, the extra's originals and every package file — an extra is written whole and no event deletes its original — and it carries no trailers: a trailer that is a file of its own is an extra of kind trailer.\n\nBecause it is written only on completion, there is no 'building' or 'failed' state to record — an unfinished package has no package.json and no .complete marker, and neither the database nor a rebuild will use it. A package that falls out of date later is not rewritten either: a new version folder holds the new package, and an events/…-package-superseded.json record says this one was replaced.\n\nThe records a rebuild trusts are covered by one chain, each link written after the one it covers:\n  .complete         written last; holds 'sha256:<hex>' of this file, and nothing else\n  package.json      this file; checksums.sha256 records the hash of the checksums file\n  checksums.sha256  version.json and every file of the package, sha256sum -c format\nso `sha256sum -c checksums.sha256` proves version.json and the package, the hash here proves the checksums file, and .complete proves this file. The checksums file cannot list .complete, this file or itself — each holds the hash of the next link down — and it does not list the originals, which are covered by their source records' fixity and may be deleted later. Nor does it list a subtitle attached to the version after the package completed, which lies in its subs/ beside the package's own, named by its bytes as subs/attached-<sha256>.<lang>[.forced][.sdh].vtt — <sha256> the hex sha256 of the file, <lang> its BCP 47 tag in lower case: it is no file of the package, this record neither counts nor names it and is never written again for it, so the chain holds with it beside the package, and its name is its check, as an image's is. How it was made and who attached it, no record holds: its row in the catalog does.\n\nPaths: renditions[].dir, subtitles[].path, subtitles[].hls, subtitles[].styled.path, fonts[].path, trickplay.vttPath, hls.master, trailers[].manifestPath and checksums.file are relative to the version or extra folder THIS record sits in. subtitles[].fromSidecar is the one path relative to the ITEM folder: it names the copy a source folder keeps of the sidecar the subtitle was made from.",
+  "type": "object",
+  "required": ["schema", "packageId", "createdAt", "packagedBy", "state", "role", "durationMs", "renditions", "fidelity", "essence", "checksums"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "zaentrum.library.package/2" },
+    "packageId": { "$ref": "defs.schema.json#/$defs/uuid" },
+    "createdAt": { "$ref": "defs.schema.json#/$defs/timestamp", "description": "When the package completed. This is the v1 playback field packagedAt under the name every v2 record uses." },
+    "packagedBy": { "type": "string", "description": "The v1 playback field packager." },
+    "state": {
+      "enum": ["complete", "stale"],
+      "description": "'complete': finished and playable, and the version folder carries its .complete marker, which names this file's hash. 'stale' exists only for a record migrated from a v1 manifest that already said the package was outdated; nothing writes it now, because a package that goes out of date gets a package-superseded event instead of a new state here."
+    },
+    "role": {
+      "enum": ["derived", "canonical"],
+      "description": "What this package was when it was written: 'derived' when an original was kept beside it in its folder, 'canonical' when the package is the only copy. It is not rewritten when the original is deleted later — a reader that sees an original-deleted event for this version treats the package as canonical from then on, and every loss below becomes permanent."
+    },
+
+    "durationMs": { "type": "integer", "minimum": 0, "description": "v1 playback field: duration of this package." },
+    "recipe": {
+      "type": "object",
+      "description": "How video, audio and subtitles were produced, so the same package can be made again.",
+      "additionalProperties": false,
+      "properties": {
+        "video": { "type": ["string", "null"] },
+        "audio": { "type": ["string", "null"] },
+        "subtitles": { "type": ["string", "null"] }
+      }
+    },
+
+    "renditions": {
+      "type": "object",
+      "description": "v1 playback field. More than one video entry is a quality ladder.",
+      "required": ["video", "audio"],
+      "additionalProperties": false,
+      "properties": {
+        "video": { "type": "array", "items": { "$ref": "#/$defs/videoRendition" } },
+        "audio": { "type": "array", "items": { "$ref": "#/$defs/audioRendition" }, "description": "One stereo rendition per audio track of the original the package carries, in the playlist's stereo group." },
+        "audioSurround": { "type": "array", "items": { "$ref": "#/$defs/audioRendition" }, "description": "The 5.1 companions of tracks the stereo renditions also carry, in an audio group of their own: the original's own surround stream, copied, or one encode of it. A track is listed once under audio whatever it has here, so a reader counts tracks there and channels in both." }
+      }
+    },
+    "subtitles": { "type": "array", "items": { "$ref": "#/$defs/subtitleRendition" }, "description": "v1 playback field." },
+    "fonts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fontFile" },
+      "minItems": 1,
+      "description": "The font files the original carried as attachments, each taken out of it as its bytes are, in the order of its streams: what a styled subtitle (subtitles[].styled) is drawn with. A player that draws styled subtitles loads them by the names a style or an override tag asks for; one that shows the WebVTT files needs none of them. Left out of a package that carries none."
+    },
+    "trickplay": { "oneOf": [{ "$ref": "#/$defs/trickplay" }, { "type": "null" }], "description": "v1 playback field." },
+    "hls": {
+      "type": "object",
+      "description": "How the package is laid out as HLS, as the packager wrote it: the master playlist a player opens, the length its media segments are cut to, the audio groups the master names — the stereo one and, with 5.1 companions, theirs — and the subtitle group, or null when the master names no subtitles.",
+      "required": ["master", "segmentSeconds", "audioGroups", "subtitleGroup"],
+      "additionalProperties": false,
+      "properties": {
+        "master": { "$ref": "defs.schema.json#/$defs/relPath" },
+        "segmentSeconds": { "type": "integer", "minimum": 1 },
+        "audioGroups": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "subtitleGroup": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "scan": {
+      "type": "object",
+      "description": "What the package's picture is as far as fields go, as the transcoder's contract says it and the packager's manifest keeps it (libv2_records.scan_block): what was done (done) and what the picture was found to be (found), in the words the transcoder says them in, and how it was judged and done, the examination's counts (idet) and what the read-through of the whole title found (verified). A word the record does not know is kept as it is. Left out where the manifest says nothing of it. Its essence carries done (scan). The deletion gate does not read done: no word of it lets an original in fields go. A scan keeps the original in fields unless its found is exactly progressive, its read-through (verified) is ok and complete with frames = packets - leading, and its done is progressive or none (libv2_records.scan_holds).",
+      "required": [
+        "found",
+        "done",
+        "judgedBy",
+        "fieldOrder",
+        "order",
+        "orderBy",
+        "frameRate",
+        "filter"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "found": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "What the picture was found to be: fields, film, telecine, mixed, progressive, unknown, field-pictures or unexamined, in the transcoder's words, or a word not known here, kept as it is; unknown where the manifest says what was done alone. Any word but progressive keeps the original by the deletion gate, as one in fields."
+        },
+        "done": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "What was done to the picture as far as fields go: inverse-telecine, progressive, deinterlaced-field, deinterlaced-frame, fields-kept, field-matched, fields-left, none or unexamined, or a word not known here, kept as it is; null where the manifest says what was found alone. Not read by the deletion gate."
+        },
+        "judgedBy": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What judged it: its pictures, its mark, its bitstream, or nothing read (failed)."
+        },
+        "fieldOrder": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The field order the source was marked with, as ffprobe says it."
+        },
+        "order": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The field order the filters took."
+        },
+        "orderBy": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What named that order."
+        },
+        "orderSeen": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether the examination saw that order."
+        },
+        "frameRate": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The package's frame rate, as ffprobe gives a rate: '50/1', '24000/1001'."
+        },
+        "filter": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The filters it took."
+        },
+        "idet": {
+          "type": "object",
+          "description": "The counts of the examination of a sample, as the transcoder writes them: as the frames are, after fieldmatch, the 3:2 blocks, and its windows by what each saw. Each is left out where it gives none, and the whole where no examination read a frame.",
+          "additionalProperties": false,
+          "properties": {
+            "frames": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tff": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "bff": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "progressive": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "undetermined": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "repeatedTop": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "repeatedBottom": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "matchedCombed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "matchedDetermined": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "matchedRun": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cadenceBlocks": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "otherBlocks": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "blindBlocks": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "windows": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "film": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "video": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "whole": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "unsure": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "detail": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        },
+        "verified": {
+          "type": "object",
+          "description": "What the read-through of the whole title found, left out where none ran: whether it bore the sample's word out (ok), whether it reached the end (complete), why not, what the sample said, and its counts.",
+          "required": [
+            "ok",
+            "complete",
+            "why",
+            "sampleDone",
+            "sampleFound"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "leading": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The stream's own leading pictures: the packets before its first keyframe in decode order, and the first group's packets timed before it, counted apart from frames not decoded. Complete is frames = packets - leading, no other slack; a read-through without leading, from before that rule, is never complete for the gate."
+            },
+            "packets": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The stream's packets the read-through counted."
+            },
+            "ok": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "complete": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "why": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sampleDone": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sampleFound": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "frames": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "chunksInFields": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "otherOrder": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "offCadence": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "repeats": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "matchedUnsure": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "combedOut": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "combedOutRun": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "droppedDistinct": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "uncertainCycles": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "seen": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "blindRun": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "trailers": { "type": "array", "items": { "$ref": "#/$defs/trailer" }, "description": "v1 playback field: trailers packaged into this folder. Trailers published elsewhere are listed by reference in metadata.json, and a trailer that is a local file of its own is an extra of kind trailer (extras/<extraId>/), not one of these." },
+
+    "sizeBytes": { "type": ["integer", "null"], "minimum": 0, "description": "Total size of the package's files: its rendition, subtitle, trickplay and trailer folders, not the records beside them, nor a subtitle attached to the version later." },
+    "peakBandwidthBps": { "type": ["integer", "null"], "minimum": 0, "description": "The highest BANDWIDTH in the package's master playlist, audio included: a peak, not an average. The rendition field bitrateBps is often 0." },
+
+    "fidelity": {
+      "type": "object",
+      "required": ["lossless", "losses"],
+      "additionalProperties": false,
+      "properties": {
+        "lossless": { "type": "boolean" },
+        "losses": {
+          "type": "array",
+          "description": "Every way the package is poorer than the original. Empty only when lossless.",
+          "items": {
+            "type": "object",
+            "required": ["kind", "detail"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "enum": ["audio-downmix", "audio-codec", "audio-dropped", "video-resolution", "video-bitdepth", "dynamic-range", "dolby-vision", "stereo3d", "subtitle-dropped", "subtitle-styling", "closed-captions-dropped", "attachments-dropped", "other"] },
+              "detail": { "type": "string" },
+              "sourceStreamIndex": { "type": ["integer", "null"] }
+            }
+          }
+        },
+        "droppedSourceStreams": { "type": "array", "items": { "type": "integer" } }
+      }
+    },
+    "essence": { "$ref": "defs.schema.json#/$defs/essence", "description": "What this package carries, in the same reduced terms as the source's, so the two can be compared. What the originals would cost to delete is not here but on the version, which can answer it whether or not anything has been packaged." },
+
+    "checksums": {
+      "type": "object",
+      "description": "A sha256sum-style file listing version.json and every file of the package — the rendition, subtitle, trickplay and trailer folders, never a subtitle attached to the version later (subs/attached-…), which is none — so a copy can be verified file by file; in an extra's folder, extra.json, the originals and every file of the package. It is written with the package, not later: once the original is gone the package is the truth, and this is its fixity. The one exception is a package a migration adopted with its checksums pending (pending), whose file is written once its files are hashed.",
+      "required": ["file", "algorithm", "files", "bytes"],
+      "oneOf": [{ "required": ["sha256"] }, { "required": ["pending"] }],
+      "additionalProperties": false,
+      "properties": {
+        "file": { "const": "checksums.sha256", "description": "In this version folder: lines of '<hex digest>  <path>', paths relative to this folder." },
+        "algorithm": { "const": "sha256" },
+        "sha256": { "$ref": "defs.schema.json#/$defs/sha256", "description": "Hash of the checksums file itself: the link from this record down to the files it lists." },
+        "pending": { "const": true, "description": "In place of sha256, while nothing has hashed the package's files yet: a package adopted from a store too large to read through in the time a migration had. No checksums file is written until every file is hashed; then this record is written again with sha256 in place of pending — its checksums the only thing that changes — and .complete names it. files and bytes say what the checksums file will list, counted without reading. A version whose checksums are pending is played as any other; its original is not deleted before they are filled." },
+        "files": { "type": "integer", "minimum": 0, "description": "How many files it lists, version.json included — or extra.json and the originals, in an extra's folder." },
+        "bytes": { "type": "integer", "minimum": 0, "description": "Their total size, the same files included." }
+      }
+    }
+  },
+
+  "$defs": {
+    "videoRendition": {
+      "type": "object",
+      "required": ["id", "dir", "codec", "width", "height", "bitrateBps", "hdr", "frameRate", "segments", "targetDuration"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "dir": { "$ref": "defs.schema.json#/$defs/relPath" },
+        "codec": { "type": "string" },
+        "width": { "type": "integer" },
+        "height": { "type": "integer" },
+        "bitrateBps": { "type": "integer" },
+        "hdr": { "type": "boolean" },
+        "frameRate": { "type": "string" },
+        "segments": { "type": "integer" },
+        "targetDuration": { "type": "integer" },
+        "dynamicRange": { "enum": ["sdr", "hdr10", "hdr10plus", "hlg", "dolby-vision", "unknown"] },
+        "sourceStreamIndex": { "type": ["integer", "null"], "description": "The original's stream this was made from." },
+        "peakBitrateBps": { "type": "integer", "minimum": 0, "description": "The highest bitrate of any segment of the rendition, where bitrateBps is the average." },
+        "videoRange": { "enum": ["SDR", "PQ", "HLG"], "description": "The VIDEO-RANGE the master playlist gives the rendition." },
+        "label": { "type": "string", "description": "The rung's name in the ladder, e.g. 'source', '1080p'." },
+        "encoder": { "type": "string", "description": "What made the rung: 'copy' when it is the original's own stream, otherwise the encoder." },
+        "hdr10Metadata": { "type": "boolean", "description": "True when the rendition's init segment carries the original's HDR10 static metadata — its mastering display colour volume, its content light level, or both (the sample entry's mdcv and clli boxes) — whatever its own bitstream carries; left out otherwise. Only a rendition in PQ carries it." },
+        "closedCaptions": { "type": "boolean", "description": "True when the rendition's own stream carries closed captions — CEA-608/708 in its SEI, as a window of its frames shows them; left out otherwise." },
+        "captionWindows": { "type": "array", "items": { "$ref": "defs.schema.json#/$defs/captionWindow" }, "description": "The windows the rendition was read in for closed captions, at the same presentation times as its source's (or, where its source keeps none, at the same fractions of the rendition's own presentation span), on the package's timeline: what its video shows, kept for a later day. The deletion gate does not use the package's captions: an original with closed captions, or with captions not known, is kept (ADR-0015)." },
+        "timestampOffset": { "type": "number", "description": "The seconds the package's presentation times run ahead of its original's: a picture at t in the original is at t + timestampOffset here, what puts its caption windows beside the original's. Left out where the packager did not measure it, and read as 0." }
+      }
+    },
+    "audioRendition": {
+      "type": "object",
+      "required": ["id", "dir", "codec", "language", "default", "channels", "bitrateBps", "segments", "purpose", "purposeFrom"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "dir": { "$ref": "defs.schema.json#/$defs/relPath" },
+        "codec": { "type": "string" },
+        "language": { "$ref": "defs.schema.json#/$defs/language" },
+        "title": { "type": "string" },
+        "default": { "type": "boolean", "description": "What the packager wrote into the playlist, so a reader sees the package as it is. Which track a viewer actually gets is behaviour and comes from the database." },
+        "channels": { "type": "integer" },
+        "bitrateBps": { "type": "integer" },
+        "segments": { "type": "integer" },
+        "visible": { "type": "boolean", "description": "As written into the playlist; see default." },
+        "sourceStreamIndex": { "type": ["integer", "null"] },
+        "sourceChannels": { "type": ["integer", "null"], "description": "Channels of the original track, e.g. 6 when a 5.1 track was downmixed to stereo." },
+        "purpose": { "$ref": "defs.schema.json#/$defs/audioPurpose" },
+        "purposeFrom": { "$ref": "defs.schema.json#/$defs/purposeFrom" },
+        "variant": { "type": ["string", "null"], "description": "Region or dialect, e.g. 'Castilian', 'Latin American'." },
+        "original": { "type": ["boolean", "null"], "description": "True when the file flagged the track as the work's original language; null when unknown." },
+        "group": { "type": "string", "minLength": 1, "description": "The HLS audio group the rendition is in, one hls.audioGroups names." },
+        "name": { "type": "string", "description": "The NAME the master playlist gives the rendition." }
+      }
+    },
+    "subtitleRendition": {
+      "type": "object",
+      "required": ["id", "path", "language", "format", "purpose", "purposeFrom"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "path": { "$ref": "defs.schema.json#/$defs/relPath" },
+        "language": { "$ref": "defs.schema.json#/$defs/language" },
+        "title": { "type": "string" },
+        "default": { "type": "boolean", "description": "As written into the playlist; see the audio rendition's default." },
+        "forced": { "type": "boolean", "description": "As written into the playlist. The content fact is purpose 'forced'." },
+        "format": { "type": "string" },
+        "visible": { "type": "boolean", "description": "As written into the playlist." },
+        "sourceStreamIndex": { "type": ["integer", "null"] },
+        "purpose": { "$ref": "defs.schema.json#/$defs/subtitlePurpose" },
+        "purposeFrom": { "$ref": "defs.schema.json#/$defs/purposeFrom" },
+        "variant": { "type": ["string", "null"], "description": "Region or script, e.g. 'Latin American', 'Simplified'." },
+        "name": { "type": "string", "description": "The NAME the master playlist gives the subtitle's HLS rendition." },
+        "hls": { "$ref": "defs.schema.json#/$defs/relPath", "description": "The folder of the subtitle's HLS rendition, when it was segmented into one." },
+        "styled": {
+          "type": "object",
+          "required": ["path", "format"],
+          "additionalProperties": false,
+          "description": "The subtitle as it was styled, kept beside its own file, which path names and every player can show (a WebVTT copy of a styled subtitle): the ASS or SSA script its stream or the file beside the original held, its text and styles as they were — a stream copy, never an encode — in a file of its own in subs/. The fonts it is drawn with are the package's fonts. Left out of a subtitle that had no styles.",
+          "properties": {
+            "path": { "$ref": "defs.schema.json#/$defs/relPath" },
+            "format": { "const": "ass", "description": "An ASS (v4+) or SSA (v4) script, as libass reads either; its [Script Info] says which. UTF-8." }
+          }
+        },
+        "fromSidecar": { "$ref": "defs.schema.json#/$defs/relPath", "description": "The subtitle was made from a sidecar that sat beside the original, and this is the copy of it the source folder keeps: sources/<sourceId>/<name>, relative to the item folder — of a source this version was made from, and one its source.json lists among its sidecars. An extra has no source record, so no subtitle of an extra's package carries it." }
+      }
+    },
+    "fontFile": {
+      "type": "object",
+      "required": ["path", "format", "names"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "$ref": "defs.schema.json#/$defs/relPath", "description": "The file, in subs/: its bytes are the attachment's, as the original carried them." },
+        "format": { "enum": ["ttf", "otf", "ttc", "woff", "woff2", null], "description": "What its bytes are: TrueType, OpenType with CFF outlines, a collection of either, WOFF or WOFF2; null for bytes that are none of them, which the original called a font by its MIME type or its file name." },
+        "names": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "description": "The names a style or an override tag asks for the font by: its family, full and PostScript names, as its name table gives them. Empty when its bytes give none." },
+        "sourceStreamIndex": { "type": ["integer", "null"], "description": "The original's attachment stream it was taken from." }
+      }
+    },
+    "trickplay": {
+      "type": "object",
+      "required": ["vttPath", "spritePattern", "intervalSec", "thumbWidth", "thumbHeight", "gridCols", "gridRows"],
+      "additionalProperties": false,
+      "properties": {
+        "vttPath": { "$ref": "defs.schema.json#/$defs/relPath" },
+        "spritePattern": { "type": "string" },
+        "intervalSec": { "type": "integer", "minimum": 1 },
+        "thumbWidth": { "type": "integer" },
+        "thumbHeight": { "type": "integer" },
+        "gridCols": { "type": "integer" },
+        "gridRows": { "type": "integer" }
+      },
+      "description": "The VTT maps each interval to one cell of one sprite sheet."
+    },
+    "trailer": {
+      "type": "object",
+      "required": ["id", "source", "durationMs", "manifestPath"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "source": { "type": "string" },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "manifestPath": { "$ref": "defs.schema.json#/$defs/relPath" }
+      }
+    }
+  }
+}

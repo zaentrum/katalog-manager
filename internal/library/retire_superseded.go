@@ -478,7 +478,8 @@ func (r *Retirer) prepareSuperseded(ctx context.Context, p Paths, set Settings, 
 			}
 			reason := supersededReason(rt.superseded, master.ID) + "; " + rt.word
 			if _, err := WriteEvent(rt.itemDir, Event{ID: *s.RetireEventID, At: *s.RetireEventAt, By: rt.auth.By,
-				Kind: EventOriginalDeleted, VersionID: vid, SourceID: s.ID, Reason: &reason, Accepted: rt.accepted}); err != nil {
+				Kind: EventOriginalDeleted, VersionID: vid, SourceID: s.ID, Reason: &reason, Accepted: rt.accepted,
+				CaptionsRead: CaptionsReadOf(rt.read)}); err != nil {
 				return r.fail(ctx, rt, fmt.Sprintf("the event cannot be recorded: %v; the original is kept", err))
 			}
 		}
@@ -619,6 +620,7 @@ func (r *Retirer) heldForAnAdmin(ctx context.Context, set Settings, rt *retireme
 	}
 	losses := g.Lost
 	rt.lost = losses
+	rt.read = g.read
 	gives := orNothing(losses)
 	if beyond := g.Beyond(); len(beyond) > 0 {
 		// how many tracks of a language each has, that whoever asked for it to

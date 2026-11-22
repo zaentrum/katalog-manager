@@ -42,6 +42,10 @@ type Event struct {
 	ExtraID   string     // extra-removed
 	Reason    *string
 	Accepted  []string // original-deleted: what the deletion gave up; written also when empty
+	// CaptionsRead is, of an original-deleted event, the read of the
+	// original's frames the gate decided on, as the event carries it
+	// (CaptionsReadOf); nil: none.
+	CaptionsRead Doc
 }
 
 // Timestamp writes t as a record does: RFC 3339, UTC, to the second.
@@ -74,6 +78,9 @@ func (ev Event) Doc() Doc {
 			accepted = append(accepted, a)
 		}
 		d = append(d, Field{"accepted", accepted})
+		if ev.CaptionsRead != nil {
+			d = append(d, Field{"captionsRead", ev.CaptionsRead})
+		}
 	}
 	return d
 }

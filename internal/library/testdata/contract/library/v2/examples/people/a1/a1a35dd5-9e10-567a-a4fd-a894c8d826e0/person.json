@@ -1,0 +1,48 @@
+{
+  "schema": "zaentrum.library.person/2",
+  "personId": "a1a35dd5-9e10-567a-a4fd-a894c8d826e0",
+  "asOf": "2026-09-20T12:00:00Z",
+  "projectedBy": "catalog example",
+  "databaseUpdatedAt": "2026-09-20T11:55:00Z",
+  "name": "Ian Hubert",
+  "sortName": "Hubert, Ian",
+  "alsoKnownAs": [],
+  "birthDate": null,
+  "deathDate": null,
+  "birthPlace": null,
+  "knownForDepartment": null,
+  "biography": {
+    "en": "Director of the open movie Tears of Steel (2012)."
+  },
+  "externalIds": {},
+  "images": [
+    {
+      "kind": "profile",
+      "primary": true,
+      "file": "63c802090d4823091a3d4cb362b29dd7e552532b9c64c85f67dbf2ea5f42cad1.jpg",
+      "sha256": "sha256:63c802090d4823091a3d4cb362b29dd7e552532b9c64c85f67dbf2ea5f42cad1",
+      "contentType": "image/jpeg",
+      "sizeBytes": 156,
+      "width": 1,
+      "height": 1,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": "2026-09-20T12:00:00Z",
+      "origin": {
+        "source": "manual",
+        "fetchedAt": "2026-09-20T12:00:00Z"
+      }
+    }
+  ],
+  "curation": {
+    "metadataLocked": false,
+    "lockedFields": [],
+    "notes": null
+  },
+  "fieldOrigins": {
+    "name": "manual",
+    "sortName": "manual",
+    "biography": "manual",
+    "images": "manual"
+  }
+}

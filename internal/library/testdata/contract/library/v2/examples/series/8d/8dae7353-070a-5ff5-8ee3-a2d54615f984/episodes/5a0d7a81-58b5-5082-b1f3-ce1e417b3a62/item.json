@@ -1,0 +1,13 @@
+{
+  "schema": "zaentrum.library.item/2",
+  "itemId": "5a0d7a81-58b5-5082-b1f3-ce1e417b3a62",
+  "type": "episode",
+  "title": "Crosswind",
+  "externalIds": {},
+  "createdAt": "2026-09-18T09:00:00Z",
+  "createdBy": "ingest example",
+  "seriesId": "8dae7353-070a-5ff5-8ee3-a2d54615f984",
+  "seasonNumber": 1,
+  "episodeNumber": 2,
+  "episodeCode": "S01E02"
+}

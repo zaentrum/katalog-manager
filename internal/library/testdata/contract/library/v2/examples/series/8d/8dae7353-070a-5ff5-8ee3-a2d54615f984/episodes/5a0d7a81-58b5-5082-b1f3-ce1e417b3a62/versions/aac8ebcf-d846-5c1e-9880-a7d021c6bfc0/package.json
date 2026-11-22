@@ -1,0 +1,278 @@
+{
+  "schema": "zaentrum.library.package/2",
+  "packageId": "b1f0114d-4154-5ea5-97e7-82f96064112a",
+  "createdAt": "2026-09-19T13:00:00Z",
+  "packagedBy": "packager example",
+  "state": "complete",
+  "role": "canonical",
+  "durationMs": 2700000,
+  "recipe": {
+    "video": "hevc copy, and a 1440p encode",
+    "audio": "aac-lc 2ch 192k, and the 5.1 track copied",
+    "subtitles": "sidecar srt -> webvtt"
+  },
+  "renditions": {
+    "video": [
+      {
+        "id": "v0",
+        "dir": "hls/v0",
+        "codec": "hev1.1.6.L120.B0",
+        "width": 3840,
+        "height": 2160,
+        "bitrateBps": 8000000,
+        "hdr": true,
+        "frameRate": "24/1",
+        "segments": 10,
+        "targetDuration": 6,
+        "dynamicRange": "hdr10",
+        "sourceStreamIndex": 0,
+        "peakBitrateBps": 16000000,
+        "videoRange": "PQ",
+        "label": "source",
+        "encoder": "copy",
+        "hdr10Metadata": true,
+        "closedCaptions": true,
+        "captionWindows": [
+          {
+            "at": 0.0,
+            "start": 0.0,
+            "end": 2.0,
+            "frames": 48,
+            "captions": true
+          },
+          {
+            "at": 0.1,
+            "start": 270.0,
+            "end": 272.0,
+            "frames": 48,
+            "captions": true
+          },
+          {
+            "at": 0.3,
+            "start": 810.0,
+            "end": 812.0,
+            "frames": 48,
+            "captions": true
+          },
+          {
+            "at": 0.5,
+            "start": 1350.0,
+            "end": 1352.0,
+            "frames": 48,
+            "captions": true
+          },
+          {
+            "at": 0.7,
+            "start": 1890.0,
+            "end": 1892.0,
+            "frames": 48,
+            "captions": true
+          },
+          {
+            "at": 0.9,
+            "start": 2430.0,
+            "end": 2432.0,
+            "frames": 48,
+            "captions": true
+          }
+        ],
+        "timestampOffset": 0.0
+      },
+      {
+        "id": "v1",
+        "dir": "hls/v1",
+        "codec": "hev1.1.6.L93.B0",
+        "width": 2560,
+        "height": 1440,
+        "bitrateBps": 3000000,
+        "hdr": true,
+        "frameRate": "24/1",
+        "segments": 10,
+        "targetDuration": 6,
+        "dynamicRange": "hdr10",
+        "sourceStreamIndex": 0,
+        "peakBitrateBps": 6000000,
+        "videoRange": "PQ",
+        "label": "1440p",
+        "encoder": "hevc_nvenc",
+        "hdr10Metadata": true,
+        "closedCaptions": true,
+        "captionWindows": [
+          {
+            "at": 0.0,
+            "start": 0.0,
+            "end": 2.0,
+            "frames": 48,
+            "captions": true
+          },
+          {
+            "at": 0.1,
+            "start": 270.0,
+            "end": 272.0,
+            "frames": 48,
+            "captions": true
+          },
+          {
+            "at": 0.3,
+            "start": 810.0,
+            "end": 812.0,
+            "frames": 48,
+            "captions": true
+          },
+          {
+            "at": 0.5,
+            "start": 1350.0,
+            "end": 1352.0,
+            "frames": 48,
+            "captions": true
+          },
+          {
+            "at": 0.7,
+            "start": 1890.0,
+            "end": 1892.0,
+            "frames": 48,
+            "captions": true
+          },
+          {
+            "at": 0.9,
+            "start": 2430.0,
+            "end": 2432.0,
+            "frames": 48,
+            "captions": true
+          }
+        ],
+        "timestampOffset": 0.0
+      }
+    ],
+    "audio": [
+      {
+        "id": "a0",
+        "dir": "hls/a0",
+        "codec": "mp4a.40.2",
+        "language": "eng",
+        "title": "",
+        "default": true,
+        "channels": 2,
+        "bitrateBps": 192000,
+        "segments": 15,
+        "visible": true,
+        "sourceStreamIndex": 1,
+        "sourceChannels": 6,
+        "purpose": "main",
+        "purposeFrom": "assumed",
+        "variant": null,
+        "original": true,
+        "group": "audio",
+        "name": "English"
+      }
+    ],
+    "audioSurround": [
+      {
+        "id": "a1",
+        "dir": "hls/a1",
+        "codec": "ec-3",
+        "language": "eng",
+        "title": "",
+        "default": true,
+        "channels": 6,
+        "bitrateBps": 640000,
+        "segments": 15,
+        "visible": true,
+        "sourceStreamIndex": 1,
+        "sourceChannels": 6,
+        "purpose": "main",
+        "purposeFrom": "assumed",
+        "variant": null,
+        "original": true,
+        "group": "audio-surround",
+        "name": "English 5.1"
+      }
+    ]
+  },
+  "subtitles": [
+    {
+      "id": "sub0",
+      "path": "subs/0.vtt",
+      "language": "ger",
+      "title": "Deutsch",
+      "default": false,
+      "forced": false,
+      "format": "webvtt",
+      "visible": true,
+      "purpose": "dialogue",
+      "purposeFrom": "assumed",
+      "variant": null,
+      "name": "Deutsch",
+      "hls": "hls/s0",
+      "fromSidecar": "sources/711a19f3-61aa-5d68-b4d3-7e9672694a15/subtitle-1.de.srt"
+    }
+  ],
+  "trickplay": {
+    "vttPath": "trickplay/thumbnails.vtt",
+    "spritePattern": "trickplay/sprite-%04d.jpg",
+    "intervalSec": 10,
+    "thumbWidth": 320,
+    "thumbHeight": 180,
+    "gridCols": 10,
+    "gridRows": 10
+  },
+  "hls": {
+    "master": "hls/master.m3u8",
+    "segmentSeconds": 6,
+    "audioGroups": [
+      "audio",
+      "audio-surround"
+    ],
+    "subtitleGroup": "subs"
+  },
+  "trailers": [],
+  "sizeBytes": 2700000000,
+  "peakBandwidthBps": 8192000,
+  "fidelity": {
+    "lossless": false,
+    "losses": [
+      {
+        "kind": "audio-codec",
+        "detail": "eac3 -> aac/eac3",
+        "sourceStreamIndex": 1
+      }
+    ],
+    "droppedSourceStreams": []
+  },
+  "essence": {
+    "maxAudioChannels": 6,
+    "surround": true,
+    "losslessAudio": false,
+    "objectAudio": false,
+    "maxVideoHeight": 2160,
+    "videoBitDepth": 10,
+    "hdr10Metadata": true,
+    "dolbyVision": false,
+    "stereo3d": false,
+    "interlaced": false,
+    "audioLanguages": [
+      "en"
+    ],
+    "subtitleLanguages": [
+      "de"
+    ],
+    "subtitleTracks": 1,
+    "imageSubtitles": false,
+    "styledSubtitles": false,
+    "fonts": false,
+    "chapters": false,
+    "commentaryTracks": 0,
+    "commentarySubtitles": 0,
+    "audioDescriptionTracks": 0,
+    "sdhSubtitleLanguages": [],
+    "forcedSubtitleLanguages": [],
+    "closedCaptions": true
+  },
+  "checksums": {
+    "file": "checksums.sha256",
+    "algorithm": "sha256",
+    "sha256": "sha256:4243f9b2f47edb481f23d24cddf186c744fb86f15175fd0e5fb82d537252c83e",
+    "files": 12,
+    "bytes": 19834
+  }
+}

@@ -304,19 +304,15 @@ func TestARecordsPictureIsItsFirstVideoStreamNotMarked(t *testing.T) {
 }
 
 // A stored probe that gives no film - no video stream that is no cover -
-// keeps the original for both, whatever the policy for an absent field
-// order says: no plan, and its fields can't be told.
+// keeps the original for both: no plan, and its fields can't be told (its
+// record, of no picture, states no field order of one).
 func TestAProbeOfNoFilmKeepsBoth(t *testing.T) {
-	was := AbsentFieldOrder
-	AbsentFieldOrder = func(FieldOrderGroup) bool { return false }
-	defer func() { AbsentFieldOrder = was }()
 	d := t.TempDir()
 	sourceRecord(t, d, "a", "matroska,webm", []any{map[string]any{"index": 0, "type": "audio", "codec": "aac"}},
 		`{"streams": [{"index": 0, "codec_type": "audio", "codec_name": "aac"}]}`)
 	packageOf(t, d, "v-a", verifiedProgressive(), "a")
 	g, err := ReadGateWith(d, "v-a", read(600, every()...), "a")
-	if err != nil || !strings.HasPrefix(g.Scan, FieldsKept+": its stored probe can't be read: it lists no picture") ||
-		g.Unknown == "" {
+	if err != nil || !strings.HasPrefix(g.Scan, FieldsKept+": its record lists no picture") || g.Unknown == "" {
 		t.Errorf("a probe of no film: %+v, %v; want both kept", g, err)
 	}
 }
@@ -331,7 +327,8 @@ func TestAProbeOfNoFilmKeepsBoth(t *testing.T) {
 // its read-through says nothing).
 func TestAScansOwnCountsThatSayFieldsHold(t *testing.T) {
 	scan := func(verified, idet string) Doc {
-		s := `"found": "progressive", "done": "none", "verified": {"ok": true, "complete": true` + verified + `}`
+		s := `"found": "progressive", "done": "none", "verified": {"ok": true, "complete": true, "frames": 10, ` +
+			`"packets": 10, "leading": 0` + verified + `}`
 		if idet != "" {
 			s += `, "idet": ` + idet
 		}
@@ -362,14 +359,11 @@ func TestAScansOwnCountsThatSayFieldsHold(t *testing.T) {
 		if got := scanHolds(s) != ""; got != c.held {
 			t.Errorf("%s, its own version's: held %v (%q); want %v", c.name, got, scanHolds(s), c.held)
 		}
-		if got := scanFoundHolds(s) != ""; got != c.held {
-			t.Errorf("%s, an older version's: held %v (%q); want %v", c.name, got, scanFoundHolds(s), c.held)
-		}
 	}
-	// an older version's scan without its read-through: its chunks can't be
-	// counted, and it says nothing
-	if why := scanFoundHolds(doc(t, `{"scan": {"found": "progressive"}}`)); why != "" {
-		t.Errorf("an older version's scan of progressive without its read-through: %q; want nothing", why)
+	// an older version's scan without its read-through is held to the full
+	// rule too: it doesn't let the title's originals go
+	if why := scanHolds(doc(t, `{"scan": {"found": "progressive"}}`)); why == "" {
+		t.Error("a scan of progressive without its read-through: nothing; want it held")
 	}
 	// at the gate: the version's own scan, and an older version's
 	for _, c := range []struct {

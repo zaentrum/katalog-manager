@@ -1,0 +1,14 @@
+{
+  "schema": "zaentrum.library.event/2",
+  "eventId": "effb14a6-b309-52e7-be7b-8f2486807efd",
+  "at": "2026-09-19T13:05:00Z",
+  "by": "packager example",
+  "kind": "package-superseded",
+  "versionId": "e3449b0b-2299-5203-b687-df793dd98241",
+  "packageId": "cb33bb4f-8e83-517a-80aa-a6e677271b50",
+  "supersededBy": {
+    "versionId": "aac8ebcf-d846-5c1e-9880-a7d021c6bfc0",
+    "packageId": "b1f0114d-4154-5ea5-97e7-82f96064112a"
+  },
+  "reason": "re-packaged with a second rung"
+}

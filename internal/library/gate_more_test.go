@@ -174,11 +174,13 @@ func TestAProbeWithoutTheRecordsPictureHolds(t *testing.T) {
 // that is a link, an encoder word that is no encode's, a window whose
 // frames can't be read, a record's captions mark, a captionSignature that
 // is no boolean, and a probe without the record's picture keep the
-// original; an older version whose scan says nothing it found lets it go.
+// original; so does an older version's scan that doesn't let it go by the
+// full rule (every package of the title is held to it).
 func TestTheRetireJobKeepsWhatTheReviewFound(t *testing.T) {
 	window := func(js string) func(f *retireFixture) {
 		return func(f *retireFixture) {
-			storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_sourcecaptions SET captionwindows = $2::jsonb
+			storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_sourcecaptions SET captionwindows = $2::jsonb,
+				readreport = NULL
 				WHERE source_id = $1`, rtSource, strings.Replace(noCaptionsWindows, `{"at": 0.3, "start": 180, "end": 181.88, `+
 				`"frames": 48, "captions": false, "interlacedFrames": 0, "repeatFrames": 0}`, js, 1))
 		}
@@ -234,8 +236,11 @@ func TestTheRetireJobKeepsWhatTheReviewFound(t *testing.T) {
 			rec["streams"].([]any)[0].(map[string]any)["captionSignature"] = "false"
 		}), "no boolean"},
 
-		{"an older version's scan of found progressive, unverified", older(map[string]any{"found": NothingFound}), ""},
-		{"an older version's scan of null", older(nil), ""},
+		// every package of the title is held to the full scan rule, an older
+		// version's too
+		{"an older version's scan of found progressive, unverified", older(map[string]any{"found": NothingFound}),
+			"says nothing of what was done"},
+		{"an older version's scan of null", older(nil), "is no object"},
 		{"an older version's scan of found fields", older(map[string]any{"found": "fields"}), "found fields"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -277,7 +282,8 @@ func TestTheGateTakesACleanReadOfItsOwnRecordAlone(t *testing.T) {
 		WHERE id = $1`, rtSource)
 	f.keptFor(t, "a clean read of the record before", "or a read that found nothing is of another record of it")
 	g := newRetireFixtureOf(t, sameEssence, sameEssence)
-	storetest.Exec(t, g.st, `UPDATE com_nalet_katalog_sourcecaptions SET captions = true, captionwindows = $2::jsonb
+	storetest.Exec(t, g.st, `UPDATE com_nalet_katalog_sourcecaptions SET captions = true, captionwindows = $2::jsonb,
+		readreport = NULL
 		WHERE source_id = $1`, rtSource, strings.Replace(noCaptionsWindows, `"at": 0.5, "start": 300, "end": 301.88, `+
 		`"frames": 48, "captions": false`, `"at": 0.5, "start": 300, "end": 301.88, "frames": 48, "captions": true`, 1))
 	storetest.Exec(t, g.st, `UPDATE com_nalet_katalog_itemsources SET recordedat = recordedat + interval '1 second'

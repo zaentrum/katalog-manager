@@ -620,6 +620,9 @@ type retirement struct {
 	superseded string
 	lost       []string
 	word       string
+	// read is the catalog's read of the original the gate let it go on,
+	// which its event carries (captionsRead)
+	read *CaptionsRead
 	// noRecord says a superseded original is held for want of a record, and
 	// unknown one whose records can't tell what its master carries of it.
 	noRecord, unknown bool
@@ -1001,7 +1004,8 @@ func (r *Retirer) prepare(ctx context.Context, p Paths, set Settings, now time.T
 	}
 	reason := rt.auth.Reason
 	if _, err := WriteEvent(rt.itemDir, Event{ID: *s.RetireEventID, At: *s.RetireEventAt, By: rt.auth.By,
-		Kind: EventOriginalDeleted, VersionID: rt.ver.ID, SourceID: s.ID, Reason: &reason, Accepted: rt.accepted}); err != nil {
+		Kind: EventOriginalDeleted, VersionID: rt.ver.ID, SourceID: s.ID, Reason: &reason, Accepted: rt.accepted,
+		CaptionsRead: CaptionsReadOf(g.read)}); err != nil {
 		return r.fail(ctx, rt, fmt.Sprintf("the event cannot be recorded: %v; the original is kept", err))
 	}
 	rt.by = rt.auth.By

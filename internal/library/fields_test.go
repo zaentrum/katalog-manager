@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,7 +22,8 @@ func sourceRecord(t *testing.T, itemDir, sid, container string, streams []any, p
 		"streams": streams}
 	librarytest.WriteSource(t, SourceDir(itemDir, sid), rec, nil)
 	if probe != "" {
-		if err := os.WriteFile(filepath.Join(SourceDir(itemDir, sid), ProbeFile), []byte(probe), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(SourceDir(itemDir, sid), ProbeFile), []byte(withFormat(t, probe, container)),
+			0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -51,20 +53,19 @@ var noFieldOrder = []any{map[string]any{"index": 0, "type": "video", "codec": "m
 // noFieldOrderProbe is its stored probe, which states none either.
 const noFieldOrderProbe = `{"streams": [{"index": 0, "codec_type": "video", "codec_name": "mpeg4", "height": 576}]}`
 
-// A field order nothing states keeps the original as its group's policy
-// says (for now every group's), whatever a package's scan says: one that
-// found it progressive lets it go no more than none does. Only an
-// examination of the original itself would, which the catalog reads none of
-// yet.
+// A field order nothing states is unknown, as the record logic reads it,
+// and keeps the original whatever a package's scan says: one that found it
+// progressive lets it go no more than none does.
 func TestAFieldOrderNothingStatesKeepsWhateverAScanSays(t *testing.T) {
 	d := t.TempDir()
 	rec := sourceRecord(t, d, "a", "avi", noFieldOrder, noFieldOrderProbe)
 	packageOf(t, d, "v-a", nil, "a")
-	if why, _ := inFields(d, "", nil, []string{"a"}, []Doc{rec}, nil, nil); why != absentFieldOrderWhy {
+	const want = "its record's field order is not stated"
+	if why, _ := inFields(d, "", nil, []string{"a"}, []Doc{rec}, nil, nil); why != want {
 		t.Errorf("an absent field order with no scan: %q; want it kept", why)
 	}
 	packageOf(t, d, "v-b", verifiedProgressive(), "a")
-	if why, _ := inFields(d, "", nil, []string{"a"}, []Doc{rec}, nil, nil); why != absentFieldOrderWhy {
+	if why, _ := inFields(d, "", nil, []string{"a"}, []Doc{rec}, nil, nil); why != want {
 		t.Errorf("an absent field order its own package's scan found progressive: %q; want it kept", why)
 	}
 }
@@ -147,21 +148,6 @@ func TestAnotherVideoStreamStatesNothingOfThePicture(t *testing.T) {
 	packageOf(t, d, "v-a", verifiedProgressive(), "a")
 	if why, _ := inFields(d, "", nil, []string{"a"}, []Doc{rec}, nil, nil); !strings.Contains(why, "2 picture streams") {
 		t.Errorf("a second video stream: %q; want it kept", why)
-	}
-}
-
-// The policy's group is the picture's codec and the record's container
-// (container.format).
-func TestTheGroupIsThePicturesCodecAndTheRecordsContainer(t *testing.T) {
-	d := t.TempDir()
-	rec := sourceRecord(t, d, "a", "avi", noFieldOrder, noFieldOrderProbe)
-	packageOf(t, d, "v-a", nil, "a")
-	var seen []FieldOrderGroup
-	defer func(p func(FieldOrderGroup) bool) { AbsentFieldOrder = p }(AbsentFieldOrder)
-	AbsentFieldOrder = func(g FieldOrderGroup) bool { seen = append(seen, g); return true }
-	inFields(d, "", nil, []string{"a"}, []Doc{rec}, nil, nil)
-	if len(seen) != 1 || seen[0] != (FieldOrderGroup{Codec: "mpeg4", Container: "avi"}) {
-		t.Errorf("the group of an AVI's MPEG-4 picture: %+v; want {mpeg4 avi}", seen)
 	}
 }
 
@@ -308,10 +294,13 @@ func TestTheClosingRuleKeepsWhatIsOffItsLists(t *testing.T) {
 			"height": 486, "fieldOrder": "progressive"}`, "", nil, "picture:vbi-lines"},
 		{"the probe's codec", "matroska,webm", onList, `{"format": {"format_name": "matroska,webm"}, "streams": [{"index": 0,
 			"codec_type": "video", "codec_name": "vp9", "field_order": "progressive"}]}`, nil, "codec:vp9"},
+		// a timecode track the record lists with no codec: on the gate's
+		// list by the probe's tag, and off the record logic's, which reads the
+		// record's stream as it is written (stream:data:none) and holds
 		{"a timecode track", mp4, onList + `, {"index": 1, "type": "data", "codec": null}`,
 			`{"format": {"format_name": "` + mp4 + `"}, "streams": [{"index": 0, "codec_type": "video",
 			"codec_name": "h264", "field_order": "progressive"}, {"index": 1, "codec_type": "data",
-			"codec_tag_string": "tmcd"}]}`, nil, ""},
+			"codec_tag_string": "tmcd"}]}`, nil, "contract:stream:data:none"},
 		{"a data stream of no probe", mp4, onList + `, {"index": 1, "type": "data", "codec": null}`,
 			"", nil, "stream:data:none"},
 		{"the probe's data stream", mp4, onList, `{"format": {"format_name": "` + mp4 + `"},
@@ -330,11 +319,13 @@ func TestTheClosingRuleKeepsWhatIsOffItsLists(t *testing.T) {
 			// one that goes on captions has a plan of its picture: its
 			// stored probe gives its start and frame rate
 			probe := c.probe
-			if c.off == "" {
+			contract, held := strings.CutPrefix(c.off, "contract:")
+			if c.off == "" || held {
 				probe = withPlan(t, probe)
 			}
 			if probe != "" {
-				if err := os.WriteFile(filepath.Join(SourceDir(d, "a"), ProbeFile), []byte(probe), 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(SourceDir(d, "a"), ProbeFile), []byte(withFormat(t, probe, c.container)),
+					0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -348,6 +339,13 @@ func TestTheClosingRuleKeepsWhatIsOffItsLists(t *testing.T) {
 					t.Fatal(err)
 				}
 				switch {
+				case held && facts.CaptionsNotAsked && (!slices.Contains(g.Lost, "interlaced") ||
+					!strings.HasSuffix(g.Scan, RecordLogicKeeps+": off the closed lists: "+contract)):
+					t.Errorf("captions not asked: %+v; want it in fields by the contract's gate", g)
+				case held && !facts.CaptionsNotAsked && g.Unknown != RecordLogicKeeps+" for its closed captions: off the "+
+					"closed lists: "+contract:
+					t.Errorf("captions asked: unknown %q; want it held by the contract's gate", g.Unknown)
+				case held:
 				case c.off == "" && (g.Unknown != "" || g.Captions != ""):
 					t.Errorf("captions asked %v: %+v; want it to go on captions", !facts.CaptionsNotAsked, g)
 				case c.off != "" && g.Unknown != want:
@@ -371,6 +369,26 @@ func mustJSON(t *testing.T, js string) any {
 // withPlan is the stored probe probe ("": one of an h264 picture, progressive)
 // with its first picture's start (0) and frame rate (24 a second) where it
 // gives none: one that gives the plan of its picture.
+// withFormat is the stored probe probe as ffprobe writes one: with its
+// format, of the container container, where it gives none (a probe written
+// as no object is left as it is).
+func withFormat(t *testing.T, probe, container string) string {
+	t.Helper()
+	var p map[string]any
+	if json.Unmarshal([]byte(probe), &p) != nil || p == nil {
+		return probe
+	}
+	if _, has := p["format"]; has {
+		return probe
+	}
+	p["format"] = map[string]any{"format_name": container}
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
 func withPlan(t *testing.T, probe string) string {
 	t.Helper()
 	if probe == "" {

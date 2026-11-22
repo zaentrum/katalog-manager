@@ -16,7 +16,7 @@ func filmProbe(codec, order, disp string) string {
 	if disp != "" {
 		d = `, "disposition": {` + disp + `}`
 	}
-	return `{"streams": [{"index": 0, "codec_type": "video", "codec_name": "` + codec + `", "field_order": "` + order +
+	return `{"format": {"format_name": "matroska,webm"}, "streams": [{"index": 0, "codec_type": "video", "codec_name": "` + codec + `", "field_order": "` + order +
 		`", "start_time": "0.000000", "avg_frame_rate": "24/1"` + d + `}]}`
 }
 
@@ -44,7 +44,7 @@ func TestTheRecordsPictureIsTheProbesFilm(t *testing.T) {
 		{"the probe's film hevc, the record's picture h264", []any{video(0, "h264", "progressive", false)},
 			filmProbe("hevc", "progressive", ""), CaptionsUnscanned, ""},
 		{"a record of no video stream", []any{map[string]any{"index": 1, "type": "audio", "codec": "aac"}},
-			filmProbe("h264", "progressive", ""), CaptionsUnknown + ": " + PictureNotFilm, FieldsKept + ": " + PictureNotFilm},
+			filmProbe("h264", "progressive", ""), CaptionsUnknown + ": " + PictureNotFilm, FieldsKept + ": its record lists no picture"},
 		{"a record picture marked an attached picture", []any{video(0, "h264", "progressive", true)},
 			filmProbe("h264", "progressive", ""), CaptionsUnknown + ": " + PictureNotFilm, FieldsKept + ": " + PictureNotFilm},
 		{"a record picture of another index", []any{video(1, "h264", "progressive", false)},
@@ -161,6 +161,7 @@ func TestTheRetireJobKeepsWhatTheSecondLookRuled(t *testing.T) {
 		f := newRetireFixtureOf(t, sameEssence, sameEssence)
 		f.rewriteRecord(t, func(rec map[string]any) { rec["container"].(map[string]any)["durationMs"] = 40000 }, nil)
 		storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_sourcecaptions SET captionwindows = $2::jsonb, duration = 40,
+			readreport = NULL,
 			readspanstart = 0, readspanend = 40 WHERE source_id = $1`, rtSource, `[{"at": 0, "start": 0, "end": 39.958,
 			"frames": 900, "packets": 900, "leading": 0, "captions": false, "interlacedFrames": 0, "repeatFrames": 0,
 			"whole": true}]`)

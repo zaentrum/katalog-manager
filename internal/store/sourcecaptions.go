@@ -76,8 +76,9 @@ func (s *Store) EnsureCaptionsWaiting(ctx context.Context) error {
 }
 
 // CaptionsSpanIndex is the index db/migrations/060_captions_read_span.sql
-// creates with its columns, which says it is in place.
-const CaptionsSpanIndex = "idx_sourcecaptions_unscanned"
+// creates last, with its columns (readreport the last of them), which says
+// it is in place.
+const CaptionsSpanIndex = "idx_sourcecaptions_report"
 
 // CaptionsSpanReady reports whether migration 060 is in place.
 func (s *Store) CaptionsSpanReady(ctx context.Context) (bool, error) {

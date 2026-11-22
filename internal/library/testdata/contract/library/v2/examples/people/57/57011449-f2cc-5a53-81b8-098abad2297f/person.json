@@ -1,0 +1,49 @@
+{
+  "schema": "zaentrum.library.person/2",
+  "personId": "57011449-f2cc-5a53-81b8-098abad2297f",
+  "asOf": "2026-09-20T12:00:00Z",
+  "projectedBy": "catalog example",
+  "databaseUpdatedAt": "2026-09-20T11:55:00Z",
+  "name": "Noor Example",
+  "sortName": "Example, Noor",
+  "alsoKnownAs": [],
+  "birthDate": null,
+  "deathDate": null,
+  "birthPlace": null,
+  "knownForDepartment": "Writing",
+  "biography": {
+    "en": "A fictional writer who created Example Show and wrote three of its episodes."
+  },
+  "externalIds": {},
+  "images": [
+    {
+      "kind": "profile",
+      "primary": true,
+      "file": "d82ee1ee937f5cdc2c09ae1ba7f4ddf3f5d87f13f89f8fcc9185fa1610101b62.jpg",
+      "sha256": "sha256:d82ee1ee937f5cdc2c09ae1ba7f4ddf3f5d87f13f89f8fcc9185fa1610101b62",
+      "contentType": "image/jpeg",
+      "sizeBytes": 158,
+      "width": 1,
+      "height": 1,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": "2026-09-20T12:00:00Z",
+      "origin": {
+        "source": "manual",
+        "fetchedAt": "2026-09-20T12:00:00Z"
+      }
+    }
+  ],
+  "curation": {
+    "metadataLocked": false,
+    "lockedFields": [],
+    "notes": null
+  },
+  "fieldOrigins": {
+    "name": "manual",
+    "sortName": "manual",
+    "knownForDepartment": "manual",
+    "biography": "manual",
+    "images": "manual"
+  }
+}

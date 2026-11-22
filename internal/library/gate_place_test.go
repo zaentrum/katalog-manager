@@ -125,7 +125,8 @@ func TestTheRetireJobLaysWindowsByThePlansSlack(t *testing.T) {
 		`"repeatFrames": 0}`
 	moved := func(window string, gop *float64) func(f *retireFixture) {
 		return func(f *retireFixture) {
-			storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_sourcecaptions SET captionwindows = $2::jsonb, readgop = $3
+			storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_sourcecaptions SET captionwindows = $2::jsonb, readgop = $3,
+				readreport = NULL
 				WHERE source_id = $1`, rtSource, strings.Replace(noCaptionsWindows, fifty, window, 1), gop)
 		}
 	}

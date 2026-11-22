@@ -227,6 +227,22 @@ type FileReport struct {
 	OffList        []string `json:"offList"`
 	FFprobe        string   `json:"ffprobe"`
 	Error          string   `json:"error,omitempty"`
+	// raw is the report as the analyzer sent it, which the catalog keeps
+	// with a read (readreport) for the contract's deletion gate to read as
+	// the record logic does (library.RecordLogicHolds)
+	raw []byte
+}
+
+// UnmarshalJSON reads a report of the original, keeping its text as sent.
+func (f *FileReport) UnmarshalJSON(b []byte) error {
+	type plain FileReport
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*f = FileReport(p)
+	f.raw = append([]byte(nil), b...)
+	return nil
 }
 
 // SpanReport is the span of its picture a read says: the seconds of its
@@ -234,6 +250,15 @@ type FileReport struct {
 type SpanReport struct {
 	Start *float64 `json:"start"`
 	End   *float64 `json:"end"`
+}
+
+// reportText is a report's text to keep (readreport), nil of none.
+func reportText(b []byte) *string {
+	if b == nil {
+		return nil
+	}
+	t := string(b)
+	return &t
 }
 
 // spanEnd is the end (end true) or the start of the span s, nil of none.
@@ -296,6 +321,7 @@ type outcome struct {
 	offList   []byte
 	version   string
 	why       string
+	report    []byte // the report as sent (FileReport.raw)
 }
 
 // versionWord is the version alone of what ffprobe names: of its first
@@ -340,7 +366,7 @@ func (f *FileReport) check() (outcome, error) {
 		return outcome{}, &BadReport{fmt.Sprintf("%s: ffprobe %s is not %d.%d, the release the catalog takes reads of "+
 			"(the one tested)", what, v, FFprobeTested[0], FFprobeTested[1])}
 	}
-	o := outcome{version: clip(versionWord(v), 100)}
+	o := outcome{version: clip(versionWord(v), 100), report: f.raw}
 	if f.CaptionStreams != nil && *f.CaptionStreams < 0 {
 		return outcome{}, &BadReport{what + ": captionStreams is how many streams of closed captions it found, 0 or more"}
 	}
@@ -673,26 +699,27 @@ func Record(ctx context.Context, st *store.Store, sourceID string, r Report, now
 		_, err = tx.Exec(ctx, `UPDATE `+store.SourceCaptionsTable+` SET state = 'read', captionwindows = $2,
 			captions = $3, ffprobeversion = $4, framesdecoded = $5, duration = $6, reason = NULLIF($7, ''), readat = $8,
 			sourcesize = claimsize, sourceqh1 = claimqh1, sourcerecordedat = claimrecordedat, captionstreams = $9,
-			offlist = $10, finding = NULL, readspanstart = $11, readspanend = $12, readgop = $13
+			offlist = $10, finding = NULL, readspanstart = $11, readspanend = $12, readgop = $13, readreport = $14
 			WHERE source_id = $1`, sourceID, o.windows, o.captions, o.version, max(o.frames, 1), o.duration, o.why, now,
-			o.streams, o.offList, spanEnd(o.span, false), spanEnd(o.span, true), o.gop)
+			o.streams, o.offList, spanEnd(o.span, false), spanEnd(o.span, true), o.gop, reportText(o.report))
 		// (a read kept as found decoded a frame at least, the one that
 		// found what it found)
 	case takeFind:
 		_, err = tx.Exec(ctx, `UPDATE `+store.SourceCaptionsTable+` SET state = 'failed', captionwindows = $2,
 			captions = NULL, ffprobeversion = $3, framesdecoded = $4, duration = $5, reason = $6, readat = $7,
 			captionstreams = $8, offlist = $9, sourcesize = claimsize, sourceqh1 = claimqh1,
-			sourcerecordedat = claimrecordedat, finding = $10 WHERE source_id = $1`,
+			sourcerecordedat = claimrecordedat, finding = $10, readreport = NULL WHERE source_id = $1`,
 			sourceID, o.windows, o.version, o.frames, o.duration, o.why, now, o.streams, o.offList, finding)
 	case takeFinds:
 		_, err = tx.Exec(ctx, `UPDATE `+store.SourceCaptionsTable+` SET state = 'failed', captionwindows = NULL,
 			captions = NULL, ffprobeversion = $2, framesdecoded = $3, duration = NULL, reason = $4,
-			captionstreams = $5, offlist = $6, sourcesize = claimsize, sourceqh1 = claimqh1, finding = NULL
-			WHERE source_id = $1`, sourceID, o.version, o.frames, o.why, o.streams, o.offList)
+			captionstreams = $5, offlist = $6, sourcesize = claimsize, sourceqh1 = claimqh1, finding = NULL,
+			readreport = NULL WHERE source_id = $1`, sourceID, o.version, o.frames, o.why, o.streams, o.offList)
 	case takeFail:
 		_, err = tx.Exec(ctx, `UPDATE `+store.SourceCaptionsTable+` SET state = 'failed', captionwindows = NULL,
 			captions = NULL, ffprobeversion = $2, framesdecoded = $3, duration = NULL, reason = $4,
-			captionstreams = NULL, offlist = NULL, sourcesize = NULL, sourceqh1 = NULL, finding = NULL WHERE source_id = $1`,
+			captionstreams = NULL, offlist = NULL, sourcesize = NULL, sourceqh1 = NULL, finding = NULL, readreport = NULL
+			WHERE source_id = $1`,
 			sourceID, o.version, o.frames, o.why)
 	}
 	if err != nil {

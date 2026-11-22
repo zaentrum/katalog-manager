@@ -1,0 +1,142 @@
+{
+  "schema": "zaentrum.library.metadata/2",
+  "itemId": "8dae7353-070a-5ff5-8ee3-a2d54615f984",
+  "type": "series",
+  "asOf": "2026-09-20T12:00:00Z",
+  "projectedBy": "catalog example",
+  "databaseUpdatedAt": "2026-09-20T11:55:00Z",
+  "externalIds": {},
+  "titles": {
+    "primary": "Example Show",
+    "original": null,
+    "sort": "example show",
+    "qualifier": "US",
+    "localized": {
+      "en": {
+        "title": "Example Show",
+        "sortTitle": "example show",
+        "tagline": null,
+        "overview": "A fictional series used to illustrate the library layout."
+      }
+    }
+  },
+  "genres": [
+    "Drama"
+  ],
+  "tags": [],
+  "rating": null,
+  "contentRating": null,
+  "credits": [
+    {
+      "personId": "542ed02d-222b-501a-9456-a7c0a9945adb",
+      "name": "Mara Example",
+      "role": "actor",
+      "job": null,
+      "character": "Captain Example",
+      "order": 0,
+      "episodeCount": 8,
+      "tmdbPerson": null
+    },
+    {
+      "personId": "57011449-f2cc-5a53-81b8-098abad2297f",
+      "name": "Noor Example",
+      "role": "creator",
+      "job": null,
+      "character": null,
+      "order": 0,
+      "episodeCount": null,
+      "tmdbPerson": null
+    },
+    {
+      "personId": "57011449-f2cc-5a53-81b8-098abad2297f",
+      "name": "Noor Example",
+      "role": "writer",
+      "job": "Story, Teleplay",
+      "character": null,
+      "order": 0,
+      "episodeCount": 3,
+      "tmdbPerson": null
+    }
+  ],
+  "series": {
+    "status": "returning",
+    "firstAirDate": "2024-01-10",
+    "lastAirDate": "2024-03-06",
+    "network": null,
+    "seasons": [
+      {
+        "number": 1,
+        "tmdbSeason": null,
+        "name": "Season 1",
+        "overview": "The first season.",
+        "airDate": "2024-01-10",
+        "episodeCountReference": 8
+      }
+    ]
+  },
+  "library": {
+    "match": {
+      "status": "unmatched",
+      "decidedBy": "inferred",
+      "decidedAt": "2026-09-20T12:00:00Z",
+      "confidence": 0.2,
+      "evidence": [
+        {
+          "signal": "folder-name",
+          "value": "Example Show (US)"
+        }
+      ]
+    },
+    "defaultOrdering": "aired"
+  },
+  "images": [
+    {
+      "kind": "poster",
+      "primary": true,
+      "file": "47bfa9f38417346388389c24309057b6252f6326e742ba5d9eca8ff59f0fefe7.jpg",
+      "sha256": "sha256:47bfa9f38417346388389c24309057b6252f6326e742ba5d9eca8ff59f0fefe7",
+      "contentType": "image/jpeg",
+      "sizeBytes": 151,
+      "width": 1,
+      "height": 1,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": "2026-09-20T12:00:00Z",
+      "origin": {
+        "source": "manual",
+        "fetchedAt": "2026-09-20T12:00:00Z"
+      },
+      "season": null
+    },
+    {
+      "kind": "poster",
+      "primary": true,
+      "file": "5467670ed712a099d14cde1cdd7b82d167b27d42279384f33f8e1be089fe79c1.jpg",
+      "sha256": "sha256:5467670ed712a099d14cde1cdd7b82d167b27d42279384f33f8e1be089fe79c1",
+      "contentType": "image/jpeg",
+      "sizeBytes": 153,
+      "width": 1,
+      "height": 1,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": "2026-09-20T12:00:00Z",
+      "origin": {
+        "source": "manual",
+        "fetchedAt": "2026-09-20T12:00:00Z"
+      },
+      "season": 1
+    }
+  ],
+  "curation": {
+    "metadataLocked": false,
+    "lockedFields": [],
+    "notes": null
+  },
+  "fieldOrigins": {
+    "titles.primary": "manual",
+    "titles.qualifier": "filename",
+    "series": "manual",
+    "credits": "manual",
+    "images": "manual"
+  }
+}

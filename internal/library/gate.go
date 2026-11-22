@@ -239,8 +239,9 @@ type Gate struct {
 	// captionsUnknown is why the captions rule can't tell yet, "" when it
 	// can (OnlyCaptionsUnknown).
 	captionsUnknown string
-	sources         []Doc // the sources' records
-	pkg             Doc   // the package's record
+	sources         []Doc         // the sources' records
+	pkg             Doc           // the package's record
+	read            *CaptionsRead // the catalog's read the gate was asked with
 }
 
 // Dropped are the names of g.Lost the master spec drops by design
@@ -356,16 +357,11 @@ func ReadGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (
 		if err == nil {
 			if why := probeShape(probe); why != "" {
 				err = errors.New(why)
-			} else if list, _ := listOf(probe, "streams"); len(probeFilms(list)) == 0 {
-				// a probe that gives no film (film_of) gives no plan and no
-				// field order of one, whatever the policy for an absent field
-				// order says; one whose record lists a picture is of another
-				// file, or cut short
-				if len(filmsOf(rec, false, nil)) > 0 {
-					err = errors.New("it lists no picture, and its record lists one")
-				} else {
-					err = errors.New("it lists no picture (a video stream that is no cover): it gives no film")
-				}
+			} else if list, _ := listOf(probe, "streams"); len(filmsOf(rec, false, nil)) > 0 && len(probeFilms(list)) == 0 {
+				// a probe of another file, or one cut short: the picture its
+				// record lists is none of its streams (a record that lists no
+				// picture states no field order of one, which keeps it)
+				err = errors.New("it lists no picture, and its record lists one")
 			}
 		}
 		switch {
@@ -492,9 +488,85 @@ func ReadGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (
 	if off := offListOf(records, probes, f.offListSaid()); len(off) > 0 && unknown == "" && captions == "" {
 		unknown = offListWhy(off)
 	}
+	// a record's attachedPic mark that the cover rule doesn't bear out (or
+	// the other way): which stream is its picture can't be told
+	if why := coverMarkWhy(records, probes); why != "" && unknown == "" && captions == "" {
+		unknown = why
+	}
+	// the contract's deletion gate, beside the gate's own rules: what it
+	// keeps, the gate keeps (of closed captions only where the gate is asked
+	// of them)
+	held := recordLogicOf(itemDir, versionID, records, sourceIDs, pkg, f)
+	if why, ok := held["interlaced"]; ok && !slices.Contains(lost, "interlaced") {
+		lost = append(lost, "interlaced")
+		sort.Strings(lost)
+		if scan == "" {
+			scan = FieldsKept + ": " + RecordLogicKeeps + ": " + why
+		}
+	}
+	if why, ok := held["closedCaptions"]; ok && !f.CaptionsNotAsked && unknown == "" && captions == "" {
+		unknown = RecordLogicKeeps + " for its closed captions: " + why
+	}
 	return Gate{Lost: lost, Unknown: unknown, Labels: labels, Scan: scan, Captions: captions,
-		captionsUnknown: captionsUnknown, sources: records, pkg: pkg}, nil
+		captionsUnknown: captionsUnknown, sources: records, pkg: pkg, read: f.Captions}, nil
 }
+
+// recordLogicOf is what the contract's deletion gate (RecordLogicHolds)
+// keeps the originals of the sources sourceIDs of the version versionID of
+// the item folder itemDir for, each read as the schemas' tools read it: its
+// source record (records), its stored probe as it lies (none, or one that
+// can't be read: nil), the package records of every version of the title,
+// of other sources too (pkg the asked version's; nil of one that can't be
+// read), and, of a version made of one original, the catalog's read of it
+// (the report its read kept: none kept, or one that can't be read, is a read
+// that can't be read).
+func recordLogicOf(itemDir, versionID string, records []Doc, sourceIDs []string, pkg Doc, f GateFacts) map[string]string {
+	packages := []any{pkg}
+	entries, _ := os.ReadDir(filepath.Join(itemDir, "versions"))
+	for _, e := range entries {
+		p := filepath.Join(itemDir, "versions", e.Name(), PackageFile)
+		if e.Name() == versionID {
+			continue
+		}
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		if d, err := readRecordDoc(p); err == nil {
+			packages = append(packages, d)
+		} else {
+			packages = append(packages, nil)
+		}
+	}
+	var reads []any
+	if f.Captions != nil && len(sourceIDs) == 1 {
+		report := f.Captions.Report
+		if report == nil && reportOfRead != nil {
+			report = reportOfRead(f.Captions)
+		}
+		reads = []any{contractRead(report)}
+	}
+	held := map[string]string{}
+	for i, rec := range records {
+		var probe any
+		if i < len(sourceIDs) {
+			if d, err := readRecordDoc(filepath.Join(SourceDir(itemDir, sourceIDs[i]), ProbeFile)); err == nil {
+				probe = d
+			}
+		}
+		for k, why := range RecordLogicHolds(rec, probe, packages, pyGet(pkg, "essence"), reads) {
+			if _, has := held[k]; !has {
+				held[k] = why
+			}
+		}
+	}
+	return held
+}
+
+// reportOfRead writes a report of a read that has none (Report nil), for
+// tests that build a read by hand alone: nil in the service, where a read
+// the catalog keeps without its report is one the contract's gate can't
+// read, and holds.
+var reportOfRead func(*CaptionsRead) []byte
 
 // OnlyCaptionsUnknown reports whether all that keeps the original of g is
 // that a read of its frames hasn't told its closed captions (or its fields)
@@ -624,71 +696,64 @@ const NothingFound = "progressive"
 // JSON of the file, sources/<id>/ffprobe.json.
 const ProbeFile = "ffprobe.json"
 
-// FieldOrderGroup is a group of originals the policy for an absent field
-// order (AbsentFieldOrder) decides alike: by the codec of their picture
-// stream and their container (container.format), as their record says them
-// ("" when it doesn't).
-type FieldOrderGroup struct{ Codec, Container string }
-
-// AbsentFieldOrder says whether an original of the group g whose record and
-// stored probe state no field order for its picture counts as in fields. For
-// now every group does: an absent field order keeps the original, as an
-// unknown one does, whatever a package's scan says (no word of the
-// transcoder's releases an original: its record is informational). What may
-// let such originals go later is an examination of the whole original
-// itself, or a proof that its package copies it, which the catalog doesn't
-// read yet; a later decision lets a group go the ordinary way here, and
-// nowhere else. Nothing in it reads a scan.
-var AbsentFieldOrder = func(g FieldOrderGroup) bool { return true }
-
-// absentFieldOrderWhy is why an original whose field order no record states
-// is kept (no examination of the original itself is read yet).
-const absentFieldOrderWhy = "its field order is not stated and it was never examined"
-
 // inFields says why the original of the sources sourceIDs of the item folder
 // itemDir (their records records, their stored probes probes, nil where
 // there is none) is in fields, in the widest reading, "" when it is not; and
 // why its fields can't be told yet of the read of its frames r (unknown).
 // Its picture is its first video stream that is no attached picture; a
 // record or a probe that has more than one such keeps it, as which is the
-// picture can't be told. In fields: a record says interlaced, or its
-// picture a field order other than progressive (tt, bb, tb, bt, unknown,
-// ...); its stored probe gives the picture such a field_order; the scan of a
-// package version made of it (version.json's sourceIds) found anything but
-// NothingFound, or a package or version record of it can't be read; a read
-// of its frames found interlaced or repeated frames in a window; or neither
-// its record nor its probe states a field order, where the policy for its
-// group says so (AbsentFieldOrder: for now, every group), whatever a
-// package's scan says. A read that says nothing of interlaced or repeated
+// picture can't be told. In fields: a record that doesn't say interlaced
+// false, or whose picture gives a field order other than exactly
+// progressive (tt, bb, tb, bt, unknown, Progressive, ...); its stored probe
+// gives the film such a field_order; the scan of the package of any version
+// of the title doesn't let it go by the full rule (scansOf), or a package or
+// version record can't be read; a caption window its record keeps, or a
+// read of its frames, found interlaced or repeated frames in a window; or
+// its record's picture or its probe's film states no field order, whatever
+// a package's scan says. A read that says nothing of interlaced or repeated
 // frames (an older one) leaves its fields not known. No word of a scan lets
 // one go, neither what it says was done (scan.done) nor that it found
 // NothingFound: a package called whole has been found not to be.
 func inFields(itemDir, versionID string, ownPkg Doc, sourceIDs []string, records, probes []Doc,
 	r *CaptionsRead) (fields, unknown string) {
 	for i, rec := range records {
+		// marked: anything but false keeps it, as the record logic's
+		// deletion_gate reads interlaced
 		switch v, has := essenceOf(rec).Get("interlaced"); {
-		case !has || v == nil || v == false:
+		case v == false:
 		case v == true:
 			return "its record says interlaced", ""
+		case !has || v == nil:
+			return "its record doesn't say its picture is no fields (interlaced)", ""
 		default:
 			return "its record's interlaced is no boolean", ""
 		}
-		stated := false
 		var probe Doc
 		if i < len(probes) {
 			probe = probes[i]
 		}
+		// the field order as written, of the record's picture and of the
+		// probe's film both: exactly progressive, a missing one unknown
 		pictures := filmsOf(rec, false, probe)
-		if len(pictures) > 1 {
+		switch {
+		case len(pictures) > 1:
 			return fmt.Sprintf("its record lists %d picture streams, so which is its picture can't be told", len(pictures)), ""
+		case len(pictures) == 0:
+			return "its record lists no picture whose field order it states", ""
 		}
-		if len(pictures) == 1 {
-			if o := strings.ToLower(strings.TrimSpace(str(pictures[0], "fieldOrder"))); o != "" {
-				stated = true
-				if o != "progressive" {
-					return "its record's field order is " + o, ""
-				}
+		// one stated otherwise keeps it at once; one not stated, after what
+		// the scans say (they say more of it)
+		unstated := ""
+		if o, _ := pictures[0].Get("fieldOrder"); o != NothingFound {
+			if o == nil {
+				unstated = "its record's field order is not stated"
+			} else {
+				return "its record's field order is " + fieldOrderSaid(o), ""
 			}
+		}
+		if pyHas(pictures[0], "captionWindows") && contractCountsFields(pyGet(pictures[0], "captionWindows")) {
+			return "a caption window its record keeps of its picture counted interlaced frames, or a count it can't " +
+				"be read for", ""
 		}
 		if why := pictureNotFilm(rec, probe); why != "" {
 			return why, ""
@@ -699,10 +764,12 @@ func inFields(itemDir, versionID string, ownPkg Doc, sourceIDs []string, records
 				return fmt.Sprintf("its probe lists %d picture streams, so which is its picture can't be told", len(pp)), ""
 			}
 			if len(pp) == 1 {
-				if o := strings.ToLower(strings.TrimSpace(str(pp[0], "field_order"))); o != "" {
-					stated = true
-					if o != "progressive" {
-						return "its probe's field order is " + o, ""
+				if o, _ := pp[0].Get("field_order"); o != NothingFound {
+					if o != nil {
+						return "its probe's field order is " + fieldOrderSaid(o), ""
+					}
+					if unstated == "" {
+						unstated = "its probe's field order is not stated"
 					}
 				}
 			}
@@ -714,24 +781,11 @@ func inFields(itemDir, versionID string, ownPkg Doc, sourceIDs []string, records
 				return "the scan of its package of version " + versionID + " " + why, ""
 			}
 		}
-		if i < len(sourceIDs) {
-			if why := scansOf(itemDir, sourceIDs[i]); why != "" {
-				return why, ""
-			}
+		if why := scansOf(itemDir); why != "" {
+			return why, ""
 		}
-		if !stated {
-			g := FieldOrderGroup{}
-			if c, _ := rec.Get("container"); c != nil {
-				if cd, ok := c.(Doc); ok {
-					g.Container = strings.ToLower(strings.TrimSpace(str(cd, "format")))
-				}
-			}
-			if len(pictures) > 0 {
-				g.Codec = strings.ToLower(strings.TrimSpace(str(pictures[0], "codec")))
-			}
-			if AbsentFieldOrder(g) {
-				return absentFieldOrderWhy, ""
-			}
+		if unstated != "" {
+			return unstated, ""
 		}
 	}
 	if r != nil {
@@ -767,16 +821,15 @@ func inFields(itemDir, versionID string, ownPkg Doc, sourceIDs []string, records
 	return "", ""
 }
 
-// scansOf is why the scans of the packages made of the source sourceID (the
-// versions of the item folder itemDir whose version.json names it in
-// sourceIds) keep it in fields: one found anything but NothingFound; a
-// version whose record can't be read, or says no list of sourceIds, or
-// whose package's record can't be read; a version without a record whose
-// package's scan holds (which original it was made of can't be told); or a
-// folder of versions that can't be listed. A version folder with neither
-// record says nothing. "" when none does. A scan that found NothingFound
-// lets nothing go.
-func scansOf(itemDir, sourceID string) string {
+// scansOf is why the scans of the packages of the title (every version of
+// the item folder itemDir, of other sources too, as the record logic's
+// in_fields reads the title's packages) keep its originals in fields: one
+// that doesn't let them go by the full rule (scanHolds); a version whose
+// record can't be read, or says no list of sourceIds, or whose package's
+// record can't be read; an entry of versions/ that is no folder of its own;
+// or a folder of versions that can't be listed. A version folder with no
+// package record says nothing. "" when none does.
+func scansOf(itemDir string) string {
 	entries, err := os.ReadDir(filepath.Join(itemDir, "versions"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "the versions of its title can't be listed: " + err.Error()
@@ -789,18 +842,13 @@ func scansOf(itemDir, sourceID string) string {
 		}
 		dir := filepath.Join(itemDir, "versions", id)
 		ver, err := readRecordDoc(filepath.Join(dir, VersionFile))
-		unnamed := errors.Is(err, os.ErrNotExist)
 		switch {
-		case unnamed:
+		case errors.Is(err, os.ErrNotExist):
 		case err != nil:
 			return "the record of version " + id + " can't be read: " + err.Error()
 		default:
-			ids, ok := sourceIDList(ver)
-			if !ok {
+			if _, ok := sourceIDList(ver); !ok {
 				return "the record of version " + id + " says no list of the originals it was made of (sourceIds)"
-			}
-			if !slices.Contains(ids, sourceID) {
-				continue
 			}
 		}
 		pkg, err := readRecordDoc(filepath.Join(dir, PackageFile))
@@ -810,47 +858,22 @@ func scansOf(itemDir, sourceID string) string {
 		if err != nil {
 			return "its package of version " + id + " can't be read: " + err.Error()
 		}
-		if why := scanFoundHolds(pkg); why != "" {
-			if unnamed {
-				return "the scan of the package of version " + id + ", whose record (version.json) is not there to say " +
-					"which original it was made of, " + why
-			}
+		if why := scanHolds(pkg); why != "" {
 			return "the scan of its package of version " + id + " " + why
 		}
 	}
 	return ""
 }
 
-// scanFoundHolds says why the scan of the package record pkg of a version of
-// the original holds it in fields - it found anything but NothingFound, or
-// found NothingFound with counts of its own that say fields or can't be
-// read (scanCountsHold) -, "" when it found NothingFound or says nothing
-// found (no scan, a scan of null, no found): what an older version's scan
-// lacks is for the version the original is retired from to state
-// (scanHolds), not a hold for good.
-func scanFoundHolds(pkg Doc) string {
-	for _, d := range []Doc{pkg, essenceOf(pkg)} {
-		v, _ := d.Get("scan")
-		x, ok := v.(Doc)
-		if !ok {
-			continue
-		}
-		found, has := x.Get("found")
-		if !has || found == nil {
-			continue
-		}
-		if found == NothingFound {
-			if why := scanCountsHold(x); why != "" {
-				return why
-			}
-			continue
-		}
-		if f, ok := found.(string); ok {
-			return "found " + f
-		}
-		return fmt.Sprintf("found %v, no word", found)
+// fieldOrderSaid names the field order v as given: "not stated" of none.
+func fieldOrderSaid(v any) string {
+	if s, ok := v.(string); ok && s != "" {
+		return s
 	}
-	return ""
+	if v == nil {
+		return "not stated"
+	}
+	return pyStr(v) + ", no word"
 }
 
 // gateCount is v where it is a whole JSON number from 0, as the record
@@ -927,8 +950,10 @@ var ScanDone = []string{NothingFound, "none"}
 // scan that is no object (null among them); a found that is not exactly
 // NothingFound (a word, one the gate doesn't know, blank, of another type);
 // a done that is not one of ScanDone's (none, null among them); a
-// verification (verified) that is not ok and complete, or none; counts of
-// its own that say fields or can't be read (scanCountsHold). A scan that
+// verification (verified) that is not ok and complete, or none, or whose
+// read-through did not decode every packet but its leading pictures
+// (readThroughHolds); counts of its own that say fields or can't be read
+// (scanCountsHold). A scan that
 // found NothingFound lets nothing go.
 func scanHolds(pkg Doc) string {
 	for _, d := range []Doc{pkg, essenceOf(pkg)} {
@@ -966,9 +991,38 @@ func scanHolds(pkg Doc) string {
 		if ok1 != true || complete != true {
 			return "found " + NothingFound + " with no verification that is ok and complete"
 		}
+		if why := readThroughHolds(vd); why != "" {
+			return why
+		}
 		if why := scanCountsHold(x); why != "" {
 			return why
 		}
+	}
+	return ""
+}
+
+// readThroughHolds says why the read-through verified (a scan's verified,
+// ok and complete) did not read the whole title, as the record logic's
+// read_through takes it: its frames, packets and leading pictures are each
+// a count (gateCount), and it decoded every packet of the stream but its
+// leading pictures, frames = packets - leading, no other slack. One that
+// gives no leading (a scan from before that rule), or no packets, is never
+// complete. "" when it read it all.
+func readThroughHolds(verified Doc) string {
+	counts := map[string]*big.Int{}
+	for _, k := range []string{"frames", "packets", "leading"} {
+		v, _ := verified.Get(k)
+		n, ok := gateCount(v)
+		if !ok {
+			return "found " + NothingFound + ", but its read-through gives no " + k + " as a count, so whether it " +
+				"read every packet can't be told"
+		}
+		counts[k] = n
+	}
+	if counts["frames"].Cmp(new(big.Int).Sub(counts["packets"], counts["leading"])) != 0 {
+		return fmt.Sprintf("found %s, but its read-through decoded %s frames of %s packets, %s of them leading: "+
+			"not every packet but its leading pictures", NothingFound, counts["frames"], counts["packets"],
+			counts["leading"])
 	}
 	return ""
 }
@@ -994,8 +1048,14 @@ func recordShape(rec Doc) string {
 			return "its streams are no list"
 		}
 		for _, e := range list {
-			if _, ok := e.(Doc); !ok {
+			st, ok := e.(Doc)
+			if !ok {
 				return "a stream of it is no object"
+			}
+			if d := pyGet(st, "dispositions"); truthy(d) {
+				if _, ok := d.(Doc); !ok {
+					return "a stream of it gives dispositions that are no object"
+				}
 			}
 		}
 	}
@@ -1112,10 +1172,8 @@ func probeShape(probe Doc) string {
 			return "a stream of it is no object"
 		}
 	}
-	if f, has := probe.Get("format"); has && f != nil {
-		if _, ok := f.(Doc); !ok {
-			return "its format is no object"
-		}
+	if _, ok := valueOf(probe.Get("format")).(Doc); !ok {
+		return "it gives no format (an object)"
 	}
 	return ""
 }
@@ -1733,15 +1791,26 @@ func readRecordDoc(path string) (Doc, error) {
 	if err != nil {
 		return nil, err
 	}
-	d, err := DecodeDoc(b)
+	d, err := LoadRecord(b)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	return d, nil
+}
+
+// LoadRecord is the JSON object b as the gate reads a record, and as the
+// schemas' loaders (load_strict) read one: one that gives a key twice in an
+// object, or a number no reader holds (unheldNumber), can't be read.
+func LoadRecord(b []byte) (Doc, error) {
+	d, err := DecodeDoc(b)
+	if err != nil {
+		return nil, err
+	}
 	if k := repeatedKey(d); k != "" {
-		return nil, fmt.Errorf("%s: its key %q is given twice in one object", path, k)
+		return nil, fmt.Errorf("its key %q is given twice in one object", k)
 	}
 	if n := unheldNumber(d); n != "" {
-		return nil, fmt.Errorf("%s: %s", path, n)
+		return nil, errors.New(n)
 	}
 	return d, nil
 }

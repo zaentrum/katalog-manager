@@ -1,0 +1,89 @@
+{
+  "schema": "zaentrum.library.metadata/2",
+  "itemId": "e0ab0b0d-3020-5d60-8404-448169bd4781",
+  "type": "episode",
+  "asOf": "2026-09-20T12:00:00Z",
+  "projectedBy": "catalog example",
+  "databaseUpdatedAt": "2026-09-20T11:55:00Z",
+  "externalIds": {},
+  "titles": {
+    "primary": "Tailwind",
+    "original": null,
+    "sort": "tailwind",
+    "qualifier": null,
+    "localized": {
+      "en": {
+        "title": "Tailwind",
+        "sortTitle": "tailwind",
+        "tagline": null,
+        "overview": "The fourth episode."
+      }
+    }
+  },
+  "genres": [],
+  "tags": [],
+  "rating": null,
+  "credits": [],
+  "episode": {
+    "airDate": "2024-02-06"
+  },
+  "library": {
+    "primaryVersionId": "9efd9bbd-8bfa-5900-81d8-b1c6e128bc57",
+    "match": {
+      "status": "unmatched",
+      "decidedBy": "inferred",
+      "decidedAt": "2026-09-20T12:00:00Z",
+      "confidence": 0.2,
+      "evidence": [
+        {
+          "signal": "filename",
+          "value": "S01E04"
+        }
+      ]
+    },
+    "reference": {
+      "runtimeMs": 2700000,
+      "runtimeSource": "manual"
+    },
+    "numbering": {
+      "aired": {
+        "season": 1,
+        "episode": 4,
+        "episodeEnd": null
+      },
+      "dvd": {
+        "season": 1,
+        "episode": 4,
+        "episodeEnd": null
+      }
+    }
+  },
+  "images": [
+    {
+      "kind": "still",
+      "file": "382ccb890587902b778d07f731d44de8aedcf1e90fff0a8f21f85bb07e1feeec.jpg",
+      "sha256": "sha256:382ccb890587902b778d07f731d44de8aedcf1e90fff0a8f21f85bb07e1feeec",
+      "contentType": "image/jpeg",
+      "sizeBytes": 150,
+      "width": 1,
+      "height": 1,
+      "language": null,
+      "sourceUrl": null,
+      "fetchedAt": "2026-09-20T12:00:00Z",
+      "origin": {
+        "source": "manual",
+        "fetchedAt": "2026-09-20T12:00:00Z"
+      }
+    }
+  ],
+  "curation": {
+    "metadataLocked": false,
+    "lockedFields": [],
+    "notes": null
+  },
+  "fieldOrigins": {
+    "titles.primary": "manual",
+    "episode.airDate": "manual",
+    "images": "manual"
+  }
+}

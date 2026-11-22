@@ -1,0 +1,33 @@
+{
+  "schema": "zaentrum.library.version/2",
+  "versionId": "9efd9bbd-8bfa-5900-81d8-b1c6e128bc57",
+  "createdAt": "2026-09-20T07:00:00Z",
+  "createdBy": "analyzer example",
+  "edition": {
+    "kind": "unknown",
+    "label": null,
+    "decidedBy": "inferred",
+    "decidedAt": "2026-09-20T07:00:00Z",
+    "evidence": []
+  },
+  "presentation": {
+    "colour": "colour",
+    "dynamicRange": "hdr10",
+    "stereo3d": "none",
+    "aspectRatio": "16:9"
+  },
+  "runtimeMs": 2700000,
+  "chapters": [],
+  "chaptersFrom": null,
+  "segments": [],
+  "completeness": {
+    "status": "complete",
+    "evidence": []
+  },
+  "sourceIds": [
+    "899c315f-1965-521f-88bb-05ea2f86bb7c"
+  ],
+  "originalFiles": [
+    "original.mkv"
+  ]
+}

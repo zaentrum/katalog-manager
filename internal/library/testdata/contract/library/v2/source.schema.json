@@ -1,0 +1,303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zaentrum.github.io/schemas/library/v2/source.schema.json",
+  "title": "sources/<sourceId>/source.json — one original as it was found",
+  "description": "Written once by the analyzer, when an original is taken into the item, and never touched again. It is the account of a file that cannot change: its size as found and the name the library gives it, its container, every stream it contained, whether it was itself already a re-encode, and the essence a package may fail to carry — the input to the deletion gate.\n\nIt keeps no name the file arrived under, and does not say where it came from: a file name, a folder or a container title can tell where a file came from, so what they claim is kept as the values parsed from them (labels, naming) and never as the name. A record written before 2026-10-08 may still name them — origin, sidecars[].originalName, the container's title, the probe's filename — and stays valid.\n\nEach source is a folder of its own, written once and complete in itself:\n  sources/<sourceId>/source.json       this record\n  sources/<sourceId>/ffprobe.json      the probe: the tool's output, but for the two edits probe names\n  sources/<sourceId>/subtitle-1.de.srt a copy of each subtitle file that came with the original\n  sources/<sourceId>/checksums.sha256  every file above, sha256sum -c format\nThe checksums file is written with the rest and lists exactly those files, so `sha256sum -c checksums.sha256` in the folder proves the record is the one that was written, which the record cannot prove about itself.\n\nBecause it is written once, it says nothing about what happened to the file later. Whether the original is still on storage is the version's business (versions/<id>/version.json names it), and its deletion is an event (events/…-original-deleted.json). A source record is never rewritten to say 'deleted'.\n\nPaths: probe.file and sidecars[].file are relative to the ITEM folder, and both live in sources/<sourceId>/ so they survive the original's deletion. origin.libraryPath, where a record written before names it, is relative to the root of the library the file came from.",
+  "type": "object",
+  "required": ["schema", "sourceId", "takenAt", "file", "container", "streams", "fidelity", "essence", "probe"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "$comment": "A record without the file's fixity says why, in probe.note.",
+      "if": { "properties": { "file": { "not": { "required": ["fixity"] } } }, "required": ["file"] },
+      "then": { "properties": { "probe": { "required": ["note"], "properties": { "note": { "type": "string", "minLength": 1 } } } } }
+    }
+  ],
+  "properties": {
+    "schema": { "const": "zaentrum.library.source/2" },
+    "sourceId": { "$ref": "defs.schema.json#/$defs/uuid", "description": "Equals the name of the folder this record sits in, sources/<sourceId>/, which also holds its probe, its sidecars and the checksums that cover them all." },
+    "takenAt": { "$ref": "defs.schema.json#/$defs/timestamp", "description": "When the original was taken in and this record written." },
+    "takenBy": { "type": "string", "description": "The service or person that took it in." },
+
+    "file": {
+      "type": "object",
+      "description": "The file as found, under the name the library gives it. There is no path here: where the bytes live is the version's business, and after a deletion they live nowhere.",
+      "required": ["name", "sizeBytes"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "$ref": "defs.schema.json#/$defs/fileName", "description": "The name the library gives the file: original.<ext>, or original-<n>.<ext> for the nth part of a version split into several, <ext> the extension it arrived with, lower-cased, or bin when that is not one to eight letters and digits. The version that keeps the original names the same file. A record written before 2026-10-08 holds the name the file arrived under." },
+        "kind": { "enum": ["stream-container", "disc-image", "transport-stream", "audio-file"] },
+        "sizeBytes": { "type": "integer", "minimum": 0 },
+        "mtime": { "$ref": "defs.schema.json#/$defs/timestamp" },
+        "fixity": { "$ref": "defs.schema.json#/$defs/fixity", "description": "Always there, but for an original that was gone before the library recorded it — a package the catalog held of a file nobody can read any more — whose record keeps the name the library gives it and the size the catalog knew, and says so in probe.note. A version never keeps such an original in its folder." },
+        "ownership": { "$ref": "defs.schema.json#/$defs/ownership" },
+        "part": {
+          "type": ["object", "null"],
+          "description": "Set when one version is split across several files.",
+          "additionalProperties": false,
+          "properties": { "index": { "type": "integer", "minimum": 1 }, "of": { "type": "integer", "minimum": 1 } }
+        }
+      }
+    },
+    "origin": {
+      "type": "object",
+      "description": "Where the original lived before it entered the library, verbatim, as a writer that kept the names wrote it. A writer that keeps no names — the platform — does not write it: a path can tell where a file came from, and what its folder claims, an edition ('Example Film - Unrated (2015)') above all, is kept in labels as the value parsed from it.",
+      "required": ["libraryPath"],
+      "additionalProperties": false,
+      "properties": {
+        "libraryPath": { "type": "string", "description": "Relative to the root of the library it came from." },
+        "folder": { "type": "string", "description": "The folder name it sat in." },
+        "takenBy": { "enum": ["move", "copy", "import", "unknown"], "description": "How it got here." }
+      }
+    },
+    "naming": {
+      "type": "object",
+      "description": "How the file's own name numbered what it holds, as the name expressed it — 'S02E05', '2x05', 'E107', 'S07E23-24'. It is a fact about the file, not a decision about the item, so it lives here and not in the metadata projection: the item's numbering is what the database decided, this is what the release claimed, and the two often disagree. When the original is deleted this is the only record of how that release was numbered. Every field is optional, because most names say some of it and none say all of it.",
+      "additionalProperties": false,
+      "properties": {
+        "scheme": { "enum": ["aired", "dvd", "absolute", "production", "unknown"], "description": "The ordering the name appears to use. 'unknown' when nothing in the name says, which is the usual case." },
+        "seasonNumber": { "type": ["integer", "null"], "minimum": 0, "description": "Absent from a name that numbers episodes absolutely." },
+        "episodeNumber": { "type": ["integer", "null"], "minimum": 0 },
+        "episodeEnd": { "type": ["integer", "null"], "minimum": 0, "description": "Set when the name covers a range, e.g. 'S07E23-24'." },
+        "raw": { "type": ["string", "null"], "description": "The token the numbers were read from, verbatim." }
+      }
+    },
+    "labels": {
+      "type": "object",
+      "description": "What the filename and folder CLAIM. Unreliable — a name can claim a disc copy that is a re-encode — but the only claim on record, and it disappears with the file. Read from the name the file arrived under and the folder it sat in, and kept as the values parsed from them, never as the name.",
+      "additionalProperties": false,
+      "properties": {
+        "quality": { "type": ["string", "null"], "description": "The quality token exactly as it appears in the filename, e.g. '1080p'." },
+        "medium": { "enum": ["disc", "web", "broadcast", "unknown", null], "description": "The physical source the name claims." },
+        "resolution": { "type": ["string", "null"] },
+        "edition": { "type": ["string", "null"] },
+        "folderEdition": { "type": ["string", "null"] }
+      }
+    },
+    "offList": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "What of the file is off the closed lists of how closed captions and fields are carried that the record logic keeps (libv2_records.CONTAINERS, VIDEO_CODECS, SUBTITLE_CODECS, DATA_CODECS, DATA_TAGS, CAPTION_CODECS, CAPTION_TAGS, the chapter track of an MP4), the same as the analyzer's, in the analyzer's offList names, in the order the probe gives them: container:<format_name>, stream:<codec_type>:<codec or tag or none>, video-streams:<n>, codec:<codec_name>, picture:vbi-lines (libv2_records.off_list). Empty for a file on them. A file with anything off them is one whose captions and fields can't be told: its windows never make it know it has no captions, and the deletion gate keeps it. Left out of a record written before 2026-11-17, whose streams say it (libv2_records.record_off_list)." },
+    "container": {
+      "type": "object",
+      "required": ["format"],
+      "additionalProperties": false,
+      "properties": {
+        "format": { "type": "string", "description": "The container's format, as ffprobe names it (format_name): 'matroska,webm', 'mov,mp4,m4a,3gp,3g2,mj2', 'mpegts'. A file in a container off the closed lists of how closed captions and fields are carried that the record logic keeps (libv2_records.CONTAINERS, VIDEO_CODECS, SUBTITLE_CODECS, DATA_CODECS, DATA_TAGS, CAPTION_CODECS, CAPTION_TAGS, the chapter track of an MP4), the same as the analyzer's is one whose captions and fields can't be told, and the deletion gate keeps it." },
+        "durationMs": { "type": ["integer", "null"] },
+        "bitrate": { "type": ["integer", "null"] },
+        "title": { "type": ["string", "null"], "description": "The container's title tag. A writer that keeps no names writes null: a title tag routinely names where a file came from. A record written before 2026-10-08 may hold it." },
+        "muxingApp": { "type": ["string", "null"] },
+        "writingApp": { "type": ["string", "null"] },
+        "creationTime": { "type": ["string", "null"] },
+        "tags": { "type": "object", "additionalProperties": { "type": "string" }, "description": "The container's tags as the probe found them, but its title tag, which a writer that keeps no names leaves out in any case." }
+      }
+    },
+    "fidelity": {
+      "type": "object",
+      "description": "Whether this original was untouched or already a re-encode, with what says so.",
+      "required": ["class"],
+      "additionalProperties": false,
+      "properties": {
+        "class": { "enum": ["original", "derivative", "unknown"] },
+        "fingerprint": { "type": ["string", "null"], "description": "Short technical fingerprint of the file, e.g. 'hevc/main10/10bit/hdr10/3840x2160'. Two episodes with different fingerprints come from different masters." },
+        "evidence": { "type": "array", "items": { "$ref": "defs.schema.json#/$defs/evidence" } }
+      }
+    },
+    "streams": {
+      "type": "array",
+      "description": "Every stream the file contained, as the probe reported it.",
+      "items": { "oneOf": [
+        { "$ref": "#/$defs/videoStream" }, { "$ref": "#/$defs/audioStream" }, { "$ref": "#/$defs/subtitleStream" },
+        { "$ref": "#/$defs/attachmentStream" }, { "$ref": "#/$defs/dataStream" }
+      ] }
+    },
+    "sidecars": {
+      "type": "array",
+      "description": "The subtitle files that came with the original, each copied into sources/<sourceId>/ so it survives the original's deletion, under the name the library gives it: subtitle-<n>.<lang>[.forced][.sdh].<ext> — n from 1 in the order the catalog lists them, lang the primary subtag of the language, lower-cased, or und, .forced and .sdh as forced and hearingImpaired say, ext the file's own, lower-cased. Nothing else that sat beside the original is kept: NFO text routinely names where a file came from. A record written before 2026-10-08 may list other small files (kind nfo, image, other), copied under the names they had.",
+      "items": {
+        "type": "object",
+        "required": ["file", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "file": { "$ref": "defs.schema.json#/$defs/relPath", "description": "sources/<sourceId>/<name>, relative to the item folder." },
+          "originalName": { "type": "string", "description": "The name the file had beside the original. A writer that keeps no names does not write it." },
+          "kind": { "enum": ["subtitle", "nfo", "image", "other"] },
+          "format": { "type": ["string", "null"] },
+          "language": { "oneOf": [{ "$ref": "defs.schema.json#/$defs/language" }, { "type": "null" }] },
+          "forced": { "type": "boolean" },
+          "hearingImpaired": { "type": "boolean" },
+          "purpose": { "$ref": "defs.schema.json#/$defs/subtitlePurpose" },
+          "sizeBytes": { "type": "integer", "minimum": 0 },
+          "sha256": { "$ref": "defs.schema.json#/$defs/sha256" }
+        }
+      }
+    },
+    "covers": {
+      "type": "array",
+      "description": "Episode item ids this one file contains, in order, when a single file holds several episodes. Such a file is never split — two episodes cut as one have no clean boundary between them — so it is packaged once and serves every episode it holds. The first id is the holder's: the episode whose folder keeps this source, the first episode the file covers, the one its versions belong to. Every episode after it, in episode order, is covered: it keeps its own item and projection — its own titles, overview and images — and no source or version of its own; its projection names the holder (library.coveredBy) and plays a version of the holder made from this source (library.primaryVersionId), and the holder's own projection numbers the last of them (library.numbering's episodeEnd). Empty for a file of one episode, as on every movie's source. Written once like the rest of this record: an episode the database no longer counts as covered stays listed here, and its own projection no longer names the holder.",
+      "items": { "$ref": "defs.schema.json#/$defs/uuid" }
+    },
+    "essence": { "$ref": "defs.schema.json#/$defs/essence", "description": "What this original carries that a package can fail to carry. The deletion gate compares it with the package's." },
+    "probe": {
+      "type": "object",
+      "description": "The tool's output, kept in a file so any attribute the normalised fields do not model is still recoverable after the original is gone. It is verbatim but for two edits, which keep it from naming where the file came from: format.filename is the name the library gives the original (file.name), not the path the tool read, and format.tags holds no title tag, in any case. A probe written before 2026-10-08 is verbatim.",
+      "required": ["tool", "at", "file"],
+      "additionalProperties": false,
+      "properties": {
+        "tool": { "const": "ffprobe" },
+        "version": { "type": ["string", "null"] },
+        "at": { "oneOf": [{ "$ref": "defs.schema.json#/$defs/timestamp" }, { "type": "null" }], "description": "When the probe ran; null when the original was never probed." },
+        "file": { "oneOf": [{ "$ref": "defs.schema.json#/$defs/relPath" }, { "type": "null" }], "description": "sources/<sourceId>/ffprobe.json, relative to the item folder." },
+        "sha256": { "oneOf": [{ "$ref": "defs.schema.json#/$defs/sha256" }, { "type": "null" }] },
+        "note": { "type": ["string", "null"] }
+      }
+    }
+  },
+
+  "$defs": {
+    "dispositions": {
+      "type": "object",
+      "description": "Only the file's own flags. Anything inferred lives in purpose.",
+      "additionalProperties": false,
+      "properties": {
+        "default": { "type": "boolean" }, "forced": { "type": "boolean" }, "original": { "type": "boolean" },
+        "dub": { "type": "boolean" }, "commentary": { "type": "boolean" }, "hearingImpaired": { "type": "boolean" },
+        "visualImpaired": { "type": "boolean", "description": "Audio description track." },
+        "attachedPic": { "type": "boolean" },
+        "lyrics": { "type": "boolean" },
+        "captions": { "type": "boolean", "description": "Captions for deaf and hard-of-hearing viewers." },
+        "descriptions": { "type": "boolean", "description": "Text or audio descriptions of the picture." }
+      }
+    },
+    "streamBase": {
+      "type": "object",
+      "required": ["index", "type"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "type": true,
+        "codec": { "type": ["string", "null"] },
+        "language": { "oneOf": [{ "$ref": "defs.schema.json#/$defs/language" }, { "type": "null" }] },
+        "languageRaw": { "type": ["string", "null"] },
+        "title": { "type": ["string", "null"] },
+        "dispositions": { "$ref": "#/$defs/dispositions" }
+      }
+    },
+    "videoStream": {
+      "allOf": [{ "$ref": "#/$defs/streamBase" }],
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "type": { "const": "video" },
+        "profile": { "type": ["string", "null"] },
+        "level": { "type": ["number", "null"] },
+        "bitDepth": { "type": ["integer", "null"] },
+        "pixelFormat": { "type": ["string", "null"] },
+        "width": { "type": ["integer", "null"] },
+        "height": { "type": ["integer", "null"] },
+        "sampleAspectRatio": { "type": ["string", "null"] },
+        "displayAspectRatio": { "type": ["string", "null"] },
+        "frameRate": { "type": ["string", "null"] },
+        "fieldOrder": { "type": ["string", "null"] },
+        "bitrate": { "type": ["integer", "null"] },
+        "colour": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "primaries": { "type": ["string", "null"] }, "transfer": { "type": ["string", "null"] },
+            "matrix": { "type": ["string", "null"] }, "range": { "type": ["string", "null"] }
+          }
+        },
+        "hdr": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "format": { "enum": ["sdr", "hdr10", "hdr10plus", "hlg", "dolby-vision"] },
+            "masteringDisplay": { "type": ["object", "null"] },
+            "contentLightLevel": { "type": ["object", "null"] },
+            "dolbyVision": {
+              "type": ["object", "null"],
+              "additionalProperties": false,
+              "properties": {
+                "profile": { "type": "integer" }, "level": { "type": "integer" }, "rpuPresent": { "type": "boolean" },
+                "elPresent": { "type": "boolean" }, "blPresent": { "type": "boolean" }, "blCompatibilityId": { "type": "integer" }
+              }
+            }
+          }
+        },
+        "stereo3d": { "type": ["string", "null"] },
+        "closedCaptions": { "type": "boolean", "description": "The video carries embedded closed captions (CEA-608/708), which a re-encode usually drops: a caption window or its caption signature shows them, or the probe said so. False says none were seen: where its caption windows do not tell them (captionWindows), not that there are none." },
+        "captionSignature": { "type": "boolean", "description": "Whether its packets, every one of them read, carry a closed-caption signature (libv2_records.caption_signature): of an MPEG-2 picture, user data with A53, DVD or SCTE-20 captions; of any other, A53 in an SEI, as H.264 and HEVC carry it. True: it carries closed captions, known, wherever its windows lay. False: none of them does, which tells nothing more of captions carried otherwise. Left out where it was not read." },
+        "captionSpan": { "$ref": "defs.schema.json#/$defs/captionSpan" },
+        "captionGop": { "$ref": "defs.schema.json#/$defs/captionGop" },
+        "captionFfprobe": { "type": "string", "minLength": 1, "description": "The release of the ffprobe its caption windows were read with, as its -version line names it (libv2_records.ffprobe_release). Left out where it named none." },
+        "captionWindows": { "type": "array", "items": { "$ref": "defs.schema.json#/$defs/captionWindow" }, "description": "The windows its frames were read in for closed captions, by the plan of library/v2/caption-windows.json: the start and 10, 30, 50, 70 and 90 % of the span its stored probe gives, each but the start at most 30 s short of its end, or the whole picture read where those places lie closer than a window reaches (libv2_records.caption_windows), beside the span the read measured (captionSpan) and its gop (captionGop), on the file's own timeline: what the deletion gate reads of an original's captions, which keeps it when one shows them or when they don't tell them (a window that could not be read, frames 0, and none that shows them). Left out where they were not read, and closedCaptions then is what the probe said, which can't tell none from not seen." },
+        "encoder": { "type": ["string", "null"], "description": "Encoder tag, e.g. 'Lavc hevc_nvenc': the plainest evidence of a re-encode." }
+      }
+    },
+    "audioStream": {
+      "allOf": [{ "$ref": "#/$defs/streamBase" }],
+      "type": "object",
+      "required": ["channels"],
+      "unevaluatedProperties": false,
+      "properties": {
+        "type": { "const": "audio" },
+        "profile": { "type": ["string", "null"], "description": "Distinguishes DTS-HD MA from its core, and 'Dolby Digital Plus + Dolby Atmos'." },
+        "channels": { "type": "integer", "minimum": 1 },
+        "channelLayout": { "type": ["string", "null"], "description": "'stereo', '5.1', '5.1(side)', '7.1'. Absent in some files even when channels = 6." },
+        "sampleRate": { "type": ["integer", "null"] },
+        "bitDepth": { "type": ["integer", "null"] },
+        "bitrate": { "type": ["integer", "null"] },
+        "lossless": { "type": ["boolean", "null"] },
+        "objectAudio": { "enum": ["atmos", "dts-x", "none", "unknown"] },
+        "titleClaim": {
+          "type": ["object", "null"],
+          "description": "What the track title claims. When it disagrees with the actual codec or channel count, the file was re-encoded and the title is the only record of the original.",
+          "additionalProperties": false,
+          "properties": {
+            "codec": { "type": ["string", "null"] },
+            "channels": { "type": ["string", "null"] },
+            "contradictsActual": { "type": "boolean" }
+          }
+        },
+        "encoder": { "type": ["string", "null"] },
+        "purpose": { "$ref": "defs.schema.json#/$defs/audioPurpose" },
+        "purposeFrom": { "$ref": "defs.schema.json#/$defs/purposeFrom" },
+        "variant": { "type": ["string", "null"], "description": "Region or dialect, e.g. 'Castilian', 'Latin American'." }
+      }
+    },
+    "subtitleStream": {
+      "allOf": [{ "$ref": "#/$defs/streamBase" }],
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "type": { "const": "subtitle" },
+        "form": { "enum": ["text", "image"], "description": "Image subtitles (PGS, VobSub) cannot become text without OCR." },
+        "styled": { "type": "boolean", "description": "ASS/SSA positioning and typesetting that plain WebVTT loses." },
+        "variant": { "type": ["string", "null"], "description": "Region or script, e.g. 'Latin American', 'Simplified', found anywhere in the title." },
+        "events": { "type": ["integer", "null"], "minimum": 0, "description": "Number of subtitle events the container records (NUMBER_OF_FRAMES). A track with a small fraction of the events of the full track in its language is a forced track." },
+        "purpose": { "$ref": "defs.schema.json#/$defs/subtitlePurpose" },
+        "purposeFrom": { "$ref": "defs.schema.json#/$defs/purposeFrom" },
+        "closedCaptions": { "const": true, "description": "The stream is closed captions of its own: CEA-608 by its codec (eia_608, as a QuickTime or MP4 c608 track), or by its tag (c608, c708). The file carries closed captions, known. Left out of every other stream." }
+      }
+    },
+    "attachmentStream": {
+      "allOf": [{ "$ref": "#/$defs/streamBase" }],
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "type": { "const": "attachment" },
+        "filename": { "type": ["string", "null"] },
+        "mimetype": { "type": ["string", "null"] },
+        "role": { "enum": ["font", "cover", "other"], "description": "Fonts are required to render styled subtitles. An attachment is a font by a MIME type in any of the words a font's carries (font, opentype, truetype, sfnt), by a font's file name (.ttf, .otf, .ttc, .woff, .woff2), or, where neither says so and no picture's MIME type makes it a cover, by its first bytes: a font's signature. A package carries every font its source counts." },
+        "signature": { "enum": ["ttf", "otf", "ttc", "woff", "woff2"], "description": "What the attachment's first bytes say it is, read where its MIME type and its name say nothing: a font by its signature alone. Left out of every other attachment." }
+      }
+    },
+    "dataStream": {
+      "allOf": [{ "$ref": "#/$defs/streamBase" }],
+      "type": "object",
+      "unevaluatedProperties": false,
+      "properties": {
+        "type": { "const": "data" },
+        "closedCaptions": { "const": true, "description": "The stream is closed captions of its own, by its tag (c608, c708): the file carries closed captions, known. Left out of every other stream. A data stream of another codec or tag than the closed lists' (DATA_CODECS: scte_35, timed_id3, epg; DATA_TAGS: tmcd) is off them, so its file's captions and fields are unknown, and the deletion gate keeps it." }
+      }
+    }
+  }
+}

@@ -474,8 +474,8 @@ func TestEveryScanIsReadAndAScanOfNothingHolds(t *testing.T) {
 	}
 	for name, scan := range map[string]any{
 		"scan null": nil,
-		"no done":   map[string]any{"found": NothingFound, "verified": map[string]any{"ok": true, "complete": true}},
-		"done null": map[string]any{"found": NothingFound, "done": nil, "verified": map[string]any{"ok": true, "complete": true}},
+		"no done":   map[string]any{"found": NothingFound, "verified": readThrough()},
+		"done null": map[string]any{"found": NothingFound, "done": nil, "verified": readThrough()},
 	} {
 		pkg := packageRecord(fullEssence())
 		pkg["scan"] = scan

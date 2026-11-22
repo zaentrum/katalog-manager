@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zaentrum.github.io/schemas/library/v2/version.schema.json",
+  "title": "versions/<versionId>/version.json — what this version is",
+  "description": "Written once by the analyzer, when a version is established, and never touched again. A version is one cut or presentation of a movie or episode — theatrical and director's cut, colour and black-and-white, HDR and SDR — and its folder is the one place its media lives: the original files, the package made from them, or both — and the subtitles attached to it, after its package completed or while it is taken in, which lie in its subs/ named by their bytes, no file of a package. A version established with its original keeps it there, under the name the library gives it, until the original is deleted; one taken in before anything packaged it holds its original alone, and the subtitles attached to it since, and its package is added to it later, beside them. A file that holds several episodes is its holder's, the first episode it covers: its versions are in the holder's folder, and every episode it covers plays them (source.json covers, metadata.json library.coveredBy).\n\nEvery version is a folder. There is no version in the item folder itself, and a re-package is a new version folder, never an edit of this one.\n\nThe marks live here rather than in any file, so they survive the original's deletion and apply to every package of the version. What plays by default is not here, and neither is the label a viewer picks between: those are decisions the database holds, projected into metadata.json.\n\nThe package's checksums.sha256 lists this file beside the package's own, so once the package completes the chain .complete -> package.json -> checksums.sha256 covers it too. A version that has no package yet has no checksums file, and nothing covers this record until its package completes.\n\nPaths: originalFiles are plain names in THIS folder. sourceIds name records at the item level (sources/<sourceId>/source.json).",
+  "type": "object",
+  "required": ["schema", "versionId", "createdAt", "edition", "presentation", "sourceIds", "originalFiles"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "zaentrum.library.version/2" },
+    "versionId": { "$ref": "defs.schema.json#/$defs/uuid", "description": "Equals the name of the folder this file sits in." },
+    "createdAt": { "$ref": "defs.schema.json#/$defs/timestamp" },
+    "createdBy": { "type": "string", "description": "The service or person that established the version." },
+
+    "edition": {
+      "description": "Which cut this is, and what says so.",
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["theatrical", "directors-cut", "extended", "unrated", "special-edition", "remastered", "restored", "imax", "final-cut", "tv-cut", "other", "unknown"] },
+        "label": { "type": ["string", "null"], "description": "Edition wording as published, e.g. 'Roadshow Director's Cut'." },
+        "decidedBy": { "$ref": "defs.schema.json#/$defs/decidedBy" },
+        "decidedAt": { "$ref": "defs.schema.json#/$defs/timestamp" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "evidence": { "type": "array", "items": { "$ref": "defs.schema.json#/$defs/evidence" } }
+      }
+    },
+    "presentation": {
+      "type": "object",
+      "required": ["colour", "dynamicRange", "stereo3d"],
+      "additionalProperties": false,
+      "properties": {
+        "colour": { "enum": ["colour", "black-and-white", "partial-colour", "unknown"], "description": "Measured from the picture, not from a label." },
+        "colourDecision": { "allOf": [{ "$ref": "defs.schema.json#/$defs/decision" }], "type": "object", "unevaluatedProperties": false },
+        "dynamicRange": { "enum": ["sdr", "hdr10", "hdr10plus", "hlg", "dolby-vision", "unknown"] },
+        "stereo3d": { "enum": ["none", "side-by-side", "top-and-bottom", "mvc", "unknown"] },
+        "aspectRatio": { "type": ["string", "null"] }
+      }
+    },
+
+    "runtimeMs": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Measured from the original. Deliberately not the runtime a reference database publishes — that is one runtime for every cut, and it belongs to the metadata projection."
+    },
+    "chapters": {
+      "type": "array",
+      "description": "Chapter marks on this version's timeline.",
+      "items": {
+        "type": "object",
+        "required": ["startMs", "endMs"],
+        "additionalProperties": false,
+        "properties": {
+          "startMs": { "type": "integer", "minimum": 0 },
+          "endMs": { "type": "integer", "minimum": 0 },
+          "title": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "chaptersFrom": { "enum": ["original-file", "legacy-catalog", "human", null], "description": "Where the chapter marks came from; null when there are none." },
+    "segments": {
+      "type": "array",
+      "description": "Intro, recap and credits ranges on this version's timeline, each with the detector that found it.",
+      "items": {
+        "type": "object",
+        "required": ["kind", "startMs", "endMs"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": { "enum": ["intro", "recap", "credits", "preview", "commercial", "other"] },
+          "startMs": { "type": "integer", "minimum": 0 },
+          "endMs": { "type": "integer", "minimum": 0 },
+          "detector": { "type": ["string", "null"] },
+          "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+          "label": { "type": ["string", "null"] }
+        }
+      }
+    },
+
+    "completeness": {
+      "type": "object",
+      "description": "Whether the version holds the whole work, measured — normally the runtime against the reference runtime, so a file that stops early is not mistaken for a shorter cut. A version nobody measured leaves this out; there is no 'unknown' value, because an absent measurement and a measurement that found nothing are not the same thing.",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["complete", "truncated", "suspect"] },
+        "evidence": { "type": "array", "items": { "$ref": "defs.schema.json#/$defs/evidence" } }
+      }
+    },
+
+    "sourceIds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "The originals this version was made from — several when it is split into parts. Each names sources/<sourceId>/source.json at the item level, which stays after the file itself is gone.",
+      "items": { "$ref": "defs.schema.json#/$defs/uuid" }
+    },
+    "originalFiles": {
+      "type": "array",
+      "uniqueItems": true,
+      "description": "The originals placed in THIS folder, beside the package when it has one, in order, each under the name the library gives it — original.<ext> normally, original-1.<ext>, original-2.<ext> … when the version is split into parts — and none when the version was made without keeping any, as a re-package is, whose original stays in the version that holds it. Every name is the file.name of one of this version's sources; a version written before 2026-10-08 may name its originals as they arrived. Written once: when an original is deleted later, this keeps naming it and an events/…-original-deleted.json record says it is gone.\n\nWhat deleting them would cost is not recorded anywhere: it is the sources' essence minus the package's, which a reader computes from the records beside this one, and which stays right however often the version is re-packaged.",
+      "items": { "$ref": "defs.schema.json#/$defs/fileName" }
+    }
+
+  }
+}

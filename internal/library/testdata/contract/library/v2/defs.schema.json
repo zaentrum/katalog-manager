@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zaentrum.github.io/schemas/library/v2/defs.schema.json",
+  "title": "zaentrum library v2 — shared definitions",
+  "description": "Types shared by the v2 records. The database is the working copy; the tree is the record that can rebuild it. Every record here is either written once and never touched again, or replaced whole by the one service that owns it, so nothing in this file models a document that is edited in place: v1's rev, audit and review are gone.",
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "Lower-case RFC 4122 UUID. Identity never changes, so nothing keyed by it is ever renamed."
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$",
+      "description": "RFC 3339 with an upper-case T and Z."
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^[0-9]{4}(-[0-9]{2}(-[0-9]{2})?)?$",
+      "description": "Full date, or year-month, or year when that is all that is known."
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^([a-z]{2,3}(-[A-Za-z0-9]{2,8})*|und|zxx|mul)$",
+      "description": "BCP 47, or the ISO 639-2 code a media file carried (a package rendition keeps the file's code, e.g. 'eng')."
+    },
+    "relPath": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).+$",
+      "description": "A relative path, never absolute and never escaping upward. Which folder it is relative to is stated by the field that uses it."
+    },
+    "fileName": {
+      "type": "string",
+      "pattern": "^(?!\\.{1,2}$)[^/]+$",
+      "description": "A plain name in the folder the field names. No subfolders, no traversal."
+    },
+    "evidence": {
+      "type": "object",
+      "description": "One observation supporting a derived conclusion, kept so the conclusion can be re-examined without reading the file again.",
+      "required": ["signal", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "signal": {
+          "enum": ["runtime", "container-title", "stream-title", "folder-name", "filename", "commentary-track", "content-analysis", "encoder-tag", "codec-vs-title", "tmdb", "catalog", "manual"]
+        },
+        "value": { "type": ["string", "number", "boolean", "object", "array", "null"] },
+        "weight": { "type": "number", "minimum": 0, "maximum": 1 },
+        "note": { "type": "string" }
+      }
+    },
+    "decidedBy": { "enum": ["inferred", "human", "legacy-catalog", "tmdb"] },
+    "decision": {
+      "type": "object",
+      "description": "A conclusion with its confidence and who reached it. There is no review field: a record written once cannot carry a task, and what a person still has to look at belongs in the database. A human decision outranks an inferred one and is never overwritten by automation. It is left open so a use can add its own field (a status, a kind) and close the object itself with unevaluatedProperties.",
+      "required": ["decidedBy"],
+      "properties": {
+        "decidedBy": { "$ref": "#/$defs/decidedBy" },
+        "decidedAt": { "$ref": "#/$defs/timestamp" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } }
+      }
+    },
+    "subtitlePurpose": {
+      "enum": ["dialogue", "sdh", "forced", "signs-songs", "commentary", "lyrics", "unknown"],
+      "description": "'dialogue': all spoken dialogue (a full track normally includes the forced lines too). 'sdh': dialogue plus sound cues and speaker names, for deaf and hard-of-hearing viewers. 'forced': only what a viewer of this language would not otherwise understand — foreign or invented languages, signs, letters. 'signs-songs': on-screen text and song lyrics only, the usual companion of a dubbed audio track. 'commentary': the text of a commentary. 'lyrics': song lyrics only. 'unknown': the track could not be traced to the original's stream. Shared by an original's subtitle streams, its sidecars and a package's subtitle renditions, which describe the same thing."
+    },
+    "audioPurpose": {
+      "enum": ["main", "commentary", "description", "unknown"],
+      "description": "'main' is the work's soundtrack in one language; 'description' is audio description for blind and partially sighted viewers."
+    },
+    "purposeFrom": {
+      "enum": ["disposition", "title", "content", "human", "assumed", null],
+      "description": "What a purpose rests on: the file's stream flags, the track title, the track's content (a subtitle with a small fraction of the events of the full track in its language is forced), a person, or nothing (assumed: only dialogue or main may be assumed). Null only with purpose unknown."
+    },
+    "externalIds": {
+      "type": "object",
+      "description": "Explicit, unambiguous keys into reference databases. Enough to fetch every text and image again.",
+      "additionalProperties": false,
+      "properties": {
+        "tmdbMovie": { "type": "string", "pattern": "^[0-9]+$" },
+        "tmdbTv": { "type": "string", "pattern": "^[0-9]+$", "description": "On a series its own TV id; on an episode the parent series' TV id." },
+        "tmdbSeason": { "type": "string", "pattern": "^[0-9]+$" },
+        "tmdbEpisode": { "type": "string", "pattern": "^[0-9]+$" },
+        "tmdbCollection": { "type": "string", "pattern": "^[0-9]+$" },
+        "imdb": { "type": "string", "pattern": "^tt[0-9]+$" },
+        "tvdb": { "type": "string", "pattern": "^[0-9]+$" }
+      }
+    },
+    "fixity": {
+      "type": "object",
+      "description": "Proves a file is the same bytes after a move. qh1 is cheap and always present; sha256 of the whole file is filled in by a background job.",
+      "required": ["qh1"],
+      "additionalProperties": false,
+      "properties": {
+        "qh1": { "$ref": "#/$defs/sha256", "description": "sha256(first 64 KiB || last 64 KiB || uint64be(size)). Not a content hash." },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "sha256At": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "captionWindow": {
+      "type": "object",
+      "description": "One window a picture was read in for closed captions, by the plan of library/v2/caption-windows.json (libv2_records.caption_windows): the CAPTION_PACKETS packets decoded from the keyframe a seek to its place lands on, over the span the stored probe gives (its picture's start_time + duration) - the start, then 10, 30, 50, 70 and 90 % of it, each but the start at most 30 s short of its end -, a package rendition's at the same presentation times as its source's (moved by its timestampOffset); or the one read of the whole picture (whole: true, at 0, its packets counted), where two places lie closer than a window reaches (48 frame steps, the gop and 0.5 s), as on a span too short for six disjoint windows at most 30 s short of its end. A window that decoded no frame (frames 0) could not be read: the record logic writes it with captions false, a reader may write it with captions null, and either way it is a failed read, never one without captions. Windows tell none only by the plan: the six at their places (each first frame within max(10 s, gop + 0.5 s) of its place, or up to 30 s before it where its keyframe is the last before it (keyframeBefore); of a gop of 0 within one frame step and 0.5 s of it), on frames of their own, each of at least half its packets and 24 frames, or a whole read that decoded every packet but the stream's own leading pictures, of a read whose span is the plan's within one frame step and 0.5 s (libv2_records.windows_tell_none); any other read is not known.",
+      "required": ["at", "start", "end", "frames", "captions"],
+      "dependentRequired": { "whole": ["packets"] },
+      "additionalProperties": false,
+      "properties": {
+        "at": { "type": "number", "minimum": 0, "maximum": 1, "description": "The fraction of the picture's presentation span the window is placed at: 0 (the start, and a whole read), 0.1, 0.3, 0.5, 0.7 and 0.9 by the plan." },
+        "start": { "type": "number", "description": "The presentation time, in seconds on the timeline of the file or the package read, of its first decoded frame; of a window that could not be read, its point." },
+        "end": { "type": "number", "description": "The end of its last decoded frame, in the same seconds; of a window that could not be read, its point." },
+        "frames": { "type": "integer", "minimum": 0, "description": "How many frames it decoded; none: it could not be read." },
+        "captions": { "type": ["boolean", "null"], "description": "Whether a decoded frame exports A53 closed captions. Of a window that decoded none, false or null: it failed, and shows none; never true, and null of none that decoded frames." },
+        "interlacedFrames": { "type": "integer", "minimum": 0, "description": "How many of the frames it decoded were interlaced (ffprobe's interlaced_frame), at most frames. One or more puts a source's picture in fields (essence interlaced), and the deletion gate keeps it. Left out where the reader did not count them." },
+        "repeatFrames": { "type": "integer", "minimum": 0, "description": "How many of the frames it decoded repeat a field (ffprobe's repeat_pict), at most frames: a film carried with its pulldown flagged. Left out where the reader did not count them." },
+        "whole": { "const": true, "description": "A read of the whole picture, every packet decoded: alone, at 0, with its packets and its leading pictures. It stands for the plan's six windows, and tells none only where it is complete: packets - leading <= frames <= packets. Left out of a window." },
+        "packets": { "type": "integer", "minimum": 0, "description": "Of a whole read: the picture's packets, as the read counted them, at least frames." },
+        "leading": { "type": "integer", "minimum": 0, "maximum": 16, "description": "Of a whole read: the stream's own leading pictures - the packets before its first keyframe in decode order and the first gop's packets timed before that keyframe, at most 16. The read is complete where packets - leading <= frames <= packets; one that gives no leading is not complete." },
+        "keyframeBefore": { "type": "boolean", "description": "The packets from the window's seek, none decoded, show the keyframe its first frame was decoded from as the last one before its place: no keyframe lies between. Such a window counts up to 30 s before its place; one without it, within max(10 s, gop + 0.5 s) of it. Left out where the reader did not list them." }
+      }
+    },
+    "captionSpan": {
+      "type": "object",
+      "description": "The presentation span a read of a picture's closed captions measured (libv2_records.caption_windows): the first frame of its start to the end of its last video packet, in seconds on the file's own timeline. The plan of library/v2/caption-windows.json places the windows over the span the stored probe gives (its picture's start_time + duration), and a read whose span differs from it by more than one frame step and 0.5 s, at either end, tells nothing: the validator holds a deletion's read to its record's.",
+      "required": ["start", "end"],
+      "additionalProperties": false,
+      "properties": {
+        "start": { "type": "number", "description": "The first frame of the read's start, in seconds." },
+        "end": { "type": "number", "description": "The end of the picture's last video packet, in seconds." }
+      }
+    },
+    "captionGop": { "type": "number", "minimum": 0, "description": "The longest run between two keyframes among the picture's first 1200 packets, in seconds at its frame step, as the read found it; 0 where they list fewer than two keyframes. A window counts only where its first frame lies within max(10 s, this + 0.5 s) of its place (up to 30 s before it with keyframeBefore), and of a gop of 0 only at its place; where two places lie closer than 48 frame steps, this and 0.5 s, the picture is read whole." },
+    "essence": {
+      "type": "object",
+      "description": "What a file or package carries, reduced to the properties that cannot be recovered once lost. Comparing a package's essence with its original's is the check before the original is deleted.",
+      "additionalProperties": false,
+      "properties": {
+        "maxAudioChannels": { "type": "integer", "minimum": 0 },
+        "surround": { "type": "boolean", "description": "Any audio track with more than two channels." },
+        "losslessAudio": { "type": "boolean" },
+        "objectAudio": { "type": "boolean", "description": "Atmos or DTS:X." },
+        "maxVideoHeight": { "type": ["integer", "null"] },
+        "videoBitDepth": { "type": ["integer", "null"] },
+        "hdr10Metadata": { "type": "boolean" },
+        "dolbyVision": { "type": "boolean" },
+        "stereo3d": { "type": "boolean" },
+        "interlaced": { "type": "boolean", "description": "Of a file: its picture is marked as fields (a field order of tt, bb, tb or bt), or a caption window of it counted interlaced frames. The deletion gate keeps an original so marked, one whose picture has any field order but progressive (none given among them), one a package's scan found anything but progressive in, and one off the closed lists of how closed captions and fields are carried that the record logic keeps (libv2_records.CONTAINERS, VIDEO_CODECS, SUBTITLE_CODECS, DATA_CODECS, DATA_TAGS, CAPTION_CODECS, CAPTION_TAGS, the chapter track of an MP4), the same as the analyzer's." },
+        "audioLanguages": { "type": "array", "items": { "$ref": "#/$defs/language" }, "uniqueItems": true },
+        "subtitleLanguages": { "type": "array", "items": { "$ref": "#/$defs/language" }, "uniqueItems": true },
+        "subtitleTracks": { "type": "integer", "minimum": 0 },
+        "imageSubtitles": { "type": "boolean" },
+        "styledSubtitles": { "type": "boolean", "description": "Of a file: an ASS or SSA subtitle stream. Of a package: a subtitle that keeps its styled original — for every styled stream of its source, when the source's streams are known." },
+        "fonts": { "type": "boolean", "description": "Of a file: a font attachment. Of a package: a font file — taken from every font attachment of its source, when the source's streams are known." },
+        "chapters": { "type": "boolean", "description": "The file itself carries chapter marks. A package never does; the version keeps the marks." },
+        "commentaryTracks": { "type": "integer", "minimum": 0, "description": "Audio commentaries." },
+        "commentarySubtitles": { "type": "integer", "minimum": 0 },
+        "audioDescriptionTracks": { "type": "integer", "minimum": 0 },
+        "sdhSubtitleLanguages": { "type": "array", "items": { "$ref": "#/$defs/language" }, "uniqueItems": true },
+        "forcedSubtitleLanguages": { "type": "array", "items": { "$ref": "#/$defs/language" }, "uniqueItems": true, "description": "Includes signs-and-songs tracks." },
+        "closedCaptions": { "type": "boolean", "description": "Of a file: its picture carries embedded closed captions (CEA-608/708), or a stream of it is closed captions of its own (eia_608, a c608 or c708 track) — of one whose captions are not known (no closedCaptionsKnown), false says none were seen, not that there are none. Of a package: its top video rendition's own stream carries them." },
+        "closedCaptionsKnown": { "const": true, "description": "Of a file: its closed captions are told — a stream of it is closed captions of its own, its picture's packets carry a caption signature (captionSignature), or its picture's caption read tells them: a window shows them, or the read tells none by the plan of library/v2/caption-windows.json, of a file on the closed lists of how closed captions and fields are carried that the record logic keeps (libv2_records.CONTAINERS, VIDEO_CODECS, SUBTITLE_CODECS, DATA_CODECS, DATA_TAGS, CAPTION_CODECS, CAPTION_TAGS, the chapter track of an MP4), the same as the analyzer's —, so closedCaptions is a finding either way; left out otherwise: its windows were not read, one could not be read and none shows them, as of every record written before 2026-11-16, its file is off the lists (a source record's offList), whose captions are unknown, or its picture is HEVC, whose suffix SEI its decoder does not read, and its packets were not read whole for a caption signature (captionSignature false). The deletion gate keeps an original that has closed captions, or whose captions are not known. A package's essence never says it." },
+        "scan": { "type": "string", "minLength": 1, "description": "Of a package: what its scan says was done of its picture as far as fields go (package.schema.json scan.done), in the transcoder's words, one not known here kept as it is. Left out where the package's manifest says nothing of it, and in a file's essence, whose fields are interlaced. Not read by the deletion gate." }
+      }
+    },
+    "ownership": {
+      "type": "object",
+      "description": "Filesystem ownership and permissions as found. The owning uid also records how a file arrived, so it is provenance as much as access control.",
+      "additionalProperties": false,
+      "properties": {
+        "uid": { "type": "integer" },
+        "gid": { "type": "integer" },
+        "mode": { "type": "string", "pattern": "^0?[0-7]{3,4}$" },
+        "acl": { "type": ["string", "null"] },
+        "selinux": { "type": ["string", "null"] }
+      }
+    },
+    "image": {
+      "type": "object",
+      "description": "One image of a projection, as one kind, in a file named by the hash of its own content. Bytes that are several kinds — a backdrop that is the poster — are an entry of each kind sharing the one file. A file is written once and never replaced in place, so a new image is a new file and a projection that stops naming an old one leaves it to be swept. metadata.json lists the images in metadata/, person.json the images beside it, both with this one object, so the two cannot drift apart; each narrows kind to its own kinds. An image needs no checksum file: its name is its checksum. Which image of a kind a reader shows is primary, and where its bytes came from is its origin, so a refresh from the reference source can tell the source replacing an image from a person picking another.",
+      "required": ["kind", "file", "sha256", "contentType", "sizeBytes"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "description": "Narrowed by the document that lists the image." },
+        "primary": {
+          "type": "boolean",
+          "description": "The image a reader shows for its kind when it shows one: a movie's poster, the portrait on a person page. At most one image of a kind is primary in a projection — in a series' metadata.json at most one per kind and season, because a season's poster stands for the season — a rule the validator holds, since a schema cannot count. A projection that marks none leaves the choice to the reader; false and absent say the same."
+        },
+        "season": { "type": ["integer", "null"], "minimum": 0, "description": "Only in a series' metadata.json: the season this image belongs to; null for the series itself. person.json forbids it." },
+        "file": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}\\.(jpg|png|webp)$",
+          "description": "<content hash>.<ext>: the lower-case hex sha256 of the file's own bytes, and the extension matching contentType. A plain name in the folder the listing document names; no subfolders."
+        },
+        "language": { "oneOf": [{ "$ref": "#/$defs/language" }, { "type": "null" }], "description": "The language of the text an image carries, e.g. a poster's or a logo's. The file name carries no language, so this is the only record of it." },
+        "sha256": { "$ref": "#/$defs/sha256", "description": "The same digest the file name carries, in the form the rest of the format uses. Caches key on it." },
+        "contentType": { "enum": ["image/jpeg", "image/png", "image/webp"] },
+        "sizeBytes": { "type": "integer", "minimum": 0 },
+        "width": { "type": ["integer", "null"] },
+        "height": { "type": ["integer", "null"] },
+        "sourceUrl": { "type": ["string", "null"], "description": "Where the image came from, so the exact chosen image can be fetched again." },
+        "fetchedAt": { "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }], "description": "When the bytes were fetched." },
+        "origin": {
+          "description": "Where the bytes came from: the source, the source's own name for the image and when it was taken. When a refresh finds the reference source naming another image for this kind than the ref an origin from that source holds, the source replaced the image; an image whose origin is manual is one a person picked, and a refresh leaves it as it is, primary or not. A projection written before 2026-10-02 (f) names the source alone, as a string: a reader takes it as {source: <it>}, and the next projection writes the object.",
+          "if": { "type": "string" },
+          "then": { "enum": ["legacy-catalog", "tmdb", "manual"], "deprecated": true },
+          "else": { "$ref": "#/$defs/imageOrigin" }
+        }
+      }
+    },
+    "imageOrigin": {
+      "type": "object",
+      "description": "Where an image's bytes came from.",
+      "required": ["source"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "enum": ["tmdb", "manual", "file", "legacy-catalog"],
+          "description": "'tmdb': fetched from the reference database. 'manual': a person provided or picked it. 'file': found as a file beside an original, a folder.jpg an old library kept. 'legacy-catalog': taken over from a catalog that did not record where it came from. A source the database comes to use is a new value here."
+        },
+        "ref": { "type": "string", "minLength": 1, "description": "The source's own name for the image: for tmdb the file path it lists the image under, for file the path the file was found at. What a refresh compares with what the source names now." },
+        "fetchedAt": { "$ref": "#/$defs/timestamp", "description": "When the bytes were taken from the source — the moment the image's own fetchedAt names, kept with the reference it was taken from." }
+      }
+    },
+    "curation": {
+      "type": "object",
+      "description": "What a person decided about a projection's texts and images, projected with them so a rebuild does not hand a locked record back to automation.",
+      "additionalProperties": false,
+      "properties": {
+        "metadataLocked": { "type": "boolean" },
+        "lockedFields": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "notes": { "type": ["string", "null"] }
+      }
+    },
+    "fieldOrigins": {
+      "type": "object",
+      "description": "Where each value of a projection came from, keyed by field path. Lists only fields that are set. Images carry their own origin.",
+      "additionalProperties": { "enum": ["tmdb", "legacy-catalog", "filename", "folder-name", "file-tags", "manual"] }
+    },
+    "databaseUpdatedAt": {
+      "$ref": "#/$defs/timestamp",
+      "description": "The modification time of the database row this projection reflects: the row's own modifiedAt, copied into the projection when it was written, so it is on the database's clock. asOf says when the projection was written; this says which state of the row it holds. Comparing it with the row is how a verification tells a stale projection from a current one: a row modified after it means the database changed since, and the projection is fixed by projecting again, never by editing the file. Absent from a projection that does not know it, such as one written before 2026-10-02 (f); its freshness is then unknown."
+    },
+    "sources": {
+      "type": "object",
+      "description": "How fresh the reference data in this projection is: for each reference source the database takes texts and images from, when it last fetched this entity from it and the date the source last reported a change to it. The database refreshes from the source first and projects afterwards, so a projection is as fresh as these say, and a source whose changedAt is later than the day of its fetchedAt has changed since. Keyed by the source: tmdb is the one there is, and a source the database comes to use is a new key here. Absent when the database never fetched the entity from one.",
+      "additionalProperties": false,
+      "properties": {
+        "tmdb": { "$ref": "#/$defs/sourceFetch" }
+      }
+    },
+    "sourceFetch": {
+      "type": "object",
+      "description": "One reference source's freshness, as the database recorded it.",
+      "required": ["fetchedAt"],
+      "additionalProperties": false,
+      "properties": {
+        "fetchedAt": { "$ref": "#/$defs/timestamp", "description": "When the database last fetched this entity from the source." },
+        "changedAt": { "$ref": "#/$defs/date", "description": "The date the source last reported a change to this entity. A source dates its changes by day, so this is a date, not a moment. Absent when the source never reported one, or the database did not record it." }
+      }
+    }
+  }
+}

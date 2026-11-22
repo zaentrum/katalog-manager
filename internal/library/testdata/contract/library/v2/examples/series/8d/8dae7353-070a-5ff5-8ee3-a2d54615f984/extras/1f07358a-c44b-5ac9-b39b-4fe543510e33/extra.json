@@ -1,0 +1,138 @@
+{
+  "schema": "zaentrum.library.extra/2",
+  "extraId": "1f07358a-c44b-5ac9-b39b-4fe543510e33",
+  "createdAt": "2026-09-19T08:00:00Z",
+  "createdBy": "ingest example",
+  "kind": "behind-the-scenes",
+  "title": "Behind the Scenes of Season 1",
+  "localizedTitles": {},
+  "language": "en",
+  "runtimeMs": 1260000,
+  "seasonNumber": 1,
+  "originalFiles": [
+    "original.mkv"
+  ],
+  "originals": [
+    {
+      "name": "original.mkv",
+      "sizeBytes": 84,
+      "fixity": {
+        "qh1": "sha256:413ce06326eac61f3589bb512cfc162fbb19f9082606dc6a7bf414c95321c270",
+        "sha256": "sha256:a73b532fd9b2a88a914a4aba59155a60c37a11a8894b455767c209c263112b50",
+        "sha256At": "2026-09-19T08:00:00Z"
+      }
+    }
+  ],
+  "container": {
+    "format": "matroska,webm",
+    "durationMs": 1260000,
+    "bitrate": null,
+    "title": null,
+    "muxingApp": null,
+    "writingApp": null,
+    "creationTime": null,
+    "tags": {}
+  },
+  "streams": [
+    {
+      "index": 0,
+      "type": "video",
+      "codec": "h264",
+      "language": null,
+      "languageRaw": null,
+      "title": null,
+      "dispositions": {
+        "default": true
+      },
+      "profile": "Main",
+      "level": null,
+      "bitDepth": 8,
+      "pixelFormat": "yuv420p",
+      "width": 1920,
+      "height": 1080,
+      "sampleAspectRatio": "1:1",
+      "displayAspectRatio": null,
+      "frameRate": "24/1",
+      "fieldOrder": "progressive",
+      "bitrate": null,
+      "colour": {
+        "primaries": "bt709",
+        "transfer": "bt709",
+        "matrix": null,
+        "range": "tv"
+      },
+      "hdr": {
+        "format": "sdr",
+        "masteringDisplay": null,
+        "contentLightLevel": null,
+        "dolbyVision": null
+      },
+      "stereo3d": null,
+      "closedCaptions": false,
+      "encoder": null
+    },
+    {
+      "index": 1,
+      "type": "audio",
+      "codec": "aac",
+      "language": "en",
+      "languageRaw": "eng",
+      "title": null,
+      "dispositions": {
+        "default": true,
+        "commentary": false
+      },
+      "profile": null,
+      "channels": 2,
+      "channelLayout": "stereo",
+      "sampleRate": 48000,
+      "bitDepth": null,
+      "bitrate": null,
+      "lossless": false,
+      "objectAudio": "none",
+      "titleClaim": null,
+      "encoder": null,
+      "purpose": "main",
+      "purposeFrom": "assumed",
+      "variant": null
+    }
+  ],
+  "fidelity": {
+    "class": "original",
+    "fingerprint": "h264/high/8bit/sdr/1920x1080",
+    "evidence": []
+  },
+  "essence": {
+    "maxAudioChannels": 2,
+    "surround": false,
+    "losslessAudio": false,
+    "objectAudio": false,
+    "maxVideoHeight": 1080,
+    "videoBitDepth": 8,
+    "hdr10Metadata": false,
+    "dolbyVision": false,
+    "stereo3d": false,
+    "interlaced": false,
+    "audioLanguages": [
+      "en"
+    ],
+    "subtitleLanguages": [],
+    "subtitleTracks": 0,
+    "imageSubtitles": false,
+    "styledSubtitles": false,
+    "fonts": false,
+    "chapters": false,
+    "commentaryTracks": 0,
+    "commentarySubtitles": 0,
+    "audioDescriptionTracks": 0,
+    "sdhSubtitleLanguages": [],
+    "forcedSubtitleLanguages": [],
+    "closedCaptions": false
+  },
+  "probe": {
+    "tool": "ffprobe",
+    "version": null,
+    "at": "2026-09-19T08:00:00Z",
+    "note": null
+  }
+}

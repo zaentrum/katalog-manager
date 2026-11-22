@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -390,6 +391,13 @@ type CaptionsRead struct {
 	// or not said), which sets how far from its place a window may lie
 	// (inPlace).
 	Gop *float64
+	// ReadAt is when it was read, FFprobe the release that read it.
+	ReadAt  *time.Time
+	FFprobe string
+	// Report is the read's report as the analyzer sent it (its "original"),
+	// which the contract's deletion gate reads as the record logic reads a
+	// deletion's read (RecordLogicHolds); nil: none kept.
+	Report []byte
 }
 
 // SourceCaptions is what a read that decoded frames found of the closed
@@ -417,11 +425,12 @@ func SourceCaptions(ctx context.Context, q Querier, sourceID string) (read *Capt
 	var windows, offList []byte
 	var duration, spanStart, spanEnd, gop *float64
 	var streams *int
-	var reason *string
+	var reason, report, ffprobe *string
+	var readAt *time.Time
 	var same bool
 	var finding *string
 	err = q.QueryRow(ctx, `SELECT c.state, c.captionwindows, c.duration, c.readspanstart, c.readspanend, c.readgop,
-			c.captionstreams, c.offlist, c.reason,
+			c.readreport, c.readat, c.ffprobeversion, c.captionstreams, c.offlist, c.reason,
 			c.sourcesize IS NOT DISTINCT FROM s.sizebytes
 			AND (c.sourceqh1 IS NULL OR s.qh1 IS NULL OR c.sourceqh1 = s.qh1)
 			AND (c.finding IS NULL OR c.sourcerecordedat IS NOT DISTINCT FROM s.recordedat)
@@ -430,8 +439,8 @@ func SourceCaptions(ctx context.Context, q Querier, sourceID string) (read *Capt
 					'[]'::jsonb)) w WHERE (jsonb_typeof(w->'interlacedFrames') = 'number' AND (w->>'interlacedFrames')::numeric > 0)
 					OR (jsonb_typeof(w->'repeatFrames') = 'number' AND (w->>'repeatFrames')::numeric > 0))), c.finding
 		FROM `+store.SourceCaptionsTable+` c JOIN com_nalet_katalog_itemsources s ON s.id = c.source_id
-		WHERE c.source_id = $1`, sourceID).Scan(&state, &windows, &duration, &spanStart, &spanEnd, &gop, &streams,
-		&offList, &reason, &same, &finding)
+		WHERE c.source_id = $1`, sourceID).Scan(&state, &windows, &duration, &spanStart, &spanEnd, &gop, &report, &readAt,
+		&ffprobe, &streams, &offList, &reason, &same, &finding)
 	var off []string
 	if err == nil && offList != nil {
 		if err = json.Unmarshal(offList, &off); err != nil {
@@ -458,6 +467,13 @@ func SourceCaptions(ctx context.Context, q Querier, sourceID string) (read *Capt
 		return nil, "", nil, nil
 	}
 	r := CaptionsRead{Duration: duration, CaptionStreams: streams, OffList: off, Gop: gop}
+	if report != nil {
+		r.Report = []byte(*report)
+	}
+	r.ReadAt = readAt
+	if ffprobe != nil {
+		r.FFprobe = *ffprobe
+	}
 	if spanStart != nil && spanEnd != nil {
 		r.Span = &Span{Start: *spanStart, End: *spanEnd}
 	}
@@ -1168,6 +1184,9 @@ func captionsRule(records, probes []Doc, f GateFacts) (carried, unknown string) 
 			if flag(film, "dispositions", "captions") {
 				recordSays = "its record marks its picture as captions (its dispositions)"
 			}
+			if contractWindowsShow(pyGet(film, "captionWindows")) {
+				recordSays = "a caption window its record keeps of its picture shows them"
+			}
 		}
 		if probe != nil {
 			for _, film := range filmsOf(probe, true, nil) {
@@ -1230,6 +1249,9 @@ func captionsRule(records, probes []Doc, f GateFacts) (carried, unknown string) 
 	}
 	if why := pictureNotFilm(records[0], probe); why != "" {
 		return "", CaptionsUnknown + ": " + why
+	}
+	if why := coverMarkWhy(records, probes); why != "" {
+		return "", why
 	}
 	if why := unscanned(records, probes); why != "" {
 		return "", why

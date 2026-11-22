@@ -36,6 +36,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24'
+      # The differential holds the gate to the record logic (python3, the
+      # runner's, is enough), and the end-to-end test runs the schemas'
+      # validator on a library a retire wrote in, which needs jsonschema and
+      # referencing (internal/library/testdata/contract).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install "jsonschema[format-nongpl]>=4.23" referencing
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...

@@ -47,7 +47,11 @@ func (f *retireFixture) rewriteRecord(t *testing.T, change func(rec map[string]a
 			t.Fatal(err)
 		}
 		if *probe != "" {
-			copies[ProbeFile] = *probe
+			// as ffprobe writes one: with its format, of the record's
+			// container, where it gives none
+			container, _ := rec["container"].(map[string]any)
+			format, _ := container["format"].(string)
+			copies[ProbeFile] = withFormat(t, *probe, format)
 		}
 	}
 	librarytest.WriteSource(t, f.sourceDir, rec, copies)
@@ -234,7 +238,8 @@ func TestARecordWithoutALengthKeepsTheOriginalOnTheRetirePath(t *testing.T) {
 			f := newRetireFixtureOf(t, sameEssence, sameEssence)
 			f.rewriteRecord(t, change, nil)
 			// a read of its own length, ten seconds, its windows in them
-			storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_sourcecaptions SET duration = 10, captionwindows = $2::jsonb
+			storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_sourcecaptions SET duration = 10, captionwindows = $2::jsonb,
+				readreport = NULL
 				WHERE source_id = $1`, rtSource, `[{"at": 0, "start": 0, "end": 0.9, "frames": 48, "captions": false,
 				"interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.1, "start": 1, "end": 1.9, "frames": 48, "captions": false,
 				"interlacedFrames": 0, "repeatFrames": 0}, {"at": 0.3, "start": 3, "end": 3.9, "frames": 48, "captions": false,
@@ -281,7 +286,8 @@ func TestASupersededOriginalIsAskedAgainBeforeItsEvent(t *testing.T) {
 	f := newRetireFixture(t)
 	f.supersede(t, true, withFiveOne)
 	beforeSupersededGateAgain = func() {
-		storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_sourcecaptions SET captions = true, captionwindows = $2::jsonb
+		storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_sourcecaptions SET captions = true, captionwindows = $2::jsonb,
+			readreport = NULL
 			WHERE source_id = $1`, rtSource, strings.Replace(noCaptionsWindows, `"at": 0.5, "start": 300, "end": 301.88, "frames": 48, `+
 			`"captions": false`, `"at": 0.5, "start": 300, "end": 301.88, "frames": 48, "captions": true`, 1))
 	}

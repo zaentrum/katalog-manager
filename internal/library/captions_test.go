@@ -63,9 +63,9 @@ func TestAReadOfTheCaptionsReleasesTheRetirementHeldForThem(t *testing.T) {
 // planProbe is a stored probe that gives the plan of its picture (its start
 // at 0, 24 frames a second; its length the record's), and planProbes the
 // probes of the one original it is of.
-var planProbe = Doc{{Key: "format", Value: Doc{{Key: "start_time", Value: "0.000000"}}},
+var planProbe = Doc{{Key: "format", Value: Doc{{Key: "format_name", Value: "matroska,webm"}, {Key: "start_time", Value: "0.000000"}}},
 	{Key: "streams", Value: []any{Doc{{Key: "index", Value: 0}, {Key: "codec_type", Value: "video"},
-		{Key: "avg_frame_rate", Value: "24/1"}}}}}
+		{Key: "codec_name", Value: "h264"}, {Key: "field_order", Value: "progressive"}, {Key: "avg_frame_rate", Value: "24/1"}}}}}
 var planProbes = []Doc{planProbe}
 
 // window is a window of a read that decoded frames frames (0: failed, no
@@ -92,19 +92,25 @@ func read(duration float64, ws ...CaptionWindow) GateFacts {
 
 // film is the source record of a film of length seconds (600 where it is 0
 // or less), as a record writer writes one: its container, of that length,
-// and its one picture, h264, progressive.
+// its essence's field order (no fields) and its one picture, h264,
+// progressive.
 func film(length float64) Doc {
 	if length <= 0 {
 		length = 600
 	}
 	return Doc{{Key: "container", Value: Doc{{Key: "format", Value: "matroska,webm"}, {Key: "durationMs", Value: length * 1000}}},
+		{Key: "essence", Value: Doc{{Key: "interlaced", Value: false}}},
 		{Key: "streams", Value: []any{Doc{{Key: "index", Value: 0}, {Key: "type", Value: "video"}, {Key: "codec", Value: "h264"},
 			{Key: "fieldOrder", Value: "progressive"}}}}}
 }
 
-// filmWith is film with the essence essence.
+// filmWith is film with the essence essence (its field order no fields
+// where it says none).
 func filmWith(length float64, essence Doc) Doc {
-	return append(film(length), Field{"essence", essence})
+	if _, has := essence.Get("interlaced"); !has {
+		essence = essence.With("interlaced", false)
+	}
+	return film(length).With("essence", essence)
 }
 
 // recordOfProbe is the source record a record writer makes of the stored

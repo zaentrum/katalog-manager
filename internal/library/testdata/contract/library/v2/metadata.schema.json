@@ -1,0 +1,318 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zaentrum.github.io/schemas/library/v2/metadata.schema.json",
+  "title": "metadata.json — the database's texts and images, projected",
+  "description": "Sits at the root of the item folder, next to item.json; the images it lists sit in metadata/ beside it. It is not a document anyone edits: it is what the catalog database held about this item at the moment asOf names — the item's row as databaseUpdatedAt says it was last modified, with the reference data as fresh as sources says — written by the one service that owns the item and replaced whole on every projection. There is no merge, so there is no conflict, and no revision to keep in step. A rebuild restores these texts and images exactly as the last projection left them. Per-user state — progress, lists, settings — is never here.\n\nThere is no checksums file beside it, on purpose: a projection is replaced whole, so a checksum written with one would be wrong after the next, and each image is named by the hash of its own bytes, so its name is its check. The records written once are the ones covered.",
+  "type": "object",
+  "required": ["schema", "itemId", "type", "asOf", "titles", "images"],
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "series" } }, "required": ["type"] },
+      "then": { "not": { "anyOf": [{ "required": ["episode"] }, { "required": ["collection"] }] } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "episode" } }, "required": ["type"] },
+      "then": { "not": { "anyOf": [{ "required": ["series"] }, { "required": ["collection"] }] } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "movie" } }, "required": ["type"] },
+      "then": { "not": { "anyOf": [{ "required": ["series"] }, { "required": ["episode"] }] } }
+    },
+    {
+      "$comment": "An ordering is a decision about a series; a place in one is a property of an episode.",
+      "if": { "not": { "properties": { "type": { "const": "series" } }, "required": ["type"] } },
+      "then": { "properties": { "library": { "not": { "required": ["defaultOrdering"] } } } }
+    },
+    {
+      "if": { "not": { "properties": { "type": { "const": "episode" } }, "required": ["type"] } },
+      "then": { "properties": { "library": { "not": { "required": ["numbering"] } } } }
+    },
+    {
+      "$comment": "Only an episode is covered by another's file, and only by another episode of its series.",
+      "if": { "not": { "properties": { "type": { "const": "episode" } }, "required": ["type"] } },
+      "then": { "properties": { "library": { "not": { "required": ["coveredBy"] } } } }
+    },
+    {
+      "$comment": "Bonus material sits beside its movie or series, never on an episode.",
+      "if": { "properties": { "type": { "const": "episode" } }, "required": ["type"] },
+      "then": { "properties": { "library": { "not": { "required": ["extras"] } } } }
+    },
+    {
+      "$comment": "A series has no timeline of its own: its episodes have the marks.",
+      "if": { "properties": { "type": { "const": "series" } }, "required": ["type"] },
+      "then": { "not": { "required": ["marks"] } }
+    }
+  ],
+  "unevaluatedProperties": false,
+  "properties": {
+    "schema": { "const": "zaentrum.library.metadata/2" },
+    "itemId": { "$ref": "defs.schema.json#/$defs/uuid", "description": "Equals the itemId of item.json in the same folder." },
+    "type": { "enum": ["movie", "series", "episode"] },
+    "asOf": { "$ref": "defs.schema.json#/$defs/timestamp", "description": "The state of the database this file is a projection of. A later projection replaces the whole file." },
+    "projectedBy": { "type": "string", "description": "The service that wrote it." },
+    "databaseUpdatedAt": { "$ref": "defs.schema.json#/$defs/databaseUpdatedAt" },
+    "sources": { "$ref": "defs.schema.json#/$defs/sources" },
+    "externalIds": { "$ref": "defs.schema.json#/$defs/externalIds", "description": "The reference ids the database holds for the item now. item.json keeps the ones the item was created with, written once, so it cannot follow a re-match; these are projected with the texts, a rebuild restores them, and a reader that refetches texts and images uses them. Absent from a projection written before 2026-10-06, whose reader falls back to item.json's." },
+
+    "titles": {
+      "type": "object",
+      "required": ["primary"],
+      "additionalProperties": false,
+      "properties": {
+        "primary": { "type": "string", "minLength": 1, "description": "Display title. May differ from the title item.json recorded at creation." },
+        "original": { "type": ["string", "null"], "description": "Title in the original language." },
+        "sort": { "type": ["string", "null"] },
+        "qualifier": { "type": ["string", "null"], "description": "Disambiguates remakes and local versions: 'US', 'UK', '2009'." },
+        "localized": {
+          "type": "object",
+          "description": "Keyed by BCP 47 language.",
+          "propertyNames": { "$ref": "defs.schema.json#/$defs/language" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "title": { "type": "string" },
+              "sortTitle": { "type": ["string", "null"] },
+              "tagline": { "type": ["string", "null"] },
+              "overview": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+
+    "releaseDate": { "oneOf": [{ "$ref": "defs.schema.json#/$defs/date" }, { "type": "null" }] },
+    "genres": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "tags": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "rating": { "type": ["number", "null"], "minimum": 0, "maximum": 10 },
+    "contentRating": { "type": ["string", "null"], "description": "e.g. 'R', 'FSK 16'." },
+
+    "credits": {
+      "type": "array",
+      "description": "People, by reference, and what each did for this title: one credit per person and role. The person's own texts and images are not copied here: personId keys the person the database holds, recorded in people/<aa>/<personId>/person.json. A credit whose person has no record there yet is not an error — the person may not have been projected — and a validator says so as a note.",
+      "items": {
+        "type": "object",
+        "required": ["personId", "name", "role"],
+        "additionalProperties": false,
+        "properties": {
+          "personId": { "$ref": "defs.schema.json#/$defs/uuid", "description": "Stable: person pages are user-facing URLs keyed by it." },
+          "name": { "type": "string", "description": "The name as recorded for this title: the credit as the database held it when the item was projected, which may be the name the person went by then. The person's current name lives in their person.json; a reader prefers that one when it exists, and falls back to this when the person has no record yet." },
+          "role": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,39}$",
+            "description": "What the person did, as a token of an open vocabulary. The well-known roles, in the order a reader lists them: actor, creator, director, writer, producer, composer, cinematographer, editor. Any other token is valid too — 'production-designer', 'casting' — and a reader that does not know one shows it generically, under the token itself, after the roles it knows."
+          },
+          "job": { "type": ["string", "null"], "description": "What the person did in this role, in the source's own words: 'Screenplay', 'Original Music Composer'. Several jobs of one person in one role are one credit, their words joined with ', ' ('Story, Teleplay'). Null when the source names none, as for an actor." },
+          "character": { "type": ["string", "null"], "description": "Whom an actor plays. A series joins the characters one person plays across its episodes with ' / '." },
+          "order": { "type": ["integer", "null"], "description": "The billing order within the role, lowest first; null when the source gives none." },
+          "episodeCount": { "type": ["integer", "null"], "minimum": 0, "description": "A series' credit: how many of its episodes credit the person in this role. Null when the source does not say, as for a movie." },
+          "tmdbPerson": { "type": ["string", "null"], "pattern": "^[0-9]+$" }
+        }
+      }
+    },
+
+    "collection": {
+      "type": ["object", "null"],
+      "description": "Franchise membership of a movie.",
+      "additionalProperties": false,
+      "properties": {
+        "tmdbCollection": { "type": "string" },
+        "name": { "type": "string" },
+        "order": { "type": ["integer", "null"] }
+      }
+    },
+
+    "series": {
+      "type": "object",
+      "description": "Present only on a series: the series as a whole and every season the database knows, whether or not its episodes are on storage. Which episodes ARE on storage is the episodes/ folders themselves; nothing lists them, so adding an episode never rewrites this file.",
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["returning", "ended", "canceled", "in-production", "unknown"] },
+        "firstAirDate": { "oneOf": [{ "$ref": "defs.schema.json#/$defs/date" }, { "type": "null" }] },
+        "lastAirDate": { "oneOf": [{ "$ref": "defs.schema.json#/$defs/date" }, { "type": "null" }] },
+        "network": { "type": ["string", "null"] },
+        "seasons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["number"],
+            "additionalProperties": false,
+            "properties": {
+              "number": { "type": "integer", "minimum": 0, "description": "0 = specials." },
+              "tmdbSeason": { "type": ["string", "null"], "pattern": "^[0-9]+$", "description": "Kept here too, so a season with no episodes on storage keeps its reference id." },
+              "name": { "type": ["string", "null"], "description": "Anthology and anime seasons carry their own titles." },
+              "overview": { "type": ["string", "null"] },
+              "airDate": { "oneOf": [{ "$ref": "defs.schema.json#/$defs/date" }, { "type": "null" }] },
+              "episodeCountReference": { "type": ["integer", "null"], "description": "Episodes the reference database lists, to show gaps against the episode folders." }
+            }
+          }
+        }
+      }
+    },
+
+    "episode": {
+      "type": "object",
+      "description": "Present only on an episode. The episode's own name and overview are in titles; its numbering is in item.json.",
+      "additionalProperties": false,
+      "properties": {
+        "airDate": { "oneOf": [{ "$ref": "defs.schema.json#/$defs/date" }, { "type": "null" }] }
+      }
+    },
+
+    "images": {
+      "type": "array",
+      "description": "Every image file in metadata/ that this projection uses. Each is named by the hash of its own content, so an image is written once and never replaced in place: a new image is a new file, and the projection that stops naming an old one leaves it to be swept (library-v2-sweep.py). A missing kind falls back to the parent at read time (an episode without a still shows its season poster, then the series poster); nothing is copied. At most one image of a kind is primary — in a series, one per kind for the series itself and one per kind for each season. An entry is an image as one kind: bytes that are several kinds — a backdrop byte-identical to the poster — are an entry of each kind, sharing the one file, and a kind lists a file once (in a series once for the series itself and once for each season).",
+      "items": {
+        "$ref": "defs.schema.json#/$defs/image",
+        "properties": {
+          "kind": { "enum": ["poster", "backdrop", "logo", "still", "banner", "thumb"] }
+        }
+      }
+    },
+
+    "videos": {
+      "type": "array",
+      "description": "Trailers, teasers and clips published elsewhere, by reference: online, not on storage. A trailer that exists as a local file of its own is an extra of kind trailer (extras/<extraId>/extra.json), and a trailer packaged into a version's folder, as the layout v1 had it, is listed in that package.json.",
+      "items": {
+        "type": "object",
+        "required": ["site", "key"],
+        "additionalProperties": false,
+        "properties": {
+          "site": { "type": "string", "description": "Hosting site." },
+          "key": { "type": "string", "description": "The site's id for the video." },
+          "url": { "type": ["string", "null"] },
+          "name": { "type": ["string", "null"] },
+          "kind": { "enum": ["trailer", "teaser", "clip", "featurette", "other", null] },
+          "language": { "oneOf": [{ "$ref": "defs.schema.json#/$defs/language" }, { "type": "null" }] },
+          "durationMs": { "type": ["integer", "null"], "minimum": 0 },
+          "publishedAt": { "oneOf": [{ "$ref": "defs.schema.json#/$defs/timestamp" }, { "type": "null" }] },
+          "origin": { "enum": ["legacy-catalog", "tmdb", "manual"] }
+        }
+      }
+    },
+
+    "library": {
+      "type": "object",
+      "description": "The decisions the database holds about this item's storage. Nothing here is a fact about the bytes — those are in the version, source and package records, which are written once and measured. These are choices a person or the catalog made that no measurement could recover, so they are projected with the texts and a rebuild restores them.",
+      "additionalProperties": false,
+      "properties": {
+        "primaryVersionId": {
+          "oneOf": [{ "$ref": "defs.schema.json#/$defs/uuid" }, { "type": "null" }],
+          "description": "The version that plays when the viewer does not choose. Null when the database never decided, and a reader then picks for itself. It is a decision, not a place: it never moves a file. A covered episode's (coveredBy) names a version of its holder — the version of the episode whose file covers it, in that episode's folder, made from a source that lists this one among the episodes it covers — since it has no version of its own."
+        },
+        "versionLabels": {
+          "type": "object",
+          "description": "versionId -> what a viewer picks between, e.g. 'Director's Cut', 'Black & White'. Listed only where a person set one; every other version is labelled at read time from its edition and presentation, so an unlisted version is not an omission. A covered episode's label versions of its holder, as its primaryVersionId names one.",
+          "propertyNames": { "$ref": "defs.schema.json#/$defs/uuid" },
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "coveredBy": {
+          "oneOf": [{ "$ref": "defs.schema.json#/$defs/uuid" }, { "type": "null" }],
+          "description": "Episode only: the episode whose file covers this one too, when one file holds several episodes and this episode has none of its own — the holder, the first episode the file covers, of the same series and season. A covered episode keeps its own item and its own texts and images here, and no source or version of its own: it plays what its holder plays, one package for every episode the file holds, and its primaryVersionId names a version of the holder whose source lists this episode among the ones it covers (source.json covers). Absent, or null, for an episode whose file is its own or that has none yet, and from a projection written before 2026-10-08."
+        },
+        "match": {
+          "description": "Whether and how this item is identified against the reference database. item.json carries the reference ids; this says how far to trust them, so a re-sync can skip what is unmatched or disputed and never overwrite what a person decided.",
+          "allOf": [{ "$ref": "defs.schema.json#/$defs/decision" }],
+          "type": "object",
+          "required": ["status", "decidedBy"],
+          "properties": {
+            "status": { "enum": ["matched", "unmatched", "manual", "disputed"] },
+            "decidedBy": true, "decidedAt": true, "confidence": true, "evidence": true
+          },
+          "unevaluatedProperties": false
+        },
+        "reference": {
+          "type": "object",
+          "description": "Facts as published. Deliberately separate from the version's MEASURED runtime: a reference database lists one runtime for every cut.",
+          "additionalProperties": false,
+          "properties": {
+            "runtimeMs": { "type": ["integer", "null"], "minimum": 0 },
+            "runtimeSource": { "enum": ["tmdb", "legacy-catalog", "manual", null] }
+          }
+        },
+        "defaultOrdering": {
+          "$ref": "#/$defs/ordering",
+          "description": "Series only: the ordering a viewer sees unless they choose another. The orderings themselves are not listed here — each episode records its own place in each of them, so adding an episode never rewrites the series."
+        },
+        "numbering": {
+          "type": "object",
+          "description": "Episode only: where this episode sits under each ordering it appears in, which is the whole record of that ordering — nothing on the series repeats it. Its aired entry agrees with the seasonNumber and episodeNumber item.json was created with, and no two episodes of a series may share a place in one ordering.",
+          "propertyNames": { "$ref": "#/$defs/ordering" },
+          "additionalProperties": {
+            "type": "object",
+            "required": ["episode"],
+            "additionalProperties": false,
+            "properties": {
+              "season": { "type": ["integer", "null"], "minimum": 0 },
+              "episode": { "type": "integer", "minimum": 0 },
+              "episodeEnd": { "type": ["integer", "null"], "minimum": 0, "description": "Set when this one file covers several episodes: on the holder, the first of them, to the number in this ordering of the last episode its file covers — the place there of the last episode whose coveredBy names this one. Null on every other episode, a covered one among them, which has a place of its own." }
+            }
+          }
+        },
+        "extras": {
+          "type": "object",
+          "description": "Movie and series only: extraId -> what a person decided about how that extra is shown, each key an extras/<extraId>/ folder of this item. Listed only where a person decided something. A reader lists the extras by order, lowest first, and then those without one by extra.json's createdAt and then extraId — so with nothing listed here, every extra is shown in the order it was taken in. hidden keeps an extra off the list without removing it; label is what a viewer sees instead of the title extra.json was written with.",
+          "propertyNames": { "$ref": "defs.schema.json#/$defs/uuid" },
+          "additionalProperties": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": false,
+            "properties": {
+              "order": { "type": "integer", "minimum": 0 },
+              "hidden": { "type": "boolean" },
+              "label": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+
+    "marks": {
+      "type": "object",
+      "description": "Movie and episode only: the marks on the item's timeline as the database holds them now — its chapters, each with the ordinal the database gives it, and the intro, recap and credits ranges, each with the detector that found it. They are the marks of the version that plays (library.primaryVersionId), found on its original; a detector run again, or a person, changes them after that version was written, and its version.json keeps the marks it was established with, written once. A rebuild restores the database's marks from here, and from the version that plays only for a projection that has none, one written before 2026-10-22. Empty lists are a database that holds no marks for the item.",
+      "required": ["chapters", "segments"],
+      "additionalProperties": false,
+      "properties": {
+        "chapters": {
+          "type": "array",
+          "description": "In the order of the timeline: by start, then by end.",
+          "items": {
+            "type": "object",
+            "required": ["startMs", "endMs", "title", "ordinal"],
+            "additionalProperties": false,
+            "properties": {
+              "startMs": { "type": "integer", "minimum": 0 },
+              "endMs": { "type": "integer", "minimum": 0 },
+              "title": { "type": ["string", "null"] },
+              "ordinal": { "type": ["integer", "null"] }
+            }
+          }
+        },
+        "segments": {
+          "type": "array",
+          "description": "By start, then by end, kind and detector; as version.json keeps them.",
+          "items": {
+            "type": "object",
+            "required": ["kind", "startMs", "endMs", "detector", "confidence", "label"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "enum": ["intro", "recap", "credits", "preview", "commercial", "other"] },
+              "startMs": { "type": "integer", "minimum": 0 },
+              "endMs": { "type": "integer", "minimum": 0 },
+              "detector": { "type": ["string", "null"] },
+              "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+              "label": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    },
+
+    "curation": { "$ref": "defs.schema.json#/$defs/curation" },
+    "fieldOrigins": { "$ref": "defs.schema.json#/$defs/fieldOrigins" }
+  },
+
+  "$defs": {
+    "ordering": { "enum": ["aired", "dvd", "absolute", "production"] }
+  }
+}

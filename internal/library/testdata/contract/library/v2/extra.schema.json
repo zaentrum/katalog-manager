@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zaentrum.github.io/schemas/library/v2/extra.schema.json",
+  "title": "extras/<extraId>/extra.json — bonus material, beside its movie or series",
+  "description": "Written once, when the extra is taken in, and never touched again. Bonus material — a featurette, a making-of, a deleted scene, a trailer that is a file of its own — belongs to a movie or a series and lives inside that item's folder, never as an item of its own and never on an episode:\n\n  movies/<aa>/<itemId>/extras/<extraId>/\n  series/<aa>/<seriesId>/extras/<extraId>/   a series' extra may name the season it belongs to\n\nAn extra is a write-once folder like a version, holding this record and its original file or files, a package made from them, or both — or, as the platform writes one, only the package, the original it was made from described by packagedFrom and deleted once the package was recorded:\n  extra.json             this record\n  original.<ext>         each one originalFiles names, when the extra keeps it\n  hls/ subs/ trickplay/  the package, when it has one\n  checksums.sha256       extra.json and every file above, sha256sum -c format\n  package.json           the package's record, the same document as a version's package, with the hash of checksums.sha256\n  .complete              sha256:<hex> of package.json\nUnlike a version's, the checksums list the originals too: an extra is written whole, and no event ever deletes part of it. They never list itself, package.json or .complete, the links of the chain above them. This record describes each original as a source record describes its file — size and fixity — so the cheap check a version's original gets from its source record, an extra's gets from here.\n\nWhether an extra is finished is told by its folder alone. A packaged extra is finished by its .complete, as a version is. An extra that keeps only its original has no package.json and no .complete: its checksums.sha256 is written last, after this record and the originals, so the checksums file is its completion signal. Anything else — no checksums file yet, or package files without a .complete — is an extra that never finished, and neither the database nor a rebuild uses it. Because the checksums are written once, an extra that keeps only its original is never packaged in place: a package made later is a new extra folder, and an extra-removed event (event.schema.json) retires the old one, whose folder a reader then ignores and a sweep collects.\n\nWhat a viewer sees — the order the extras are listed in, which are hidden, a label instead of the title — is a decision the database holds, projected into the item's metadata.json under library.extras. An online video, by reference, is metadata.json's videos[]; an extra is a local file.\n\nPaths: originalFiles are plain names in THIS folder.",
+  "type": "object",
+  "required": ["schema", "extraId", "createdAt", "kind", "title", "originalFiles", "originals"],
+  "additionalProperties": false,
+  "dependentRequired": {
+    "probe": ["container", "streams", "fidelity", "essence"],
+    "container": ["probe"],
+    "streams": ["probe"],
+    "fidelity": ["probe"],
+    "essence": ["probe"]
+  },
+  "properties": {
+    "schema": { "const": "zaentrum.library.extra/2" },
+    "extraId": { "$ref": "defs.schema.json#/$defs/uuid", "description": "Equals the name of the folder this file sits in." },
+    "createdAt": {
+      "$ref": "defs.schema.json#/$defs/timestamp",
+      "description": "When the extra was taken in and this record written. Extras nobody ordered are listed in this order."
+    },
+    "createdBy": { "type": "string", "description": "The service or person that took it in." },
+
+    "kind": {
+      "enum": ["featurette", "behind-the-scenes", "making-of", "deleted-scene", "interview", "trailer", "teaser", "gag-reel", "short", "other"],
+      "description": "'featurette': a short piece about the work or its subject. 'behind-the-scenes': footage of the production. 'making-of': a documentary of the production. 'deleted-scene': a scene cut from the work. 'interview': cast or crew talking about it. 'trailer', 'teaser': one that exists as a local file of its own. 'gag-reel': outtakes. 'short': a short work released with it. 'other': anything else."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The title as it was when the extra was taken in. What a viewer sees instead, when a person chose a label, is library.extras in the item's metadata.json."
+    },
+    "localizedTitles": {
+      "type": "object",
+      "description": "The title in other languages, keyed by BCP 47 language.",
+      "propertyNames": { "$ref": "defs.schema.json#/$defs/language" },
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "language": {
+      "oneOf": [{ "$ref": "defs.schema.json#/$defs/language" }, { "type": "null" }],
+      "description": "The language spoken in it; null when unknown."
+    },
+    "runtimeMs": { "type": ["integer", "null"], "minimum": 0, "description": "Measured from the original; null when nothing measured it." },
+    "seasonNumber": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Only on a series' extra: the season it belongs to, which must be one the series' metadata.json lists; 0 = specials. A series' extra without it belongs to the series as a whole."
+    },
+    "originalFiles": {
+      "type": "array",
+      "uniqueItems": true,
+      "description": "The originals kept in THIS folder, each under the name the library gives it, as a version's are — original.<ext> normally, original-1.<ext>, original-2.<ext> … when the extra came in parts — and none when only its package is kept; an extra written before 2026-10-08 may name them as they arrived. The checksums written with the folder list every one of them, so they are covered for as long as the extra exists, and originals describes each one.",
+      "items": {
+        "allOf": [
+          { "$ref": "defs.schema.json#/$defs/fileName" },
+          { "not": { "enum": ["extra.json", "package.json", "checksums.sha256", ".complete", "hls", "subs", "trickplay"] } }
+        ]
+      }
+    },
+    "originals": {
+      "type": "array",
+      "description": "Each file originalFiles names, in the same order, described the way a source record describes its file: its name, its size and its fixity — qh1 always, the sha256 of the whole file when it is known. A version's originals are described by their source records; an extra has none, so it carries its own, and its original can be checked as cheaply as a version's: its size and qh1, two reads however big the file is.",
+      "items": {
+        "type": "object",
+        "required": ["name", "sizeBytes", "fixity"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "$ref": "defs.schema.json#/$defs/fileName", "description": "One of originalFiles." },
+          "sizeBytes": { "type": "integer", "minimum": 0 },
+          "fixity": { "$ref": "defs.schema.json#/$defs/fixity" }
+        }
+      }
+    },
+    "packagedFrom": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The originals the package was made from, when the extra keeps none of them: an extra the platform takes in waits outside the library until its package is recorded, and its original is deleted then, so this is the only record of the file — the name the library would give it, its size and its fixity, qh1 always — described as originals describes a file the folder keeps. Only on a packaged extra that keeps no original: one that keeps its originals describes them under originals.",
+      "items": {
+        "type": "object",
+        "required": ["name", "sizeBytes", "fixity"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "$ref": "defs.schema.json#/$defs/fileName", "description": "The name the library would give the original, as it names a version's: original.<ext>, or original-<n>.<ext> for the nth of several. Never the name it arrived under, which an extra written before 2026-10-08 may hold." },
+          "sizeBytes": { "type": "integer", "minimum": 0 },
+          "fixity": { "$ref": "defs.schema.json#/$defs/fixity" }
+        }
+      }
+    },
+
+    "origin": {
+      "type": "object",
+      "description": "Where the file came from, when that is something a record can name. 'link': a video published online that was downloaded — the video metadata.json's videos[] lists under the same site and, as its key, the same externalId — so a rebuild can give that link its local copy back. Written once like the rest: a link the database later drops is still named here.",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["link"] },
+        "site": { "type": ["string", "null"], "description": "The hosting site, as videos[] names it." },
+        "externalId": { "type": ["string", "null"], "description": "The site's id for the video: what videos[] lists as its key." },
+        "url": { "type": ["string", "null"] },
+        "fetchedAt": { "oneOf": [{ "$ref": "defs.schema.json#/$defs/timestamp" }, { "type": "null" }], "description": "When the file was downloaded." }
+      }
+    },
+
+    "container": {
+      "$ref": "source.schema.json#/properties/container",
+      "description": "As a source record carries it for its original. This and the four below are present together, exactly when the original was probed; an extra in several parts is one encode split into files, and they describe its first part, the essence all of them."
+    },
+    "streams": { "$ref": "source.schema.json#/properties/streams", "description": "Every stream the original contained, as the probe reported it." },
+    "fidelity": { "$ref": "source.schema.json#/properties/fidelity", "description": "Whether the original was untouched or already a re-encode." },
+    "essence": { "$ref": "defs.schema.json#/$defs/essence", "description": "What the original carries, in the terms a package's essence is compared in." },
+    "probe": {
+      "type": "object",
+      "description": "When the original was probed and with what. There is no probe file: a kept original is covered by the checksums and can be probed again.",
+      "required": ["tool", "at"],
+      "additionalProperties": false,
+      "properties": {
+        "tool": { "const": "ffprobe" },
+        "version": { "type": ["string", "null"] },
+        "at": { "$ref": "defs.schema.json#/$defs/timestamp" },
+        "note": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

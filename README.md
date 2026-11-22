@@ -2868,28 +2868,29 @@ or `found` anything but exactly `progressive` (`fields`, `film`,
 `telecine`, `mixed`, `field-pictures`, `unknown`, a word the gate doesn't
 know, a blank, another type, none), or did something to the picture or
 doesn't say (a `done` other than `progressive` or `none`, or none), or did
-not verify it whole (`verified.ok` and `verified.complete` true), or found
+not verify it whole (`verified.ok` and `verified.complete` true, and its
+read-through decoded every packet but its leading pictures: `frames` =
+`packets` - `leading`, each a whole number from 0; one without `leading`,
+from before that rule, is never complete), or found
 `progressive` and its own counts say otherwise (its read-through counted
 chunks in fields, `verified.chunksInFields` above 0, or its examination,
 `idet`, more `tff` and `bff` pictures together than `progressive` ones; a
-count that can't be read holds too); the scan of
-another package version made of it (one whose `version.json` names it in
-`sourceIds`, every entry of `versions/` listed: one that can't be listed,
-or an entry that is no folder of its own, a link or a file, holds it; a
-version whose `version.json` says no list of `sourceIds` holds it, and one
-without a `version.json` whose package's scan holds) found anything but
-`progressive`, or `progressive` and counts of its own that say otherwise -
-what an older version's scan lacks is for the version it is retired from to
-state, not a hold for good -; or such a version's or
-package's record can't be read (one not there says nothing); its record's `interlaced` is no boolean;
+count that can't be read holds too); the scan of the package of any other
+version of the title, of it or of another source, doesn't let it go by the
+same whole rule (every entry of `versions/` listed: one that can't be
+listed, or an entry that is no folder of its own, a link or a file, holds
+it; a version whose `version.json` can't be read or says no list of
+`sourceIds` holds it); or such a version's package record can't be read
+(one not there says nothing); its record's `interlaced` is anything but
+`false` (missing, null, no boolean);
 a read of its frames (see [Closed captions](#closed-captions)) found frames
 coded as fields (`interlacedFrames`) or ones that repeat a field
-(`repeatFrames`) in a window, or gave a count of them that can't be read; or
-neither its record nor its probe states a field order for its
-picture, whatever any package's scan says, which counts as not known ("its
-field order is not stated and it was never examined"; a policy by the
-picture's codec and the record's container, `container.format`,
-`AbsentFieldOrder`, may later let a group go, and reads no scan). No word of
+(`repeatFrames`) in a window, or gave a count of them that can't be read; a
+caption window its record keeps of its picture counted interlaced frames or
+gives such a count; or its record's picture or its probe's film states no
+field order, whatever any package's scan says: the field order is read as
+written, exactly `progressive` on both sides, and a missing one is not
+known ("its record's field order is not stated"). No word of
 the transcoder's lets an original go, neither what its scan says was done
 nor that it `found` `progressive`: a package called whole has been found not
 to be, and the record is informational. What may let such an original go
@@ -3034,14 +3035,47 @@ the original is read again; one that found captions or frames in fields is
 of the file, whichever record. An extra's original the gate lets go is
 checked against its record again right before it is moved or unlinked.
 
+The contract's deletion gate runs beside the gate's own rules, and keeps
+what it keeps: the record logic's gate block (the schemas'
+`tools/libv2_records.py`, which the validator and the rebuild run as the
+same text), ported function for function in `internal/library/contract.go`
+(`RecordLogicHolds`). It reads what the record logic reads: the source
+record, the stored probe as it lies, the package record of every version of
+the title, and the catalog's read of the original as the analyzer sent it
+(the report a read keeps, `readreport`; a clean read kept before it, without
+one, is read again, and until then holds). Where the record logic would
+raise it holds both; where its reading is hard to follow exactly (a time
+written as Python's `float()` alone reads it) it reads less, which holds
+more. What it keeps of the closed captions sets the gate's unknown ("the
+contract's deletion gate keeps it for its closed captions: ..."), of the
+fields its `interlaced`. A test (`TestTheGateHoldsWhatTheRecordLogicHolds`,
+`internal/captions`) holds the two to each other input by input: the
+schemas' record logic, vendored and pinned by its sha256, says what the
+contract does with each of some 33,000 inputs a generator makes (every edge
+the contract draws, varied), and any input the gate lets go where the record
+logic holds fails it, as does any where its port, key by key, lets go a
+key the record logic holds; it needs `python3`. Every
+original-deleted event a retirement writes carries the read the gate
+decided on (`captionsRead`: its windows as the record logic keeps them, its
+span, its gop, the release of the ffprobe that read it, when it was read),
+as the validator judges a deletion by the reads events carry; a test runs
+the schemas' validator, vendored and pinned, on a library a retirement
+wrote in (it needs `python3` with `jsonschema` and `referencing`).
+
 The closing rule: the reads were made for, and tested with, some ways
 closed captions and fields are carried, and the gate takes a read of no
 other. An original whose record or stored probe has a container, a stream,
 a film's codec or a picture off the closed lists, or more than one film,
-or whose read names what is off them (`offList`), has its closed captions
+or whose read names what is off them (`offList`), or whose source record's
+own `offList` names something (one that is no list of names is
+`offList:unreadable`; it is held beside what the record's streams show, and
+what either says is off holds), has its closed captions
 and fields not known, whether its captions are read or not, and is kept,
 saying which by the analyzer's names ("closed captions and fields not
-known: off the closed lists: codec:vc1"). The lists are the analyzer's (its
+known: off the closed lists: codec:vc1"). So is one whose record marks a
+stream `attachedPic` that the cover rule, with its stored probe's tags,
+calls no cover, or leaves a cover unmarked: which stream is its picture
+can't be told. The lists are the analyzer's (its
 README, "The closed lists", and `pipelines/captions.py`), by the same names,
 and the deletion waves' check holds the same; they are in one place here
 (`internal/library/closing.go`), and a name added to one side is added to

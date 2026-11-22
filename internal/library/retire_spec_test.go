@@ -3,6 +3,7 @@ package library
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -109,8 +110,9 @@ func TestWhatARetirementGivesUpIsWhatTheSpecDrops(t *testing.T) {
 	// the streams of a Dolby Vision original whose base layer is of the
 	// compatibility id base, and its two subtitles
 	dolbyStreams := func(base int) []any {
-		return []any{map[string]any{"index": 0, "type": "video", "codec": "hevc", "captionSignature": false, "height": 1080, "hdr": map[string]any{"format": "dolby-vision",
-			"dolbyVision": map[string]any{"profile": 8, "blCompatibilityId": base}}},
+		return []any{map[string]any{"index": 0, "type": "video", "codec": "hevc", "captionSignature": false, "height": 1080,
+			"fieldOrder": "progressive", "hdr": map[string]any{"format": "dolby-vision",
+				"dolbyVision": map[string]any{"profile": 8, "blCompatibilityId": base}}},
 			map[string]any{"index": 1, "type": "audio", "channels": 2},
 			map[string]any{"index": 2, "type": "subtitle", "codec": "subrip", "language": "de"},
 			map[string]any{"index": 3, "type": "subtitle", "codec": "subrip", "language": "en"}}
@@ -118,7 +120,7 @@ func TestWhatARetirementGivesUpIsWhatTheSpecDrops(t *testing.T) {
 	// the streams of an original with a picture, its audio tracks in the
 	// languages langs, from index 1 on, and its two subtitles
 	audioStreams := func(langs ...string) []any {
-		out := []any{map[string]any{"index": 0, "type": "video", "codec": "h264", "height": 1080}}
+		out := []any{map[string]any{"index": 0, "type": "video", "codec": "h264", "height": 1080, "fieldOrder": "progressive"}}
 		for i, l := range langs {
 			out = append(out, map[string]any{"index": 1 + i, "type": "audio", "channels": 2, "language": l})
 		}
@@ -130,7 +132,7 @@ func TestWhatARetirementGivesUpIsWhatTheSpecDrops(t *testing.T) {
 	hdrStreams := func(format string) []any {
 		out := audioStreams("en")
 		out[0] = map[string]any{"index": 0, "type": "video", "codec": "hevc", "captionSignature": false, "height": 1080,
-			"hdr": map[string]any{"format": format}}
+			"fieldOrder": "progressive", "hdr": map[string]any{"format": format}}
 		return out
 	}
 	// the streams of an original whose picture's field order is order, its
@@ -197,6 +199,7 @@ func TestWhatARetirementGivesUpIsWhatTheSpecDrops(t *testing.T) {
 				d = &duration
 			}
 			storetest.Exec(t, f.st, `UPDATE com_nalet_katalog_sourcecaptions SET captionwindows = $2, captions = $3,
+				readreport = NULL,
 				framesdecoded = $4, duration = $5, readspanstart = 0, readspanend = $5 WHERE source_id = $1`, rtSource, string(b), has,
 				max(frames, 1), d)
 		}
@@ -224,7 +227,7 @@ func TestWhatARetirementGivesUpIsWhatTheSpecDrops(t *testing.T) {
 		if len(found) > 0 {
 			scan["found"] = found[0]
 			// a scan that found the picture progressive verified it whole
-			scan["verified"] = map[string]any{"ok": true, "complete": true}
+			scan["verified"] = readThrough()
 		}
 		rec["scan"] = scan
 		return rec
@@ -350,8 +353,8 @@ func TestWhatARetirementGivesUpIsWhatTheSpecDrops(t *testing.T) {
 			change: func(t *testing.T, f *listFixture) {
 				// the probe the record was made of, kept beside it and in its
 				// checksums
-				librarytest.Write(t, filepath.Join(f.sourceDir, "ffprobe.json"), []byte(`{"streams": [
-					{"index": 0, "codec_type": "video", "field_order": "tt", "start_time": "0.000000",
+				librarytest.Write(t, filepath.Join(f.sourceDir, "ffprobe.json"), []byte(`{"format": {"format_name":
+					"matroska,webm"}, "streams": [{"index": 0, "codec_type": "video", "codec_name": "mpeg2video", "field_order": "tt", "start_time": "0.000000",
 					"avg_frame_rate": "24/1"}]}`))
 				f.rewriteSource(t, full, fieldStreams("progressive"))
 			}, kept: fieldsKept("its probe's field order is tt"), held: true},
@@ -376,16 +379,15 @@ func TestWhatARetirementGivesUpIsWhatTheSpecDrops(t *testing.T) {
 					Package: scanned(record(full, "SDR"), "deinterlaced-field", "fields")})
 			}, kept: fieldsKept("the scan of its package of version 0c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f found fields"),
 			held: true},
-		// a field order neither its record nor its probe states counts as
-		// one not known, whatever a package's scan says (for now, every
-		// group: AbsentFieldOrder): no word of the transcoder's lets an
-		// original go
+		// a field order neither its record nor its probe states is not
+		// known, whatever a package's scan says: no word of the transcoder's
+		// lets an original go
 		{name: "no field order stated, the package with no scan", src: full, streams: audioStreams("en"),
 			pkg: withAudio(unscanned(record(full, "SDR")), "en", 1), change: noProbe(audioStreams("en")),
-			kept: fieldsKept("its field order is not stated and it was never examined"), held: true},
+			kept: fieldsKept("its record's field order is not stated"), held: true},
 		{name: "no field order stated, the package's scan found it progressive", src: full, streams: audioStreams("en"),
 			pkg: withAudio(scanned(record(full, "SDR"), "none", NothingFound), "en", 1), change: noProbe(audioStreams("en")),
-			kept: fieldsKept("its field order is not stated and it was never examined"), held: true},
+			kept: fieldsKept("its record's field order is not stated"), held: true},
 		{name: "no field order stated, the package's scan found film", src: full, streams: audioStreams("en"),
 			pkg: withAudio(scanned(record(full, "SDR"), "inverse-telecine", "film"), "en", 1), change: noProbe(audioStreams("en")),
 			kept: fieldsKept("the scan of its package of version " + rtVersion + " found film"), held: true},
@@ -645,7 +647,7 @@ func TestTheRetireJobNamesWhatItWaitsFor(t *testing.T) {
 // whatever an admin says; one whose master carries every track goes.
 func TestASupersededOriginalIsHeldByItsTracksCounted(t *testing.T) {
 	full := fullEssence()
-	streams := []any{map[string]any{"index": 0, "type": "video", "codec": "h264"},
+	streams := []any{map[string]any{"index": 0, "type": "video", "codec": "h264", "fieldOrder": "progressive"},
 		map[string]any{"index": 1, "type": "audio", "channels": 2, "language": "de"},
 		map[string]any{"index": 2, "type": "audio", "channels": 2, "language": "de"},
 		map[string]any{"index": 3, "type": "audio", "channels": 2, "language": "en"},
@@ -704,7 +706,7 @@ func TestASupersededOriginalIsHeldByItsTracksCounted(t *testing.T) {
 func TestATrackLanguageAnAdminCorrectedIsTheStreamsLanguage(t *testing.T) {
 	ctx := context.Background()
 	full := with2(fullEssence(), "audioLanguages", []string{"de", "en"})
-	streams := []any{map[string]any{"index": 0, "type": "video", "codec": "h264"},
+	streams := []any{map[string]any{"index": 0, "type": "video", "codec": "h264", "fieldOrder": "progressive"},
 		map[string]any{"index": 1, "type": "audio", "channels": 2, "language": "de"},
 		map[string]any{"index": 2, "type": "audio", "channels": 2, "language": "en"},
 		map[string]any{"index": 3, "type": "subtitle", "codec": "subrip", "language": "de"},
@@ -785,10 +787,20 @@ func noProbe(streams []any) func(*testing.T, *listFixture) {
 			t.Fatal(err)
 		}
 		essence, _ := rec["essence"].(map[string]any)
-		if err := os.WriteFile(filepath.Join(f.sourceDir, ProbeFile), []byte(`{"streams": [{"index": 0, "codec_type":
-			"video", "start_time": "0.000000", "avg_frame_rate": "24/1"}]}`), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(f.sourceDir, ProbeFile), []byte(`{"format": {"format_name": "matroska,webm"},
+			"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "start_time": "0.000000",
+			"avg_frame_rate": "24/1"}]}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		f.rewriteSource(t, essence, streams)
+		// and a record whose picture states no field order either
+		var unstated []any
+		for _, e := range streams {
+			st := maps.Clone(e.(map[string]any))
+			if st["type"] == "video" {
+				delete(st, "fieldOrder")
+			}
+			unstated = append(unstated, st)
+		}
+		f.rewriteSource(t, essence, unstated)
 	}
 }

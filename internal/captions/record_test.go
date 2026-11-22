@@ -72,7 +72,7 @@ func writeRecord(t *testing.T, dir, record string) string {
 
 // planProbe is a stored probe that gives the plan of its picture: its start
 // at 0 and its frame rate (24 a second); its length is the record's.
-const planProbe = `{"format": {"start_time": "0.000000"}, "streams": [{"index": 0, "codec_type": "video", ` +
+const planProbe = `{"format": {"format_name": "matroska,webm", "start_time": "0.000000"}, "streams": [{"index": 0, "codec_type": "video", ` +
 	`"codec_name": "h264", "field_order": "progressive", "avg_frame_rate": "24/1"}]}`
 
 func report(t *testing.T, body string) Report {

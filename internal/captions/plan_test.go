@@ -292,6 +292,10 @@ func claimedWithProbe(t *testing.T, record, probe string) (*Service, string, str
 	if err := os.Remove(filepath.Join(rec, library.ProbeFile)); err != nil {
 		t.Fatal(err)
 	}
+	if probe != "" && !strings.Contains(probe, `"format"`) {
+		// as ffprobe writes one: with its format
+		probe = `{"format": {"format_name": "matroska,webm"}, ` + strings.TrimPrefix(strings.TrimSpace(probe), "{")
+	}
 	if probe != "" {
 		if err := os.WriteFile(filepath.Join(rec, library.ProbeFile), []byte(probe), 0o644); err != nil {
 			t.Fatal(err)

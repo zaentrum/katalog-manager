@@ -41,6 +41,13 @@ in which they may create and drop schemas. Each makes a schema of its own
 skipped. The test that runs `db/export/library-export.sql` through `psql`
 skips without `psql` on the `PATH`. `internal/graph/schema_test.go` checks
 that the GraphQL schema binds to its resolvers, as the service does at start.
+The differential of the deletion gate against the schemas' record logic
+(`internal/captions/differential_test.go`) needs `python3`; the test that
+runs the schemas' validator on a library a retirement wrote in
+(`internal/library/contract_e2e_test.go`) needs a `python3` with `jsonschema`
+and `referencing` (`pip install "jsonschema[format-nongpl]>=4.23"
+referencing`; `KATALOG_TEST_PYTHON` names another python). Without them
+they are skipped, except in CI (`CI` set), where they fail.
 
 ## Run it
 

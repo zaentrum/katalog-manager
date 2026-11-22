@@ -189,10 +189,18 @@ func (f *retireFixture) settle(t *testing.T, item, source, version string) {
 		VALUES ($1, 'item', $1, 'measured', 1920, 1080, 0, 0, 1920, 1080, $2, $3, 'original', now())
 		ON CONFLICT (id) DO UPDATE SET state = 'measured', sourceid = $2, versionid = $3`, item, source, version)
 	storetest.Exec(t, f.st, `INSERT INTO com_nalet_katalog_sourcecaptions (source_id, item_id, state, captionwindows, captions,
-			ffprobeversion, framesdecoded, duration, readspanstart, readspanend, sourcesize, sourceqh1, sourcerecordedat, readat)
-		SELECT $1::varchar, $2::varchar, 'read', '`+noCaptionsWindows+`', false, '7.1.1', 288, 600, 0, 600, s.sizebytes, s.qh1, s.recordedat, now()
-		FROM com_nalet_katalog_itemsources s WHERE s.id = $1::varchar ON CONFLICT (source_id) DO NOTHING`, source, item)
+			ffprobeversion, framesdecoded, duration, readspanstart, readspanend, sourcesize, sourceqh1, sourcerecordedat, readat,
+			readreport)
+		SELECT $1::varchar, $2::varchar, 'read', '`+noCaptionsWindows+`', false, '7.1.1', 288, 600, 0, 600, s.sizebytes, s.qh1, s.recordedat,
+			now() - interval '1 minute', $3
+		FROM com_nalet_katalog_itemsources s WHERE s.id = $1::varchar ON CONFLICT (source_id) DO NOTHING`, source, item,
+		noCaptionsReport)
 }
+
+// noCaptionsReport is the report the analyzer sent of the read of
+// noCaptionsWindows, which the catalog keeps beside it.
+const noCaptionsReport = `{"captionWindows": ` + noCaptionsWindows + `, "duration": 600, "span": {"start": 0, "end": 600},
+	"sizeBytes": 1, "ffprobe": "7.1.1"}`
 
 // packageRecord is what a package.json the fixtures write holds besides what
 // WriteVersion sets, as the packager writes it: its essence, and the
@@ -249,6 +257,10 @@ func stated(e map[string]any) map[string]any {
 			}
 		}
 	}
+	// and its field order: of a progressive picture, no fields
+	if _, ok := out["interlaced"]; !ok {
+		out["interlaced"] = false
+	}
 	for _, k := range lossLanguages {
 		if _, ok := out[k]; !ok {
 			out[k] = []string{}
@@ -258,16 +270,22 @@ func stated(e map[string]any) map[string]any {
 }
 
 // verifiedProgressive is a package's scan that found its original's picture
-// progressive, did nothing to it and verified it whole: the one scan that
-// holds nothing (it lets nothing go either).
+// progressive, did nothing to it and verified it whole - its read-through
+// decoded every packet but its leading pictures (frames = packets -
+// leading) -: the one scan that holds nothing (it lets nothing go either).
 func verifiedProgressive() map[string]any {
-	return map[string]any{"found": NothingFound, "done": NothingFound,
-		"verified": map[string]any{"ok": true, "complete": true}}
+	return map[string]any{"found": NothingFound, "done": NothingFound, "verified": readThrough()}
+}
+
+// readThrough is a read-through of a whole title that read it all: ok,
+// complete, and 14400 frames of 14400 packets, none of them leading.
+func readThrough() map[string]any {
+	return map[string]any{"ok": true, "complete": true, "frames": 14400, "packets": 14400, "leading": 0}
 }
 
 // progressiveProbe is a stored probe (ffprobe.json) that states its
 // picture's field order progressive.
-const progressiveProbe = `{"streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "field_order": "progressive",
+const progressiveProbe = `{"format": {"format_name": "matroska,webm"}, "streams": [{"index": 0, "codec_type": "video", "codec_name": "h264", "field_order": "progressive",
 	"start_time": "0.000000", "avg_frame_rate": "24/1"}]}`
 
 // statedProbe is the files files of a source folder and its stored probe
@@ -406,6 +424,29 @@ func TestTheRetireJobDeletesAnOriginalAfterPackaging(t *testing.T) {
 		t.Fatalf("the event: %q, %v", dir, err)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, EventFile))
+	// the read the gate let it go on, as the event carries it: its windows
+	// as the record logic keeps them, its span, the ffprobe that read it and
+	// when it was read
+	var readAt time.Time
+	if err := f.st.Pool().QueryRow(ctx, `SELECT readat FROM com_nalet_katalog_sourcecaptions WHERE source_id = $1`,
+		rtSource).Scan(&readAt); err != nil {
+		t.Fatal(err)
+	}
+	var windows []string
+	for _, w := range []struct{ at, start, end string }{{"0.0", "0.0", "1.88"}, {"0.1", "60.0", "61.88"},
+		{"0.3", "180.0", "181.88"}, {"0.5", "300.0", "301.88"}, {"0.7", "420.0", "421.88"}, {"0.9", "540.0", "541.88"}} {
+		windows = append(windows, `
+      {
+        "at": `+w.at+`,
+        "start": `+w.start+`,
+        "end": `+w.end+`,
+        "frames": 48,
+        "captions": false,
+        "interlacedFrames": 0,
+        "repeatFrames": 0
+      }`)
+	}
+	readWindows := strings.Join(windows, ",")
 	wantEvent := `{
   "schema": "zaentrum.library.event/2",
   "eventId": "` + *s.RetireEventID + `",
@@ -417,7 +458,17 @@ func TestTheRetireJobDeletesAnOriginalAfterPackaging(t *testing.T) {
   "reason": "originals are not kept: the package is the record",
   "accepted": [
     "maxAudioChannels"
-  ]
+  ],
+  "captionsRead": {
+    "windows": [` + readWindows + `
+    ],
+    "span": {
+      "start": 0.0,
+      "end": 600.0
+    },
+    "ffprobe": "7.1.1",
+    "at": "` + Timestamp(readAt) + `"
+  }
 }
 `
 	if string(b) != wantEvent {

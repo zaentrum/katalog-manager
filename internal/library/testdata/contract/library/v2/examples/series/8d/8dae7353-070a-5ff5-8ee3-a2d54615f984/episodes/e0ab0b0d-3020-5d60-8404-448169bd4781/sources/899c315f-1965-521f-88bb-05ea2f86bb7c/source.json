@@ -1,0 +1,159 @@
+{
+  "schema": "zaentrum.library.source/2",
+  "sourceId": "899c315f-1965-521f-88bb-05ea2f86bb7c",
+  "takenAt": "2026-09-18T09:05:00Z",
+  "takenBy": "analyzer example",
+  "file": {
+    "name": "original.mkv",
+    "kind": "stream-container",
+    "sizeBytes": 53,
+    "mtime": "2026-09-18T09:00:00Z",
+    "fixity": {
+      "qh1": "sha256:dbbcef83dd6eaf3c276257917ad15c9c07b81d3f1f1ff54a1994fab343baf489"
+    },
+    "part": null
+  },
+  "naming": {
+    "scheme": "unknown",
+    "seasonNumber": 1,
+    "episodeNumber": 4,
+    "episodeEnd": null,
+    "raw": "S01E04"
+  },
+  "labels": {
+    "quality": "2160p",
+    "medium": "web",
+    "resolution": "2160p",
+    "edition": null,
+    "folderEdition": null
+  },
+  "container": {
+    "format": "matroska,webm",
+    "durationMs": 2700000,
+    "bitrate": null,
+    "title": null,
+    "muxingApp": null,
+    "writingApp": null,
+    "creationTime": null,
+    "tags": {}
+  },
+  "offList": [],
+  "fidelity": {
+    "class": "original",
+    "fingerprint": "hevc/main10/10bit/hdr10/3840x2160",
+    "evidence": []
+  },
+  "streams": [
+    {
+      "index": 0,
+      "type": "video",
+      "codec": "hevc",
+      "language": null,
+      "languageRaw": null,
+      "title": null,
+      "dispositions": {
+        "default": true
+      },
+      "profile": "Main 10",
+      "level": null,
+      "bitDepth": 10,
+      "pixelFormat": "yuv420p10le",
+      "width": 3840,
+      "height": 2160,
+      "sampleAspectRatio": "1:1",
+      "displayAspectRatio": null,
+      "frameRate": "24/1",
+      "fieldOrder": "progressive",
+      "bitrate": null,
+      "colour": {
+        "primaries": "bt2020",
+        "transfer": "smpte2084",
+        "matrix": null,
+        "range": "tv"
+      },
+      "hdr": {
+        "format": "hdr10",
+        "masteringDisplay": null,
+        "contentLightLevel": null,
+        "dolbyVision": null
+      },
+      "stereo3d": null,
+      "closedCaptions": false,
+      "encoder": null
+    },
+    {
+      "index": 1,
+      "type": "audio",
+      "codec": "eac3",
+      "language": "en",
+      "languageRaw": "eng",
+      "title": null,
+      "dispositions": {
+        "default": true,
+        "commentary": false
+      },
+      "profile": null,
+      "channels": 6,
+      "channelLayout": "5.1",
+      "sampleRate": 48000,
+      "bitDepth": null,
+      "bitrate": null,
+      "lossless": false,
+      "objectAudio": "none",
+      "titleClaim": null,
+      "encoder": null,
+      "purpose": "main",
+      "purposeFrom": "assumed",
+      "variant": null
+    }
+  ],
+  "sidecars": [
+    {
+      "file": "sources/899c315f-1965-521f-88bb-05ea2f86bb7c/subtitle-1.en.sdh.srt",
+      "kind": "subtitle",
+      "format": "srt",
+      "language": "en",
+      "forced": false,
+      "hearingImpaired": true,
+      "purpose": "sdh",
+      "sizeBytes": 47,
+      "sha256": "sha256:c7a5c761d94822b91664082d9ff5b32f79e8f7d0c38cd3e5bf23e46e7fbde1e3"
+    }
+  ],
+  "covers": [],
+  "essence": {
+    "maxAudioChannels": 6,
+    "surround": true,
+    "losslessAudio": false,
+    "objectAudio": false,
+    "maxVideoHeight": 2160,
+    "videoBitDepth": 10,
+    "hdr10Metadata": true,
+    "dolbyVision": false,
+    "stereo3d": false,
+    "interlaced": false,
+    "audioLanguages": [
+      "en"
+    ],
+    "subtitleLanguages": [],
+    "subtitleTracks": 0,
+    "imageSubtitles": false,
+    "styledSubtitles": false,
+    "fonts": false,
+    "chapters": false,
+    "commentaryTracks": 0,
+    "commentarySubtitles": 0,
+    "audioDescriptionTracks": 0,
+    "sdhSubtitleLanguages": [],
+    "forcedSubtitleLanguages": [],
+    "closedCaptions": false
+  },
+  "probe": {
+    "tool": "ffprobe",
+    "version": null,
+    "at": "2026-09-18T09:05:00Z",
+    "file": "sources/899c315f-1965-521f-88bb-05ea2f86bb7c/ffprobe.json",
+    "sha256": "sha256:3eb8665187979c51d605e614f3b9ac1aa34a33116bcdafd476385b773eb375f8",
+    "note": null
+  }
+}
