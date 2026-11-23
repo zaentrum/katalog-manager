@@ -57,7 +57,8 @@ more on an arm64 runner (the job `fused`),
 where the compiler fuses a multiply and an add into one; Go 1.24 does not
 on amd64, not even for x86-64-v3 (`GOAMD64=v3` fuses from Go 1.25 on).
 `KATALOG_TEST_FUSED=1` has `TestTheBuildFusesAMultiplyAndAnAdd` fail
-unless the build fuses.
+unless the build fuses, and so `TestTheChecksArithmeticRoundsEachProductFirst`,
+which that job runs too (the compliance check's arithmetic).
 
 ## Run it
 

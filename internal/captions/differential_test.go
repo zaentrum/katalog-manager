@@ -32,9 +32,9 @@ const (
 // it is one made on purpose, its pin with it), and the least it must make:
 // of every input, and of each family (the part of an id before its first
 // /), so that a generator that makes fewer compares fewer and fails.
-const generatorSHA256 = "61111b95d4dacc98edba0c59767a9eb39b99f7a83be53ff5e7825e4b444aa833"
+const generatorSHA256 = "9cc452427f51531381ff45308a3b17afd2adf5631225d2fa8d3781dd5a773908"
 
-var differentialFloor = map[string]int{"": 64756, "C": 3426, "E": 227, "J": 144, "L": 481, "P": 594, "R": 58243, "S": 247, "W": 1018, "X": 375}
+var differentialFloor = map[string]int{"": 64780, "C": 3426, "E": 227, "J": 168, "L": 481, "P": 594, "R": 58243, "S": 247, "W": 1018, "X": 375}
 
 // differentialCase is one input of the differential: the files of an item
 // folder as text, and a read's report (its "original") as text; nil: none.

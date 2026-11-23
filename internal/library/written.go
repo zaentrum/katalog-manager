@@ -11,35 +11,71 @@ import (
 	"unicode/utf8"
 )
 
-// The forms the gate takes a source record, its stored probe and a package
-// in: those the platform's writers write, and no other. Every writer of the
-// three is the record logic's json_bytes (the schemas' tools/libv2_records.py,
-// which the packager vendors and the schemas' migration tools share):
-// json.dumps(doc, indent=2, ensure_ascii=False) + "\n", in UTF-8; the probe
-// is ffprobe's output loaded and dumped so (scrub_probe). katalog-manager
-// writes none of them. So a text is as Python's encoder writes it (its quote,
-// backslash and control characters escaped as \", \\, \n, \r, \t, \b, \f and
-// \u00xx, nothing else, no other character escaped); a whole number is in
-// digits, a minus its only sign, never -0, within 64 bits; a float is as
-// Python's repr writes it (the shortest digits that read back, positional
-// from 1e-4 to 1e16, else 1e-05 or 1e+16: those are the only exponents a
-// writer writes); and no key has space about it (Python's str.strip). A
+// The forms the gate takes a source record, its stored probe, a package and
+// a version's record in: those the platform's writers write, and no other.
+// Every writer of the four is the record logic's json_bytes (the schemas'
+// tools/libv2_records.py, which the packager vendors and the schemas'
+// migration tools share): json.dumps(doc, indent=2, ensure_ascii=False) +
+// "\n", in UTF-8; the probe is ffprobe's output loaded and dumped so
+// (scrub_probe). katalog-manager writes none of them. So a text is as
+// Python's encoder writes it (its quote, backslash and control characters
+// escaped as \", \\, \n, \r, \t, \b, \f and \u00xx, nothing else, no other
+// character escaped); a whole number is in digits, a minus its only sign,
+// never -0, within 64 bits; a float is as Python's repr writes it (the
+// shortest digits that read back, positional from 1e-4 to 1e16, else 1e-05
+// or 1e+16: those are the only exponents a writer writes); no key has space
+// about it (Python's str.strip); and it nests no deeper than writtenDepth. A
 // record in any other form holds, with the reason: a form nobody writes is
 // not worth reading, and every unusual form has been a place where two
 // readers differ. The layout (the indent, the line breaks between tokens)
 // is not held to: no reader reads it apart.
 
+// writtenDepth is how deep a record the writers write nests at most, objects
+// and lists in one another: theirs nest about 6 deep, and json.dumps of one
+// nested past about 1,000 fails. A record nested deeper is held before it is
+// decoded (nestedPast), so on every Go version alike: Go 1.24's decoder reads
+// any depth, Go 1.27's none past 10,000.
+const writtenDepth = 64
+
+// nestedPast says why the bytes b nest deeper than writtenDepth, objects and
+// lists in one another outside the texts, "" when they don't; of any bytes,
+// JSON or not.
+func nestedPast(b []byte) string {
+	depth := 0
+	for i := 0; i < len(b); i++ {
+		switch b[i] {
+		case '"':
+			for i++; i < len(b) && b[i] != '"'; i++ {
+				if b[i] == '\\' {
+					i++
+				}
+			}
+		case '{', '[':
+			if depth++; depth > writtenDepth {
+				return fmt.Sprintf("it nests deeper than %d levels", writtenDepth)
+			}
+		case '}', ']':
+			depth--
+		}
+	}
+	return ""
+}
+
 // readWritten reads the record at path (LoadRecord) in a form its writers
-// write (writtenForm), and, of a source record or a package (rules), as the
-// validator's own rules of its texts and keys take it (textRules). A record
-// that is JSON in any other form - its bytes no UTF-8, a key given twice, a
-// number no reader holds among them - is no failure of the library's: it
-// says so as unwritten, which the gate keeps the original for, saying why.
-// One that is no JSON can't be read, as ever.
+// write (writtenForm), and, of a package or a version's record (rules), as
+// the validator's own rules of its texts and keys take it (textRules). A
+// record that is JSON in any other form - its bytes no UTF-8, a key given
+// twice, a number no reader holds among them - is no failure of the
+// library's: it says so as unwritten, which the gate keeps the original for,
+// saying why; so is one nested deeper than writtenDepth, JSON or not. One
+// that is no JSON can't be read, as ever.
 func readWritten(path string, rules bool) (Doc, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
+	}
+	if why := nestedPast(b); why != "" {
+		return nil, &unwritten{path, "it is in no form the platform's writers write: " + why}
 	}
 	d, err := LoadRecord(b)
 	if err != nil {

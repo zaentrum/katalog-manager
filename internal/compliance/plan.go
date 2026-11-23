@@ -468,7 +468,10 @@ func priorEncode(t title, r records, copied tri, codec string, maxrate float64) 
 		return 0, false
 	}
 	was, err := strconv.ParseFloat(m[1], 64)
-	if err != nil || math.Abs(was*1e6-maxrate) >= 1 {
+	// the product rounded before the subtraction (float64), that no build
+	// fuses the two (arm64 would take an encode at 10.000001 Mbps for one at
+	// a maxrate of 10e6)
+	if err != nil || math.Abs(float64(was*1e6)-maxrate) >= 1 {
 		return 0, false
 	}
 	return *v.BitrateBps, true

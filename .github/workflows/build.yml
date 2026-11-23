@@ -73,3 +73,8 @@ jobs:
         env:
           KATALOG_TEST_FUSED: "1"
       - run: go test -v -timeout 20m -count=1 -run '^TestTheRecordCheckTakesNoSourceRecordTheValidatorRefuses$' ./internal/library/
+      # the compliance check's arithmetic, which an admin's retire list
+      # reads: each product rounded first here too (it proves the build fuses)
+      - run: go test -v -count=1 -run '^TestTheChecksArithmeticRoundsEachProductFirst$' ./internal/compliance/
+        env:
+          KATALOG_TEST_FUSED: "1"

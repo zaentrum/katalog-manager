@@ -209,3 +209,110 @@ func TestAGateThatFailsKeepsItsOriginalAndThePassGoesOn(t *testing.T) {
 		t.Errorf("the next title's original: %s; the pass %+v; want it retired", s.State, rep)
 	}
 }
+
+// nested is a JSON value n levels deep: lists in one another, or objects.
+func nested(n int, objects bool) string {
+	if objects {
+		return strings.Repeat(`{"a": `, n) + "1" + strings.Repeat("}", n)
+	}
+	return strings.Repeat("[", n) + strings.Repeat("]", n)
+}
+
+// depthForms are the review's depth family (J2): the value of a key nothing
+// reads, nested so deep, in lists or in objects.
+var depthForms = map[string]string{"depth-100": nested(100, false), "depth-900": nested(900, false),
+	"depth-1100": nested(1100, false), "depth-3000": nested(3000, false), "depth-9990": nested(9990, false),
+	"depth-10010": nested(10010, false), "depth-50000": nested(50000, false),
+	"objects-depth-1100": nested(1100, true), "objects-depth-10010": nested(10010, true)}
+
+// depthFixture is an item folder whose original a goes by its gate (version
+// v-a), beside a version v-b of another original b.
+func depthFixture(t *testing.T) string {
+	d := t.TempDir()
+	sourceRecord(t, d, "a", "matroska,webm", filmStreams(), progressiveProbe)
+	sourceRecord(t, d, "b", "matroska,webm", filmStreams(), progressiveProbe)
+	packageOf(t, d, "v-a", verifiedProgressive(), "a")
+	packageOf(t, d, "v-b", verifiedProgressive(), "b")
+	return d
+}
+
+// withKey writes the record at path again with the key zz first, of value v.
+func withKey(t *testing.T, path, v string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	librarytest.Write(t, path, []byte(`{"zz": `+v+", "+string(b[1:])))
+}
+
+// A record nested deeper than 64 levels is in no form a writer writes: the
+// gate holds it, saying so, of every record it reads, on every Go version
+// alike (Go 1.24's decoder reads any depth; Go 1.27's none past 10,000, an
+// error) - the review's 36 cases of a source record, a probe, a package and
+// a version's record, each record of another version and that of the
+// original a master was made of. 64 levels are read, a bracket in a text
+// counts for none. A version's record is held to its writers' forms and the
+// validator's rules of its texts, as a package is.
+func TestARecordNestedPast64LevelsHolds(t *testing.T) {
+	const why = "no form the platform's writers write: it nests deeper than 64 levels"
+	// a record of the item folder, and whether the gate says why of the scan
+	// (of the probe and of another version), not as what it doesn't know
+	type place struct {
+		rel  string
+		scan bool
+	}
+	source, probe, pkg := place{"sources/a/source.json", false}, place{"sources/a/" + ProbeFile, true},
+		place{"versions/v-a/" + PackageFile, false}
+	version, otherPkg, otherVersion := place{"versions/v-a/" + VersionFile, false},
+		place{"versions/v-b/" + PackageFile, true}, place{"versions/v-b/" + VersionFile, true}
+	gate := func(d string) (Gate, error) { return ReadGateWith(d, "v-a", read(600, every()...), "a") }
+	if g, err := gate(depthFixture(t)); err != nil || g.Unknown != "" || len(g.Beyond()) > 0 {
+		t.Fatalf("the records in their writers' forms: %+v, %v; want it let go", g, err)
+	}
+	kept := func(f place, v, want string) {
+		d := depthFixture(t)
+		withKey(t, filepath.Join(d, f.rel), v)
+		g, err := gate(d)
+		said := g.Unknown
+		if f.scan {
+			said = g.Scan
+		}
+		if err != nil || (g.Unknown == "" && len(g.Beyond()) == 0) || !strings.Contains(said, want) {
+			t.Errorf("%s with a key of %.12s... (%d long): %+v, %v; want it kept, %q", f.rel, v, len(v), g, err, want)
+		}
+	}
+	for _, f := range []place{source, probe, pkg, version, otherPkg, otherVersion} {
+		for _, v := range depthForms {
+			kept(f, v, why)
+		}
+	}
+	for _, f := range []place{version, otherVersion} {
+		kept(f, "1e2", `no form the platform's writers write: a number of it is written "1e2"`)
+		kept(f, `"x\n"`, `its zz "x\n" contains a line break`)
+	}
+	// the master's own original (a superseded original's gate): its record
+	d := depthFixture(t)
+	master := func() (Gate, error) {
+		return ReadGateWith(d, "v-b", GateFacts{Master: true, CaptionsNotAsked: true}, "a")
+	}
+	if g, err := master(); err != nil || g.Unknown != "" || len(g.Beyond()) > 0 {
+		t.Fatalf("the master's original in its writers' form: %+v, %v; want it let go", g, err)
+	}
+	withKey(t, filepath.Join(d, "sources/b/source.json"), depthForms["depth-100"])
+	if g, err := master(); err != nil || !strings.Contains(g.Unknown, "the original its version was made of can't be read: it is in "+why) {
+		t.Errorf("the master's original nested 101 deep: %+v, %v; want it kept, %q", g, err, why)
+	}
+	// the edge, and brackets in a text, an escaped quote among them
+	for v, held := range map[string]bool{nested(63, false): false, nested(64, false): true, nested(63, true): false,
+		`"` + nested(100, false) + `"`: false, `"\"` + nested(100, false) + `"`: false} {
+		d := depthFixture(t)
+		withKey(t, filepath.Join(d, "versions/v-a", PackageFile), v)
+		g, err := gate(d)
+		if kept := g.Unknown != "" || len(g.Beyond()) > 0; err != nil || kept != held || held != strings.Contains(g.Unknown, why) {
+			t.Errorf("a package's key of %.12s... (%d long): %+v, %v; want it kept %v", v, len(v), g, err, held)
+		}
+	}
+	if _, w := sourceRecordTaken([]byte(`{"zz": `+depthForms["depth-10010"]+`}`), "a"); !strings.Contains(w, why) {
+		t.Errorf("a source record nested 10011 deep: %q; want %q", w, why)
+	}
+}

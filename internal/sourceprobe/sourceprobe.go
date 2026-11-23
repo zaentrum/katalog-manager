@@ -107,7 +107,9 @@ func FromFFprobe(out string) Probe {
 		break
 	}
 	if d, err := strconv.ParseFloat(strings.TrimSpace(raw.Format.Duration), 64); err == nil && d > 0 {
-		p.DurationMs = num(int64(d*1000 + 0.5))
+		// rounded before the half is added (float64), that no build fuses
+		// the two: the compliance check reads the duration it stores
+		p.DurationMs = num(int64(float64(d*1000) + 0.5))
 	}
 	if b, err := strconv.ParseInt(strings.TrimSpace(raw.Format.BitRate), 10, 64); err == nil && b > 0 {
 		p.BitrateKbps = num(b / 1000)

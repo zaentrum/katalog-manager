@@ -1083,7 +1083,14 @@ def gen_loader():
                  "x-neg-4301": Raw("-" + "1" + "0" * 4300), "x-1e-999": Raw("1e-999"), "x-list-twice": [{"y": Twice(1, 2)}],
                  "x-5000digits.0": Raw("1" + "0" * 5000 + ".0"), "x-1E999": Raw("1E999"), "x-10e998": Raw("10e998"),
                  "x-1.7976931348623157e308": Raw("1.7976931348623157e308"), "x-1.7976931348623159e308": Raw("1.7976931348623159e308"),
-                 "x-1e309": Raw("1e309"), "x-4300digits.5": Raw("9" * 4300 + ".5")}
+                 "x-1e309": Raw("1e309"), "x-4300digits.5": Raw("9" * 4300 + ".5"),
+                 # nested so deep (the record one level more), at the edge of the gate's 64 levels and past it;
+                 # not past 1,000, where the record logic's own reading differs by Python (its loader refuses
+                 # from 1,000 levels on 3.11, from about 10,000 on 3.12, not near either on 3.14)
+                 "x-depth-63": Raw("[" * 63 + "]" * 63), "x-depth-64": Raw("[" * 64 + "]" * 64),
+                 "x-depth-100": Raw("[" * 100 + "]" * 100), "x-depth-500": Raw("[" * 500 + "]" * 500),
+                 "x-objects-depth-63": Raw('{"a": ' * 63 + "1" + "}" * 63),
+                 "x-objects-depth-500": Raw('{"a": ' * 500 + "1" + "}" * 500)}
         for name, form in forms.items():
             d = base()
             d["x"] = form

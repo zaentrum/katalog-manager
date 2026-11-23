@@ -465,6 +465,17 @@ def gen_bytes():
                     "depth-600": raw[:1] + b'"takenBy": ' + b"[" * 600 + b"]" * 600 + b", " + raw[1:].replace(b'"takenBy": "review", ', b""),
                     }.items():
         add(f"B/file/{name}", b)
+    # the review's depth family (J2): a key nothing reads, nested so deep (the record one level more), in lists or
+    # in objects, and the edge of the 64 levels the gate reads. The schema takes no such key, nor a value nested
+    # anywhere it allows one: the validator refuses each on every Python (its loader's own limit, 1,000 levels on
+    # 3.11, about 10,000 on 3.12 and none near on 3.14, decides only why)
+    lists = lambda n: "[" * n + "]" * n
+    objects = lambda n: '{"a": ' * n + "1" + "}" * n
+    for name, v in {"depth-63": lists(63), "depth-64": lists(64), "depth-100": lists(100), "depth-900": lists(900),
+                    "depth-1100": lists(1100), "depth-3000": lists(3000), "depth-9990": lists(9990),
+                    "depth-10010": lists(10010), "depth-50000": lists(50000), "objects-depth-63": objects(63),
+                    "objects-depth-1100": objects(1100), "objects-depth-10010": objects(10010)}.items():
+        add(f"B/depth/{name}", raw[:1] + b'"zz": ' + v.encode() + b", " + raw[1:])
 
 
 def generate(path):

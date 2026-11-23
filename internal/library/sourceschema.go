@@ -94,10 +94,13 @@ var sourceRecordCheck = sourceRecordRefused
 
 // sourceRecordTaken is the gate's reading of the bytes raw of a source
 // record in the folder sources/<folder>/, and why it takes them for none -
-// LoadRecord can't read them, they are in no form its writers write
-// (writtenForm), or the contract's validator takes them for no source record
-// (sourceRecordRefused) -, "" when it takes them.
+// they nest past writtenDepth, LoadRecord can't read them, they are in no
+// form its writers write (writtenForm), or the contract's validator takes
+// them for no source record (sourceRecordRefused) -, "" when it takes them.
 func sourceRecordTaken(raw []byte, folder string) (Doc, string) {
+	if why := nestedPast(raw); why != "" {
+		return nil, "it is in no form the platform's writers write: " + why
+	}
 	d, err := LoadRecord(raw)
 	if err != nil {
 		return nil, "it can't be read: " + err.Error()

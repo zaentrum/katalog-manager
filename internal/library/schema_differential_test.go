@@ -18,10 +18,10 @@ import (
 // (the part of an id before its first /).
 const (
 	sdiffDir    = "testdata/sdiff"
-	sdiffSHA256 = "7d7b95c53194da244e8b9e86c16ef9a23e0b545150d08fec02ddd632b868a965"
+	sdiffSHA256 = "cad352d414c3caf4355cd20a02c3b62c4bbcdbc96459eedd8e73a818c5319442"
 )
 
-var sdiffFloor = map[string]int{"": 33261, "B": 85, "S": 32337, "T": 839}
+var sdiffFloor = map[string]int{"": 33273, "B": 97, "S": 32337, "T": 839}
 
 // The gate takes no source record the contract's validator refuses. The
 // second differential, input by input: sdiff.py makes the bytes of source

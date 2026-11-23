@@ -255,15 +255,19 @@ func (r result) breaks(rules ...string) bool {
 
 func strp(s string) *string { return &s }
 
+// roundTo is f rounded to places, half away from 0, its product rounded
+// before the half is added (float64) on every build: one that fused the two
+// into one multiply-add (arm64), rounding once, would round
+// 0.004999999999999999 to 2 places as 0 where the others say 0.01.
 func roundTo(f float64, places int) float64 {
 	p := 1.0
 	for range places {
 		p *= 10
 	}
 	if f >= 0 {
-		return float64(int64(f*p+0.5)) / p
+		return float64(int64(float64(f*p)+0.5)) / p
 	}
-	return -float64(int64(-f*p+0.5)) / p
+	return -float64(int64(float64(-f*p)+0.5)) / p
 }
 
 // evaluate holds a title against the rules rs, from what the catalog holds of

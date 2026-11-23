@@ -424,9 +424,12 @@ func readGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (
 	versionUnread, copied := "", ""
 	if !f.Master {
 		ownPkg = pkg
-		listed, ok := versionSourceList(itemDir, versionID)
+		listed, ok, unwritten := versionSourceList(itemDir, versionID)
+		if unwritten != "" {
+			versionUnread = "the record of its version " + versionID + " (version.json) can't be read: " + unwritten
+		}
 		for _, sid := range sourceIDs {
-			if !ok || !slices.Contains(listed, sid) {
+			if versionUnread == "" && (!ok || !slices.Contains(listed, sid)) {
 				versionUnread = "the record of its version " + versionID + " (version.json) doesn't name it among the " +
 					"originals the version was made of (a list of sourceIds), as the catalog does"
 				break
@@ -472,7 +475,11 @@ func readGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (
 		// master's own original
 		var pkgSrc Doc
 		if len(made) == 1 {
-			pkgSrc, _ = readRecordDoc(filepath.Join(SourceDir(itemDir, made[0]), "source.json"))
+			var err error
+			pkgSrc, err = readWritten(filepath.Join(SourceDir(itemDir, made[0]), "source.json"), false)
+			if why := unwrittenWhy(err); why != "" && unknown == "" {
+				unknown = "the source record of the original its version was made of can't be read: " + why
+			}
 		}
 		var counts string
 		lost, counts, labels = TrackCounts(lost, records[0], pkg, pkgSrc, nil)
@@ -668,13 +675,14 @@ var TranscoderEncoders = []string{"hevc_nvenc", "h264_nvenc", "libx265", "libx26
 // versionSourceList is what the record of the version versionID of the item
 // folder itemDir says it was made of (version.json's sourceIds), and whether
 // it says it: a record that can be read whose sourceIds is a list of
-// strings.
-func versionSourceList(itemDir, versionID string) ([]string, bool) {
-	d, err := readRecordDoc(filepath.Join(VersionDir(itemDir, versionID), VersionFile))
+// strings; and why it is unwritten (readWritten), "" when it is not.
+func versionSourceList(itemDir, versionID string) ([]string, bool, string) {
+	d, err := readWritten(filepath.Join(VersionDir(itemDir, versionID), VersionFile), true)
 	if err != nil {
-		return nil, false
+		return nil, false, unwrittenWhy(err)
 	}
-	return sourceIDList(d)
+	list, ok := sourceIDList(d)
+	return list, ok, ""
 }
 
 // sourceIDList is the version record ver's sourceIds, and whether it is a
@@ -876,7 +884,7 @@ func scansOf(itemDir string) string {
 			return "the versions of its title hold " + id + ", which is no folder of its own (a link, a file)"
 		}
 		dir := filepath.Join(itemDir, "versions", id)
-		ver, err := readRecordDoc(filepath.Join(dir, VersionFile))
+		ver, err := readWritten(filepath.Join(dir, VersionFile), true)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
 		case err != nil:
@@ -1738,9 +1746,9 @@ func firstVideo(rec Doc) Doc {
 
 // versionSources are the sources the record of the version versionID of the
 // item folder itemDir says it was made of (version.json's sourceIds); nil
-// when it can't be read.
+// when it can't be read in its writers' forms (readWritten).
 func versionSources(itemDir, versionID string) []string {
-	d, err := readRecordDoc(filepath.Join(VersionDir(itemDir, versionID), VersionFile))
+	d, err := readWritten(filepath.Join(VersionDir(itemDir, versionID), VersionFile), true)
 	if err != nil {
 		return nil
 	}
@@ -1816,7 +1824,8 @@ func hlgBase(rec Doc) bool {
 	return ok && n == 4
 }
 
-// readRecordDoc is the record at path, decoded, as the gate reads one: a
+// readRecordDoc is the record at path, decoded, as the captions backfill
+// reads one (the gate reads a record in its writers' forms, readWritten): a
 // record an object of which gives a key twice is none it can read (which of
 // the two a reader takes is a reader's choice, and the gate's would be one);
 // nor is one that gives a number no reader holds (unheldNumber), as the
