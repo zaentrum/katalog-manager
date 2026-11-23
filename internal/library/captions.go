@@ -256,7 +256,9 @@ func (w *CaptionWindow) UnmarshalJSON(b []byte) error {
 	w.Captions = c
 	start, okS := number("start")
 	end, okE := number("end")
-	if !okS || !okE || start < 0 || end < start {
+	// any number, as the contract's window_of reads them: a picture whose
+	// clock starts before 0 s is read in windows that start before it too
+	if !okS || !okE || end < start {
 		return fail("start and end are the seconds it covered, end not before start", frames)
 	}
 	w.Start, w.End = start, end
@@ -724,7 +726,10 @@ func planAts() []float64 { return append([]float64{0}, PlannedWindows...) }
 // on the picture of the span s: WindowPackets packets at its frame step,
 // from a keyframe up to gop before its place, and ShortReachSlack.
 func shortReach(s Span, gop float64) float64 {
-	return float64(WindowPackets)*s.Step + gop + ShortReachSlack
+	// the product rounded before it is added (float64), as the record logic's
+	// plan_short adds it: Go may fuse a*b + c into one multiply-add, which
+	// rounds once, and a place at the edge then lies on the other side
+	return float64(float64(WindowPackets)*s.Step) + gop + ShortReachSlack
 }
 
 // ShortPicture reports whether the plan's windows can't be read on frames
@@ -767,7 +772,9 @@ func (s Span) Place(at float64) float64 {
 	if at < atSlack {
 		return s.Start
 	}
-	return math.Max(s.Start, math.Min(s.Start+at*s.Length(), s.End-WindowTail))
+	// the product rounded before it is added, as plan_places adds it (no
+	// fused multiply-add: shortReach)
+	return math.Max(s.Start, math.Min(s.Start+float64(at*s.Length()), s.End-WindowTail))
 }
 
 // CaptionsNoLength begins why the gate keeps an original whose record says

@@ -47,7 +47,13 @@ runs the schemas' validator on a library a retirement wrote in
 (`internal/library/contract_e2e_test.go`) needs a `python3` with `jsonschema`
 and `referencing` (`pip install "jsonschema[format-nongpl]>=4.23"
 referencing`; `KATALOG_TEST_PYTHON` names another python). Without them
-they are skipped, except in CI (`CI` set), where they fail.
+they are skipped, except in CI (`CI` set), where they fail. CI gives each
+package 20 minutes (`go test -timeout 20m ./...`): the differential takes
+about 6 minutes there and the library's tests about 4, longer with `-race`.
+CI runs the differential once more built for x86-64-v3 (`GOAMD64=v3`),
+where the compiler fuses a multiply and an add into one, as it always does
+on arm64 (this Mac's suites fuse too); `KATALOG_TEST_FUSED=1` has
+`TestTheBuildFusesAMultiplyAndAnAdd` fail unless the build fuses.
 
 ## Run it
 

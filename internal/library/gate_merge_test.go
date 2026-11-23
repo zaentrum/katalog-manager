@@ -1,6 +1,7 @@
 package library
 
 import (
+	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
@@ -274,31 +275,39 @@ func TestALoaderRefusesANumberNoReaderHolds(t *testing.T) {
 // The record's picture is the record logic's picture_of: its first video
 // stream that its dispositions don't mark attachedPic, by any value Python
 // takes for true - "yes" and 2 mark it, "" and 0 don't -, which the record
-// logic marks on what the cover rule calls a cover and nothing else.
+// logic marks on what the cover rule calls a cover and nothing else. A mark
+// that is no boolean is one the contract's schema refuses: such a record
+// holds, its picture read all the same.
 func TestARecordsPictureIsItsFirstVideoStreamNotMarked(t *testing.T) {
 	probe := `{"streams": [{"index": 0, "codec_type": "video", "codec_name": "mjpeg", "tags": {"filename": "c.jpg",
 		"mimetype": "image/jpeg"}}, {"index": 1, "codec_type": "video", "codec_name": "h264", "field_order": "progressive",
 		"start_time": "0.000000", "avg_frame_rate": "24/1"}]}`
 	for _, c := range []struct {
-		name string
-		mark any
-		held bool
+		name   string
+		mark   any
+		held   bool // its picture not the film
+		schema bool // held as a record the contract's schema refuses
 	}{
-		{"marked true", true, false},
-		{"marked \"yes\"", "yes", false},
-		{"marked 2", 2, false},
-		{"marked \"\"", "", true},
-		{"marked 0", 0, true},
+		{"marked true", true, false, false},
+		{"marked \"yes\"", "yes", false, true},
+		{"marked 2", 2, false, true},
+		{"marked \"\"", "", true, false},
+		{"marked 0", 0, true, false},
 	} {
 		d := t.TempDir()
-		sourceRecord(t, d, "a", "matroska,webm", []any{
+		rec := sourceRecord(t, d, "a", "matroska,webm", []any{
 			map[string]any{"index": 0, "type": "video", "codec": "mjpeg", "dispositions": map[string]any{"attachedPic": c.mark}},
 			map[string]any{"index": 1, "type": "video", "codec": "h264", "fieldOrder": "progressive"}}, probe)
 		packageOf(t, d, "v-a", verifiedProgressive(), "a")
 		g, err := ReadGateWith(d, "v-a", read(600, every()...), "a")
 		held := strings.HasPrefix(g.Unknown, CaptionsUnknown+": "+PictureNotFilm)
-		if err != nil || held != c.held || (!c.held && g.Unknown != "") {
-			t.Errorf("the cover %s: %+v, %v; want its picture not the film %v", c.name, g, err, c.held)
+		schema := strings.Contains(g.Unknown, "/streams/0/dispositions/attachedPic")
+		if err != nil || held != c.held || schema != c.schema || (!c.held && !c.schema && g.Unknown != "") {
+			t.Errorf("the cover %s: %+v, %v; want its picture not the film %v, the record refused %v", c.name, g, err,
+				c.held, c.schema)
+		}
+		if i, _ := recordPicture(rec).Get("index"); (i == json.Number("1")) == c.held {
+			t.Errorf("the cover %s: the record's picture is stream %v; want the film %v", c.name, i, !c.held)
 		}
 	}
 }

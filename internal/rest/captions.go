@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -121,8 +120,7 @@ func (h *Handlers) putCaptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if k := captions.RepeatedKey(body); k != "" {
-		writeError(w, http.StatusBadRequest, "the body is no report of a read: its key "+strconv.Quote(k)+
-			" is given twice in one object")
+		writeError(w, http.StatusBadRequest, "the body is no report of a read: its key "+k+" is given twice in one object")
 		return
 	}
 	var rep captions.Report

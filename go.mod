@@ -7,6 +7,7 @@ require (
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/graph-gophers/graphql-go v1.7.2
 	github.com/jackc/pgx/v5 v5.7.5
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/segmentio/kafka-go v0.4.51
 	golang.org/x/text v0.29.0
 )

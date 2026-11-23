@@ -142,47 +142,51 @@ type Report struct {
 	Released bool        `json:"released"`
 }
 
-// RepeatedKey is a key an object of the report b gives twice, "" when none
-// does (or b is no JSON a report is read from, which its reading says): a
-// report that says a thing twice says it neither way. Its windows are read
-// on their own (library.CaptionWindow: a window that gives a key twice is a
-// failed one), so a key repeated inside one is not this one's.
+// RepeatedKey names a key an object of the report b gives twice, quoted
+// ("token"; "" the empty key), "" when none does (or b is no JSON a report
+// is read from, which its reading says): a report that says a thing twice
+// says it neither way. Its windows are read on their own
+// (library.CaptionWindow: a window that gives a key twice is a failed one),
+// so a key repeated inside one is not this one's.
 func RepeatedKey(b []byte) string {
 	d, err := library.DecodeDoc(b)
 	if err != nil {
 		return ""
 	}
-	return repeated(d, "")
+	if k, twice := repeated(d, ""); twice {
+		return strconv.Quote(k)
+	}
+	return ""
 }
 
 // repeated is a key an object of the value v, at the path path of the
-// report, gives twice, its windows aside: in any case, as encoding/json
-// takes "Token" for "token".
-func repeated(v any, path string) string {
+// report, gives twice, its windows aside, and whether one does (the empty
+// key too): in any case, as encoding/json takes "Token" for "token".
+func repeated(v any, path string) (string, bool) {
 	switch x := v.(type) {
 	case library.Doc:
 		seen := make(map[string]bool, len(x))
 		for _, f := range x {
 			k := strings.ToLower(f.Key)
 			if seen[k] {
-				return f.Key
+				return f.Key, true
 			}
 			seen[k] = true
 			if path+"/"+k == "/original/captionwindows" {
 				continue
 			}
-			if r := repeated(f.Value, path+"/"+k); r != "" {
-				return r
+			if r, twice := repeated(f.Value, path+"/"+k); twice {
+				return r, true
 			}
 		}
 	case []any:
 		for _, e := range x {
-			if k := repeated(e, path+"/[]"); k != "" {
-				return k
+			if k, twice := repeated(e, path+"/[]"); twice {
+				return k, true
 			}
 		}
 	}
-	return ""
+	return "", false
 }
 
 // FileReport is what a read of the original found, window by window

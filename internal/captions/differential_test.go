@@ -23,7 +23,18 @@ const (
 	differentialDir      = "testdata/differential"
 	recordLogicSHA256    = "5109334f5645d99a90ce728d541b64dcc0dd7802312d0771bc25b104b5b0d3db"
 	differentialMaxShown = 40
+	// differentialSource is the source the inputs are of (differential.py's
+	// SOURCE), its records in the folder its id names
+	differentialSource = "a0a0a0a0-0000-4000-8000-0000000000a0"
 )
+
+// The generator, pinned by its sha256 as the record logic is (a change to
+// it is one made on purpose, its pin with it), and the least it must make:
+// of every input, and of each family (the part of an id before its first
+// /), so that a generator that makes fewer compares fewer and fails.
+const generatorSHA256 = "61111b95d4dacc98edba0c59767a9eb39b99f7a83be53ff5e7825e4b444aa833"
+
+var differentialFloor = map[string]int{"": 64756, "C": 3426, "E": 227, "J": 144, "L": 481, "P": 594, "R": 58243, "S": 247, "W": 1018, "X": 375}
 
 // differentialCase is one input of the differential: the files of an item
 // folder as text, and a read's report (its "original") as text; nil: none.
@@ -78,8 +89,11 @@ func loaded(text *string) any {
 // nor its port lets it go, and the port holds each key it holds (its closed
 // captions, its fields; a raise holds both): any such input fails the test.
 // The inputs the gate holds and the record logic lets go are counted by their
-// kind, which the pull request's text names, each with why. It needs python3 (3.11 or
-// later); CI has it, and fails without it.
+// kind, which the pull request's text names, each with why. The generator is
+// pinned, and it must have made at least the inputs it makes now
+// (differentialFloor), of every family. It needs python3 (3.11 or later); CI
+// has it, and fails without it; CI runs it once more where the compiler
+// fuses (TestTheBuildFusesAMultiplyAndAnAdd).
 func TestTheGateHoldsWhatTheRecordLogicHolds(t *testing.T) {
 	py, err := exec.LookPath("python3")
 	if err != nil {
@@ -94,6 +108,11 @@ func TestTheGateHoldsWhatTheRecordLogicHolds(t *testing.T) {
 	}
 	if got := library.SHA256(b); got != recordLogicSHA256 {
 		t.Fatalf("libv2_records.py: sha256 %s; want %s, the record logic as vendored", got, recordLogicSHA256)
+	}
+	if b, err := os.ReadFile(filepath.Join(differentialDir, "differential.py")); err != nil {
+		t.Fatal(err)
+	} else if got := library.SHA256(b); got != generatorSHA256 {
+		t.Fatalf("differential.py: sha256 %s; want %s, the generator as pinned", got, generatorSHA256)
 	}
 	tmp := t.TempDir()
 	cases, goOut, summary := filepath.Join(tmp, "cases.jsonl"), filepath.Join(tmp, "go.out"), filepath.Join(tmp, "summary.json")
@@ -114,12 +133,15 @@ func TestTheGateHoldsWhatTheRecordLogicHolds(t *testing.T) {
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
 	base := t.TempDir()
 	n := 0
+	families := map[string]int{}
 	for sc.Scan() {
 		var c differentialCase
 		if err := json.Unmarshal(sc.Bytes(), &c); err != nil {
 			t.Fatalf("case %d: %v", n, err)
 		}
 		n++
+		family, _, _ := strings.Cut(c.ID, "/")
+		families[family]++
 		verdict, note, why := gateVerdict(t, filepath.Join(base, fmt.Sprint(n)), c)
 		port := portVerdict(c)
 		fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\n", c.ID, verdict, clean(note), clean(why), port)
@@ -160,8 +182,13 @@ func TestTheGateHoldsWhatTheRecordLogicHolds(t *testing.T) {
 		}
 	}
 	t.Logf("agree %v; the gate holds and the record logic lets go, by kind: %v; the port: %v", s.Agree, s.Lesser, s.PortLesser)
-	if s.Cases != n || n == 0 {
-		t.Fatalf("the comparison read %d cases of %d", s.Cases, n)
+	if s.Cases != n || n < differentialFloor[""] {
+		t.Fatalf("the comparison read %d cases of %d; want at least %d", s.Cases, n, differentialFloor[""])
+	}
+	for family, least := range differentialFloor {
+		if family != "" && families[family] < least {
+			t.Errorf("the generator made %d inputs of %s; want at least %d", families[family], family, least)
+		}
 	}
 	for i, m := range s.Must {
 		if i == differentialMaxShown {
@@ -210,8 +237,8 @@ func clean(s string) string {
 // the item folder dir: GOES, KEPT or ERR, how the PUT took its read, and why.
 func gateVerdict(t *testing.T, dir string, c differentialCase) (verdict, note, why string) {
 	t.Helper()
-	putText(t, filepath.Join(dir, "sources", "a", "source.json"), c.Source)
-	putText(t, filepath.Join(dir, "sources", "a", "ffprobe.json"), c.Probe)
+	putText(t, filepath.Join(dir, "sources", differentialSource, "source.json"), c.Source)
+	putText(t, filepath.Join(dir, "sources", differentialSource, "ffprobe.json"), c.Probe)
 	putText(t, filepath.Join(dir, "versions", "v-a", "package.json"), c.Package)
 	putText(t, filepath.Join(dir, "versions", "v-a", "version.json"), c.Version)
 	for _, o := range c.Others {
@@ -252,7 +279,7 @@ func gateVerdict(t *testing.T, dir string, c differentialCase) (verdict, note, w
 			}
 		}
 	}
-	g, err := library.ReadGateWith(dir, "v-a", facts, "a")
+	g, err := library.ReadGateWith(dir, "v-a", facts, differentialSource)
 	switch {
 	case err != nil:
 		return "ERR", note, err.Error()

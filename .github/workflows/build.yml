@@ -46,4 +46,15 @@ jobs:
       - run: python3 -m pip install "jsonschema[format-nongpl]>=4.23" referencing
       - run: go build ./...
       - run: go vet ./...
-      - run: go test ./...
+      # Each package's tests get 20 minutes, not go test's default 10: the
+      # differential (internal/captions) takes about 6 minutes on this runner
+      # and the library's tests about 4, and their full input sets stay.
+      - run: go test -timeout 20m ./...
+      # The differential once more where the compiler fuses a multiply and an
+      # add into one multiply-add, which rounds once where the record logic
+      # rounds twice: amd64 built for x86-64-v3, as arm64 always fuses. The
+      # first test fails unless this build fuses a bare a*b + c.
+      - run: go test -timeout 20m -count=1 -run '^(TestTheBuildFusesAMultiplyAndAnAdd|TestTheGateHoldsWhatTheRecordLogicHolds)$' ./internal/captions/
+        env:
+          GOAMD64: v3
+          KATALOG_TEST_FUSED: "1"

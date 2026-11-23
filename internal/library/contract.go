@@ -400,14 +400,23 @@ func contractPlaces(plan *contractPlan) []float64 {
 			out = append(out, plan.start)
 			continue
 		}
-		out = append(out, math.Max(plan.start, math.Min(plan.start+at*(plan.end-plan.start), plan.end-WindowTail)))
+		// the product rounded before it is added, as Python adds it (no fused
+		// multiply-add: shortReach)
+		out = append(out, math.Max(plan.start, math.Min(plan.start+float64(at*(plan.end-plan.start)), plan.end-WindowTail)))
 	}
 	return out
 }
 
+// contractReach is how far a window reaches in the record logic's
+// plan_short: its packets at the frame step, the gop and 0.5 s, the product
+// rounded before it is added (no fused multiply-add: shortReach).
+func contractReach(plan *contractPlan, gop float64) float64 {
+	return float64(float64(WindowPackets)*plan.step) + gop + ShortReachSlack
+}
+
 // contractShort is the record logic's plan_short.
 func contractShort(plan *contractPlan, gop float64) bool {
-	reach := float64(WindowPackets)*plan.step + gop + ShortReachSlack
+	reach := contractReach(plan, gop)
 	places := contractPlaces(plan)
 	sort.Float64s(places)
 	for i := 1; i < len(places); i++ {
@@ -1144,7 +1153,7 @@ func contractRead(report []byte) any {
 		return nil
 	}
 	orig, err := DecodeDoc(report)
-	if err != nil || repeatedKey(orig) != "" || unheldNumber(orig) != "" {
+	if _, twice := repeatedKey(orig); err != nil || twice || unheldNumber(orig) != "" {
 		return nil
 	}
 	r := Doc{{"windows", pyGet(orig, "captionWindows")}}

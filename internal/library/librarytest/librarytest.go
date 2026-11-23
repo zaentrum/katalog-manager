@@ -235,6 +235,30 @@ func WriteSource(t testing.TB, dir string, record map[string]any, files map[stri
 	Write(t, filepath.Join(dir, "checksums.sha256"), checksums(digests))
 }
 
+// Recorded is the source record record with what the record logic writes of
+// every original that record leaves out - when it took it and by what, its
+// file's kind, time and fixity, its fidelity, its probe -, as the contract's
+// schema of a source record requires it (the gate keeps the original of a
+// record it refuses).
+func Recorded(record map[string]any) map[string]any {
+	out := map[string]any{"takenAt": "2026-10-01T10:00:00Z", "takenBy": "analyzer test",
+		"fidelity": map[string]any{"class": "original", "fingerprint": nil, "evidence": []any{}},
+		"probe": map[string]any{"tool": "ffprobe", "version": nil, "at": "2026-10-01T10:00:00Z", "file": nil, "sha256": nil,
+			"note": nil}}
+	for k, v := range record {
+		out[k] = v
+	}
+	file := map[string]any{"kind": "stream-container", "mtime": "2026-10-01T09:00:00Z",
+		"fixity": map[string]any{"qh1": "sha256:" + strings.Repeat("0", 64)}, "part": nil}
+	if given, ok := record["file"].(map[string]any); ok {
+		for k, v := range given {
+			file[k] = v
+		}
+		out["file"] = file
+	}
+	return out
+}
+
 // Extra is an extra's folder as WriteExtra writes it.
 type Extra struct {
 	ExtraID, PackageID string

@@ -339,7 +339,7 @@ func ReadGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (
 	}
 	var records, essences, probes []Doc
 	var unreadable []string
-	recordUnread, recordGap := "", ""
+	recordUnread, recordGap, refused := "", "", ""
 	for _, sid := range sourceIDs {
 		rec, err := readRecordDoc(filepath.Join(SourceDir(itemDir, sid), "source.json"))
 		if err != nil {
@@ -347,6 +347,11 @@ func ReadGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (
 		}
 		if why := recordShape(rec); why != "" && recordUnread == "" {
 			recordUnread = "its source record can't be read: " + why
+		}
+		// a record the contract's validator takes for none, whose original
+		// its gate keeps
+		if why := sourceRecordCheck(rec, sid); why != "" && refused == "" {
+			refused = "its source record is none the contract takes: " + why
 		}
 		records = append(records, rec)
 		essences = append(essences, essenceOf(rec))
@@ -492,6 +497,9 @@ func ReadGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (
 	// the other way): which stream is its picture can't be told
 	if why := coverMarkWhy(records, probes); why != "" && unknown == "" && captions == "" {
 		unknown = why
+	}
+	if refused != "" && unknown == "" && captions == "" {
+		unknown = refused
 	}
 	// the contract's deletion gate, beside the gate's own rules: what it
 	// keeps, the gate keeps (of closed captions only where the gate is asked
@@ -1806,7 +1814,7 @@ func LoadRecord(b []byte) (Doc, error) {
 	if err != nil {
 		return nil, err
 	}
-	if k := repeatedKey(d); k != "" {
+	if k, twice := repeatedKey(d); twice {
 		return nil, fmt.Errorf("its key %q is given twice in one object", k)
 	}
 	if n := unheldNumber(d); n != "" {
@@ -1851,29 +1859,29 @@ func unheldNumber(v any) string {
 	return ""
 }
 
-// repeatedKey is a key an object of the decoded value v gives twice, ""
-// when none does.
-func repeatedKey(v any) string {
+// repeatedKey is a key an object of the decoded value v gives twice, and
+// whether one does: the empty key "" given twice is one too.
+func repeatedKey(v any) (string, bool) {
 	switch x := v.(type) {
 	case Doc:
 		seen := make(map[string]bool, len(x))
 		for _, f := range x {
 			if seen[f.Key] {
-				return f.Key
+				return f.Key, true
 			}
 			seen[f.Key] = true
-			if k := repeatedKey(f.Value); k != "" {
-				return k
+			if k, twice := repeatedKey(f.Value); twice {
+				return k, true
 			}
 		}
 	case []any:
 		for _, e := range x {
-			if k := repeatedKey(e); k != "" {
-				return k
+			if k, twice := repeatedKey(e); twice {
+				return k, true
 			}
 		}
 	}
-	return ""
+	return "", false
 }
 
 // essenceOf is the essence a decoded record holds: none when it holds none.

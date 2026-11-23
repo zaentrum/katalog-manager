@@ -3051,16 +3051,36 @@ contract's deletion gate keeps it for its closed captions: ..."), of the
 fields its `interlaced`. A test (`TestTheGateHoldsWhatTheRecordLogicHolds`,
 `internal/captions`) holds the two to each other input by input: the
 schemas' record logic, vendored and pinned by its sha256, says what the
-contract does with each of some 33,000 inputs a generator makes (every edge
-the contract draws, varied), and any input the gate lets go where the record
-logic holds fails it, as does any where its port, key by key, lets go a
-key the record logic holds; it needs `python3`. Every
+contract does with each of some 65,000 inputs a generator makes (every edge
+the contract draws, varied, of pictures at 25 rates and starts, a day long
+among them), and any input the gate lets go where the record logic holds
+fails it, as does any where its port, key by key, lets go a key the record
+logic holds; the generator is pinned too, and the test wants at least the
+inputs it makes; it needs `python3`. The gate's arithmetic rounds as
+Python's does: a product is rounded before it is added (`float64(a*b) +
+c`), as the compiler may otherwise fuse the two into one multiply-add,
+which rounds once (arm64 does, amd64 built for x86-64-v3 does), and a
+window at the edge of its slack would lie on the other side. Every
 original-deleted event a retirement writes carries the read the gate
 decided on (`captionsRead`: its windows as the record logic keeps them, its
 span, its gop, the release of the ffprobe that read it, when it was read),
 as the validator judges a deletion by the reads events carry; a test runs
 the schemas' validator, vendored and pinned, on a library a retirement
 wrote in (it needs `python3` with `jsonschema` and `referencing`).
+
+A source record the contract's validator takes for none keeps its original
+("its source record is none the contract takes: ..."): one its schema
+(`library/v2/source.schema.json`, vendored at 71999959) refuses, or whose
+`sourceId` doesn't name its folder. The gate reads the vendored schema with
+`github.com/santhosh-tekuri/jsonschema/v6` (draft 2020-12, its formats
+asserted) as the validator reads it: a number Python's json reads as no int
+(`7.0`, `1e2`), or whose int is past 64 bits, is no integer; a date-time is
+one Go's RFC 3339 reading takes; a pattern matches no string Python's
+`re.search` doesn't (Go's `$` is the end alone; the two patterns that look
+ahead are read as they say, of a string of one line). A record, a probe or
+a read that gives a key twice in one object, the empty key `""` too, can't
+be read, and a read's window may start at any second, before 0 too, as the
+schema allows.
 
 The closing rule: the reads were made for, and tested with, some ways
 closed captions and fields are carried, and the gate takes a read of no

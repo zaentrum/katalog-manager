@@ -293,10 +293,10 @@ func newInVersion(t *testing.T) *inVersion {
 	iv.old = filepath.Join(vdir, "original.mkv")
 	librarytest.Write(t, iv.old, make([]byte, 100))
 	// probed: a progressive picture and a stereo track, no subtitle
-	librarytest.WriteSource(t, library.SourceDir(iv.itemDir, ivSource), map[string]any{"sourceId": ivSource,
+	librarytest.WriteSource(t, library.SourceDir(iv.itemDir, ivSource), librarytest.Recorded(map[string]any{"sourceId": ivSource,
 		"file": map[string]any{"name": "original.mkv", "sizeBytes": 100}, "essence": statedEssence(map[string]any{"maxAudioChannels": 2}),
 		"container": tenMinutes, "streams": []any{map[string]any{"index": 0, "type": "video", "codec": "h264", "fieldOrder": "progressive"},
-			map[string]any{"index": 1, "type": "audio", "channels": 2, "language": "en"}}}, planProbe)
+			map[string]any{"index": 1, "type": "audio", "channels": 2, "language": "en"}}}), planProbe)
 	storetest.AddItem(t, st, bunny, "movie", "Big Buck Bunny", "")
 	storetest.Exec(t, st, `INSERT INTO com_nalet_katalog_itemsources (id, item_id, filename, arrivalpath, sizebytes, state, recordedat)
 		VALUES ($3, $1, 'original.mkv', $2, 100, 'present', now())`, bunny, iv.old, ivSource)
@@ -455,9 +455,9 @@ func TestAReplaceIsToldWhyItsOldFileIsKept(t *testing.T) {
 		map[string]any{"index": 2, "type": "audio", "channels": 2, "language": "de"},
 		map[string]any{"index": 3, "type": "audio", "channels": 2, "language": "en"}}
 	ess := map[string]any{"maxAudioChannels": 2, "audioLanguages": []string{"de", "en"}}
-	librarytest.WriteSource(t, library.SourceDir(iv.itemDir, ivSource), map[string]any{"sourceId": ivSource,
+	librarytest.WriteSource(t, library.SourceDir(iv.itemDir, ivSource), librarytest.Recorded(map[string]any{"sourceId": ivSource,
 		"file": map[string]any{"name": "original.mkv", "sizeBytes": 100}, "essence": statedEssence(ess), "container": tenMinutes,
-		"streams": streams}, planProbe)
+		"streams": streams}), planProbe)
 	res, err := iv.svc.ReplaceSource(asAddon, graph.ReplaceSourceRequest{ItemID: bunny, Path: iv.handed, DeleteOldFile: true,
 		Key: "handed-1"})
 	if err != nil || res.OldFileDeleted || !res.OldFileSuperseded ||

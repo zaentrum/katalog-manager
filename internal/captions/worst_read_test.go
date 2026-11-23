@@ -250,10 +250,13 @@ func TestARewrittenRecordHasItsOriginalReadAgain(t *testing.T) {
 // window.
 func TestAReportThatSaysAThingTwiceIsRefused(t *testing.T) {
 	for body, want := range map[string]string{
-		`{"token": "a", "token": "b", "original": {}}`:                                            "token",
-		`{"token": "a", "original": {"sizeBytes": 6, "sizeBytes": 7}}`:                            "sizeBytes",
-		`{"token": "a", "original": {"captionWindows": [], "captionWindows": []}}`:                "captionWindows",
+		`{"token": "a", "token": "b", "original": {}}`:                                            `"token"`,
+		`{"token": "a", "original": {"sizeBytes": 6, "sizeBytes": 7}}`:                            `"sizeBytes"`,
+		`{"token": "a", "original": {"captionWindows": [], "captionWindows": []}}`:                `"captionWindows"`,
+		`{"token": "a", "original": {"": 1, "": 2}}`:                                              `""`,
+		`{"": 1, "": 1, "token": "a", "original": {}}`:                                            `""`,
 		`{"token": "a", "original": {"captionWindows": [{"captions": true, "captions": false}]}}`: "",
+		`{"token": "a", "original": {"": 1}}`:                                                     "",
 		`{"token": "a", "original": ` + fullRead + `}`:                                            "",
 	} {
 		if got := RepeatedKey([]byte(body)); got != want {

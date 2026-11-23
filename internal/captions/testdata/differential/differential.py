@@ -151,10 +151,24 @@ def essence():
             "sdhSubtitleLanguages": [], "forcedSubtitleLanguages": [], "closedCaptions": False}
 
 
+# the source the gate is asked of, and another one, by the ids the schema takes (lower-case UUIDs); the test writes
+# a source's records into the folder its id names
+SOURCE = "a0a0a0a0-0000-4000-8000-0000000000a0"
+OTHER = "b0b0b0b0-0000-4000-8000-0000000000b0"
+
+
 def source(ms=600000):
-    return {"schema": "zaentrum.library.source/2", "sourceId": "a",
+    """A source record the contract's schema takes (source.schema.json), of what the gate reads and what the record
+    logic writes beside it."""
+    return {"schema": "zaentrum.library.source/2", "sourceId": SOURCE, "takenAt": "2026-10-01T10:00:00Z",
+            "takenBy": "analyzer test",
+            "file": {"name": "original.mkv", "kind": "stream-container", "sizeBytes": 6, "mtime": "2026-10-01T09:00:00Z",
+                     "fixity": {"qh1": "sha256:" + "0" * 64}, "part": None},
             "container": {"format": "matroska,webm", "durationMs": ms}, "essence": essence(),
-            "streams": [{"index": 0, "type": "video", "codec": "h264", "fieldOrder": "progressive", "height": 1080}]}
+            "streams": [{"index": 0, "type": "video", "codec": "h264", "fieldOrder": "progressive", "height": 1080}],
+            "fidelity": {"class": "original", "fingerprint": None, "evidence": []},
+            "probe": {"tool": "ffprobe", "version": None, "at": "2026-10-01T10:00:00Z",
+                      "file": f"sources/{SOURCE}/ffprobe.json", "sha256": None, "note": None}}
 
 
 def probe(seconds="600.000000", rate="24/1", start="0.000000"):
@@ -174,7 +188,7 @@ def package():
                                       "videoRange": "SDR"}]}, "scan": scan()}
 
 
-def version(ids=("a",), vid="v-a"):
+def version(ids=(SOURCE,), vid="v-a"):
     return {"schema": "zaentrum.library.version/2", "versionId": vid, "sourceIds": list(ids)}
 
 
@@ -344,7 +358,39 @@ def setups():
     out["120s@24"] = (source(120000), probe("120.000000"))
     out["20000s@24"] = (source(20000000), probe("20000.000000"))
     out["600s@25"] = (source(), probe("600.000000", "25/1"))
+    # the review's widened pictures: other rates (where a step is no binary fraction), starts that are none either
+    # (where the compiler may fuse start + at x length into one multiply-add, which rounds once), a day, and a
+    # picture whose average rate is not its real one, or none
+    S = lambda ms, secs, rate, start="0.000000": (source(ms), probe(secs, rate, start))
+    out.update({
+        "600s@29.97": S(600000, "600.000000", "30000/1001"),
+        "5400s@59.94": S(5400000, "5400.000000", "60000/1001"),
+        "600s@50,start0.08": S(600000, "600.000000", "50/1", "0.080000"),
+        "600s@30,start1.4": S(600000, "600.000000", "30/1", "1.400000"),
+        "600s@120": S(600000, "600.000000", "120/1"),
+        "600s@12": S(600000, "600.000000", "12/1"),
+        "900s@15": S(900000, "900.000000", "15/1"),
+        "3600s@2": S(3600000, "3600.000000", "2/1"),
+        "3600s@1.5": S(3600000, "3600.000000", "3/2"),
+        "1800s@1.001": S(1800000, "1800.000000", "1001/1000"),
+        "601.337s@23.976": S(601337, "601.337000", "24000/1001"),
+        "45s@59.94": S(45000, "45.000000", "60000/1001"),
+        "86400s@25": S(86400000, "86400.000000", "25/1"),
+        "200s@29.97": S(200000, "200.000000", "30000/1001"),
+    })
+    s, p = S(600000, "600.000000", "24000/1001")
+    p["streams"][0]["r_frame_rate"] = "30000/1001"
+    out["600s@avg23.976,r29.97"] = (s, p)
+    s, p = S(600000, "600.000000", "0/0")
+    p["streams"][0]["r_frame_rate"] = "30000/1001"
+    out["600s@avg0:0,r29.97"] = (s, p)
     return out
+
+
+# the widened pictures (setups)
+WIDE = {"600s@29.97", "5400s@59.94", "600s@50,start0.08", "600s@30,start1.4", "600s@120", "600s@12", "900s@15", "3600s@2",
+        "3600s@1.5", "1800s@1.001", "601.337s@23.976", "45s@59.94", "86400s@25", "200s@29.97", "600s@avg23.976,r29.97",
+        "600s@avg0:0,r29.97"}
 
 
 def plan_for(s, p):
@@ -355,12 +401,24 @@ def edges(x):
     return [x, nxt(x), prv(x), x + 4e-4, x - 4e-4, x + 6e-4, x - 6e-4, x + 1e-3, x - 1e-3]
 
 
+def wide_input(sname, cid):
+    """Whether the read cid of the picture sname is one the generator makes: of the widened pictures (WIDE) where a
+    window lies and the fraction it says, not what a window says of itself or how many there are (those don't
+    depend on the rate), and keyframeBefore given true or not at all."""
+    if sname not in WIDE:
+        return True
+    family = cid.split("/")[0].split(".")[0]
+    return family not in ("window", "windows", "at-form", "counts") and \
+        (family != "keyframeBefore" or cid.endswith(("/kb=true", "/kb=missing")))
+
+
 def gen_read():
     for sname, (s, p) in setups().items():
         plan = plan_for(s, p)
         tol = L.caption_tolerance(plan)
         ceiling = L.CAPTION_GOP_PACKETS * plan["step"]
-        A = lambda cid, read: add(f"R/{sname}/{cid}", src=copy.deepcopy(s), prb=copy.deepcopy(p), read=read)
+        A = lambda cid, read: wide_input(sname, cid) and add(f"R/{sname}/{cid}", src=copy.deepcopy(s), prb=copy.deepcopy(p),
+                                                             read=read)
         A("base", read_of(plan))
         A("base,gop-none", read_of(plan, MISSING))
         A("whole", read_of(plan, 2.0, whole=True))
@@ -545,7 +603,8 @@ def gen_read():
 
 
 def gen_whole():
-    for sname in ("40s@24", "600s@24", "3600s@1", "600s@24,start12.5"):
+    for sname in ("40s@24", "600s@24", "3600s@1", "600s@24,start12.5", "45s@59.94", "600s@29.97", "600s@50,start0.08",
+                  "3600s@2"):
         s, p = setups()[sname]
         plan = plan_for(s, p)
         tol = L.caption_tolerance(plan)
@@ -993,9 +1052,9 @@ def gen_scan():
         "scan-text": "x", "scan-list": [], "scan-empty": {}, "found-unknown": {"found": "unknown"}, "found-null": {"found": None},
         "found-missing-done-none": {"done": "none"}, "found-number": {"found": 5},
     }
-    vers = {"same-source": version(("a",), "v-old"), "other-source": version(("b",), "v-old"),
-            "both-sources": version(("a", "b"), "v-old"), "no-version.json": MISSING,
-            "sourceIds-null": dict(version((), "v-old"), sourceIds=None), "sourceIds-text": dict(version((), "v-old"), sourceIds="a"),
+    vers = {"same-source": version((SOURCE,), "v-old"), "other-source": version((OTHER,), "v-old"),
+            "both-sources": version((SOURCE, OTHER), "v-old"), "no-version.json": MISSING,
+            "sourceIds-null": dict(version((), "v-old"), sourceIds=None), "sourceIds-text": dict(version((), "v-old"), sourceIds=SOURCE),
             "version.json-list": Raw("[]")}
     for sname, sc in older.items():
         for vname, ver in vers.items():
@@ -1029,11 +1088,36 @@ def gen_loader():
             d = base()
             d["x"] = form
             add(f"J/{which}/{name}", **{{"source": "src", "probe": "prb", "package": "pkg", "version": "ver"}[which]: d})
+        # the empty key given twice: at the top, and where any key may stand (a container's or a format's tags)
+        d = base()
+        d[""] = Twice(1, 2)
+        add(f"J/{which}/empty-key-twice", **{{"source": "src", "probe": "prb", "package": "pkg", "version": "ver"}[which]: d})
+        d = base()
+        d[""] = Twice(1, 1)
+        add(f"J/{which}/empty-key-twice-alike", **{{"source": "src", "probe": "prb", "package": "pkg", "version": "ver"}[which]: d})
+        if which in ("source", "probe"):
+            d = base()
+            d["container" if which == "source" else "format"]["tags"] = {"": Twice("x", "y")}
+            add(f"J/{which}/tags-empty-key-twice", **{{"source": "src", "probe": "prb"}[which]: d})
+            d = base()
+            d["container" if which == "source" else "format"]["tags"] = {"": "x"}
+            add(f"J/{which}/tags-empty-key", **{{"source": "src", "probe": "prb"}[which]: d})
         text = dumps(base())
         for name, raw in {"bom": "﻿" + text, "trailing": text + " x", "trailing-object": text + " {}", "empty": "",
                           "spaces": "  ", "list": "[" + text + "]", "comment": "// x\n" + text, "single-quotes": text.replace('"', "'"),
                           "trailing-comma": text[:-1] + ",}", "nul-after": text + "\x00", "newline": text + "\n"}.items():
             add(f"J/{which}/text-{name}", **{{"source": "src", "probe": "prb", "package": "pkg", "version": "ver"}[which]: Raw(raw)})
+
+
+    # a read's report that gives the empty key twice, at the top or in its span
+    plan = {"start": 0.0, "end": 600.0, "step": 1 / 24}
+    for name, f in {"empty-key-twice": lambda r: r.__setitem__("", Twice(1, 2)),
+                    "empty-key-twice-alike": lambda r: r.__setitem__("", Twice(1, 1)),
+                    "span-empty-key-twice": lambda r: r["span"].__setitem__("", Twice(1, 2)),
+                    "empty-key": lambda r: r.__setitem__("", 1)}.items():
+        r = read_of(plan)
+        f(r)
+        add(f"J/read/{name}", read=r)
 
 
 # ---- X: the gate's own reading against the record's key and mark, each way (the review's second batch) ----

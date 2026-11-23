@@ -443,3 +443,41 @@ func TestTheContractsGateKeepsAProbeOfNoOneFilm(t *testing.T) {
 		}
 	}
 }
+
+// A key given twice in one object makes a record, a probe or a read's report
+// one no loader reads, the empty key "" too: the gate's loader (LoadRecord)
+// refuses it, the contract's gate takes such a report for a read that can't
+// be read (which keeps both), and the gate keeps the original of a record or
+// a probe that gives it.
+func TestTheEmptyKeyGivenTwiceIsAKeyGivenTwice(t *testing.T) {
+	for text, read := range map[string]bool{
+		`{"": 1, "": 2}`:            false,
+		`{"a": {"": 1, "": 1}}`:     false,
+		`{"a": [{"": 1}, {"": 1}]}`: true,
+		`{"": 1}`:                   true,
+		`{"a": 1, "a": 1}`:          false,
+	} {
+		if _, err := LoadRecord([]byte(text)); (err == nil) != read {
+			t.Errorf("%s: %v; want it read %v", text, err, read)
+		}
+	}
+	report := `{"captionWindows": [{"at": 0, "start": 0, "end": 1.88, "frames": 48, "captions": false}], "": 1, "": 2}`
+	if r := RecordLogicRead([]byte(report)); r != nil {
+		t.Errorf("a report giving the empty key twice: %v; want one that can't be read", r)
+	}
+	for _, file := range []string{"source.json", ProbeFile} {
+		d := t.TempDir()
+		sourceRecord(t, d, "a", "matroska,webm", filmStreams(), progressiveProbe)
+		packageOf(t, d, "v-a", verifiedProgressive(), "a")
+		p := filepath.Join(SourceDir(d, "a"), file)
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		librarytest.Write(t, p, []byte(`{"": 1, "": 2, `+strings.TrimPrefix(strings.TrimSpace(string(b)), "{")))
+		g, err := ReadGateWith(d, "v-a", read(600, every()...), "a")
+		if err == nil && g.Unknown == "" && len(g.Beyond()) == 0 {
+			t.Errorf("a %s giving the empty key twice: %+v; want the original kept", file, g)
+		}
+	}
+}
