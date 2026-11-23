@@ -44,13 +44,16 @@ that the GraphQL schema binds to its resolvers, as the service does at start.
 The differential of the deletion gate against the schemas' record logic
 (`internal/captions/differential_test.go`) needs `python3`; the test that
 runs the schemas' validator on a library a retirement wrote in
-(`internal/library/contract_e2e_test.go`) needs a `python3` with `jsonschema`
+(`internal/library/contract_e2e_test.go`) and the second differential, of
+the gate's reading of a source record against that validator
+(`internal/library/schema_differential_test.go`), need a `python3` with `jsonschema`
 and `referencing` (`pip install "jsonschema[format-nongpl]>=4.23"
 referencing`; `KATALOG_TEST_PYTHON` names another python). Without them
 they are skipped, except in CI (`CI` set), where they fail. CI gives each
 package 20 minutes (`go test -timeout 20m ./...`): the differential takes
-about 6 minutes there and the library's tests about 4, longer with `-race`.
-CI runs the differential once more on an arm64 runner (the job `fused`),
+about 6 minutes there and the library's tests, the second differential
+among them, about 9, longer with `-race`. CI runs both differentials once
+more on an arm64 runner (the job `fused`),
 where the compiler fuses a multiply and an add into one; Go 1.24 does not
 on amd64, not even for x86-64-v3 (`GOAMD64=v3` fuses from Go 1.25 on).
 `KATALOG_TEST_FUSED=1` has `TestTheBuildFusesAMultiplyAndAnAdd` fail

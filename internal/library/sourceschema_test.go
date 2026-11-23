@@ -48,6 +48,12 @@ func TestTheContractsSchemaOfASourceRecord(t *testing.T) {
 		{"a size as 5.3e1", `"sizeBytes": 53,`, `"sizeBytes": 5.3e1,`, exampleSource, "/file/sizeBytes"},
 		{"a size past 64 bits", `"sizeBytes": 53,`, `"sizeBytes": 9223372036854775808,`, exampleSource, "/file/sizeBytes"},
 		{"a size of 2^63 - 1", `"sizeBytes": 53,`, `"sizeBytes": 9223372036854775807,`, exampleSource, ""},
+		{"a window's at as 1.0", `"fieldOrder": "progressive"`, `"captionWindows": [{"at": 1.0, "start": 0.0, "end": 1.6, ` +
+			`"frames": 48, "captions": false}], "fieldOrder": "progressive"`, exampleSource, ""},
+		{"a window's at as 0.0", `"fieldOrder": "progressive"`, `"captionWindows": [{"at": 0.0, "start": 0.0, "end": 1.6, ` +
+			`"frames": 48, "captions": false}], "fieldOrder": "progressive"`, exampleSource, ""},
+		{"a window's frames as 48.0", `"fieldOrder": "progressive"`, `"captionWindows": [{"at": 0.0, "start": 0.0, "end": 1.6, ` +
+			`"frames": 48.0, "captions": false}], "fieldOrder": "progressive"`, exampleSource, "/frames"},
 		{"a size as text", `"sizeBytes": 53,`, `"sizeBytes": "53",`, exampleSource, "/file/sizeBytes"},
 		{"a size below 0", `"sizeBytes": 53,`, `"sizeBytes": -1,`, exampleSource, "/file/sizeBytes"},
 		{"a time of no day", `"takenAt": "2026-09-18T09:05:00Z"`, `"takenAt": "2026-02-30T09:05:00Z"`, exampleSource,
@@ -66,7 +72,7 @@ func TestTheContractsSchemaOfASourceRecord(t *testing.T) {
 			"/takenAt"},
 		{"a name of ..", `"name": "original.mkv"`, `"name": ".."`, exampleSource, "/file/name"},
 		{"a name with a /", `"name": "original.mkv"`, `"name": "a/original.mkv"`, exampleSource, "/file/name"},
-		{"a name of two lines", `"name": "original.mkv"`, `"name": "original.mkv\n"`, exampleSource, "/file/name"},
+		{"a name of two lines", `"name": "original.mkv"`, `"name": "original.mkv\n"`, exampleSource, "its name \"original.mkv\\n\" contains a line break"},
 		{"an id in capitals", `"sourceId": "9c9e9620`, `"sourceId": "9C9E9620`, exampleSource, "/sourceId"},
 	} {
 		changed := text

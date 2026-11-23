@@ -60,7 +60,17 @@ var sourceSchema = sync.OnceValues(func() (*jsonschema.Schema, error) {
 // record rec, read from the folder sources/<folder>/, for no source record:
 // its schema refuses it, or it names another folder (sourceId); "" when it
 // takes it. A schema that can't be read takes none.
-func sourceRecordRefused(rec Doc, folder string) string {
+func sourceRecordRefused(rec Doc, folder string) (why string) {
+	// a reading that fails takes nothing (the schema library on a form no
+	// writer writes, which writtenForm refuses before it gets here)
+	defer func() {
+		if r := recover(); r != nil {
+			why = fmt.Sprintf("the contract's schema can't be read of it: it failed (%v)", r)
+		}
+	}()
+	if why := textRules(rec, ""); why != "" {
+		return "the contract's validator refuses it: " + why
+	}
 	sch, err := sourceSchema()
 	if err != nil {
 		return "the contract's schema of a source record can't be read: " + err.Error()
@@ -82,6 +92,22 @@ func sourceRecordRefused(rec Doc, folder string) string {
 // hand fill in first (TestMain).
 var sourceRecordCheck = sourceRecordRefused
 
+// sourceRecordTaken is the gate's reading of the bytes raw of a source
+// record in the folder sources/<folder>/, and why it takes them for none -
+// LoadRecord can't read them, they are in no form its writers write
+// (writtenForm), or the contract's validator takes them for no source record
+// (sourceRecordRefused) -, "" when it takes them.
+func sourceRecordTaken(raw []byte, folder string) (Doc, string) {
+	d, err := LoadRecord(raw)
+	if err != nil {
+		return nil, "it can't be read: " + err.Error()
+	}
+	if why := writtenForm(raw); why != "" {
+		return d, "it is in no form the platform's writers write: " + why
+	}
+	return d, sourceRecordRefused(d, folder)
+}
+
 // schemaWhy is the first of the deepest causes v gives, where it lies.
 func schemaWhy(v *jsonschema.ValidationError) string {
 	for len(v.Causes) > 0 {
@@ -95,8 +121,11 @@ func schemaWhy(v *jsonschema.ValidationError) string {
 // with the validator's types: a number Python's json reads as no int (one
 // written with a point or an exponent) or whose int lies outside 64 bits is
 // no integer to the validator, which redefines integer so, while JSON Schema
-// takes 7.0 for one - such a number is given 1e-30 more, which no integer is
-// and which no bound or value the schema states lies between.
+// takes 7.0 for one - such a number is moved 1e-30 toward the inside of the
+// bounds the schema states (up from 0, down from above it, up from below
+// it), which no integer is: the schema bounds a number at 0 and 1 alone (a
+// window's at, a weight, a confidence, a gop), so a number on a bound stays
+// on its side of it, and no other bound or value lies within 1e-30.
 func schemaValue(v any) any {
 	switch x := v.(type) {
 	case Doc:
@@ -119,6 +148,9 @@ func schemaValue(v any) any {
 		}
 		if !strings.ContainsAny(s, ".eE") && r.Num().IsInt64() {
 			return x
+		}
+		if r.Sign() > 0 {
+			return json.Number(r.Sub(r, schemaNudge).String())
 		}
 		return json.Number(r.Add(r, schemaNudge).String())
 	}

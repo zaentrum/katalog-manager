@@ -228,8 +228,9 @@ func TestAWholeNumberPastAFloatIsNotStated(t *testing.T) {
 // The loader refuses, as the schemas' loaders do, a record that gives a
 // number no reader holds: one written past a float (1e999, -1e999, as
 // Infinity), or a whole number longer than Python reads; 1e-999 (0) and
-// 4300 digits are read. At the gate a record so written can't be read, and
-// a stored probe so written keeps the original in fields with no plan.
+// 4300 digits are read. At the gate a record so written is in no form its
+// writers write, which keeps the original (no failure), and a stored probe so
+// written keeps it in fields with no plan.
 func TestALoaderRefusesANumberNoReaderHolds(t *testing.T) {
 	for _, c := range []struct {
 		name, value string
@@ -258,8 +259,8 @@ func TestALoaderRefusesANumberNoReaderHolds(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(SourceDir(d, "a"), "source.json"))
 	librarytest.Write(t, filepath.Join(SourceDir(d, "a"), "source.json"),
 		[]byte(strings.Replace(string(b), `"durationMs": 600000`, `"durationMs": 1e999`, 1)))
-	if _, err := ReadGateWith(d, "v-a", read(600, every()...), "a"); err == nil || !strings.Contains(err.Error(), "past what a float") {
-		t.Errorf("a record giving 1e999: %v; want it unreadable", err)
+	if g, err := ReadGateWith(d, "v-a", read(600, every()...), "a"); err != nil || !strings.Contains(g.Unknown, "past what a float") {
+		t.Errorf("a record giving 1e999: %+v, %v; want it kept, unreadable", g, err)
 	}
 	d = t.TempDir()
 	sourceRecord(t, d, "a", "matroska,webm", filmStreams(), strings.Replace(progressiveProbe, `"start_time": "0.000000"`,

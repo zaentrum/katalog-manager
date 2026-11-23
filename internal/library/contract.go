@@ -1145,15 +1145,15 @@ func contractDeletionGate(sources []Doc, pkgEssence any, held map[string]string)
 
 // contractRead is the read of a report ({windows, span, gop}) as the record
 // logic takes a deletion's captionsRead: of the report the analyzer sent,
-// loaded as the schemas' loaders load a record (a key given twice, NaN,
-// Infinity or 1e999 can't be read: nil), its captionWindows, and its span
-// and gop where it gives them.
+// loaded as the schemas' loaders load a record (LoadRecord: bytes that are
+// no UTF-8, a key given twice, NaN, Infinity or 1e999 can't be read: nil),
+// its captionWindows, and its span and gop where it gives them.
 func contractRead(report []byte) any {
 	if report == nil {
 		return nil
 	}
-	orig, err := DecodeDoc(report)
-	if _, twice := repeatedKey(orig); err != nil || twice || unheldNumber(orig) != "" {
+	orig, err := LoadRecord(report)
+	if err != nil {
 		return nil
 	}
 	r := Doc{{"windows", pyGet(orig, "captionWindows")}}

@@ -66,7 +66,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      # -v: the log shows the proof and the differential's counts.
+      # the second differential runs the schemas' validator
+      - run: python3 -m pip install "jsonschema[format-nongpl]>=4.23" referencing
+      # -v: the log shows the proof and both differentials' counts.
       - run: go test -v -timeout 20m -count=1 -run '^(TestTheBuildFusesAMultiplyAndAnAdd|TestTheGateHoldsWhatTheRecordLogicHolds)$' ./internal/captions/
         env:
           KATALOG_TEST_FUSED: "1"
+      - run: go test -v -timeout 20m -count=1 -run '^TestTheRecordCheckTakesNoSourceRecordTheValidatorRefuses$' ./internal/library/

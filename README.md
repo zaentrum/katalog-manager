@@ -3077,10 +3077,40 @@ asserted) as the validator reads it: a number Python's json reads as no int
 (`7.0`, `1e2`), or whose int is past 64 bits, is no integer; a date-time is
 one Go's RFC 3339 reading takes; a pattern matches no string Python's
 `re.search` doesn't (Go's `$` is the end alone; the two patterns that look
-ahead are read as they say, of a string of one line). A record, a probe or
-a read that gives a key twice in one object, the empty key `""` too, can't
-be read, and a read's window may start at any second, before 0 too, as the
-schema allows.
+ahead are read as they say, of a string of one line). The validator's own
+rules beside its schema apply too: a text under an id-like key (`name`,
+`file`, `language`, `type`, `kind`, `sha256` and the others) with a line
+break anywhere, or under any key but the six free-text ones ending in one,
+and a key with space about it (Python's `str.strip`, which takes U+001C to
+U+001F too), keep it for none. A record, a probe or a read whose bytes are
+no UTF-8, or that gives a key twice in one object, the empty key `""` too,
+can't be read (the record logic's port reads none of such a read either),
+and a read's window may start at any second, before 0 too, as the schema
+allows.
+
+The gate takes a source record, its stored probe and a package only in the
+forms the platform's writers write them (`internal/library/written.go`):
+all three are the record logic's `json_bytes`, `json.dumps(doc, indent=2,
+ensure_ascii=False)` in UTF-8, which the packager vendors and the schemas'
+tools share (the probe is ffprobe's output loaded and dumped so), and
+katalog-manager writes none of them. A text is as Python's encoder writes
+it (its quote, backslash and control characters escaped, nothing else); a
+whole number is in plain digits within 64 bits, never `-0`; a float is as
+Python's `repr` writes it (`1e-05` and `1e+16` are its only exponents); no
+key has space about it. Any other form holds, with the reason ("it is in no
+form the platform's writers write: ..."): a form nobody writes is not worth
+reading. That is a hold, no failure of the pass (its bytes no UTF-8, a key
+given twice and a number no reader holds among them, and a package the
+validator's own rules refuse); a record that is no JSON at all can't be
+read, a failure as ever. A reading of the gate that fails anyway (a panic, its own or a
+library's) keeps the original, says so ("the gate failed reading its
+records ..."), and is logged; the pass goes on. A second test
+(`TestTheRecordCheckTakesNoSourceRecordTheValidatorRefuses`,
+`internal/library`) holds the gate's reading of a source record to the
+validator itself, record by record: some 33,000 source records a generator
+makes (`testdata/sdiff/sdiff.py`, pinned, with a floor), and any the gate
+takes that the validator refuses fails it; it needs `python3` with
+`jsonschema` and `referencing`.
 
 The closing rule: the reads were made for, and tested with, some ways
 closed captions and fields are carried, and the gate takes a read of no

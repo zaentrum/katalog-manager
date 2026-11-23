@@ -296,9 +296,10 @@ func TestALibraryARetireWroteInPassesTheValidator(t *testing.T) {
 // A source record the contract's schema refuses, or that names another
 // folder, is none the validator takes, and its gate keeps the original: so
 // does the retire job, of a record with a key the schema doesn't know,
-// another sourceId, a key it requires left out, or a fact of another type;
-// and the validator, run on the same library, takes the record for none
-// too.
+// another sourceId, a key it requires left out, or a fact of another type,
+// and of one the validator's own rules refuse (a text that ends in a line
+// break, a key with space about it); and the validator, run on the same
+// library, takes the record for none too.
 func TestARecordTheContractsSchemaRefusesKeepsItsOriginal(t *testing.T) {
 	contractFiles(t)
 	py := validatorPython(t)
@@ -318,11 +319,26 @@ func TestARecordTheContractsSchemaRefusesKeepsItsOriginal(t *testing.T) {
 			file, _ := d.Get("file")
 			return d.With("file", file.(Doc).With("sizeBytes", json.Number("53.0")))
 		}},
+		// the validator's own rules beside its schema
+		{"a container title that ends in a line break", "title contains a line break", func(d Doc) Doc {
+			c, _ := d.Get("container")
+			return d.With("container", c.(Doc).With("title", "A film\n"))
+		}},
+		{"a tag whose key ends in a space", "has surrounding whitespace", func(d Doc) Doc {
+			c, _ := d.Get("container")
+			return d.With("container", c.(Doc).With("tags", Doc{{"title ", "x"}}))
+		}},
+		{"a takenBy that ends in a carriage return", "takenBy contains a line break", func(d Doc) Doc {
+			return d.With("takenBy", "analyzer example\r")
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			root, _, rep, s, _ := retiredLibrary(t, c.change)
+			// kept, its record none the contract takes, or in a form no writer
+			// writes (a key with space about it is both)
 			if rep.Originals != 0 || s.State == SourceDeleted || s.Error == nil ||
-				!strings.Contains(*s.Error, "none the contract takes") {
+				(!strings.Contains(*s.Error, "none the contract takes") &&
+					!strings.Contains(*s.Error, "no form the platform's writers write")) {
 				t.Errorf("the pass: %+v; the source %s (%s); want the original kept, its record none the contract takes",
 					rep, s.State, deref(s.Error))
 			}

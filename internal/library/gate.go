@@ -5,16 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"math/big"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zaentrum/katalog-manager/internal/languages"
 )
@@ -327,10 +330,32 @@ func FactsOf(ctx context.Context, q Querier, s *Source) (GateFacts, error) {
 // good whatever its package carries, closedCaptions named and where said
 // (Captions); one whose captions can't be told yet is kept until a read
 // tells (Unknown).
-func ReadGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (Gate, error) {
+//
+// A reading that fails anywhere in the gate (a panic) is no crash: the gate
+// keeps the original, saying so (GateFailed), and logs what failed where, so
+// the pass goes on to the next title.
+func ReadGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (g Gate, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("library: the gate of version %s of %s failed: %v; the original is kept\n%s", versionID, itemDir, r,
+				debug.Stack())
+			g, err = Gate{Unknown: fmt.Sprintf("%s (%v)", GateFailed, r)}, nil
+		}
+	}()
+	return readGateWith(itemDir, versionID, f, sourceIDs...)
+}
+
+// GateFailed begins why the gate keeps an original whose records it failed
+// reading (a panic of its own, or of a library it calls).
+const GateFailed = "the gate failed reading its records, so what deleting it gives up can't be told"
+
+func readGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (Gate, error) {
 	corr := f.Corrections
-	pkg, err := readRecordDoc(filepath.Join(VersionDir(itemDir, versionID), PackageFile))
-	if err != nil {
+	pkg, err := readWritten(filepath.Join(VersionDir(itemDir, versionID), PackageFile), true)
+	if why := unwrittenWhy(err); why != "" {
+		// a package in no form its writers write: kept, saying why
+		return Gate{Unknown: "its package can't be read: " + why}, nil
+	} else if err != nil {
 		return Gate{}, err
 	}
 	if len(sourceIDs) == 0 {
@@ -341,8 +366,10 @@ func ReadGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (
 	var unreadable []string
 	recordUnread, recordGap, refused := "", "", ""
 	for _, sid := range sourceIDs {
-		rec, err := readRecordDoc(filepath.Join(SourceDir(itemDir, sid), "source.json"))
-		if err != nil {
+		rec, err := readWritten(filepath.Join(SourceDir(itemDir, sid), "source.json"), false)
+		if why := unwrittenWhy(err); why != "" {
+			return Gate{Unknown: "its source record can't be read: " + why}, nil
+		} else if err != nil {
 			return Gate{}, err
 		}
 		if why := recordShape(rec); why != "" && recordUnread == "" {
@@ -358,7 +385,7 @@ func ReadGateWith(itemDir, versionID string, f GateFacts, sourceIDs ...string) (
 		// its stored probe, where there is one: one that can't be read, or
 		// is no probe of a file (no object, no streams), keeps it, as what it
 		// says can't be told
-		probe, err := readRecordDoc(filepath.Join(SourceDir(itemDir, sid), ProbeFile))
+		probe, err := readWritten(filepath.Join(SourceDir(itemDir, sid), ProbeFile), false)
 		if err == nil {
 			if why := probeShape(probe); why != "" {
 				err = errors.New(why)
@@ -539,7 +566,7 @@ func recordLogicOf(itemDir, versionID string, records []Doc, sourceIDs []string,
 		if _, err := os.Stat(p); err != nil {
 			continue
 		}
-		if d, err := readRecordDoc(p); err == nil {
+		if d, err := readWritten(p, true); err == nil {
 			packages = append(packages, d)
 		} else {
 			packages = append(packages, nil)
@@ -557,7 +584,7 @@ func recordLogicOf(itemDir, versionID string, records []Doc, sourceIDs []string,
 	for i, rec := range records {
 		var probe any
 		if i < len(sourceIDs) {
-			if d, err := readRecordDoc(filepath.Join(SourceDir(itemDir, sourceIDs[i]), ProbeFile)); err == nil {
+			if d, err := readWritten(filepath.Join(SourceDir(itemDir, sourceIDs[i]), ProbeFile), false); err == nil {
 				probe = d
 			}
 		}
@@ -859,7 +886,7 @@ func scansOf(itemDir string) string {
 				return "the record of version " + id + " says no list of the originals it was made of (sourceIds)"
 			}
 		}
-		pkg, err := readRecordDoc(filepath.Join(dir, PackageFile))
+		pkg, err := readWritten(filepath.Join(dir, PackageFile), true)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -1807,9 +1834,13 @@ func readRecordDoc(path string) (Doc, error) {
 }
 
 // LoadRecord is the JSON object b as the gate reads a record, and as the
-// schemas' loaders (load_strict) read one: one that gives a key twice in an
-// object, or a number no reader holds (unheldNumber), can't be read.
+// schemas' loaders (load_strict) read one: one whose bytes are no UTF-8, that
+// gives a key twice in an object, or a number no reader holds (unheldNumber),
+// can't be read.
 func LoadRecord(b []byte) (Doc, error) {
+	if !utf8.Valid(b) {
+		return nil, errors.New("its bytes are no UTF-8, which no loader reads")
+	}
 	d, err := DecodeDoc(b)
 	if err != nil {
 		return nil, err
