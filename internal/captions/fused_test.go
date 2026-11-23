@@ -8,8 +8,9 @@ import (
 
 // The differential runs once more where the compiler fuses a multiply and an
 // add into one multiply-add, which rounds once where Python rounds twice:
-// arm64 always, amd64 built for GOAMD64=v3 (CI's run of it so sets
-// KATALOG_TEST_FUSED). There a bare a*b + c of values that tell the two
+// arm64 (CI's arm64 job, which sets KATALOG_TEST_FUSED); amd64 only built
+// for GOAMD64=v3 and from Go 1.25 on, so not with this module's Go 1.24.
+// There a bare a*b + c of values that tell the two
 // apart is math.FMA's, not float64(a*b) + c - else the build doesn't fuse,
 // and the run proves nothing. The gate's own arithmetic rounds each product
 // before it adds it (float64), so the differential holds it to the record

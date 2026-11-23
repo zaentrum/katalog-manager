@@ -50,10 +50,11 @@ referencing`; `KATALOG_TEST_PYTHON` names another python). Without them
 they are skipped, except in CI (`CI` set), where they fail. CI gives each
 package 20 minutes (`go test -timeout 20m ./...`): the differential takes
 about 6 minutes there and the library's tests about 4, longer with `-race`.
-CI runs the differential once more built for x86-64-v3 (`GOAMD64=v3`),
-where the compiler fuses a multiply and an add into one, as it always does
-on arm64 (this Mac's suites fuse too); `KATALOG_TEST_FUSED=1` has
-`TestTheBuildFusesAMultiplyAndAnAdd` fail unless the build fuses.
+CI runs the differential once more on an arm64 runner (the job `fused`),
+where the compiler fuses a multiply and an add into one; Go 1.24 does not
+on amd64, not even for x86-64-v3 (`GOAMD64=v3` fuses from Go 1.25 on).
+`KATALOG_TEST_FUSED=1` has `TestTheBuildFusesAMultiplyAndAnAdd` fail
+unless the build fuses.
 
 ## Run it
 

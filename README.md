@@ -3059,9 +3059,9 @@ logic holds; the generator is pinned too, and the test wants at least the
 inputs it makes; it needs `python3`. The gate's arithmetic rounds as
 Python's does: a product is rounded before it is added (`float64(a*b) +
 c`), as the compiler may otherwise fuse the two into one multiply-add,
-which rounds once (arm64 does, amd64 built for x86-64-v3 does), and a
-window at the edge of its slack would lie on the other side. Every
-original-deleted event a retirement writes carries the read the gate
+which rounds once (arm64 does; amd64 built for x86-64-v3 does from Go 1.25
+on), and a window at the edge of its slack would lie on the other side.
+Every original-deleted event a retirement writes carries the read the gate
 decided on (`captionsRead`: its windows as the record logic keeps them, its
 span, its gop, the release of the ffprobe that read it, when it was read),
 as the validator judges a deletion by the reads events carry; a test runs

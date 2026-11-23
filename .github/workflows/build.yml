@@ -50,11 +50,23 @@ jobs:
       # differential (internal/captions) takes about 6 minutes on this runner
       # and the library's tests about 4, and their full input sets stay.
       - run: go test -timeout 20m ./...
-      # The differential once more where the compiler fuses a multiply and an
-      # add into one multiply-add, which rounds once where the record logic
-      # rounds twice: amd64 built for x86-64-v3, as arm64 always fuses. The
-      # first test fails unless this build fuses a bare a*b + c.
-      - run: go test -timeout 20m -count=1 -run '^(TestTheBuildFusesAMultiplyAndAnAdd|TestTheGateHoldsWhatTheRecordLogicHolds)$' ./internal/captions/
+
+  # The differential once more where the compiler fuses a multiply and an add
+  # into one multiply-add, which rounds once where the record logic rounds
+  # twice. Go 1.24 fuses on arm64; on amd64 it doesn't, not even built for
+  # x86-64-v3 (GOAMD64=v3 fuses from Go 1.25 on). The first test fails unless
+  # this build fuses a bare a*b + c.
+  fused:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # -v: the log shows the proof and the differential's counts.
+      - run: go test -v -timeout 20m -count=1 -run '^(TestTheBuildFusesAMultiplyAndAnAdd|TestTheGateHoldsWhatTheRecordLogicHolds)$' ./internal/captions/
         env:
-          GOAMD64: v3
           KATALOG_TEST_FUSED: "1"
